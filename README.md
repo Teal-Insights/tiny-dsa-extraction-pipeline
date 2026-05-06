@@ -1,0 +1,34 @@
+## Development
+
+### Setup
+
+Clone the repository and install the dependencies:
+
+```bash
+git clone https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline.git
+cd tiny-dsa-extraction-pipeline
+uv sync
+uv run pre-commit install
+```
+
+### Workflow
+
+Type, lint, and format checks are run automatically when you commit.
+
+Lint:
+
+```bash
+uv run ruff check
+```
+
+Format:
+
+```bash
+uv run ruff format
+```
+
+Type check:
+
+```bash
+uv run ty check
+```
