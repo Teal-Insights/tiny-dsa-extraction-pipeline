@@ -1,0 +1,344 @@
+{
+  "tool": "tiny-dsa",
+  "version": "0.2.0",
+  "release_date_utc": "2026-05-04T00:00:00Z",
+  "build_script": "build_tiny_dsa.py",
+  "purpose": "Smaller-than-Q-CRAFT toy that exercises time recursion, stress-test branching, INDEX/MATCH country lookup, OFFSET against a dynamic column, CHOOSE for categorical dispatch, and cross-sheet references. Bridge between excel-grapher's micro-workbook (mechanics) and Q-CRAFT v2 (the first real integration). Cookie-cutter v0.1 input bundle prototype.",
+  "model": {
+    "equation": "debt(t) = debt(t-1) * (1 + r(t)) / (1 + g(t)) - primary_balance(t)",
+    "recursion": "additive percentage-point shock applied from shock_year onwards to one selected parameter",
+    "horizon_years": 5
+  },
+  "patterns_exercised": [
+    "time recursion (debt(t) depends on debt(t-1))",
+    "stress-test branching (parallel baseline vs shocked paths)",
+    "cross-sheet references (Engine reads from Inputs; Outputs reads from Engine)",
+    "INDEX/MATCH against country_profile_table to look up initial_debt_to_gdp",
+    "CHOOSE on shock_type (which variable receives the shock)",
+    "OFFSET on shock_type (dynamic-column lookup of shock magnitude)",
+    "Excel-logic vs economic-logic translation (snowball factor)"
+  ],
+  "out_of_scope": [
+    "merged cells, hard-pasted-over formulas, orphan cells",
+    "iterative or quasi-iterative calculation",
+    "non-linear functional forms (e.g. logistic productivity convergence)",
+    "time-window aggregations across historical periods",
+    "many-to-one selection from large preloaded datasets (Q-CRAFT-scale)",
+    "long-horizon compounding (5 years vs Q-CRAFT's 75)",
+    "indicator-and-threshold output and risk classification"
+  ],
+  "files": {
+    "tiny-dsa.xlsx": {
+      "sha256": "c6d97d8f7d6abb1e1481b998f2079cff2367aec17036eea9ca2455898e263a11",
+      "size_bytes": 9211
+    }
+  },
+  "schemas": {
+    "country_name": {
+      "kind": "scalar",
+      "type": "string",
+      "domain": "values from country_profile_table[Country]",
+      "user_editable": true
+    },
+    "initial_debt_to_gdp": {
+      "kind": "scalar",
+      "type": "float64",
+      "units": "percent of GDP",
+      "computed": true,
+      "computed_via": "INDEX/MATCH against country_profile_table",
+      "valid_range_inclusive": [
+        0.0,
+        200.0
+      ]
+    },
+    "country_profile_table": {
+      "kind": "table",
+      "rows": 3,
+      "columns": [
+        "Country (string)",
+        "Initial debt (float64, % of GDP)",
+        "Description (string)"
+      ],
+      "user_editable": false
+    },
+    "growth_baseline": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percent per annum (real)",
+      "valid_range_inclusive": [
+        -10.0,
+        15.0
+      ],
+      "user_editable": true
+    },
+    "interest_baseline": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percent per annum (real)",
+      "valid_range_inclusive": [
+        0.0,
+        20.0
+      ],
+      "user_editable": true
+    },
+    "primary_balance_baseline": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percent of GDP",
+      "valid_range_inclusive": [
+        -15.0,
+        15.0
+      ],
+      "user_editable": true
+    },
+    "shock_year": {
+      "kind": "scalar",
+      "type": "int",
+      "valid_range_inclusive": [
+        1,
+        5
+      ],
+      "user_editable": true
+    },
+    "shock_type": {
+      "kind": "scalar",
+      "type": "int",
+      "valid_range_inclusive": [
+        1,
+        3
+      ],
+      "categorical_labels": {
+        "1": "growth",
+        "2": "interest",
+        "3": "primary_balance"
+      },
+      "user_editable": true
+    },
+    "shock_table": {
+      "kind": "array",
+      "type": "float64",
+      "length": 3,
+      "units": "percentage points",
+      "ordered_by": [
+        "growth",
+        "interest",
+        "primary_balance"
+      ],
+      "user_editable": true
+    },
+    "shock_magnitude_resolved": {
+      "kind": "scalar",
+      "type": "float64",
+      "units": "percentage points",
+      "computed": true,
+      "computed_via": "OFFSET against shock_table on shock_type"
+    },
+    "baseline_path": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percent of GDP",
+      "computed": true
+    },
+    "shocked_path": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percent of GDP",
+      "computed": true
+    },
+    "output_baseline": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percent of GDP",
+      "computed": true,
+      "alias_of": "baseline_path"
+    },
+    "output_shocked": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percent of GDP",
+      "computed": true,
+      "alias_of": "shocked_path"
+    },
+    "output_delta": {
+      "kind": "array",
+      "type": "float64",
+      "length": 5,
+      "units": "percentage points",
+      "computed": true
+    }
+  },
+  "golden_master_scenarios": [
+    {
+      "scenario_id": "borvelia_growth_shock",
+      "inputs": {
+        "country_name": "Borvelia",
+        "initial_debt_to_gdp": 60.0,
+        "growth_baseline": [
+          3.5,
+          3.5,
+          3.5,
+          3.5,
+          3.5
+        ],
+        "interest_baseline": [
+          4.0,
+          4.0,
+          4.0,
+          4.0,
+          4.0
+        ],
+        "primary_balance_baseline": [
+          -1.0,
+          -0.5,
+          0.0,
+          0.5,
+          1.0
+        ],
+        "shock_year": 2,
+        "shock_type": 1,
+        "shock_type_label": "growth",
+        "shock_magnitude_pp": -2.0
+      },
+      "outputs": {
+        "baseline_debt_to_gdp": [
+          61.289855,
+          62.085941,
+          62.385873,
+          62.187254,
+          61.487676
+        ],
+        "shocked_debt_to_gdp": [
+          61.289855,
+          63.299457,
+          64.858557,
+          65.956059,
+          66.580592
+        ],
+        "delta_pp": [
+          0.0,
+          1.213516,
+          2.472684,
+          3.768805,
+          5.092916
+        ]
+      }
+    },
+    {
+      "scenario_id": "borvelia_interest_shock",
+      "inputs": {
+        "country_name": "Borvelia",
+        "initial_debt_to_gdp": 60.0,
+        "growth_baseline": [
+          3.5,
+          3.5,
+          3.5,
+          3.5,
+          3.5
+        ],
+        "interest_baseline": [
+          4.0,
+          4.0,
+          4.0,
+          4.0,
+          4.0
+        ],
+        "primary_balance_baseline": [
+          -1.0,
+          -0.5,
+          0.0,
+          0.5,
+          1.0
+        ],
+        "shock_year": 2,
+        "shock_type": 2,
+        "shock_type_label": "interest",
+        "shock_magnitude_pp": 2.0
+      },
+      "outputs": {
+        "baseline_debt_to_gdp": [
+          61.289855,
+          62.085941,
+          62.385873,
+          62.187254,
+          61.487676
+        ],
+        "shocked_debt_to_gdp": [
+          61.289855,
+          63.270286,
+          64.798554,
+          65.863737,
+          66.454648
+        ],
+        "delta_pp": [
+          0.0,
+          1.184345,
+          2.412681,
+          3.676483,
+          4.966972
+        ]
+      }
+    },
+    {
+      "scenario_id": "borvelia_primary_balance_shock",
+      "inputs": {
+        "country_name": "Borvelia",
+        "initial_debt_to_gdp": 60.0,
+        "growth_baseline": [
+          3.5,
+          3.5,
+          3.5,
+          3.5,
+          3.5
+        ],
+        "interest_baseline": [
+          4.0,
+          4.0,
+          4.0,
+          4.0,
+          4.0
+        ],
+        "primary_balance_baseline": [
+          -1.0,
+          -0.5,
+          0.0,
+          0.5,
+          1.0
+        ],
+        "shock_year": 2,
+        "shock_type": 3,
+        "shock_type_label": "primary_balance",
+        "shock_magnitude_pp": -1.0
+      },
+      "outputs": {
+        "baseline_debt_to_gdp": [
+          61.289855,
+          62.085941,
+          62.385873,
+          62.187254,
+          61.487676
+        ],
+        "shocked_debt_to_gdp": [
+          61.289855,
+          63.085941,
+          64.390704,
+          65.201771,
+          65.516755
+        ],
+        "delta_pp": [
+          0.0,
+          1.0,
+          2.004831,
+          3.014517,
+          4.029079
+        ]
+      }
+    }
+  ]
+}
