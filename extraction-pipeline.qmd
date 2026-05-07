@@ -1,0 +1,91 @@
+---
+title: "Tiny-DSA Extraction Pipeline"
+format: gfm
+output: asis
+---
+
+The illustrative Tiny DSA workbook, [data/tiny-dsa.xlsx](tiny-dsa.xlsx), was created by Teal Emery as a test case for reverse-engineering an Excel financial model with `excel-grapher` and turning it into a standalone Python library. This workbook demonstrates the extraction and export workflow. The workflow consists of three stages:
+
+1. **configure**: classify cells as outputs, inputs, or constants, and constrain input cells' domains
+2. **extract and export**: extract the graph and export it to Python code
+3. **refactor**: refactor the exported code to improve readability and maintainability
+
+Extraction and export (stage 2) are fully automated by `excel-grapher`. `excel-grapher` provides an API for configuration (stage 1) and tooling for refactoring (stage 3), but these stages require manual human/AI work informed by understanding of intended usage.
+
+## Stage 1: Configure
+
+We will load the Tiny DSA workbook from the `data` folder.
+
+```{python}
+from pathlib import Path
+
+from excel_grapher.grapher import (
+    create_dependency_graph, DependencyGraph
+)
+
+# Load the Tiny DSA workbook
+workbook_path = Path("data/tiny-dsa.xlsx")
+```
+
+The [tiny-dsa-guide.md](data/tiny-dsa-guide.md) file contains a detailed description of the Tiny DSA workbook and its intended usage, including a table of inputs and outputs. Here are the outputs, from that table:
+
+| Named range | Cells | Description |
+|---|---|---|
+| `output_baseline` | Outputs!B12:F12 | Baseline debt-to-GDP path on the Outputs sheet |
+| `output_shocked` | Outputs!B13:F13 | Shocked debt-to-GDP path on the Outputs sheet |
+| `output_delta` | Outputs!B14:F14 | Difference, shocked minus baseline, in percentage points |
+
+We define these ranges as the "targets" of our extraction pipeline, which will trace their dependencies to achieve a "target-driven graph extraction".
+
+We can pass either range names or sheet-qualified cell/range addresses as targets. We'll use range names:
+
+```{python}
+targets = ["output_baseline", "output_shocked", "output_delta"]
+```
+
+Since the workbook contains `OFFSET` and `INDEX` functions that resolve to different dependency ranges depending on the values in input cells, we need to "constrain" the input cells that inform these dynamic references so that `excel-grapher` can include all plausible dependencies in the graph. `excel-grapher` provides a helper function to list the candidate input cells for constraining:
+
+```{python}
+from excel_grapher.grapher import (
+    list_dynamic_ref_constraint_candidates,
+)
+
+list_dynamic_ref_constraint_candidates(workbook_path, targets)
+```
+
+For each of these candidate cells, we apply our domain knowledge to constrain the range of plausible values we will allow a user to set for the cell:
+
+```{python}
+from typing import Literal
+
+constraints = {
+    'Inputs!A10': Literal['Borvelia'],
+    'Inputs!A11': Literal['Litellia'],
+    'Inputs!A12': Literal['Aurelium'],
+    'Inputs!B22': Literal[1, 2, 3],
+    'Inputs!B5': Literal['Borvelia', 'Litellia', 'Aurelium'],
+}
+```
+
+## Stage 2: Extract and Export
+
+We can extract the graph with the `create_dependency_graph` function. This returns a `DependencyGraph` object.
+
+```{python}
+from excel_grapher.grapher import DynamicRefConfig
+
+config = DynamicRefConfig.from_constraints(constraints, {})
+graph: DependencyGraph = create_dependency_graph(workbook_path, targets, load_values=True, dynamic_refs=config)
+```
+
+Since the workbook is relatively small, we can visualize it as a Mermaid diagram.
+
+```{python}
+from excel_grapher.grapher import to_mermaid
+
+print("```mermaid")
+print(to_mermaid(graph))
+print("```\n")
+```
+
+The graph is a DAG with the outputs at the top and the inputs at the bottom. Cells from the Engine sheet largely comprise a middle layer between the inputs and outputs.
