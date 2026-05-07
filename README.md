@@ -1,3 +1,9 @@
+## Dependency graph
+
+The pipeline for extracting the dependency graph lives in the [extraction-pipeline.qmd](extraction-pipeline.qmd) file.
+
+This file renders to [extraction-pipeline.md](extraction-pipeline.md), where you can see the dependency graph as a Mermaid diagram.
+
 ## Development
 
 ### Setup
