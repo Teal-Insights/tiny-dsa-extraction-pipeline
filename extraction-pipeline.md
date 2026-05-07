@@ -88,7 +88,7 @@ constraints = {
 }
 ```
 
-## Stage 2: Extract and Export
+## Stage 2A: Extract
 
 We can extract the graph with the `create_dependency_graph` function.
 This returns a `DependencyGraph` object.
@@ -114,8 +114,6 @@ print("```\n")
 ``` mermaid
 flowchart TD
   Engine_B20("Engine!B20<br>=Inputs!B6")
-  Engine_B21["Engine!B21"]
-  Engine_B22["Engine!B22"]
   Engine_B6("Engine!B6<br>=Inputs!B6")
   Engine_B9("Engine!B9<br>=OFFSET(Inputs!$B$26,0,Inputs!$B$22-1)")
   Engine_C10("Engine!C10<br>=IF(C5>=Inputs!$B$21,1,0)")
@@ -154,6 +152,7 @@ flowchart TD
   Engine_G5["Engine!G5"]
   Engine_G6("Engine!G6<br>=F6*(1+Inputs!G17/100)/(1+Inputs!G16/100)-Inputs!G18")
   Inputs_A10["Inputs!A10"]
+  Inputs_A11["Inputs!A11"]
   Inputs_A12["Inputs!A12"]
   Inputs_B10["Inputs!B10"]
   Inputs_B11["Inputs!B11"]
@@ -163,7 +162,6 @@ flowchart TD
   Inputs_B26["Inputs!B26"]
   Inputs_B5["Inputs!B5"]
   Inputs_B6("Inputs!B6<br>=INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2)")
-  Inputs_C12["Inputs!C12"]
   Inputs_C16["Inputs!C16"]
   Inputs_C17["Inputs!C17"]
   Inputs_C18["Inputs!C18"]
@@ -198,20 +196,16 @@ flowchart TD
   Engine_B6 --> Inputs_B6
   Engine_B9 --> Inputs_B22
   Engine_B9 --> Inputs_B26
-  Engine_C10 --> Engine_B21
   Engine_C10 --> Engine_C5
   Engine_C10 --> Inputs_B21
-  Engine_C14 --> Engine_B22
   Engine_C14 --> Engine_B9
   Engine_C14 --> Engine_C10
   Engine_C14 --> Inputs_B22
   Engine_C14 --> Inputs_C16
-  Engine_C15 --> Engine_B22
   Engine_C15 --> Engine_B9
   Engine_C15 --> Engine_C10
   Engine_C15 --> Inputs_B22
   Engine_C15 --> Inputs_C17
-  Engine_C16 --> Engine_B22
   Engine_C16 --> Engine_B9
   Engine_C16 --> Engine_C10
   Engine_C16 --> Inputs_B22
@@ -224,20 +218,16 @@ flowchart TD
   Engine_C6 --> Inputs_C16
   Engine_C6 --> Inputs_C17
   Engine_C6 --> Inputs_C18
-  Engine_D10 --> Engine_B21
   Engine_D10 --> Engine_D5
   Engine_D10 --> Inputs_B21
-  Engine_D14 --> Engine_B22
   Engine_D14 --> Engine_B9
   Engine_D14 --> Engine_D10
   Engine_D14 --> Inputs_B22
   Engine_D14 --> Inputs_D16
-  Engine_D15 --> Engine_B22
   Engine_D15 --> Engine_B9
   Engine_D15 --> Engine_D10
   Engine_D15 --> Inputs_B22
   Engine_D15 --> Inputs_D17
-  Engine_D16 --> Engine_B22
   Engine_D16 --> Engine_B9
   Engine_D16 --> Engine_D10
   Engine_D16 --> Inputs_B22
@@ -250,20 +240,16 @@ flowchart TD
   Engine_D6 --> Inputs_D16
   Engine_D6 --> Inputs_D17
   Engine_D6 --> Inputs_D18
-  Engine_E10 --> Engine_B21
   Engine_E10 --> Engine_E5
   Engine_E10 --> Inputs_B21
-  Engine_E14 --> Engine_B22
   Engine_E14 --> Engine_B9
   Engine_E14 --> Engine_E10
   Engine_E14 --> Inputs_B22
   Engine_E14 --> Inputs_E16
-  Engine_E15 --> Engine_B22
   Engine_E15 --> Engine_B9
   Engine_E15 --> Engine_E10
   Engine_E15 --> Inputs_B22
   Engine_E15 --> Inputs_E17
-  Engine_E16 --> Engine_B22
   Engine_E16 --> Engine_B9
   Engine_E16 --> Engine_E10
   Engine_E16 --> Inputs_B22
@@ -276,20 +262,16 @@ flowchart TD
   Engine_E6 --> Inputs_E16
   Engine_E6 --> Inputs_E17
   Engine_E6 --> Inputs_E18
-  Engine_F10 --> Engine_B21
   Engine_F10 --> Engine_F5
   Engine_F10 --> Inputs_B21
-  Engine_F14 --> Engine_B22
   Engine_F14 --> Engine_B9
   Engine_F14 --> Engine_F10
   Engine_F14 --> Inputs_B22
   Engine_F14 --> Inputs_F16
-  Engine_F15 --> Engine_B22
   Engine_F15 --> Engine_B9
   Engine_F15 --> Engine_F10
   Engine_F15 --> Inputs_B22
   Engine_F15 --> Inputs_F17
-  Engine_F16 --> Engine_B22
   Engine_F16 --> Engine_B9
   Engine_F16 --> Engine_F10
   Engine_F16 --> Inputs_B22
@@ -302,20 +284,16 @@ flowchart TD
   Engine_F6 --> Inputs_F16
   Engine_F6 --> Inputs_F17
   Engine_F6 --> Inputs_F18
-  Engine_G10 --> Engine_B21
   Engine_G10 --> Engine_G5
   Engine_G10 --> Inputs_B21
-  Engine_G14 --> Engine_B22
   Engine_G14 --> Engine_B9
   Engine_G14 --> Engine_G10
   Engine_G14 --> Inputs_B22
   Engine_G14 --> Inputs_G16
-  Engine_G15 --> Engine_B22
   Engine_G15 --> Engine_B9
   Engine_G15 --> Engine_G10
   Engine_G15 --> Inputs_B22
   Engine_G15 --> Inputs_G17
-  Engine_G16 --> Engine_B22
   Engine_G16 --> Engine_B9
   Engine_G16 --> Engine_G10
   Engine_G16 --> Inputs_B22
@@ -329,12 +307,12 @@ flowchart TD
   Engine_G6 --> Inputs_G17
   Engine_G6 --> Inputs_G18
   Inputs_B6 --> Inputs_A10
+  Inputs_B6 --> Inputs_A11
   Inputs_B6 --> Inputs_A12
   Inputs_B6 --> Inputs_B10
   Inputs_B6 --> Inputs_B11
   Inputs_B6 --> Inputs_B12
   Inputs_B6 --> Inputs_B5
-  Inputs_B6 --> Inputs_C12
   Outputs_B12 --> Engine_C6
   Outputs_B13 --> Engine_C20
   Outputs_B14 --> Outputs_B12
@@ -360,3 +338,5 @@ flowchart TD
 The graph is a DAG with the outputs at the top and the inputs at the
 bottom. Cells from the Engine sheet largely comprise a middle layer
 between the inputs and outputs.
+
+## Stage 3: Refactor

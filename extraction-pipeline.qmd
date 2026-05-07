@@ -67,7 +67,7 @@ constraints = {
 }
 ```
 
-## Stage 2: Extract and Export
+## Stage 2A: Extract
 
 We can extract the graph with the `create_dependency_graph` function. This returns a `DependencyGraph` object.
 
@@ -89,3 +89,7 @@ print("```\n")
 ```
 
 The graph is a DAG with the outputs at the top and the inputs at the bottom. Cells from the Engine sheet largely comprise a middle layer between the inputs and outputs.
+
+
+
+## Stage 3: Refactor
