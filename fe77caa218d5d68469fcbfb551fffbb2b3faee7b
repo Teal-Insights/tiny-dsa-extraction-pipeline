@@ -1,0 +1,198 @@
+```yaml
+author: Christopher C. Smith
+date: 2026-05-07
+title: "Project 0 — Project Plan"
+```
+
+## Deliverable Milestones (Definition of Done)
+
+Each of the `D#` list items represents a concrete deliverable with acceptance conditions. Deliverables are listed in the sequence they are meant to be completed (though some neighboring deliverables and even parts of neighboring phases can be worked on in parallel).
+
+### Phase 0 - Development Workflow Setup
+
+* **D1****
+****Deliverable:** Plan of action for the Tiny DSA project is documented in the planning repo.
+  **Acceptance criteria:** Plan of action approved by Christopher, Kweku, and Teal.
+* **D2****
+****Deliverable:** Development environment scaffolded, likely with ruff (linter), ty (type checker), pre-commit hooks, pytest, GitHub Actions (CI/CD), a good README, AGENTS.md (with instructions for opening `Teal-Insights/excel-grapher` issues with minimal reproduction instructions).
+  **Acceptance criteria:** Tooling approved by Christopher and Kweku, setup process documented for replicability when we work on DDT and Q-CRAFT v2.
+
+**M1:** Phase 0 complete.
+
+### Phase 1 - Graph Extraction
+
+* **D3****
+****Deliverable:** Well-documented code pipeline for extracting the Excel workbook graph and exporting it as a standalone Python library using `excel-grapher`. The test runner and excel-grapher pipeline are independent and combine neatly.
+  **Acceptance criteria:** The pipeline must document the `excel-grapher` API, user flow, and decision process, must export the graph for visualization, and must be compatible with Kweku's testing harness (so not Quarto, or at least not *only* Quarto).
+* **D4****
+****Deliverable:** Kweku's Golden-Master testing harness operational: self-contained Python runner that drives Excel (via xlwings), the extracted graph via `FormulaEvaluator.evaluate`, and the extracted standalone Python package on identical inputs in isolated processes and writes a parity report.
+  **Acceptance criteria:** Must run a matrix of inputs for three canonical scenarios: growth, interest, and primary-balance shock scenarios with `atol=1e-6` against Excel.
+* **D5****
+****Deliverable:** Extracted `DependencyGraph`, successfully using the constraint-resolution path (`use_cached_values=False` in `create_dependency_graph`) with configured input constraints to resolve the dependencies of `OFFSET`, `INDEX` / `MATCH`, and `CHOOSE` without raising warnings or errors.
+  **Acceptance criteria:** Passes a manual inspection (asking, "does the graph contain everything it should, contain nothing it shouldn't?"). `FormulaEvaluator.evaluate` runs without error and produces Excel-equivalent results for the three canonical scenarios in Kweku's harness.
+
+**M2:** Phase 1 complete
+
+### Phase 2 - Standalone Library Generation
+
+* **D6****
+****Deliverable:** New `excel-grapher` feature that uses named-range labels to inform the generated-library API.
+  **Acceptance criteria:** Regenerating standalone library produces an API with usage ergonomics and naming conventions that honor the named-range API contract in `tiny-dsa-manifest.json`.
+* **D7****
+****Deliverable:** Revised pipeline that configures input/output *groups* so that `excel_grapher.CodeGenerator` can generate `set_` functions for inputs and `compute_` functions for outputs in generated code, and that classifies leaf nodes as *inputs* or *constants* so the generator can exclude constants from the API.
+  **Acceptance criteria:** The pipeline must document the generator API, user flow, and decision process clearly enough for Teal, Kweku, or an AI agent to replicate for DDT or Q-CRAFT v2. Teal signs off on the shape of the input/output *groups* (e.g., "these input cells are a time series and should be set by a single `set_` function").
+* **D8****
+****Deliverable:** Exported standalone Python library.
+  **Acceptance criteria:** The library's `compute_` functions run without error and pass Kweku's differential testing for the three canonical scenarios.
+* **D9****
+****Deliverable:** `excel-grapher` bugs encountered during extraction and export are triaged and either fixed (critical) or documented upstream (non-critical).
+  **Acceptance criteria:** Christopher certifies that all critical bugs are resolved, and all non-critical bugs are filed as open issues in `Teal-Insights/excel-grapher` with minimal reproduction steps.
+
+**M3:** Phase 2 complete
+
+### Phase 3 - Standalone Library Documentation
+
+* **D10****
+****Deliverable:** New `excel-grapher` feature that incorporates the label detection logic Christopher prototyped in `Teal-Insights/lic-dsf-extraction-pipeline` and incorporates it directly into `excel-grapher` so that the labels are available at graph analysis time.
+  **Acceptance criteria:** Labels are correctly detected and added to `DependencyGraph` nodes and can be used at graph analysis time to inform the generated-library API.
+* **D11****
+****Deliverable:** Scalable post-processing pipeline for generating AI docstrings (using dependency chain, guidance note, and cell labels as prompt inputs) and adding them to the `set_` and `compute_` functions in the generated standalone library.
+  **Acceptance criteria:** Every input/output identifier is meaningful to an economist (`financing_time_series`, `primary_balance_shock_pp`), not to a spreadsheet (`U24`, `OFFSET_RANGE_3`). `set_` and `compute_` functions all have names and docstrings that use domain language, not Excel language, and Teal certifies the API as sufficiently usable by semi-technical macrofinance domain experts.
+* **D12****
+****Deliverable:** Scalable post-processing pipeline for generating a companion guide for the library.
+  **Acceptance criteria:** Process should produce correct outputs of approximately the same shape on every run. Companion guide should be written in MoF-reader voice, using domain language, and stand up to IMF-level technical precision. Voice: intelligent, busy Ministry-of-Finance reader who has ten other things on their plate — the voice that worked for the published Q-CRAFT v1 companion guide. Precision: every factual claim and every methodology description is correct enough that an IMF reviewer would sign off.
+
+**M4:** Phase 3 complete.
+
+### Phase 4 - Post-Mortem
+
+* **D13****
+****Deliverable:** Christopher's technical standard for what counts as "good extraction" is documented and can be applied to Q-CRAFT v2 and DDT.
+* **D14****
+****Deliverable:** Kweku's technical standard for golden-master validation is documented and can be applied to Q-CRAFT v2 and DDT. The precision policy (`atol=1e-6`, error-class equality, `None` / `NaN` rules), the parity-report convention (CSV per-cell + TXT summary, 100% pass-rate bar), and first-divergence reporting convention (the report names the first axis-point and cell that diverged, so root-cause lands on one row, not 465) used on Tiny-DSA become the documented standard for the next two tools.
+* **D15****
+****Deliverable:** Provenance / attribution log captures a mostly-reproducible record of the process. Every artifact and every decision tagged: LLM-generated, human-authored, or software-produced (excel-grapher, the harness). Sources stitched together: SpecStory CLI agent-interaction records (per-author), git commit history, planning-repo notes, individual prompting records, and a manual-intervention log capturing the moments where guild knowledge had to bridge an AI gap (Kweku cleaning up generated code, Christopher fixing a model parameter, Teal injecting economic-realism domain knowledge that wasn't in the input bundle).
+* **D16****
+****Deliverable:** LESSONS_LEARNED documented. Written for three audiences: (1) the three of us re-reading on Q-CRAFT v2 day-1; (2) a future Teal Insights person forking the cookie-cutter for tool #3; (3) the next Council pass framing input. Inputs include the provenance log. Keep it tight enough to serve all three without sprawl. Document what the test harness caught, what it didn't, what excel-grapher's OFFSET / INDEX-MATCH gap currently hides, what generalizes to Q-CRAFT v2, and what's the approach for DDT.
+* **D17****
+****Deliverable:** List of cookie-cutter v0.0 artifacts, with paths. Harness layout, standards docs, and the oracle-isolation contract — listed by file path, not extracted as a template repo. Q-CRAFT v2 forks them.
+* **D18****
+****Deliverable:** Honest, concrete assessment of the results of the open methodological question, based on a real attempt on Tiny-DSA: have we achieved extracted Python that carries enough semantic information (names, structure, embedded explanations, possibly auto-generated narrative) to be readable as economics, not just as spreadsheet logic? Method-finding: what worked, what didn't, what Q-CRAFT v2 needs to refine.
+* **D19****
+****Deliverable:** Each of us walks into Q-CRAFT v2 with working clarity on our lane. No renegotiation of who does what. This is informal; the test is what doesn't happen, not what gets documented.
+
+**M5:** Phase 4 complete
+
+## Follow-on Stretch Goals (Optional)
+
+### Exported Standalone Library Test Suite
+
+* `excel_grapher.CodeGenerator` programmatically generates a differential test suite along with the standalone Python library. Functionality for exporting tests does not currently exist in `excel-grapher`, so this would be a new `CodeGenerator` feature.
+
+### Exported Function to Set Inputs from Filled-out Excel Template
+
+* The standalone library should support either setting inputs manually or loading them from a filled-out Excel template. I prototyped this in `Teal-Insights/lic-dsf-extraction-pipeline`, but I can't remember whether it's directly incorporated into `excel-grapher`'s export functionality yet. If not, we should add this functionality as an export option so it doesn't have to be added in post-processing.
+
+### Refactored Standalone Library Internals
+
+* The team should analyze the graph to identify: 1. connected parts of the graph that should be functions/modules, and 2. identical parts of the graph that should be deduplicated. `excel-grapher` provides some tooling for this (specifically, a NetworkX layout plugin intended to support module inference), but this is mostly not yet implemented and will require experimentation by the team. Whatever process we develop for module inference must be scalable to larger graphs.
+* The final refactored library should still pass differential testing against Excel, but should be significantly reduced in code size. Library internals should be well organized into functions that map to macrofinance computations, not individual Excel workbook cells. Library internals should have their own docstrings.
+
+### Library Publication from CI/CD
+
+* In `Teal-Insights/lic-dsf-extraction-pipeline`, I prototyped generating and publishing the standalone library directly from GitHub Actions. The *pipeline* repository pushes to a different *production* repository that contains the published library for download by end users.
+
+## Execution Plan
+
+### AI Usage
+
+Each contributor should read the others' code. Christopher reads Kweku's harness; Kweku reads Christopher's extraction; Teal reads both.
+
+We use AI where it's strong (multi-step technical planning, dependency reasoning, decomposition of complex problems) and inject human domain expertise where AI is weak (calendar estimation under AI-agent pace, sovereign-debt guild knowledge that isn't written down, and the verification that best practices Council recommends are actually executed and not faked).
+
+**Council of experts loop**: AI produces clarifying questions, humans provide answers, AI proposes a plan and spec, humans and other AI models provide adversarial review of spec and plan, then iterate until shared human/AI sign-off. Every artifact and every decision in this loop gets attribution. SpecStory CLI captures agent-interaction records per-author; git commit history captures repo state; planning-repo notes capture human reasoning; a manual-intervention log captures the bridging moments.
+
+### Three Lanes
+
+**The three lanes are extraction (Christopher), golden-master testing (Kweku), and economic-logic design (Teal).** The sign-off pattern is layered. Teal signs off on economic meaning, whether the interface speaks to a domain expert. Christopher certifies software correctness, that the generated code honors the library API contract and is well-engineered. Kweku signs off on extraction parity — that the extracted Python passes the harness at the locked precision tolerance and that root-cause analysis surfaces no fundamental gaps.
+
+This allows for work ("actions") to be performed in parallel. Deliverables pass between lanes via "handoffs" at "approval gates". Handoffs result in either approval or an iterative feedback loop until approval is reached. In some cases, we may find flaws in a deliverable and decide to proceed with approval anyway. In that case, feedback should still be passed back to the author of the deliverable and documented by the author for future action.
+
+### What This Looks Like in Practice
+
+We can think in terms of three abstractions for coordination: **action**, **handoff**, and **approval gate**. We've already set the precedent during our planning process. Drafting and synthesizing are actions, peer reviews/signoffs are approval gates, and handoffs connect them to each other:
+
+```
+sequenceDiagram
+  autonumber
+  participant C as Christopher
+  participant K as Kweku
+  participant T as Teal
+
+  par Initial drafting
+    C->>T: Draft input for plan of action
+  and
+    K->>T: Draft input for plan of action
+  and
+    T->>T: Draft own input
+  end
+
+  T->>T: Synthesize unified plan draft
+
+  loop Until both approvals are yes
+    T->>C: Handoff synthesized draft for approval
+    C-->>T: Approve? (Yes / No with revisions)
+
+    T->>K: Handoff synthesized draft for approval
+    K-->>T: Approve? (Yes / No with revisions)
+
+    alt C or K says No
+      T->>T: Incorporate revisions and resynthesize
+    else Both say Yes
+      T-->>C: Final approved plan
+      T-->>K: Final approved plan
+    end
+  end
+```
+
+Here we have three lanes, with the labeled "loop" representing an approval gate. Outside of an approval gate, work is loosely coupled and can be performed in parallel. At the seams (approval gates), there are sequential dependencies where work in one lane may be blocked until a handoff from another lane occurs.
+
+With twelve approval gates (although not every gate involves handoffs), our challenge is going to be managing those bottlenecks effectively. Each team member will need to be accountable to provide fast feedback to keep the loop moving, and team members should also feel free to jump ahead to work on the next deliverable when work is blocked by a handoff that hasn't occurred yet.
+
+### Project Management Technology
+
+I suggest that each `D#` deliverable item be created as a GitHub issue and assigned to the person who needs to take the first action on it.
+
+(Teal can decide whether he wants the deliverable issues synced to Linear with Linear milestones for each phase, or if he'd prefer Linear issues be created at the phase-milestone level with links to the corresponding GitHub deliverable issues.)
+
+Once you complete your **action** items on a deliverable issue assigned to you, you can either close the issue if it's done and has passed the approval gate, or make the **handoff** to whoever is supposed to take the next action on the issue. This should take the form of "assigning" the issue to that person and optionally tagging them in a comment or pinging them on Slack.
+
+### Tackling Phases 0 and 1
+
+Phase 0 is nearly complete:
+
+* D1 will be complete once we approve a consolidated "definition of done" and action plan.
+* D2 is partially done, but we still need to add pytest, flesh out the README, and document in AGENTS.md that all `excel-grapher` bugs should be reported to `Teal-Insights/excel-grapher` by opening an issue with minimal reproduction instructions. We should also document the setup steps and send them to Teal for documentation in the log. I suggest Kweku tackle this milestone (and also review the work Chris has already done on it).
+
+Phase 1 is well under way:
+
+* Christopher and Kweku have already made a good start on D3 – D5, but they need to coordinate to make sure their implementations are compatible with each other. Christopher needs to produce a Python extraction script that is *not* in Quarto, so Kweku can import it, and Kweku needs to confirm that the code has the right shape to work with his testing framework. D3 can be marked complete as soon as Christopher puts his Quarto code into a `.py` file. D4 and D5 can be marked complete once the extracted graph passes differential testing on the `FormulaEvaluator.evaluate` path with Kweku's harness.
+
+Phase 2 can be begun by Christopher while Kweku works on testing for Phase 1:
+
+* D6 blocks D7 and must be completed first.
+* D7 is where Teal comes in at more than a project management level. Christopher should group inputs and outputs and generate `set_` and `compute_` functions in consultation with Teal. There are some API ergonomics to be worked out here, because the standard I/O interface exposed by `excel-grapher` is probably not as usable/interpretable to macrofinance domain experts as we want it to be. Teal should provide design feedback until everybody is satisfied with the shape. Kweku may also want to pitch in about how to make the design more functional, because currently it is object oriented.
+* D8 and D9 are mostly a matter of running the code against Kweku's harness and iterating on the feedback loop between Christopher and Kweku until everyone is satisfied that Excel parity has been achieved.
+
+Phase 3 is partially blocked by Phase 2, but work can be started in parallel:
+
+* D10 has no dependencies and can be completed at any time.
+* D11 and D12 can be worked on once D8 and D10 are complete. Christopher should work in close collaboration with Teal on these issues, since Teal's experience creating the Q-CRAFT-v1 companion guide will be invaluable here. Teal could begin documenting his process and standards for the companion guide in preparation for this step at any time.
+
+Phase 4, a post-project reflection phase, will look much like the planning phase:
+
+* Teal will assign team members to draft deliverables, we'll give each other feedback during stand-ups, and we'll revise until everyone is satisfied. There's a risk of spending too much time here, so we should time-gate it to a couple days at most.
+
+## Open Question for Teal
+
+Would you prefer the deliverable issues in GitHub be synced as Linear and grouped under Linear milestones for each phase, or that the phase milestones be represented as Linear issues, each containing a list of links to the corresponding GitHub deliverable issues?
