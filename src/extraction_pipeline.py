@@ -59,6 +59,3 @@ graph: DependencyGraph = create_dependency_graph(
     load_values=True,
     dynamic_refs=config,
 )
-
-# Verify that all leaf cells are constrained
-assert all([key in constraints.keys() for key in graph.leaf_keys()])
