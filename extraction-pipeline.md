@@ -26,10 +26,6 @@ We will load the Tiny DSA workbook from the `data` folder.
 ``` python
 from pathlib import Path
 
-from excel_grapher.grapher import (
-    create_dependency_graph, DependencyGraph
-)
-
 # Load the Tiny DSA workbook
 workbook_path = Path("data/tiny-dsa.xlsx")
 ```
@@ -55,12 +51,35 @@ as targets. We’ll use range names:
 targets = ["output_baseline", "output_shocked", "output_delta"]
 ```
 
-Since the workbook contains `OFFSET` and `INDEX` functions that resolve
-to different dependency ranges depending on the values in input cells,
-we need to “constrain” the input cells that inform these dynamic
-references so that `excel-grapher` can include all plausible
-dependencies in the graph. `excel-grapher` provides a helper function to
-list the candidate input cells for constraining:
+Note that if we try to extract the graph without any further
+configuration, we get an error:
+
+``` python
+from excel_grapher.grapher import (
+    DynamicRefError,
+    create_dependency_graph,
+    DependencyGraph,
+)
+
+try:
+    graph: DependencyGraph = create_dependency_graph(workbook_path, targets, load_values=True)
+except DynamicRefError as e:
+    print(e)
+```
+
+Formula at Inputs!B6 contains INDEX that require resolution. Pass
+dynamic_refs=DynamicRefConfig.from_constraints(…) or set
+use_cached_dynamic_refs=True.
+
+That is because the workbook contains `OFFSET` and `INDEX` functions
+that resolve to different dependency ranges depending on the values in
+input cells, so `excel-grapher` cannot resolve their dependency graphs
+without knowing more about the input cells. To resolve this, we need to
+“constrain” the input cells that inform these dynamic references so that
+`excel-grapher` can include all plausible dependencies in the graph.
+
+`excel-grapher` provides a helper function to list the candidate input
+cells for constraining:
 
 ``` python
 from excel_grapher.grapher import (
@@ -90,8 +109,9 @@ constraints = {
 
 ## Stage 2A: Extract
 
-We can extract the graph with the `create_dependency_graph` function.
-This returns a `DependencyGraph` object.
+Now `excel-grapher` can successfully extract the graph with the
+`create_dependency_graph` function. This returns a `DependencyGraph`
+object.
 
 ``` python
 from excel_grapher.grapher import DynamicRefConfig
@@ -338,5 +358,7 @@ flowchart TD
 The graph is a DAG with the outputs at the top and the inputs at the
 bottom. Cells from the Engine sheet largely comprise a middle layer
 between the inputs and outputs.
+
+## Stage 2B: Export
 
 ## Stage 3: Refactor
