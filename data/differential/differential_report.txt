@@ -1,0 +1,53 @@
+==============================================================================
+tiny-dsa differential parity report
+==============================================================================
+workbook : C:\Users\chris\Software\tiny-dsa-extraction-pipeline\data\tiny-dsa.xlsx
+oracles  : Excel via xlwings [golden] vs excel-grapher graph + FormulaEvaluator [mvp]
+tolerance: atol=1e-06
+trials   : 465 cell-level comparisons
+
+SUMMARY  : 465/465 passed (100.00%), 0 failed
+
+PER-AXIS
+------------------------------------------------------------------------------
+[PASS]    45/45     country_name
+[PASS]    75/75     shock_year
+[PASS]    45/45     shock_type
+[PASS]    75/75     shock_table[growth]
+[PASS]    75/75     growth_baseline[year=3]
+[PASS]    75/75     interest_baseline[year=3]
+[PASS]    75/75     primary_balance_baseline[year=3]
+
+PER-POINT
+------------------------------------------------------------------------------
+[PASS]  15/15   country_name :: country_name=Borvelia
+[PASS]  15/15   country_name :: country_name=Litellia
+[PASS]  15/15   country_name :: country_name=Aurelium
+[PASS]  15/15   shock_year :: shock_year=1
+[PASS]  15/15   shock_year :: shock_year=2
+[PASS]  15/15   shock_year :: shock_year=3
+[PASS]  15/15   shock_year :: shock_year=4
+[PASS]  15/15   shock_year :: shock_year=5
+[PASS]  15/15   shock_type :: shock_type=1
+[PASS]  15/15   shock_type :: shock_type=2
+[PASS]  15/15   shock_type :: shock_type=3
+[PASS]  15/15   shock_table[growth] :: shock_table[growth]=-3.0
+[PASS]  15/15   shock_table[growth] :: shock_table[growth]=-2.0
+[PASS]  15/15   shock_table[growth] :: shock_table[growth]=-1.0
+[PASS]  15/15   shock_table[growth] :: shock_table[growth]=+0.0
+[PASS]  15/15   shock_table[growth] :: shock_table[growth]=+1.0
+[PASS]  15/15   growth_baseline[year=3] :: growth_baseline[year=3]=+0.0
+[PASS]  15/15   growth_baseline[year=3] :: growth_baseline[year=3]=+1.5
+[PASS]  15/15   growth_baseline[year=3] :: growth_baseline[year=3]=+3.5
+[PASS]  15/15   growth_baseline[year=3] :: growth_baseline[year=3]=+5.5
+[PASS]  15/15   growth_baseline[year=3] :: growth_baseline[year=3]=+7.0
+[PASS]  15/15   interest_baseline[year=3] :: interest_baseline[year=3]=+0.0
+[PASS]  15/15   interest_baseline[year=3] :: interest_baseline[year=3]=+2.0
+[PASS]  15/15   interest_baseline[year=3] :: interest_baseline[year=3]=+4.0
+[PASS]  15/15   interest_baseline[year=3] :: interest_baseline[year=3]=+6.0
+[PASS]  15/15   interest_baseline[year=3] :: interest_baseline[year=3]=+8.0
+[PASS]  15/15   primary_balance_baseline[year=3] :: primary_balance_baseline[year=3]=-3.0
+[PASS]  15/15   primary_balance_baseline[year=3] :: primary_balance_baseline[year=3]=-1.5
+[PASS]  15/15   primary_balance_baseline[year=3] :: primary_balance_baseline[year=3]=+0.0
+[PASS]  15/15   primary_balance_baseline[year=3] :: primary_balance_baseline[year=3]=+1.5
+[PASS]  15/15   primary_balance_baseline[year=3] :: primary_balance_baseline[year=3]=+3.0

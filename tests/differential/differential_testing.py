@@ -25,6 +25,7 @@ Requires Microsoft Excel installed locally (xlwings drives Excel via COM).
 from __future__ import annotations
 
 import csv
+import importlib
 import math
 import re
 import shutil
@@ -34,8 +35,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-import openpyxl
-
+import fastpyxl
 from excel_grapher import XlError
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import (
@@ -44,15 +44,20 @@ from excel_grapher.grapher import (
     create_dependency_graph,
 )
 
+# Ensure direct script execution can import the local `src` package.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 # Import the canonical configuration from the extraction pipeline so the
 # differential always tests the same shape the pipeline ships.
-from src.extraction_pipeline import constraints as PIPELINE_CONSTRAINTS
-from src.extraction_pipeline import targets as PIPELINE_TARGETS
-from src.extraction_pipeline import workbook_path as PIPELINE_WORKBOOK_PATH
+_pipeline = importlib.import_module("src.extraction_pipeline")
+PIPELINE_CONSTRAINTS = _pipeline.constraints
+PIPELINE_TARGETS = _pipeline.targets
+PIPELINE_WORKBOOK_PATH = _pipeline.workbook_path
 
 # ---- Configuration -----------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # extraction_pipeline.py declares Path("data/tiny-dsa.xlsx") relative to the
 # project root (CWD-relative). Resolve it explicitly so this script can be
 # launched from any working directory.
@@ -153,7 +158,7 @@ def _expand_a1(sheet: str, a1: str) -> tuple[str, ...]:
 
 def resolve_named_ranges(workbook_path: Path) -> dict[str, tuple[str, ...]]:
     """Return {name: (cell, ...)} for every input/output named range."""
-    wb = openpyxl.load_workbook(workbook_path, data_only=False)
+    wb = fastpyxl.load_workbook(workbook_path, data_only=False)
     try:
         out: dict[str, tuple[str, ...]] = {}
         for name in INPUT_NAMES + OUTPUT_NAMES:

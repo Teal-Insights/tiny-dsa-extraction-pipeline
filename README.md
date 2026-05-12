@@ -4,6 +4,10 @@ The pipeline for extracting the dependency graph lives in the [extraction-pipeli
 
 This file renders to [extraction-pipeline.md](extraction-pipeline.md), where you can see the dependency graph as a Mermaid diagram.
 
+## Differential Testing
+
+For instructions on running the differential test sweep, see the [differential testing README](tests/differential/README.md). The test sweep passes cleanly with the current pipeline. Test results may be viewed in the [differential/differential_report.txt](data/differential/differential_report.txt) file. The Pytest test suite also runs a small sample of randomized differential tests.
+
 ## Development
 
 ### Setup

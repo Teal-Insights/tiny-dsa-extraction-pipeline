@@ -1,5 +1,5 @@
 import random
-from typing import Annotated, Literal, Protocol, cast, get_args, get_origin
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 import fastpyxl
 import fastpyxl.utils.cell
@@ -12,32 +12,6 @@ from excel_grapher.grapher.resolver import NamedRangeMaps, build_named_range_map
 from excel_grapher.grapher.parser import expand_range
 
 from src.extraction_pipeline import constraints, graph, targets, workbook_path
-
-
-class _ExcelWorksheet(Protocol):
-    def Range(self, cell: str) -> object: ...
-
-
-class _ExcelWorkbook(Protocol):
-    def Worksheets(self, name: str) -> _ExcelWorksheet: ...
-    def Close(self, save_changes: bool) -> None: ...
-
-
-class _ExcelWorkbooks(Protocol):
-    def Open(self, path: str) -> _ExcelWorkbook: ...
-
-
-class _ExcelApplication(Protocol):
-    Visible: bool
-    DisplayAlerts: bool
-    Workbooks: _ExcelWorkbooks
-
-    def Calculate(self) -> None: ...
-    def Quit(self) -> None: ...
-
-
-class _ExcelRange(Protocol):
-    Value: object
 
 
 def test_all_leaf_cells_are_constrained():
@@ -73,7 +47,6 @@ def test_formula_evaluator_matches_excel_for_default_inputs():
                 ), f"Cell {dep_sheet}!{dep_a1} value mismatch"
 
 
-@pytest.mark.skipped
 def test_formula_evaluator_matches_excel_for_randomized_inputs():
     def _sample_constraint(rng: random.Random, constraint: object) -> object:
         origin = get_origin(constraint)
@@ -115,9 +88,7 @@ def test_formula_evaluator_matches_excel_for_randomized_inputs():
                 output_addresses.append(f"{dep_sheet}!{dep_a1}")
         return output_addresses
 
-    win32 = pytest.importorskip(
-        "win32com.client", reason="requires pywin32 for Excel COM automation"
-    )
+    xw = pytest.importorskip("xlwings", reason="requires xlwings for Excel automation")
 
     wb_formulas = fastpyxl.load_workbook(workbook_path, data_only=False)
     maps = build_named_range_map(wb_formulas)
@@ -140,23 +111,23 @@ def test_formula_evaluator_matches_excel_for_randomized_inputs():
         )
         original_leaf_values[address] = node.value
 
-    app: _ExcelApplication | None = None
-    book: _ExcelWorkbook | None = None
-    sheet_cache: dict[str, _ExcelWorksheet] = {}
+    app: Any | None = None
+    book: Any | None = None
+    sheet_cache: dict[str, Any] = {}
     try:
         try:
-            app = cast(_ExcelApplication, win32.DispatchEx("Excel.Application"))
-            app.Visible = False
-            app.DisplayAlerts = False
-            book = app.Workbooks.Open(str(workbook_path.resolve()))
+            app = xw.App(visible=False, add_book=False)
+            app.display_alerts = False
+            app.screen_updating = False
+            book = app.books.open(str(workbook_path.resolve()))
         except Exception as exc:  # pragma: no cover - environment-specific
-            pytest.skip(f"Excel is not available for COM automation: {exc}")
+            pytest.skip(f"Excel is not available for xlwings automation: {exc}")
 
-        def _sheet(name: str) -> _ExcelWorksheet:
+        def _sheet(name: str) -> Any:
             worksheet = sheet_cache.get(name)
             if worksheet is None:
                 assert book is not None
-                worksheet = book.Worksheets(name)
+                worksheet = book.sheets[name]
                 sheet_cache[name] = worksheet
             return worksheet
 
@@ -169,12 +140,12 @@ def test_formula_evaluator_matches_excel_for_randomized_inputs():
                 for address, value in sample.items():
                     graph.set_node_value(address, value)
                     sheet_name, cell = address.split("!", 1)
-                    cast(_ExcelRange, _sheet(sheet_name).Range(cell)).Value = value
+                    _sheet(sheet_name).range(cell).value = value
 
-                app.Calculate()
+                app.calculate()
                 for output_address in output_addresses:
                     sheet_name, cell = output_address.split("!", 1)
-                    expected = cast(_ExcelRange, _sheet(sheet_name).Range(cell)).Value
+                    expected = _sheet(sheet_name).range(cell).value
                     actual = ev.evaluate(output_address)
                     if isinstance(expected, (int, float)) and isinstance(
                         actual, (int, float)
@@ -190,7 +161,7 @@ def test_formula_evaluator_matches_excel_for_randomized_inputs():
         for address, value in original_leaf_values.items():
             graph.set_node_value(address, value)
         if book is not None:
-            book.Close(False)
+            book.close()
         if app is not None:
-            app.Quit()
+            app.quit()
         sheet_cache.clear()
