@@ -12,4 +12,4 @@ We control the `Teal-Insights/excel-grapher` repository, so we can and should op
 
 If a bug blocks our work, open an issue, mark it urgent, and stop working until the bug is fixed. If we can work around it, you should still open an issue so that we can track it and fix it in the future.
 
-Remember to include at least a working minimal complete verifiable example (MCVE) of the bug in the issue body, if not also diagnostic hypotheses and proposed fixes.
+Remember to include at least a working minimal complete verifiable example (MCVE) of the bug in the issue body. The MCVE must be *self-contained* (must not depend on any local file artifacts or environment variables).

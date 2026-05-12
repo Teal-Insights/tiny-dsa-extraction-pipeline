@@ -17,10 +17,11 @@ Extraction and export (stage 2) are fully automated by `excel-grapher`. `excel-g
 We will load the Tiny DSA workbook from the `data` folder.
 
 ```{python}
+import sys
 from pathlib import Path
 
 # Load the Tiny DSA workbook
-workbook_path = Path("data/tiny-dsa.xlsx")
+workbook_path = Path("../data/tiny-dsa.xlsx")
 ```
 
 The [tiny-dsa-guide.md](data/tiny-dsa-guide.md) file contains a detailed description of the Tiny DSA workbook and its intended usage, including a table of inputs and outputs. Here are the outputs, from that table:

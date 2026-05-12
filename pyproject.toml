@@ -13,7 +13,8 @@ excel-grapher = { git = "https://github.com/Teal-Insights/excel-grapher.git" }
 
 [dependency-groups]
 dev = [
-    "openpyxl>=3.1.5",
+    "fastpyxl>=1.0.9",
+    "pywin32>=311; sys_platform == 'win32'",
     "pre-commit>=4.6.0",
     "pytest>=9.0.3",
     "quarto>=0.1.0",

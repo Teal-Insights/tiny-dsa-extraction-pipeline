@@ -44,11 +44,11 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
-from openpyxl.workbook.defined_name import DefinedName
-from openpyxl.worksheet.datavalidation import DataValidation
+from fastpyxl import Workbook
+from fastpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from fastpyxl.utils import get_column_letter
+from fastpyxl.workbook.defined_name import DefinedName
+from fastpyxl.worksheet.datavalidation import DataValidation
 
 HERE = Path(__file__).parent
 OUT_XLSX = HERE / "tiny-dsa.xlsx"
@@ -552,9 +552,9 @@ def make_xlsx_byte_deterministic(path: Path) -> None:
 
     Two non-deterministic sources need normalization:
 
-    1. ZIP entry timestamps. openpyxl writes the current time into each
+    1. ZIP entry timestamps. fastpyxl writes the current time into each
        entry's creation timestamp; we reset them all to a fixed value.
-    2. ``dcterms:modified`` in ``docProps/core.xml``. openpyxl overwrites
+    2. ``dcterms:modified`` in ``docProps/core.xml``. fastpyxl overwrites
        this on save with ``datetime.utcnow()`` regardless of what is set on
        ``wb.properties.modified``. We replace the value with the fixed
        release date.
@@ -581,7 +581,7 @@ def make_xlsx_byte_deterministic(path: Path) -> None:
                     rf"\g<1>{fixed_iso}\g<2>",
                     text,
                 )
-                # Same for created, in case openpyxl ever overrides it.
+                # Same for created, in case fastpyxl ever overrides it.
                 text = re.sub(
                     r"(<dcterms:created[^>]*>)[^<]+(</dcterms:created>)",
                     rf"\g<1>{fixed_iso}\g<2>",

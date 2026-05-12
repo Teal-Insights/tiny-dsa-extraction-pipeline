@@ -24,10 +24,11 @@ informed by understanding of intended usage.
 We will load the Tiny DSA workbook from the `data` folder.
 
 ``` python
+import sys
 from pathlib import Path
 
 # Load the Tiny DSA workbook
-workbook_path = Path("data/tiny-dsa.xlsx")
+workbook_path = Path("../data/tiny-dsa.xlsx")
 ```
 
 The [tiny-dsa-guide.md](data/tiny-dsa-guide.md) file contains a detailed
@@ -185,9 +186,11 @@ flowchart TD
   Inputs_C16["Inputs!C16"]
   Inputs_C17["Inputs!C17"]
   Inputs_C18["Inputs!C18"]
+  Inputs_C26["Inputs!C26"]
   Inputs_D16["Inputs!D16"]
   Inputs_D17["Inputs!D17"]
   Inputs_D18["Inputs!D18"]
+  Inputs_D26["Inputs!D26"]
   Inputs_E16["Inputs!E16"]
   Inputs_E17["Inputs!E17"]
   Inputs_E18["Inputs!E18"]
@@ -216,6 +219,8 @@ flowchart TD
   Engine_B6 --> Inputs_B6
   Engine_B9 --> Inputs_B22
   Engine_B9 --> Inputs_B26
+  Engine_B9 --> Inputs_C26
+  Engine_B9 --> Inputs_D26
   Engine_C10 --> Engine_C5
   Engine_C10 --> Inputs_B21
   Engine_C14 --> Engine_B9
