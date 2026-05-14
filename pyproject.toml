@@ -21,4 +21,9 @@ dev = [
     "ruff>=0.15.12",
     "ty>=0.0.34",
     "xlwings>=0.35.3",
+    "python-dotenv>=1.2.2",
+    "openai>=2.36.0",
 ]
+
+[tool.pytest.ini_options]
+addopts = "-v -p no:faulthandler -p no:warnings -p no:cacheprovider"

@@ -28,13 +28,19 @@ permissible inputs that might be entered into user-configurable input
 cells)?"
 """
 
-_cols = ("C", "D", "E", "F", "G")
-constraints = {
+# Required constraints
+required_constraints = {
     "Inputs!A10": Literal["Borvelia"],
     "Inputs!A11": Literal["Litellia"],
     "Inputs!A12": Literal["Aurelium"],
     "Inputs!B22": Literal[1, 2, 3],
     "Inputs!B5": Literal["Borvelia", "Litellia", "Aurelium"],
+}
+
+# Additional constraints not required for dynamic ref resolution
+# (included to support testing of the extraction pipeline)
+_cols = ("C", "D", "E", "F", "G")
+constraints = required_constraints | {
     "Engine!C5": Literal[1],
     "Engine!D5": Literal[2],
     "Engine!E5": Literal[3],
@@ -52,7 +58,7 @@ constraints = {
     **{f"Inputs!{c}18": Annotated[float, RealBetween(-15.0, 15.0)] for c in _cols},
 }
 
-config = DynamicRefConfig.from_constraints(constraints, {})
+config = DynamicRefConfig.from_constraints(required_constraints, {})
 graph: DependencyGraph = create_dependency_graph(
     workbook_path,
     targets,

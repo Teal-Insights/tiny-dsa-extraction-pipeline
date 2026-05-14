@@ -1,6 +1,8 @@
+import os
 import random
 from typing import Annotated, Any, Literal, get_args, get_origin
 
+from dotenv import load_dotenv
 import fastpyxl
 import fastpyxl.utils.cell
 import pytest
@@ -8,15 +10,75 @@ import pytest
 from excel_grapher.core.cell_types import Between, RealBetween
 from excel_grapher.core.address_keys import normalize_key
 from excel_grapher.evaluator import FormulaEvaluator
+from excel_grapher.grapher import to_mermaid
 from excel_grapher.grapher.resolver import NamedRangeMaps, build_named_range_map
 from excel_grapher.grapher.parser import expand_range
 
-from src.extraction_pipeline import constraints, graph, targets, workbook_path
+from src.extraction_pipeline import (
+    required_constraints,
+    constraints,
+    graph,
+    targets,
+    workbook_path,
+)
+
+load_dotenv()
 
 
 def test_all_leaf_cells_are_constrained():
     assert all([key in constraints.keys() for key in graph.leaf_keys()])
     assert all([key in graph.leaf_keys() for key in constraints.keys()])
+
+
+@pytest.mark.skipped(reason="Opt-in test; pass --run-skipped to run")
+def test_llm_judges_that_graph_is_correct():
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        pytest.skip("DEEPSEEK_API_KEY is not set")
+    openai = pytest.importorskip(
+        "openai", reason="requires openai for LLM-based testing"
+    )
+
+    client = openai.OpenAI(
+        api_key=os.environ.get("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
+    )
+
+    targets = ["Outputs!B12:F12", "Outputs!B13:F13", "Outputs!B14:F14"]
+    prompt = """
+Given these targets in an Excel workbook, we want to extract a graph
+of all possible dependencies of the targets:
+
+{targets}
+
+We set the following constraints on user inputs affecting dependency
+resolution:
+
+{required_constraints}
+
+Give these constraints, is the following graph correct? Does it contain
+all nodes and edges it should, and none that it shouldn't? Just say
+CORRECT or INCORRECT.
+
+Graph:
+```mermaid
+{mermaid_graph}
+```
+""".format(
+        targets=targets,
+        required_constraints=required_constraints,
+        mermaid_graph=to_mermaid(graph),
+    )
+
+    response = client.chat.completions.create(
+        model="deepseek-v4-pro",
+        messages=[
+            {"role": "user", "content": prompt},
+        ],
+        stream=False,
+        reasoning_effort="high",
+        extra_body={"thinking": {"type": "enabled"}},
+    )
+
+    assert response.choices[0].message.content.strip().upper() == "CORRECT"
 
 
 def test_formula_evaluator_matches_excel_for_default_inputs():
@@ -160,8 +222,8 @@ def test_formula_evaluator_matches_excel_for_randomized_inputs():
     finally:
         for address, value in original_leaf_values.items():
             graph.set_node_value(address, value)
+        sheet_cache.clear()
         if book is not None:
             book.close()
         if app is not None:
             app.quit()
-        sheet_cache.clear()
