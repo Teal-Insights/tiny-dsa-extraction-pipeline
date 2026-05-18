@@ -2,29 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from excel_grapher.grapher import (
-    DynamicRefConfig,
-    LabelDetectionConfig,
-    create_dependency_graph,
-)
-
-from src.extraction_pipeline import required_constraints, targets, workbook_path
+from src.extraction_pipeline import graph
 
 
 def _year_label(col: str) -> str:
     return {"C": "1", "D": "2", "E": "3", "F": "4", "G": "5", "B": "1"}[col]
-
-
-@pytest.fixture(scope="module")
-def graph_with_labels():
-    dynamic_refs = DynamicRefConfig.from_constraints(required_constraints, {})
-    return create_dependency_graph(
-        workbook_path,
-        targets,
-        load_values=True,
-        dynamic_refs=dynamic_refs,
-        label_detection=LabelDetectionConfig(enabled=True),
-    )
 
 
 EXPECTED_LABELS: dict[str, tuple[list[str], list[str], list[str]]] = {
@@ -167,11 +149,11 @@ for col in ("B", "C", "D", "E", "F"):
 
 
 @pytest.mark.parametrize("address", sorted(EXPECTED_LABELS.keys()))
-def test_expected_labels_for_graph_nodes(graph_with_labels, address: str):
+def test_expected_labels_for_graph_nodes(address: str):
     expected_row_labels, expected_column_labels, expected_table_labels = (
         EXPECTED_LABELS[address]
     )
-    node = graph_with_labels.get_node(address)
+    node = graph.get_node(address)
 
     assert node is not None, f"Missing graph node: {address}"
     assert node.metadata.get("row_labels", []) == expected_row_labels
