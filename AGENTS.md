@@ -4,6 +4,8 @@ Always run Python code with `uv run`.
 
 Use `fastpyxl` as a drop-in replacement for `openpyxl`.
 
+Use static type annotations and direct attribute access. True defensive programming means enforcing that incorrect code fails fast and loudly.
+
 ## Test-driven development
 
 Practice test-driven development (TDD). First write RED-phase tests and watch them fail for the right reason, then write code to turn the tests GREEN.
