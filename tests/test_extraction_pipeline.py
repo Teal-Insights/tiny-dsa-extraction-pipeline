@@ -15,6 +15,7 @@ from excel_grapher.grapher.resolver import NamedRangeMaps, build_named_range_map
 from excel_grapher.grapher.parser import expand_range
 
 from src.extraction_pipeline import (
+    leaf_classification,
     required_constraints,
     constraints,
     graph,
@@ -28,6 +29,65 @@ load_dotenv()
 def test_all_leaf_cells_are_constrained():
     assert all([key in constraints.keys() for key in graph.leaf_keys()])
     assert all([key in graph.leaf_keys() for key in constraints.keys()])
+
+
+def test_all_leaf_cells_are_classified():
+    assert all(key in leaf_classification for key in graph.leaf_keys())
+    assert all(key in graph.leaf_keys() for key in leaf_classification)
+
+
+# Lookup keys and Engine year headers are fixed model data, not scenario inputs.
+EXPECTED_CONSTANT_LEAVES = frozenset(
+    {
+        "Engine!C5",
+        "Engine!D5",
+        "Engine!E5",
+        "Engine!F5",
+        "Engine!G5",
+        "Inputs!A10",
+        "Inputs!A11",
+        "Inputs!A12",
+    }
+)
+# Cornsilk user-editable cells and lookup-table debt ratios (constrained for tests).
+EXPECTED_INPUT_LEAVES = frozenset(
+    {
+        "Inputs!B5",
+        "Inputs!B10",
+        "Inputs!B11",
+        "Inputs!B12",
+        "Inputs!B21",
+        "Inputs!B22",
+        "Inputs!B26",
+        "Inputs!C16",
+        "Inputs!C17",
+        "Inputs!C18",
+        "Inputs!C26",
+        "Inputs!D16",
+        "Inputs!D17",
+        "Inputs!D18",
+        "Inputs!D26",
+        "Inputs!E16",
+        "Inputs!E17",
+        "Inputs!E18",
+        "Inputs!F16",
+        "Inputs!F17",
+        "Inputs!F18",
+        "Inputs!G16",
+        "Inputs!G17",
+        "Inputs!G18",
+    }
+)
+
+
+def test_leaf_classification():
+    assert EXPECTED_CONSTANT_LEAVES | EXPECTED_INPUT_LEAVES == frozenset(
+        graph.leaf_keys()
+    )
+    for address in EXPECTED_CONSTANT_LEAVES:
+        assert leaf_classification[address] == "constant"
+    for address in EXPECTED_INPUT_LEAVES:
+        assert leaf_classification[address] == "input"
 
 
 @pytest.mark.skipped(reason="Opt-in test; pass --run-skipped to run")

@@ -76,7 +76,8 @@ list_dynamic_ref_constraint_candidates(workbook_path, targets)
 For each of these candidate cells, we apply our domain knowledge to constrain the range of plausible values we will allow a user to set for the cell:
 
 ```{python}
-from typing import Literal
+from typing import Literal, Annotated
+from excel_grapher.core.cell_types import Between, RealBetween
 
 constraints = {
     'Inputs!A10': Literal['Borvelia'],
@@ -84,6 +85,29 @@ constraints = {
     'Inputs!A12': Literal['Aurelium'],
     'Inputs!B22': Literal[1, 2, 3],
     'Inputs!B5': Literal['Borvelia', 'Litellia', 'Aurelium'],
+}
+```
+
+To support testing, code generation, and library documentation, we will also constrain the rest of the leaf cells in the workbook, even though these aren't required for dynamic ref resolution:
+
+```{python}
+_cols = ("C", "D", "E", "F", "G")
+constraints = constraints | {
+    "Engine!C5": Literal[1],
+    "Engine!D5": Literal[2],
+    "Engine!E5": Literal[3],
+    "Engine!F5": Literal[4],
+    "Engine!G5": Literal[5],
+    "Inputs!B10": Annotated[float, RealBetween(0.0, 200.0)],
+    "Inputs!B11": Annotated[float, RealBetween(0.0, 200.0)],
+    "Inputs!B12": Annotated[float, RealBetween(0.0, 200.0)],
+    "Inputs!B21": Annotated[int, Between(1, 5)],
+    "Inputs!B26": Annotated[float, RealBetween(-30.0, 30.0)],
+    "Inputs!C26": Annotated[float, RealBetween(-30.0, 30.0)],
+    "Inputs!D26": Annotated[float, RealBetween(-30.0, 30.0)],
+    **{f"Inputs!{c}16": Annotated[float, RealBetween(-10.0, 15.0)] for c in _cols},
+    **{f"Inputs!{c}17": Annotated[float, RealBetween(0.0, 20.0)] for c in _cols},
+    **{f"Inputs!{c}18": Annotated[float, RealBetween(-15.0, 15.0)] for c in _cols},
 }
 ```
 
@@ -355,11 +379,60 @@ print("```")
 
 ## Stage 2B: Export
 
-```python
+In the current architecture of `excel-grapher, constraints don't persist on the graph object, so we need to pass them to the `CodeGenerator` as a dictionary. (Persisting the constraints on the `DependencyGraph` object is planned for a future release and will obviate the need for this step.)
+
+We can define some helpers to turn our constraints dictionary into an inputs/constraints classification:
+
+```{python}
+from typing import Iterable, Literal, Mapping, get_args, get_origin
+
+LeafKind = Literal["input", "constant"]
+
+
+def is_constant_constraint(constraint: object) -> bool:
+    """True when the constraint fixes a single value (lookup/structural data)."""
+    return get_origin(constraint) is Literal and len(get_args(constraint)) == 1
+
+
+def classify_leaves_from_constraints(
+    constraint_map: Mapping[str, object],
+    leaf_keys: Iterable[str],
+) -> dict[str, LeafKind]:
+    """Classify graph leaves as inputs or constants from their constraints."""
+    keys = list(leaf_keys)
+    missing = [key for key in keys if key not in constraint_map]
+    if missing:
+        raise KeyError(f"missing constraints for leaf cells: {missing}")
+    return {
+        key: "constant" if is_constant_constraint(constraint_map[key]) else "input"
+        for key in keys
+    }
+
+leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_keys())
+graph.leaf_classification = leaf_classification
+```
+
+Then we define our entrypoints, which are the output functions we want to export. The keys of this dictionary are appended to `compute_` prefix to form the function names, and can be any arbitrary strings. The values are the list of cell addresses, range addresses, or named ranges that collectively comprise the output range that the function will compute and return.
+
+```{python}
+from typing import Mapping, Sequence
+
+entrypoints: Mapping[str, Sequence[str]] | None = {
+    "output_baseline": ["output_baseline"],
+    "output_shocked": ["output_shocked"],
+    "output_delta": ["output_delta"],
+}
+```
+
+Finally, we can generate the code and write it to a file, [dist/tiny_dsa.py](tiny_dsa.py).
+
+```{python}
 from excel_grapher.exporter import CodeGenerator
 
-code = CodeGenerator(graph).generate()
-with open("tiny_dsa.py", "w", encoding="utf-8") as f:
+with CodeGenerator(graph) as generator:
+    code = generator.generate(entrypoints=entrypoints)
+
+with open("../dist/tiny_dsa.py", "w", encoding="utf-8") as f:
     f.write(code)
 ```
 
