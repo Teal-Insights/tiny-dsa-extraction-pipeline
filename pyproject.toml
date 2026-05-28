@@ -23,6 +23,8 @@ dev = [
     "xlwings>=0.35.3",
     "python-dotenv>=1.2.2",
     "openai>=2.36.0",
+    "vl-convert-python>=1.9.0.post1",
+    "matplotlib>=3.10.9",
 ]
 
 [tool.pytest.ini_options]

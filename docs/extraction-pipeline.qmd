@@ -320,6 +320,134 @@ with open("../dist/tiny_dsa.py", "w", encoding="utf-8") as f:
     f.write(code)
 ```
 
-## Stage 3: Document
+## Stage 3: Test
 
-## Stage 4: Refactor
+Now we can test the semantic API from `dist/tiny_dsa.py` by running a full scenario with the generated `set_*` and `compute_*` functions.
+
+```{python}
+repo_root = Path("..").resolve()
+if str(repo_root) not in sys.path:
+    sys.path.append(str(repo_root))
+
+from dist.tiny_dsa import (
+    compute_output_baseline,
+    compute_output_delta,
+    compute_output_shocked,
+    make_context,
+    set_country_name,
+    set_growth_baseline,
+    set_interest_baseline,
+    set_primary_balance_baseline,
+    set_shock_magnitudes,
+    set_shock_type,
+    set_shock_year,
+)
+
+
+def time_series_records(values: list[float]) -> list[dict[str, float | int]]:
+    return [{"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)]
+```
+
+Here is one scenario: Litellia with weaker growth, tighter financing conditions, and a larger growth shock starting in year 2.
+
+```{python}
+ctx = make_context()
+
+# Scalar inputs
+set_country_name(
+    ctx,
+    [{"PARAMETER": "country_name", "OBS_VALUE": "Litellia"}],
+)
+set_shock_year(
+    ctx,
+    [{"PARAMETER": "shock_year", "OBS_VALUE": 2}],
+)
+set_shock_type(
+    ctx,
+    [{"PARAMETER": "shock_type", "OBS_VALUE": 1}],  # growth shock
+)
+
+# Baseline trajectories
+set_growth_baseline(
+    ctx,
+    time_series_records([2.5, 2.4, 2.3, 2.2, 2.1]),
+)
+set_interest_baseline(
+    ctx,
+    time_series_records([5.2, 5.1, 5.0, 4.9, 4.8]),
+)
+set_primary_balance_baseline(
+    ctx,
+    time_series_records([-1.5, -1.0, -0.5, 0.0, 0.5]),
+)
+
+# Shock table values (growth, interest, primary balance)
+set_shock_magnitudes(
+    ctx,
+    [
+        {"SHOCK_PARAMETER": "Growth", "OBS_VALUE": -3.0},
+        {"SHOCK_PARAMETER": "Interest", "OBS_VALUE": 2.5},
+        {"SHOCK_PARAMETER": "Primary balance", "OBS_VALUE": -1.5},
+    ],
+)
+```
+
+Compute each output surface with its semantic `compute_*` function:
+
+```{python}
+baseline_records = compute_output_baseline(ctx=ctx)
+shocked_records = compute_output_shocked(ctx=ctx)
+delta_records = compute_output_delta(ctx=ctx)
+
+print("```text")
+print("baseline:", baseline_records)
+print("shocked :", shocked_records)
+print("delta   :", delta_records)
+print("```")
+```
+
+Then plot the outputs in a two-panel layout:
+
+```{python}
+#| label: fig-output-panels
+#| fig-cap: "Tiny-DSA scenario outputs"
+import matplotlib.pyplot as plt
+
+
+def series_values(records: list[dict[str, object]]) -> tuple[list[int], list[float]]:
+    sorted_records = sorted(records, key=lambda r: int(r["TIME_PERIOD"]))
+    x = [int(r["TIME_PERIOD"]) for r in sorted_records]
+    y = [float(r["OBS_VALUE"]) for r in sorted_records]
+    return x, y
+
+
+x, baseline_values = series_values(baseline_records)
+_, shocked_values = series_values(shocked_records)
+_, delta_values = series_values(delta_records)
+
+fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+
+axes[0].plot(x, baseline_values, marker="o", label="baseline")
+axes[0].plot(x, shocked_values, marker="o", label="shocked")
+axes[0].set_title("Baseline vs shocked")
+axes[0].set_ylabel("Percent of GDP")
+axes[0].legend()
+axes[0].grid(alpha=0.3)
+
+axes[1].plot(x, delta_values, marker="o", color="tab:red")
+axes[1].axhline(0.0, color="black", linewidth=0.8, linestyle="--")
+axes[1].set_title("compute_output_delta")
+axes[1].set_xlabel("Projection year")
+axes[1].set_ylabel("Percentage points")
+axes[1].grid(alpha=0.3)
+
+for ax in axes:
+    ax.set_xticks(x)
+
+fig.tight_layout()
+plt.show()
+```
+
+## Stage 4: Document
+
+## Stage 5: Refactor
