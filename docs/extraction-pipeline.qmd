@@ -6,7 +6,7 @@ output: asis
 
 The illustrative Tiny DSA workbook, [data/tiny-dsa.xlsx](tiny-dsa.xlsx), was created by Teal Emery as a test case for reverse-engineering an Excel financial model with `excel-grapher` and turning it into a standalone Python library. This workbook demonstrates the extraction and export workflow. The workflow consists of three stages:
 
-1. **configure**: classify cells as outputs, inputs, or constants, and constrain input cells' domains
+1. **configure**: declare input/output series bindings, classify leaves as inputs or constants, and constrain input cells' domains
 2. **extract and export**: extract the graph and export it to Python code
 3. **refactor**: refactor the exported code to improve readability and maintainability
 
@@ -36,12 +36,119 @@ The [tiny-dsa-guide.md](data/tiny-dsa-guide.md) file contains a detailed descrip
 | `output_shocked` | Outputs!B13:F13 | Shocked debt-to-GDP path on the Outputs sheet |
 | `output_delta` | Outputs!B14:F14 | Difference, shocked minus baseline, in percentage points |
 
-We define these ranges as the "targets" of our extraction pipeline, which will trace their dependencies to achieve a "target-driven graph extraction".
+We define these ranges as the "targets" of our extraction pipeline, which will trace their dependencies to achieve a "target-driven graph extraction". The same three ranges are also declared as output series in `bindings/outputs.bindings.yaml`, where each one receives a generated records-shaped `compute_*` function.
 
 We can pass either range names or sheet-qualified cell/range addresses as targets. We'll use range names:
 
 ```{python}
 targets = ["output_baseline", "output_shocked", "output_delta"]
+```
+
+**Note:** Identifying input and output series is trivial in this workbook because we have a guidance note that catalogs them, but this is a proof of concept for tackling larger workbooks that won't have such guidance. I imagine the workflow would be roughly:
+
+1. Have an AI agent look at workbook sheets and list the logical tables with their Excel ranges, inclusive of headers and titles and labels.
+2. Filter out any of these tables that don't include leaf nodes or target nodes from the graph.
+3. For each logical table, have an AI agent catalog the series, and their ranges, that include leaf or target cells from our graph.
+
+For this workbook, the following prompt is sufficient to have an AI agent generate the binding sidecars from the guide, the workbook, and the extracted graph surface:
+
+```text
+You are authoring excel-grapher series bindings for a workbook.
+
+Workbook:
+- data/tiny-dsa.xlsx
+
+Human documentation:
+- data/tiny-dsa-guide.md
+
+Binding schema and conventions:
+- Before authoring YAML, load the bundled JSON Schema from excel-grapher and use it as the authoritative field and shape reference:
+
+  from importlib.resources import files
+
+  schema_text = (
+      files("excel_grapher.series_bindings")
+      .joinpath("series_binding.schema.json")
+      .read_text(encoding="utf-8")
+  )
+
+- Use schema_version: 1.2.0.
+- Create a bindings/ directory with two files:
+  - inputs.bindings.yaml for public input setters.
+  - outputs.bindings.yaml for public output compute functions.
+- Use one series[] entry per logical public input or output series.
+- Use layout: scalar for one-cell inputs and layout: row_series for one-row time series.
+- Use structure.measure.concept: OBS_VALUE with bind.kind: data_cell.
+- Use key fields only for record matching. For row time series, use TIME_PERIOD from the column header row. For scalar parameters, use a constant PARAMETER key. For shock magnitudes, use the shock-type header as the key.
+- Add input.setter.name values matching set_[a-z][a-z0-9_]* for input series.
+- Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
+- Include useful series_context and UNIT_MEASURE attributes where they clarify records.
+- Do not include internal engine calculations or read-only lookup/profile data as public API bindings unless the guide says downstream users should set or read them directly.
+
+Task:
+1. Read the guide's named-range API table and functional overview.
+2. Identify public input series that require user configuration.
+3. Identify public output series that downstream users should read.
+4. Cross-check each proposed series against the extracted graph:
+   - input bindings should overlap graph leaves;
+   - output bindings should overlap graph target/output nodes.
+5. Write bindings/inputs.bindings.yaml and bindings/outputs.bindings.yaml.
+6. Validate by loading the binding directory with load_series_bindings("bindings"), then running validate_series_bindings(graph, bindings, workbook=workbook_path), derive_input_series(...), and derive_output_series(...).
+
+Expected Tiny-DSA public inputs:
+- country_name: Inputs!B5
+- growth_baseline: Inputs!C16:G16
+- interest_baseline: Inputs!C17:G17
+- primary_balance_baseline: Inputs!C18:G18
+- shock_year: Inputs!B21
+- shock_type: Inputs!B22
+- shock_magnitudes: Inputs!B26:D26
+
+Expected Tiny-DSA public outputs:
+- output_baseline: Outputs!B12:F12
+- output_shocked: Outputs!B13:F13
+- output_delta: Outputs!B14:F14
+
+Return the two YAML files and a short validation summary. If any series is ambiguous, explain the ambiguity instead of guessing.
+```
+
+### Declare series bindings
+
+Series bindings are the machine-readable source of truth for the public input and output surface. We keep them outside the workbook in a `bindings` folder:
+
+```text
+bindings/
+  inputs.bindings.yaml
+  outputs.bindings.yaml
+```
+
+The input bindings file declares the user-editable surface described in the guide: selected country, the three baseline parameter rows, shock year, shock type, and shock magnitudes. The output bindings file declares the three published trajectory rows on the Outputs sheet. The profile lookup table is a graph leaf, but it is not part of the public API bindings because users do not edit it.
+
+We do not duplicate the full YAML here. The important shape is one logical series per generated API:
+
+```yaml
+series:
+  - id: growth_baseline
+    data_range: Inputs!C16:G16
+    layout: row_series
+    input:
+      setter:
+        name: set_growth_baseline
+    key: [TIME_PERIOD]
+```
+
+At runtime, `excel-grapher` merges all `*.bindings.yaml` files in the directory:
+
+```{python}
+from excel_grapher.series_bindings import (
+    derive_input_series,
+    derive_output_series,
+    load_series_bindings,
+    validate_series_bindings,
+)
+
+bindings_path = Path("../bindings")
+series_bindings = load_series_bindings(bindings_path)
 ```
 
 ### Constrain key input cells
@@ -111,221 +218,6 @@ constraints = constraints | {
 }
 ```
 
-### Configure label detection
-
-When we extract our graph, we will pass a `label_detection` argument to tell `create_dependency_graph` to enrich each graph node with labels extracted from the workbook. We will later use these labels to inform graph analysis and refactoring of exported code.
-
-Since it is somewhat computationally heavy, label detection is skipped by default. To enable it, we must pass a `LabelDetectionConfig` object with `enabled=True` to the `label_detection` argument of `create_dependency_graph`.
-
-Optionally, we can also define custom `BehaviorRule`s to customize label detection behavior (either for the whole workbook or for specific `RegionSelector`s). The default behaviors, `left_edge_scan` and `top_edge_scan`, respectively scan left and up from the reference cell and collect text or calendar-year labels that appear at the edges of its row or column. However, these are not always the right behaviors for any given region of the spreadsheet, so `excel-grapher` also allows customization by region.
-
-To configure label detection, I passed this prompt to an AI agent: "`excel-grapher` now offers a label detection API. Review its [documentation](https://github.com/Teal-Insights/excel-grapher/blob/main/examples/micro_workbooks/label_detection.md). For tiny-dsa.xlsx, there are eleven logical tables spread across three spreadsheets. I need you to review each table and assess whether it can use the default label detection behaviors or needs custom behaviors." The agent returned the following configuration:
-
-```{python}
-from excel_grapher.grapher.label_detection import (
-    BehaviorRule,
-    LabelDetectionBehavior,
-    LabelDetectionConfig,
-    LabelDetectionContext,
-    LabelResult,
-    RegionLabelParams,
-    RegionSelector,
-    region_specs_from_ranges,
-)
-
-
-class _OffsetYearAndRowLabelScan(LabelDetectionBehavior):
-    """Collect labels from configured header rows and row labels from the left."""
-
-    name = "offset_year_and_row_label_scan"
-
-    def detect(self, ctx: LabelDetectionContext) -> LabelResult:
-        ws = ctx.ws_values
-        if ws is None:
-            return LabelResult()
-
-        column_labels: list[str] = []
-        header_rows = ctx.region_params.header_rows if ctx.region_params is not None else ()
-        if ctx.row not in header_rows:
-            for header_row in header_rows:
-                value = ws.cell(row=header_row, column=ctx.col).value
-                if isinstance(value, str):
-                    text = value.strip()
-                    if text:
-                        column_labels.append(text)
-                elif isinstance(value, int) and not isinstance(value, bool):
-                    column_labels.append(str(value))
-                elif isinstance(value, float) and value.is_integer():
-                    column_labels.append(str(int(value)))
-
-        row_labels: list[str] = []
-        scan_col = ctx.col - 1
-        while scan_col >= 1:
-            value = ws.cell(row=ctx.row, column=scan_col).value
-            if isinstance(value, str):
-                text = value.strip()
-                if text:
-                    row_labels.append(text)
-                    break
-            scan_col -= 1
-
-        return LabelResult(row_labels=tuple(row_labels), column_labels=tuple(column_labels))
-
-
-def _build_label_detection_config() -> LabelDetectionConfig:
-    """Build label detection configuration when the API is available."""
-
-    def selector(*ranges: str) -> RegionSelector:
-        return RegionSelector(include=region_specs_from_ranges(ranges))
-
-    rules = (
-        # Country/profile/shock table regions in Inputs
-        BehaviorRule(
-            name="inputs-country-selector",
-            selector=selector("Inputs!$A$5:$B$6"),
-            behaviors=("left_edge_scan",),
-            stop_after_match=True,
-        ),
-        BehaviorRule(
-            name="inputs-country-profile",
-            selector=selector("Inputs!$A$10:$B$12"),
-            behaviors=("left_edge_scan", "right_edge_scan", "offset_year_and_row_label_scan"),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(9,)),
-        ),
-        BehaviorRule(
-            name="inputs-baseline-vectors",
-            selector=selector("Inputs!$C$16:$G$18"),
-            behaviors=("offset_year_and_row_label_scan",),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(15,)),
-        ),
-        BehaviorRule(
-            name="inputs-shock-config",
-            selector=selector("Inputs!$B$21:$B$22"),
-            behaviors=("left_edge_scan",),
-            stop_after_match=True,
-        ),
-        BehaviorRule(
-            name="inputs-shock-table",
-            selector=selector("Inputs!$B$26:$D$26"),
-            behaviors=("left_edge_scan", "offset_year_and_row_label_scan"),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(25,)),
-        ),
-        # Engine table regions
-        BehaviorRule(
-            name="engine-baseline-path",
-            selector=selector("Engine!$B$5:$G$6"),
-            behaviors=("offset_year_and_row_label_scan",),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(5,)),
-        ),
-        BehaviorRule(
-            name="engine-shock-activation-cell",
-            selector=selector("Engine!$B$9"),
-            behaviors=("left_edge_scan",),
-            stop_after_match=True,
-        ),
-        BehaviorRule(
-            name="engine-shock-activation-row",
-            selector=selector("Engine!$C$10:$G$10"),
-            behaviors=("offset_year_and_row_label_scan",),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(5,)),
-        ),
-        BehaviorRule(
-            name="engine-shocked-parameters",
-            selector=selector("Engine!$C$14:$G$16"),
-            behaviors=("offset_year_and_row_label_scan",),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(13,)),
-        ),
-        BehaviorRule(
-            name="engine-shocked-path",
-            selector=selector("Engine!$C$20:$G$20"),
-            behaviors=("offset_year_and_row_label_scan",),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(19,)),
-        ),
-        # Output table region
-        BehaviorRule(
-            name="outputs-trajectory",
-            selector=selector("Outputs!$B$12:$F$14"),
-            behaviors=("offset_year_and_row_label_scan",),
-            stop_after_match=True,
-            region_params=RegionLabelParams(header_rows=(11,)),
-        ),
-    )
-
-    return LabelDetectionConfig(
-        enabled=True,
-        fallback_behaviors=("left_edge_scan",),
-        rules=rules,
-    )
-
-
-label_detection_config = _build_label_detection_config()
-```
-
-Additionally, I asked the agent to capture table titles and manually attach them to nodes, as this is not supported in `excel-grapher` yet:
-
-```{python}
-def _annotate_table_labels(graph_obj: DependencyGraph) -> None:
-    """Add table-level labels from section headers to node metadata."""
-    table_regions: tuple[tuple[str, str], ...] = (
-        ("COUNTRY SELECTOR", "Inputs!B5:B6"),
-        ("COUNTRY PROFILE TABLE (lookup data)", "Inputs!A10:B12"),
-        ("BASELINE PARAMETERS", "Inputs!C16:G18"),
-        ("SHOCK CONFIGURATION", "Inputs!B21:B22"),
-        ("SHOCK TABLE (lookup by shock type, in percentage points)", "Inputs!B26:D26"),
-        ("BASELINE PATH", "Engine!B5:G6"),
-        ("SHOCK ACTIVATION", "Engine!B9:B9"),
-        ("SHOCK ACTIVATION", "Engine!C10:G10"),
-        ("SHOCKED PARAMETERS", "Engine!C14:G16"),
-        ("SHOCKED PATH", "Engine!C20:G20"),
-        ("DEBT-TO-GDP TRAJECTORY", "Outputs!B12:F14"),
-    )
-
-    def col_to_index(col: str) -> int:
-        value = 0
-        for ch in col:
-            value = value * 26 + (ord(ch) - ord("A") + 1)
-        return value
-
-    def index_to_col(index: int) -> str:
-        chars: list[str] = []
-        while index > 0:
-            index, rem = divmod(index - 1, 26)
-            chars.append(chr(ord("A") + rem))
-        return "".join(reversed(chars))
-
-    for table_label, sheet_range in table_regions:
-        sheet, a1_range = sheet_range.split("!", maxsplit=1)
-        left, right = a1_range.split(":", maxsplit=1)
-        left_col = "".join(ch for ch in left if ch.isalpha())
-        left_row = int("".join(ch for ch in left if ch.isdigit()))
-        right_col = "".join(ch for ch in right if ch.isalpha())
-        right_row = int("".join(ch for ch in right if ch.isdigit()))
-
-        min_col = col_to_index(left_col)
-        max_col = col_to_index(right_col)
-        for row in range(left_row, right_row + 1):
-            for col in range(min_col, max_col + 1):
-                key = f"{sheet}!{index_to_col(col)}{row}"
-                node = graph_obj.get_node(key)
-                if node is None:
-                    continue
-                metadata = dict(node.metadata)
-                table_labels = list(metadata.get("table_labels", []))
-                if table_label not in table_labels:
-                    table_labels.append(table_label)
-                metadata["table_labels"] = table_labels
-                graph_obj.set_node_metadata(key, metadata)
-```
-
-You can see that label detection configuration is currently verbose and labor-intensive. I believe it can likely be improved either with better detection heuristics or by substituting API calls to a language model that returns structured data.
-
 ## Stage 2A: Extract
 
 Now `excel-grapher` can successfully extract the graph with the `create_dependency_graph` function. This returns a `DependencyGraph` object.
@@ -339,11 +231,17 @@ graph: DependencyGraph = create_dependency_graph(
     targets,
     load_values=True,
     dynamic_refs=config,
-    label_detection=label_detection_config,
-    label_behaviors=[_OffsetYearAndRowLabelScan()],
 )
 
-_annotate_table_labels(graph)
+binding_validation_report = validate_series_bindings(
+    graph,
+    series_bindings,
+    workbook=workbook_path,
+)
+assert binding_validation_report["ok"], binding_validation_report["issues"]
+
+input_series = derive_input_series(graph, series_bindings, workbook=workbook_path)
+output_series = derive_output_series(graph, series_bindings, workbook=workbook_path)
 ```
 
 Since the workbook is relatively small, we can visualize it as a Mermaid diagram.
@@ -358,28 +256,22 @@ print("```\n")
 
 The graph is a DAG with the outputs at the top and the inputs at the bottom. Cells from the Engine sheet largely comprise a middle layer between the inputs and outputs.
 
-We can also review the labels attached to each node (listed here in reverse order of hierarchical priority, i.e., least important to most important):
+We can also review the input and output series that resolved against the extracted graph:
 
 ```{python}
-# Print labels for each node in the graph.
 print("```text")
-for key in graph.keys(order="workbook"):
-    node = graph.get_node(key)
-    if node is None:
-        continue
-
-    md = node.metadata
-    row_labels = md.get("row_labels", md.get("row_label", []))
-    column_labels = md.get("column_labels", md.get("column_label", []))
-    table_labels = md.get("table_labels", md.get("table_label", []))
-
-    print(f"{key}: {row_labels} {column_labels} {table_labels}\n")
+for item in input_series:
+    cells = ", ".join(cell["address"] for cell in item["cells"])
+    print(f"input {item['id']}: {cells}")
+for item in output_series:
+    cells = ", ".join(cell["address"] for cell in item["cells"])
+    print(f"output {item['id']}: {cells}")
 print("```")
 ```
 
 ## Stage 2B: Export
 
-In the current architecture of `excel-grapher, constraints don't persist on the graph object, so we need to pass them to the `CodeGenerator` as a dictionary. (Persisting the constraints on the `DependencyGraph` object is planned for a future release and will obviate the need for this step.)
+In the current architecture of `excel-grapher`, constraints do not persist on the graph object, so we still attach a leaf classification before code generation. The binding manifests define the public `set_*` and `compute_*` records APIs; the leaf classification tells codegen which dependency leaves should be emitted as mutable inputs rather than fixed constants.
 
 We can define some helpers to turn our constraints dictionary into an inputs/constraints classification:
 
@@ -412,28 +304,22 @@ leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_k
 graph.leaf_classification = leaf_classification
 ```
 
-Then we define our entrypoints, which are the output functions we want to export. The keys of this dictionary are appended to `compute_` prefix to form the function names, and can be any arbitrary strings. The values are the list of cell addresses, range addresses, or named ranges that collectively comprise the output range that the function will compute and return.
-
-```{python}
-from typing import Mapping, Sequence
-
-entrypoints: Mapping[str, Sequence[str]] | None = {
-    "output_baseline": ["output_baseline"],
-    "output_shocked": ["output_shocked"],
-    "output_delta": ["output_delta"],
-}
-```
-
-Finally, we can generate the code and write it to a file, [dist/tiny_dsa.py](tiny_dsa.py).
+Finally, we can generate the code and write it to a file, [dist/tiny_dsa.py](tiny_dsa.py). Passing `series_bindings` and `bindings_workbook` emits records-shaped input setters such as `set_growth_baseline` and output compute functions such as `compute_output_baseline`.
 
 ```{python}
 from excel_grapher.exporter import CodeGenerator
 
 with CodeGenerator(graph) as generator:
-    code = generator.generate(entrypoints=entrypoints)
+    code = generator.generate(
+        targets,
+        series_bindings=series_bindings,
+        bindings_workbook=workbook_path,
+    )
 
 with open("../dist/tiny_dsa.py", "w", encoding="utf-8") as f:
     f.write(code)
 ```
 
-## Stage 3: Refactor
+## Stage 3: Document
+
+## Stage 4: Refactor

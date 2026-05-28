@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Iterable, Literal, Mapping, Sequence, get_args, get_origin
+from typing import Annotated, Iterable, Literal, Mapping, get_args, get_origin
 
 from excel_grapher.core.cell_types import RealBetween, Between
 from excel_grapher.grapher import (
@@ -8,17 +8,19 @@ from excel_grapher.grapher import (
     create_dependency_graph,
 )
 from excel_grapher.exporter import CodeGenerator
-
-from src.label_detection_config import (
-    LABEL_BEHAVIORS,
-    LABEL_DETECTION_CONFIG,
-    _annotate_table_labels,
+from excel_grapher.series_bindings import (
+    derive_input_series,
+    derive_output_series,
+    load_series_bindings,
+    validate_series_bindings,
 )
 
 # Load the Tiny DSA workbook
 workbook_path = Path("data/tiny-dsa.xlsx")
+bindings_path = Path("bindings")
 
 targets = ["output_baseline", "output_shocked", "output_delta"]
+series_bindings = load_series_bindings(bindings_path)
 
 # ------------------------------------------------------------
 # Constraint configuration
@@ -106,11 +108,20 @@ graph: DependencyGraph = create_dependency_graph(
     targets,
     load_values=True,
     dynamic_refs=config,
-    label_detection=LABEL_DETECTION_CONFIG,
-    label_behaviors=list(LABEL_BEHAVIORS),
 )
 
-_annotate_table_labels(graph)
+binding_validation_report = validate_series_bindings(
+    graph,
+    series_bindings,
+    workbook=workbook_path,
+)
+if not binding_validation_report["ok"]:
+    raise ValueError(
+        f"Invalid series bindings: {binding_validation_report['issues']!r}"
+    )
+
+input_series = derive_input_series(graph, series_bindings, workbook=workbook_path)
+output_series = derive_output_series(graph, series_bindings, workbook=workbook_path)
 
 
 # ------------------------------------------------------------
@@ -118,17 +129,15 @@ _annotate_table_labels(graph)
 # ------------------------------------------------------------
 
 
-entrypoints: Mapping[str, Sequence[str]] | None = {
-    "output_baseline": ["output_baseline"],
-    "output_shocked": ["output_shocked"],
-    "output_delta": ["output_delta"],
-}
-
 leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_keys())
 graph.leaf_classification = leaf_classification
 
 with CodeGenerator(graph) as generator:
-    code = generator.generate(entrypoints=entrypoints)
+    code = generator.generate(
+        targets,
+        series_bindings=series_bindings,
+        bindings_workbook=workbook_path,
+    )
 
 with open("dist/tiny_dsa.py", "w", encoding="utf-8") as f:
     f.write(code)

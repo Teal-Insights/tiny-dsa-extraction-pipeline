@@ -6,7 +6,7 @@ import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, TypeAlias, cast
+from typing import TypeAlias, cast
 
 import fastpyxl.utils.cell
 import numpy as np
@@ -73,6 +73,8 @@ class EvalContext:
         if changed:
             self.invalidate(changed)
 
+NormalizedAddress: TypeAlias = str
+
 class XlError(StrEnum):
     VALUE = "#VALUE!"
     REF = "#REF!"
@@ -123,7 +125,7 @@ def quote_sheet_if_needed(sheet: str) -> str:
         return sheet
     return "'" + _escape_sheet_for_formula(sheet) + "'"
 
-def format_key(sheet: str, cell: str) -> str:
+def format_key(sheet: str, cell: str) -> NormalizedAddress:
     """Format a sheet and A1 cell coordinate into a canonical address string."""
     return f"{quote_sheet_if_needed(sheet)}!{cell}"
 
@@ -230,11 +232,6 @@ def to_bool(value: CellValue) -> bool | XlError:
         return XlError.VALUE
     return XlError.VALUE
 
-def to_native(value: Any) -> Any:
-    if hasattr(value, "item"):
-        return value.item()
-    return value
-
 def to_number(value: CellValue) -> float | XlError:
     if value is None:
         return 0.0
@@ -275,6 +272,84 @@ def _values_match(a: CellValue, b: CellValue) -> bool:
     if not isinstance(an, XlError) and not isinstance(bn, XlError):
         return an == bn
     return a == b
+
+def index_excel_range(
+    base: ExcelRange,
+    row_num: CellValue | None,
+    col_num: CellValue | None,
+) -> ExcelRange | XlError:
+    """Map INDEX(row,col) over *base* to an absolute range (single cell or slice).
+
+    Mirrors :func:`excel_grapher.runtime.lookup.xl_index` geometry
+    so OFFSET(INDEX(...), ...) receives a true cell reference.
+    """
+    nrows = base.end_row - base.start_row + 1
+    ncols = base.end_col - base.start_col + 1
+    row_omitted = row_num is None
+    col_omitted = col_num is None
+
+    def abs_cell(r0: int, c0: int) -> ExcelRange:
+        r = base.start_row + r0
+        c = base.start_col + c0
+        return ExcelRange(base.sheet, r, c, r, c)
+
+    if row_omitted and col_omitted:
+        if nrows == 1 and ncols == 1:
+            return abs_cell(0, 0)
+        if nrows == 1:
+            return abs_cell(0, ncols - 1)
+        if ncols == 1:
+            return abs_cell(nrows - 1, 0)
+        return XlError.VALUE
+
+    if row_omitted:
+        cn = to_number(col_num)
+        if isinstance(cn, XlError):
+            return cn
+        col = int(cn)
+        if col < 1 or col > ncols:
+            return XlError.REF
+        if nrows == 1:
+            return abs_cell(0, col - 1)
+        c0 = base.start_col + col - 1
+        return ExcelRange(base.sheet, base.start_row, c0, base.end_row, c0)
+
+    rn = to_number(row_num)
+    if isinstance(rn, XlError):
+        return rn
+    row = int(rn)
+
+    if col_omitted:
+        if nrows == 1:
+            if row < 1 or row > ncols:
+                return XlError.REF
+            return abs_cell(0, row - 1)
+        if ncols == 1:
+            if row < 1 or row > nrows:
+                return XlError.REF
+            return abs_cell(row - 1, 0)
+        if row < 1 or row > nrows:
+            return XlError.REF
+        r0 = base.start_row + row - 1
+        return ExcelRange(base.sheet, r0, base.start_col, r0, base.end_col)
+
+    cn = to_number(col_num)
+    if isinstance(cn, XlError):
+        return cn
+    col = int(cn)
+    if nrows == 1:
+        if row < 1 or row > ncols:
+            return XlError.REF
+        return abs_cell(0, row - 1)
+    if ncols == 1:
+        if row < 1 or row > nrows:
+            return XlError.REF
+        return abs_cell(row - 1, 0)
+    if row < 1 or row > nrows:
+        return XlError.REF
+    if col < 1 or col > ncols:
+        return XlError.REF
+    return abs_cell(row - 1, col - 1)
 
 def to_int(value: CellValue) -> int | XlError:
     """Coerce a CellValue to an integer using Excel-style numeric coercion.
@@ -466,68 +541,29 @@ def xl_eval(
 def xl_ge(left: CellValue, right: CellValue) -> bool | XlError:
     return _xl_compare(">=", left, right)
 
-def xl_index(array: np.ndarray, row_num: CellValue, col_num: CellValue = None) -> CellValue:
-    if not isinstance(array, np.ndarray):
-        return XlError.VALUE
-    nrows, ncols = array.shape
-    row_omitted = row_num is None
-    col_omitted = col_num is None
+def xl_index_ref(
+    ref: ExcelRange | tuple[str, int, int] | tuple[str, int, int, int, int],
+    row_num: CellValue | None,
+    col_num: CellValue | None,
+) -> ExcelRange | tuple[str, int, int] | tuple[str, int, int, int, int] | XlError:
+    """INDEX semantics that return a reference suitable for OFFSET."""
+    if isinstance(ref, ExcelRange):
+        base = ref
+    else:
+        match ref:
+            case (sheet, r1, c1):
+                base = ExcelRange(sheet=sheet, start_row=r1, start_col=c1, end_row=r1, end_col=c1)
+            case (sheet, r1, c1, r2, c2):
+                base = ExcelRange(sheet=sheet, start_row=r1, start_col=c1, end_row=r2, end_col=c2)
+            case _:
+                return XlError.VALUE
 
-    if row_omitted and col_omitted:
-        if nrows == 1 and ncols == 1:
-            return to_native(array[0, 0])
-        if nrows == 1:
-            return to_native(array[0, ncols - 1])
-        if ncols == 1:
-            return to_native(array[nrows - 1, 0])
-        return XlError.VALUE
-
-    if row_omitted:
-        cn = to_number(col_num)
-        if isinstance(cn, XlError):
-            return cn
-        col = int(cn)
-        if col < 1 or col > ncols:
-            return XlError.REF
-        if nrows == 1:
-            return to_native(array[0, col - 1])
-        return array[:, col - 1 : col]
-
-    rn = to_number(row_num)
-    if isinstance(rn, XlError):
-        return rn
-    row = int(rn)
-
-    if col_omitted:
-        if nrows == 1:
-            if row < 1 or row > ncols:
-                return XlError.REF
-            return to_native(array[0, row - 1])
-        if ncols == 1:
-            if row < 1 or row > nrows:
-                return XlError.REF
-            return to_native(array[row - 1, 0])
-        if row < 1 or row > nrows:
-            return XlError.REF
-        return array[row - 1 : row, :]
-
-    cn = to_number(col_num)
-    if isinstance(cn, XlError):
-        return cn
-    col = int(cn)
-    if nrows == 1:
-        if row < 1 or row > ncols:
-            return XlError.REF
-        return to_native(array[0, row - 1])
-    if ncols == 1:
-        if row < 1 or row > nrows:
-            return XlError.REF
-        return to_native(array[row - 1, 0])
-    if row < 1 or row > nrows:
-        return XlError.REF
-    if col < 1 or col > ncols:
-        return XlError.REF
-    return to_native(array[row - 1, col - 1])
+    out = index_excel_range(base, row_num, col_num)
+    if isinstance(out, XlError):
+        return out
+    if out.start_row == out.end_row and out.start_col == out.end_col:
+        return (out.sheet, out.start_row, out.start_col)
+    return (out.sheet, out.start_row, out.start_col, out.end_row, out.end_col)
 
 def xl_match(
     lookup_value: CellValue, lookup_array: CellValue, match_type: CellValue = 1
@@ -582,7 +618,7 @@ def xl_mul(left: CellValue, right: CellValue) -> float | XlError:
 
 def xl_offset(
     ctx: EvalContext,
-    ref_info: tuple[str, int, int] | tuple[str, int, int, int, int],
+    ref_info: tuple[str, int, int] | tuple[str, int, int, int, int] | XlError,
     rows: CellValue,
     cols: CellValue,
     height: CellValue | None = None,
@@ -595,11 +631,16 @@ def xl_offset(
     if isinstance(cc, XlError):
         return cc
 
+    if isinstance(ref_info, XlError):
+        return ref_info
+
     match ref_info:
         case (sheet, base_row, base_col):
             base_end_row, base_end_col = base_row, base_col
         case (sheet, base_row, base_col, base_end_row, base_end_col):
             pass
+        case _:
+            return XlError.VALUE
 
     base_h = int(base_end_row - base_row + 1)
     base_w = int(base_end_col - base_col + 1)
@@ -721,7 +762,7 @@ CONSTANTS = {
 
 def cell_inputs_b6(ctx):
     '''Formula: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2)'''
-    return xl_index(np.array(np.array([[xl_cell(ctx, 'Inputs!A10'), xl_cell(ctx, 'Inputs!B10'), xl_cell(ctx, 'Inputs!C10')], [xl_cell(ctx, 'Inputs!A11'), xl_cell(ctx, 'Inputs!B11'), xl_cell(ctx, 'Inputs!C11')], [xl_cell(ctx, 'Inputs!A12'), xl_cell(ctx, 'Inputs!B12'), xl_cell(ctx, 'Inputs!C12')]], dtype=object), dtype=object), xl_match(xl_cell(ctx, 'Inputs!B5'), np.array(np.array([[xl_cell(ctx, 'Inputs!A10')], [xl_cell(ctx, 'Inputs!A11')], [xl_cell(ctx, 'Inputs!A12')]], dtype=object), dtype=object), 0.0), 2.0)
+    return xl_offset(ctx, xl_index_ref(('Inputs', 10, 1, 12, 3), xl_match(xl_cell(ctx, 'Inputs!B5'), np.array(np.array([[xl_cell(ctx, 'Inputs!A10')], [xl_cell(ctx, 'Inputs!A11')], [xl_cell(ctx, 'Inputs!A12')]], dtype=object), dtype=object), 0.0), 2.0), 0.0, 0.0)
 
 
 def cell_engine_b6(ctx):
@@ -789,14 +830,14 @@ def cell_engine_b9(ctx):
     return xl_offset(ctx, ('Inputs', 26, 2), 0.0, xl_sub(xl_cell(ctx, 'Inputs!B22'), 1.0), None, None)
 
 
+def cell_engine_c15(ctx):
+    '''Formula: =Inputs!C17+CHOOSE(Inputs!$B$22,0,$B$9,0)*C10'''
+    return xl_add(xl_cell(ctx, 'Inputs!C17'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!C10', cell_engine_c10)))
+
+
 def cell_engine_c14(ctx):
     '''Formula: =Inputs!C16+CHOOSE(Inputs!$B$22,$B$9,0,0)*C10'''
     return xl_add(xl_cell(ctx, 'Inputs!C16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!C10', cell_engine_c10)))
-
-
-def cell_engine_b20(ctx):
-    '''Formula: =Inputs!B6'''
-    return xl_eval(ctx, 'Inputs!B6', cell_inputs_b6)
 
 
 def cell_engine_c16(ctx):
@@ -804,9 +845,9 @@ def cell_engine_c16(ctx):
     return xl_add(xl_cell(ctx, 'Inputs!C18'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((0.0) if _t2 == 2 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!C10', cell_engine_c10)))
 
 
-def cell_engine_c15(ctx):
-    '''Formula: =Inputs!C17+CHOOSE(Inputs!$B$22,0,$B$9,0)*C10'''
-    return xl_add(xl_cell(ctx, 'Inputs!C17'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!C10', cell_engine_c10)))
+def cell_engine_b20(ctx):
+    '''Formula: =Inputs!B6'''
+    return xl_eval(ctx, 'Inputs!B6', cell_inputs_b6)
 
 
 def cell_engine_c20(ctx):
@@ -824,11 +865,6 @@ def cell_engine_d10(ctx):
     return (_t2 if isinstance((_t2 := to_bool((_t1 := xl_ge(xl_cell(ctx, 'Engine!D5'), xl_cell(ctx, 'Inputs!B21'))))), XlError) else ((1.0) if _t2 else (0.0)))
 
 
-def cell_engine_d15(ctx):
-    '''Formula: =Inputs!D17+CHOOSE(Inputs!$B$22,0,$B$9,0)*D10'''
-    return xl_add(xl_cell(ctx, 'Inputs!D17'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!D10', cell_engine_d10)))
-
-
 def cell_engine_d14(ctx):
     '''Formula: =Inputs!D16+CHOOSE(Inputs!$B$22,$B$9,0,0)*D10'''
     return xl_add(xl_cell(ctx, 'Inputs!D16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!D10', cell_engine_d10)))
@@ -837,6 +873,11 @@ def cell_engine_d14(ctx):
 def cell_engine_d16(ctx):
     '''Formula: =Inputs!D18+CHOOSE(Inputs!$B$22,0,0,$B$9)*D10'''
     return xl_add(xl_cell(ctx, 'Inputs!D18'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((0.0) if _t2 == 2 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!D10', cell_engine_d10)))
+
+
+def cell_engine_d15(ctx):
+    '''Formula: =Inputs!D17+CHOOSE(Inputs!$B$22,0,$B$9,0)*D10'''
+    return xl_add(xl_cell(ctx, 'Inputs!D17'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!D10', cell_engine_d10)))
 
 
 def cell_engine_d20(ctx):
@@ -854,14 +895,14 @@ def cell_engine_e10(ctx):
     return (_t2 if isinstance((_t2 := to_bool((_t1 := xl_ge(xl_cell(ctx, 'Engine!E5'), xl_cell(ctx, 'Inputs!B21'))))), XlError) else ((1.0) if _t2 else (0.0)))
 
 
-def cell_engine_e16(ctx):
-    '''Formula: =Inputs!E18+CHOOSE(Inputs!$B$22,0,0,$B$9)*E10'''
-    return xl_add(xl_cell(ctx, 'Inputs!E18'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((0.0) if _t2 == 2 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!E10', cell_engine_e10)))
-
-
 def cell_engine_e15(ctx):
     '''Formula: =Inputs!E17+CHOOSE(Inputs!$B$22,0,$B$9,0)*E10'''
     return xl_add(xl_cell(ctx, 'Inputs!E17'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!E10', cell_engine_e10)))
+
+
+def cell_engine_e16(ctx):
+    '''Formula: =Inputs!E18+CHOOSE(Inputs!$B$22,0,0,$B$9)*E10'''
+    return xl_add(xl_cell(ctx, 'Inputs!E18'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((0.0) if _t2 == 2 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!E10', cell_engine_e10)))
 
 
 def cell_engine_e14(ctx):
@@ -884,11 +925,6 @@ def cell_engine_f10(ctx):
     return (_t2 if isinstance((_t2 := to_bool((_t1 := xl_ge(xl_cell(ctx, 'Engine!F5'), xl_cell(ctx, 'Inputs!B21'))))), XlError) else ((1.0) if _t2 else (0.0)))
 
 
-def cell_engine_f14(ctx):
-    '''Formula: =Inputs!F16+CHOOSE(Inputs!$B$22,$B$9,0,0)*F10'''
-    return xl_add(xl_cell(ctx, 'Inputs!F16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!F10', cell_engine_f10)))
-
-
 def cell_engine_f15(ctx):
     '''Formula: =Inputs!F17+CHOOSE(Inputs!$B$22,0,$B$9,0)*F10'''
     return xl_add(xl_cell(ctx, 'Inputs!F17'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!F10', cell_engine_f10)))
@@ -897,6 +933,11 @@ def cell_engine_f15(ctx):
 def cell_engine_f16(ctx):
     '''Formula: =Inputs!F18+CHOOSE(Inputs!$B$22,0,0,$B$9)*F10'''
     return xl_add(xl_cell(ctx, 'Inputs!F18'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((0.0) if _t2 == 2 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!F10', cell_engine_f10)))
+
+
+def cell_engine_f14(ctx):
+    '''Formula: =Inputs!F16+CHOOSE(Inputs!$B$22,$B$9,0,0)*F10'''
+    return xl_add(xl_cell(ctx, 'Inputs!F16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!F10', cell_engine_f10)))
 
 
 def cell_engine_f20(ctx):
@@ -914,14 +955,14 @@ def cell_engine_g10(ctx):
     return (_t2 if isinstance((_t2 := to_bool((_t1 := xl_ge(xl_cell(ctx, 'Engine!G5'), xl_cell(ctx, 'Inputs!B21'))))), XlError) else ((1.0) if _t2 else (0.0)))
 
 
-def cell_engine_g14(ctx):
-    '''Formula: =Inputs!G16+CHOOSE(Inputs!$B$22,$B$9,0,0)*G10'''
-    return xl_add(xl_cell(ctx, 'Inputs!G16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!G10', cell_engine_g10)))
-
-
 def cell_engine_g16(ctx):
     '''Formula: =Inputs!G18+CHOOSE(Inputs!$B$22,0,0,$B$9)*G10'''
     return xl_add(xl_cell(ctx, 'Inputs!G18'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((0.0) if _t2 == 1 else (((0.0) if _t2 == 2 else (((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!G10', cell_engine_g10)))
+
+
+def cell_engine_g14(ctx):
+    '''Formula: =Inputs!G16+CHOOSE(Inputs!$B$22,$B$9,0,0)*G10'''
+    return xl_add(xl_cell(ctx, 'Inputs!G16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), xl_eval(ctx, 'Engine!G10', cell_engine_g10)))
 
 
 def cell_engine_g15(ctx):
@@ -1001,46 +1042,388 @@ def make_context(inputs=None):
     return EvalContext(inputs=coerce_inputs_dict(merged), resolver=_resolve_formula, iterative_enabled=False, iterate_count=100, iterate_delta=0.001)
 
 
-TARGETS_OUTPUT_BASELINE = {
-    'Outputs!B12:Outputs!F12': xl_range,
+# --- Series binding setters (Records API) ---
+
+Record = dict[str, object]
+Records = list[Record]
+
+_LEAF_INDEX_COUNTRY_NAME = {
+    (('PARAMETER', 'country_name'),): 'Inputs!B5',
 }
 
+def set_country_name(
+    ctx: EvalContext,
+    records: Records,
+    *,
+    strict: bool = True,
+) -> None:
+    """Selected country name from the country profile table."""
+    key_fields = ('PARAMETER',)
+    allow_address = False
+    requires_address = False
+    measure_field = 'OBS_VALUE'
+    allowed_fields = {'OBS_VALUE', 'PARAMETER'}
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(f"record[{index}]: address required for set_country_name (duplicate keys in binding)")
+        if address is None:
+            missing = [field for field in key_fields if field not in record]
+            if missing:
+                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+            key_tuple = tuple((field, record[field]) for field in key_fields)
+            address = _LEAF_INDEX_COUNTRY_NAME.get(key_tuple)
+            if address is None:
+                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
 
-def compute_output_baseline(inputs=None, *, ctx=None):
-    """Compute output_baseline target cells and return results."""
+_LEAF_INDEX_GROWTH_BASELINE = {
+    (('TIME_PERIOD', 1),): 'Inputs!C16',
+    (('TIME_PERIOD', 2),): 'Inputs!D16',
+    (('TIME_PERIOD', 3),): 'Inputs!E16',
+    (('TIME_PERIOD', 4),): 'Inputs!F16',
+    (('TIME_PERIOD', 5),): 'Inputs!G16',
+}
+
+def set_growth_baseline(
+    ctx: EvalContext,
+    records: Records,
+    *,
+    strict: bool = True,
+) -> None:
+    """Baseline real GDP growth rates for projection years 1 through 5."""
+    key_fields = ('TIME_PERIOD',)
+    allow_address = False
+    requires_address = False
+    measure_field = 'OBS_VALUE'
+    allowed_fields = {'TIME_PERIOD', 'OBS_VALUE', 'INDICATOR', 'UNIT_MEASURE'}
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(f"record[{index}]: address required for set_growth_baseline (duplicate keys in binding)")
+        if address is None:
+            missing = [field for field in key_fields if field not in record]
+            if missing:
+                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+            key_tuple = tuple((field, record[field]) for field in key_fields)
+            address = _LEAF_INDEX_GROWTH_BASELINE.get(key_tuple)
+            if address is None:
+                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
+
+_LEAF_INDEX_INTEREST_BASELINE = {
+    (('TIME_PERIOD', 1),): 'Inputs!C17',
+    (('TIME_PERIOD', 2),): 'Inputs!D17',
+    (('TIME_PERIOD', 3),): 'Inputs!E17',
+    (('TIME_PERIOD', 4),): 'Inputs!F17',
+    (('TIME_PERIOD', 5),): 'Inputs!G17',
+}
+
+def set_interest_baseline(
+    ctx: EvalContext,
+    records: Records,
+    *,
+    strict: bool = True,
+) -> None:
+    """Baseline real interest rates for projection years 1 through 5."""
+    key_fields = ('TIME_PERIOD',)
+    allow_address = False
+    requires_address = False
+    measure_field = 'OBS_VALUE'
+    allowed_fields = {'TIME_PERIOD', 'OBS_VALUE', 'INDICATOR', 'UNIT_MEASURE'}
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(f"record[{index}]: address required for set_interest_baseline (duplicate keys in binding)")
+        if address is None:
+            missing = [field for field in key_fields if field not in record]
+            if missing:
+                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+            key_tuple = tuple((field, record[field]) for field in key_fields)
+            address = _LEAF_INDEX_INTEREST_BASELINE.get(key_tuple)
+            if address is None:
+                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
+
+_LEAF_INDEX_PRIMARY_BALANCE_BASELINE = {
+    (('TIME_PERIOD', 1),): 'Inputs!C18',
+    (('TIME_PERIOD', 2),): 'Inputs!D18',
+    (('TIME_PERIOD', 3),): 'Inputs!E18',
+    (('TIME_PERIOD', 4),): 'Inputs!F18',
+    (('TIME_PERIOD', 5),): 'Inputs!G18',
+}
+
+def set_primary_balance_baseline(
+    ctx: EvalContext,
+    records: Records,
+    *,
+    strict: bool = True,
+) -> None:
+    """Baseline primary balance path for projection years 1 through 5."""
+    key_fields = ('TIME_PERIOD',)
+    allow_address = False
+    requires_address = False
+    measure_field = 'OBS_VALUE'
+    allowed_fields = {'TIME_PERIOD', 'OBS_VALUE', 'INDICATOR', 'UNIT_MEASURE'}
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(f"record[{index}]: address required for set_primary_balance_baseline (duplicate keys in binding)")
+        if address is None:
+            missing = [field for field in key_fields if field not in record]
+            if missing:
+                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+            key_tuple = tuple((field, record[field]) for field in key_fields)
+            address = _LEAF_INDEX_PRIMARY_BALANCE_BASELINE.get(key_tuple)
+            if address is None:
+                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
+
+_LEAF_INDEX_SHOCK_YEAR = {
+    (('PARAMETER', 'shock_year'),): 'Inputs!B21',
+}
+
+def set_shock_year(
+    ctx: EvalContext,
+    records: Records,
+    *,
+    strict: bool = True,
+) -> None:
+    """First projection year in which the selected shock applies."""
+    key_fields = ('PARAMETER',)
+    allow_address = False
+    requires_address = False
+    measure_field = 'OBS_VALUE'
+    allowed_fields = {'OBS_VALUE', 'PARAMETER'}
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(f"record[{index}]: address required for set_shock_year (duplicate keys in binding)")
+        if address is None:
+            missing = [field for field in key_fields if field not in record]
+            if missing:
+                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+            key_tuple = tuple((field, record[field]) for field in key_fields)
+            address = _LEAF_INDEX_SHOCK_YEAR.get(key_tuple)
+            if address is None:
+                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
+
+_LEAF_INDEX_SHOCK_TYPE = {
+    (('PARAMETER', 'shock_type'),): 'Inputs!B22',
+}
+
+def set_shock_type(
+    ctx: EvalContext,
+    records: Records,
+    *,
+    strict: bool = True,
+) -> None:
+    """Shock type code: 1 for growth, 2 for interest, 3 for primary balance."""
+    key_fields = ('PARAMETER',)
+    allow_address = False
+    requires_address = False
+    measure_field = 'OBS_VALUE'
+    allowed_fields = {'OBS_VALUE', 'PARAMETER'}
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(f"record[{index}]: address required for set_shock_type (duplicate keys in binding)")
+        if address is None:
+            missing = [field for field in key_fields if field not in record]
+            if missing:
+                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+            key_tuple = tuple((field, record[field]) for field in key_fields)
+            address = _LEAF_INDEX_SHOCK_TYPE.get(key_tuple)
+            if address is None:
+                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
+
+_LEAF_INDEX_SHOCK_MAGNITUDES = {
+    (('SHOCK_PARAMETER', 'Growth'),): 'Inputs!B26',
+    (('SHOCK_PARAMETER', 'Interest'),): 'Inputs!C26',
+    (('SHOCK_PARAMETER', 'Primary balance'),): 'Inputs!D26',
+}
+
+def set_shock_magnitudes(
+    ctx: EvalContext,
+    records: Records,
+    *,
+    strict: bool = True,
+) -> None:
+    """Shock magnitudes keyed by affected parameter."""
+    key_fields = ('SHOCK_PARAMETER',)
+    allow_address = False
+    requires_address = False
+    measure_field = 'OBS_VALUE'
+    allowed_fields = {'SHOCK_PARAMETER', 'OBS_VALUE', 'UNIT_MEASURE', 'PARAMETER'}
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(f"record[{index}]: address required for set_shock_magnitudes (duplicate keys in binding)")
+        if address is None:
+            missing = [field for field in key_fields if field not in record]
+            if missing:
+                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+            key_tuple = tuple((field, record[field]) for field in key_fields)
+            address = _LEAF_INDEX_SHOCK_MAGNITUDES.get(key_tuple)
+            if address is None:
+                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
+
+# --- Series binding output compute (Records API) ---
+
+_OUTPUT_LEAVES_OUTPUT_BASELINE = [
+    ('Outputs!B12', {'SCENARIO': 'baseline', 'TIME_PERIOD': 1, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!C12', {'SCENARIO': 'baseline', 'TIME_PERIOD': 2, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!D12', {'SCENARIO': 'baseline', 'TIME_PERIOD': 3, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!E12', {'SCENARIO': 'baseline', 'TIME_PERIOD': 4, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!F12', {'SCENARIO': 'baseline', 'TIME_PERIOD': 5, 'UNIT_MEASURE': 'PC_GDP'}),
+]
+
+def compute_output_baseline(inputs=None, *, ctx=None) -> Records:
+    """Baseline debt-to-GDP path for projection years 1 through 5."""
     if ctx is None:
         ctx = make_context(inputs)
     elif inputs is not None:
         warnings.warn("inputs will be ignored because ctx was provided", UserWarning, stacklevel=2)
-    return {target: handler(ctx, target) for target, handler in TARGETS_OUTPUT_BASELINE.items()}
+    measure_field = 'OBS_VALUE'
+    include_address = False
+    records: Records = []
+    for address, static_record in _OUTPUT_LEAVES_OUTPUT_BASELINE:
+        record = dict(static_record)
+        record[measure_field] = xl_cell(ctx, address)
+        if include_address:
+            record["address"] = address
+        records.append(record)
+    return records
 
+_OUTPUT_LEAVES_OUTPUT_SHOCKED = [
+    ('Outputs!B13', {'SCENARIO': 'shocked', 'TIME_PERIOD': 1, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!C13', {'SCENARIO': 'shocked', 'TIME_PERIOD': 2, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!D13', {'SCENARIO': 'shocked', 'TIME_PERIOD': 3, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!E13', {'SCENARIO': 'shocked', 'TIME_PERIOD': 4, 'UNIT_MEASURE': 'PC_GDP'}),
+    ('Outputs!F13', {'SCENARIO': 'shocked', 'TIME_PERIOD': 5, 'UNIT_MEASURE': 'PC_GDP'}),
+]
 
-TARGETS_OUTPUT_SHOCKED = {
-    'Outputs!B13:Outputs!F13': xl_range,
-}
-
-
-def compute_output_shocked(inputs=None, *, ctx=None):
-    """Compute output_shocked target cells and return results."""
+def compute_output_shocked(inputs=None, *, ctx=None) -> Records:
+    """Shocked debt-to-GDP path for projection years 1 through 5."""
     if ctx is None:
         ctx = make_context(inputs)
     elif inputs is not None:
         warnings.warn("inputs will be ignored because ctx was provided", UserWarning, stacklevel=2)
-    return {target: handler(ctx, target) for target, handler in TARGETS_OUTPUT_SHOCKED.items()}
+    measure_field = 'OBS_VALUE'
+    include_address = False
+    records: Records = []
+    for address, static_record in _OUTPUT_LEAVES_OUTPUT_SHOCKED:
+        record = dict(static_record)
+        record[measure_field] = xl_cell(ctx, address)
+        if include_address:
+            record["address"] = address
+        records.append(record)
+    return records
 
+_OUTPUT_LEAVES_OUTPUT_DELTA = [
+    ('Outputs!B14', {'SCENARIO': 'shocked_minus_baseline', 'TIME_PERIOD': 1, 'UNIT_MEASURE': 'PP'}),
+    ('Outputs!C14', {'SCENARIO': 'shocked_minus_baseline', 'TIME_PERIOD': 2, 'UNIT_MEASURE': 'PP'}),
+    ('Outputs!D14', {'SCENARIO': 'shocked_minus_baseline', 'TIME_PERIOD': 3, 'UNIT_MEASURE': 'PP'}),
+    ('Outputs!E14', {'SCENARIO': 'shocked_minus_baseline', 'TIME_PERIOD': 4, 'UNIT_MEASURE': 'PP'}),
+    ('Outputs!F14', {'SCENARIO': 'shocked_minus_baseline', 'TIME_PERIOD': 5, 'UNIT_MEASURE': 'PP'}),
+]
 
-TARGETS_OUTPUT_DELTA = {
-    'Outputs!B14:Outputs!F14': xl_range,
-}
-
-
-def compute_output_delta(inputs=None, *, ctx=None):
-    """Compute output_delta target cells and return results."""
+def compute_output_delta(inputs=None, *, ctx=None) -> Records:
+    """Difference between the shocked and baseline paths in percentage points."""
     if ctx is None:
         ctx = make_context(inputs)
     elif inputs is not None:
         warnings.warn("inputs will be ignored because ctx was provided", UserWarning, stacklevel=2)
-    return {target: handler(ctx, target) for target, handler in TARGETS_OUTPUT_DELTA.items()}
+    measure_field = 'OBS_VALUE'
+    include_address = False
+    records: Records = []
+    for address, static_record in _OUTPUT_LEAVES_OUTPUT_DELTA:
+        record = dict(static_record)
+        record[measure_field] = xl_cell(ctx, address)
+        if include_address:
+            record["address"] = address
+        records.append(record)
+    return records
 
 
 TARGETS = {
