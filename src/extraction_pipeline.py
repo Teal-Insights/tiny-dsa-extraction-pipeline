@@ -133,11 +133,12 @@ leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_k
 graph.leaf_classification = leaf_classification
 
 with CodeGenerator(graph) as generator:
-    code = generator.generate(
+    modules = generator.generate_modules(
         targets,
         series_bindings=series_bindings,
         bindings_workbook=workbook_path,
     )
 
-with open("dist/tiny_dsa.py", "w", encoding="utf-8") as f:
-    f.write(code)
+for filepath, code in modules.items():
+    with open(f"../dist/{filepath}", "w", encoding="utf-8") as f:
+        f.write(code)

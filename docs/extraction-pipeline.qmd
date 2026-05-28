@@ -310,29 +310,27 @@ Finally, we can generate the code and write it to a file, [dist/tiny_dsa.py](tin
 from excel_grapher.exporter import CodeGenerator
 
 with CodeGenerator(graph) as generator:
-    code = generator.generate(
+    modules = generator.generate_modules(
         targets,
         series_bindings=series_bindings,
         bindings_workbook=workbook_path,
     )
 
-with open("../dist/tiny_dsa.py", "w", encoding="utf-8") as f:
-    f.write(code)
+for filepath, code in modules.items():
+    with open(f"../dist/{filepath}", "w", encoding="utf-8") as f:
+        f.write(code)
 ```
 
 ## Stage 3: Test
 
-Now we can test the semantic API from `dist/tiny_dsa.py` by running a full scenario with the generated `set_*` and `compute_*` functions.
+Now we can test the semantic API from `dist/api.py` by running a full scenario with the generated `set_*` and `compute_*` functions.
 
 ```{python}
 repo_root = Path("..").resolve()
 if str(repo_root) not in sys.path:
     sys.path.append(str(repo_root))
 
-from dist.tiny_dsa import (
-    compute_output_baseline,
-    compute_output_delta,
-    compute_output_shocked,
+from dist.api import (
     make_context,
     set_country_name,
     set_growth_baseline,
@@ -341,6 +339,9 @@ from dist.tiny_dsa import (
     set_shock_magnitudes,
     set_shock_type,
     set_shock_year,
+    compute_output_baseline,
+    compute_output_delta,
+    compute_output_shocked,
 )
 
 
