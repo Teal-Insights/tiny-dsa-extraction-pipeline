@@ -2,12 +2,12 @@ from pathlib import Path
 from typing import Annotated, Iterable, Literal, Mapping, get_args, get_origin
 
 from excel_grapher.core.cell_types import RealBetween, Between
+from excel_grapher.exporter import CodeGenerator
 from excel_grapher.grapher import (
     DependencyGraph,
     DynamicRefConfig,
     create_dependency_graph,
 )
-from excel_grapher.exporter import CodeGenerator
 from excel_grapher.series_bindings import (
     derive_input_series,
     derive_output_series,
@@ -15,9 +15,12 @@ from excel_grapher.series_bindings import (
     validate_series_bindings,
 )
 
+from src.docstring_callback import available_docstring_callback
+
 # Load the Tiny DSA workbook
-workbook_path = Path("data/tiny-dsa.xlsx")
-bindings_path = Path("bindings")
+repo_root = Path(__file__).resolve().parents[1]
+workbook_path = repo_root / "data/tiny-dsa.xlsx"
+bindings_path = repo_root / "bindings"
 
 targets = ["output_baseline", "output_shocked", "output_delta"]
 series_bindings = load_series_bindings(bindings_path)
@@ -137,8 +140,10 @@ with CodeGenerator(graph) as generator:
         targets,
         series_bindings=series_bindings,
         bindings_workbook=workbook_path,
+        series_docstring_callback=available_docstring_callback(),
     )
 
 for filepath, code in modules.items():
-    with open(f"../dist/{filepath}", "w", encoding="utf-8") as f:
-        f.write(code)
+    output_path = repo_root / "dist" / filepath
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(code, encoding="utf-8")

@@ -30,12 +30,30 @@ def set_country_name(
     *,
     strict: bool = True,
 ) -> None:
-    """Selected country name from the country profile table."""
+    """Set the selected country name in the Inputs sheet.
+
+    Updates the country selection in cell `country_name` (Inputs!B5), which drives the initial debt-to-GDP lookup from the country profile table.
+    Each record writes the OBS_VALUE to the workbook cell identified by the PARAMETER key.
+
+    Required record fields:
+        PARAMETER: The name of the parameter being set. If supplied, expected value: "country_name".
+        OBS_VALUE: The country name to assign to the parameter.
+
+    Source binding:
+        Workbook range: Inputs!B5
+        Layout: scalar
+        Value type: string
+
+    Example:
+        set_country_name(ctx, [
+            {'PARAMETER': 'country_name', 'OBS_VALUE': 'Borvelia'},
+        ])
+    """
     key_fields = ('PARAMETER',)
     allow_address = False
     requires_address = False
     measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'OBS_VALUE'}
+    allowed_fields = {'OBS_VALUE', 'PARAMETER'}
     updates: dict[str, object] = {}
     for index, record in enumerate(records):
         if strict:
@@ -75,12 +93,35 @@ def set_growth_baseline(
     *,
     strict: bool = True,
 ) -> None:
-    """Baseline real GDP growth rates for projection years 1 through 5."""
+    """Set baseline real GDP growth rates for projection years 1 through 5.
+
+    Updates the real GDP growth assumptions used in the baseline debt projection.
+    Each record corresponds to a cell in `Inputs!C16:G16`, with `TIME_PERIOD` mapping to the column header year and `OBS_VALUE` mapping to the cell value.
+
+    Required record fields:
+        TIME_PERIOD: Projection year (1 to 5) for which the growth rate applies.
+        OBS_VALUE: The baseline real GDP growth rate, expressed as a percent per annum.
+
+    Optional record fields:
+        INDICATOR: The economic indicator that this series represents. If supplied, expected value: "real_gdp_growth".
+        UNIT_MEASURE: The unit of measurement for the growth rates. If supplied, expected value: "PERCENT_PER_ANNUM".
+
+    Source binding:
+        Workbook range: Inputs!C16:G16
+        Layout: row_series
+        Value type: float
+
+    Example:
+        set_growth_baseline(ctx, [
+            {'TIME_PERIOD': 1, 'OBS_VALUE': 3.5},
+            {'TIME_PERIOD': 2, 'OBS_VALUE': 3.5},
+        ])
+    """
     key_fields = ('TIME_PERIOD',)
     allow_address = False
     requires_address = False
     measure_field = 'OBS_VALUE'
-    allowed_fields = {'INDICATOR', 'TIME_PERIOD', 'UNIT_MEASURE', 'OBS_VALUE'}
+    allowed_fields = {'INDICATOR', 'UNIT_MEASURE', 'TIME_PERIOD', 'OBS_VALUE'}
     updates: dict[str, object] = {}
     for index, record in enumerate(records):
         if strict:
@@ -120,12 +161,35 @@ def set_interest_baseline(
     *,
     strict: bool = True,
 ) -> None:
-    """Baseline real interest rates for projection years 1 through 5."""
+    """Set the baseline real interest rate path for projection years 1 through 5.
+
+    Updates the real interest rate baseline values on the Inputs sheet.
+    Each record corresponds to a projection year in the interest_baseline row (Inputs!C17:G17), keyed by TIME_PERIOD.
+
+    Required record fields:
+        TIME_PERIOD: Projection year (1 through 5).
+        OBS_VALUE: Real interest rate for the given projection year.
+
+    Optional record fields:
+        INDICATOR: The indicator series. If supplied, expected value: "real_interest_rate".
+        UNIT_MEASURE: The unit of measure. If supplied, expected value: "PERCENT_PER_ANNUM".
+
+    Source binding:
+        Workbook range: Inputs!C17:G17
+        Layout: row_series
+        Value type: float
+
+    Example:
+        set_interest_baseline(ctx, [
+            {'TIME_PERIOD': 1, 'OBS_VALUE': 4.0},
+            {'TIME_PERIOD': 2, 'OBS_VALUE': 4.0},
+        ])
+    """
     key_fields = ('TIME_PERIOD',)
     allow_address = False
     requires_address = False
     measure_field = 'OBS_VALUE'
-    allowed_fields = {'INDICATOR', 'TIME_PERIOD', 'UNIT_MEASURE', 'OBS_VALUE'}
+    allowed_fields = {'INDICATOR', 'UNIT_MEASURE', 'TIME_PERIOD', 'OBS_VALUE'}
     updates: dict[str, object] = {}
     for index, record in enumerate(records):
         if strict:
@@ -165,12 +229,35 @@ def set_primary_balance_baseline(
     *,
     strict: bool = True,
 ) -> None:
-    """Baseline primary balance path for projection years 1 through 5."""
+    """Set the baseline primary balance series as percent of GDP for projection years 1 through 5.
+
+    Writes the primary balance baseline values to the Inputs sheet for the specified projection years.
+    Each record maps TIME_PERIOD to the year column header and OBS_VALUE to the corresponding cell in the Inputs!C18:G18 range.
+
+    Required record fields:
+        TIME_PERIOD: Projection year number (1 to 5) to which the primary balance value applies.
+        OBS_VALUE: Primary balance as percent of GDP, with positive values indicating a surplus.
+
+    Optional record fields:
+        INDICATOR: Economic indicator that identifies this series as the primary balance. If supplied, expected value: "primary_balance".
+        UNIT_MEASURE: Unit of measure, indicating the observation value is expressed as percent of GDP. If supplied, expected value: "PC_GDP".
+
+    Source binding:
+        Workbook range: Inputs!C18:G18
+        Layout: row_series
+        Value type: float
+
+    Example:
+        set_primary_balance_baseline(ctx, [
+            {'TIME_PERIOD': 1, 'OBS_VALUE': -1.0},
+            {'TIME_PERIOD': 2, 'OBS_VALUE': -0.5},
+        ])
+    """
     key_fields = ('TIME_PERIOD',)
     allow_address = False
     requires_address = False
     measure_field = 'OBS_VALUE'
-    allowed_fields = {'INDICATOR', 'TIME_PERIOD', 'UNIT_MEASURE', 'OBS_VALUE'}
+    allowed_fields = {'INDICATOR', 'UNIT_MEASURE', 'TIME_PERIOD', 'OBS_VALUE'}
     updates: dict[str, object] = {}
     for index, record in enumerate(records):
         if strict:
@@ -206,12 +293,30 @@ def set_shock_year(
     *,
     strict: bool = True,
 ) -> None:
-    """First projection year in which the selected shock applies."""
+    """Set the shock year for the debt sustainability analysis scenario.
+
+    Updates the cell Inputs!B21 with the first projection year in which the selected shock takes effect.
+    Each record maps directly to the scalar cell Inputs!B21, with PARAMETER identifying the input and OBS_VALUE providing the shock year.
+
+    Required record fields:
+        PARAMETER: Identifier for the shock year parameter. If supplied, expected value: "shock_year".
+        OBS_VALUE: The projection year (1 to 5) when the shock begins to apply.
+
+    Source binding:
+        Workbook range: Inputs!B21
+        Layout: scalar
+        Value type: int
+
+    Example:
+        set_shock_year(ctx, [
+            {'PARAMETER': 'shock_year', 'OBS_VALUE': 2},
+        ])
+    """
     key_fields = ('PARAMETER',)
     allow_address = False
     requires_address = False
     measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'OBS_VALUE'}
+    allowed_fields = {'OBS_VALUE', 'PARAMETER'}
     updates: dict[str, object] = {}
     for index, record in enumerate(records):
         if strict:
@@ -247,12 +352,30 @@ def set_shock_type(
     *,
     strict: bool = True,
 ) -> None:
-    """Shock type code: 1 for growth, 2 for interest, 3 for primary balance."""
+    """Set the shock type for the debt sustainability scenario.
+
+    Updates the shock type in the Inputs sheet to specify which variable (growth, interest rate, or primary balance) is affected by the shock.
+    Writes a record's OBS_VALUE to the shock type cell, matching on PARAMETER='shock_type'.
+
+    Required record fields:
+        PARAMETER: The identifier for the shock type parameter. If supplied, expected value: "shock_type".
+        OBS_VALUE: Shock type index: 1 for growth, 2 for interest, 3 for primary balance.
+
+    Source binding:
+        Workbook range: Inputs!B22
+        Layout: scalar
+        Value type: int
+
+    Example:
+        set_shock_type(ctx, [
+            {'PARAMETER': 'shock_type', 'OBS_VALUE': 1},
+        ])
+    """
     key_fields = ('PARAMETER',)
     allow_address = False
     requires_address = False
     measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'OBS_VALUE'}
+    allowed_fields = {'OBS_VALUE', 'PARAMETER'}
     updates: dict[str, object] = {}
     for index, record in enumerate(records):
         if strict:
@@ -290,12 +413,35 @@ def set_shock_magnitudes(
     *,
     strict: bool = True,
 ) -> None:
-    """Shock magnitudes keyed by affected parameter."""
+    """Set shock magnitudes for the debt sustainability analysis.
+
+    Update the shock magnitudes used in the shock scenario configuration on the Inputs sheet.
+    Each record corresponds to a cell in the row series Inputs!B26:D26, identified by the SHOCK_PARAMETER dimension.
+
+    Required record fields:
+        SHOCK_PARAMETER: The parameter affected by the shock (growth, interest rate, or primary balance).
+        OBS_VALUE: The magnitude of the shock, expressed in percentage points.
+
+    Optional record fields:
+        PARAMETER: The parameter this series represents. If supplied, expected value: "shock_magnitude".
+        UNIT_MEASURE: The unit of measure for the shock magnitude. If supplied, expected value: "PP".
+
+    Source binding:
+        Workbook range: Inputs!B26:D26
+        Layout: row_series
+        Value type: float
+
+    Example:
+        set_shock_magnitudes(ctx, [
+            {'SHOCK_PARAMETER': 'Growth', 'OBS_VALUE': -2.0},
+            {'SHOCK_PARAMETER': 'Interest', 'OBS_VALUE': 2.0},
+        ])
+    """
     key_fields = ('SHOCK_PARAMETER',)
     allow_address = False
     requires_address = False
     measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'SHOCK_PARAMETER', 'UNIT_MEASURE', 'OBS_VALUE'}
+    allowed_fields = {'OBS_VALUE', 'UNIT_MEASURE', 'SHOCK_PARAMETER', 'PARAMETER'}
     updates: dict[str, object] = {}
     for index, record in enumerate(records):
         if strict:
@@ -332,7 +478,27 @@ _OUTPUT_LEAVES_OUTPUT_BASELINE = [
 ]
 
 def compute_output_baseline(inputs=None, *, ctx=None) -> Records:
-    """Baseline debt-to-GDP path for projection years 1 through 5."""
+    """Compute the baseline debt-to-GDP path from the Outputs sheet.
+
+    Returns the baseline debt-to-GDP trajectory as a list of records, one per projection year.
+    Each record represents one cell in the row series `Outputs!B12:F12`, with TIME_PERIOD from the column header in row 11 and OBS_VALUE from the cell value.
+
+    Required record fields:
+        TIME_PERIOD: Projection year, an integer from 1 to 5.
+        OBS_VALUE: Baseline debt-to-GDP ratio as a percentage of GDP.
+
+    Optional record fields:
+        SCENARIO: Scenario identifier. If supplied, expected value: "baseline".
+        UNIT_MEASURE: Unit of measure for the observation values. If supplied, expected value: "PC_GDP".
+
+    Source binding:
+        Workbook range: Outputs!B12:F12
+        Layout: row_series
+        Value type: float
+
+    Example:
+        compute_output_baseline(ctx=ctx)
+    """
     if ctx is None:
         ctx = make_context(inputs)
     elif inputs is not None:
@@ -357,7 +523,27 @@ _OUTPUT_LEAVES_OUTPUT_SHOCKED = [
 ]
 
 def compute_output_shocked(inputs=None, *, ctx=None) -> Records:
-    """Shocked debt-to-GDP path for projection years 1 through 5."""
+    """Compute the shocked debt-to-GDP path records.
+
+    Return the shocked debt-to-GDP path for projection years 1 through 5.
+    Each record corresponds to one cell in the Outputs!B13:F13 range, with TIME_PERIOD derived from column headers and OBS_VALUE from cell values.
+
+    Required record fields:
+        TIME_PERIOD: Projection year.
+        OBS_VALUE: Debt-to-GDP ratio under the shock scenario, expressed as a percentage of GDP.
+
+    Optional record fields:
+        SCENARIO: Scenario identifier for the shock path. If supplied, expected value: "shocked".
+        UNIT_MEASURE: Unit of measure for the debt ratio. If supplied, expected value: "PC_GDP".
+
+    Source binding:
+        Workbook range: Outputs!B13:F13
+        Layout: row_series
+        Value type: float
+
+    Example:
+        compute_output_shocked(ctx=ctx)
+    """
     if ctx is None:
         ctx = make_context(inputs)
     elif inputs is not None:
@@ -382,7 +568,27 @@ _OUTPUT_LEAVES_OUTPUT_DELTA = [
 ]
 
 def compute_output_delta(inputs=None, *, ctx=None) -> Records:
-    """Difference between the shocked and baseline paths in percentage points."""
+    """Computes the difference between the shocked and baseline debt-to-GDP paths over the projection horizon.
+
+    Returns an array of records representing the year-by-year delta in debt-to-GDP ratio under the shocked-minus-baseline scenario.
+    Each record maps to one cell in the Outputs!B14:F14 row, with TIME_PERIOD derived from the column header and OBS_VALUE from the cell value.
+
+    Required record fields:
+        TIME_PERIOD: Projection year, an integer from 1 to 5.
+        OBS_VALUE: Debt-to-GDP difference, in percentage points, between the shocked and baseline paths.
+
+    Optional record fields:
+        SCENARIO: Scenario identifier for the shocked-minus-baseline difference series. If supplied, expected value: "shocked_minus_baseline".
+        UNIT_MEASURE: Unit of measure for the observation values. If supplied, expected value: "PP".
+
+    Source binding:
+        Workbook range: Outputs!B14:F14
+        Layout: row_series
+        Value type: float
+
+    Example:
+        compute_output_delta(ctx=ctx)
+    """
     if ctx is None:
         ctx = make_context(inputs)
     elif inputs is not None:

@@ -266,7 +266,7 @@ wheels = [
 [[package]]
 name = "excel-grapher"
 version = "0.1.0"
-source = { git = "https://github.com/Teal-Insights/excel-grapher.git#dfe5243525259a68d577796dcc7b7cce87bd3cc9" }
+source = { git = "https://github.com/Teal-Insights/excel-grapher.git#e7420bad96f84f429953941a356133028b5a29d1" }
 dependencies = [
     { name = "fastpyxl" },
     { name = "jsonschema" },
@@ -1458,6 +1458,7 @@ dev = [
     { name = "matplotlib" },
     { name = "openai" },
     { name = "pre-commit" },
+    { name = "pydantic" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
@@ -1477,6 +1478,7 @@ dev = [
     { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "openai", specifier = ">=2.36.0" },
     { name = "pre-commit", specifier = ">=4.6.0" },
+    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=311" },
