@@ -1,56 +1,20 @@
 # Differential testing
 
-[`differential_testing.py`](differential_testing.py) compares two oracles for
-`data/tiny-dsa.xlsx`:
+Two harnesses live here, both comparing Tiny-DSA outputs against Microsoft Excel via xlwings at `atol = 1e-6`:
 
-- **golden** — Microsoft Excel, driven via xlwings.
-- **mvp** — `excel-grapher` set up from the constraints exported by
-  [`src/extraction_pipeline.py`](../../src/extraction_pipeline.py), with a
-  `FormulaEvaluator` layered on top so output cells can actually be read.
+- [`differential_testing.py`](differential_testing.py) — MVP oracle: `excel-grapher` + `FormulaEvaluator`. 14 axes × 106 input points × 15 cells. Single-axis isolation around the canonical scenario (categorical axes + continuous perturbations at years 1 / 3 / 5) plus the full categorical combo of country × shock_type × shock_year (45 points).
+- [`differential_test_exported_library.py`](differential_test_exported_library.py) — MVP oracle: the exported standalone package at `dist/`, imported as `dist.api`. 118 scenarios × 15 cells = 1,770 comparisons. Canonical sweep + single-axis isolation + the same 45-point categorical combo; no access to the Excel file at runtime.
 
-The script sweeps **7 axes × 31 input points** (country, shock year, shock
-type, shock magnitude, and year-3 perturbations of growth / interest /
-primary balance) and compares the **15 output cells** at every point. Any
-divergence is logged to the report.
-
-## Requirements
-
-- Microsoft Excel installed locally (xlwings drives Excel via COM).
-- `xlwings` in the dev dependency group (already in `pyproject.toml`).
-- Run from the **project root** so the `from src.extraction_pipeline import ...`
-  resolution and `data/tiny-dsa.xlsx` path work.
+Both exit `0` on pass, `1` on any failure, `2` on a missing prerequisite. Microsoft Excel must be installed locally; `xlwings` is in `pyproject.toml`'s dev dependencies.
 
 ## Run
 
 ```pwsh
 uv run python tests/differential/differential_testing.py
+uv run python tests/differential/differential_test_exported_library.py
 ```
-
-Exit codes:
-
-- `0` — every comparison matched within `atol = 1e-6`.
-- `1` — at least one comparison failed (or the mvp raised). Inspect the report.
-- `2` — workbook missing or `xlwings` not installed.
 
 ## Output
 
-Two files are written to [`data/differential/`](../../data/differential/) at the project root (the directory is created on first run):
-
-- `differential_report.txt` — human-readable: summary, per-axis pass rates,
-  per-point pass rates, and the top failures ranked by absolute difference.
-- `differential_report.csv` — one row per comparison, for spreadsheet
-  drill-down.
-
-If any input cells the differential tries to set are missing from the mvp
-graph, they're listed under an **ABSENT INPUTS** section at the top of the
-report — that's itself a differential signal about the extraction pipeline's
-coverage of dynamic-ref branches.
-
-## Known upstream issues
-
-- [`playground/formula_evaluator_unqualified_ref_bug.md`](../../playground/formula_evaluator_unqualified_ref_bug.md)
-  documents a `FormulaEvaluator` reference-resolution bug that currently
-  causes every mvp read to fail with
-  `KeyError: 'Cell Inputs!C10 not found in graph'`. Until that's fixed
-  upstream, the report's failure section will be dominated by that single
-  cause.
+- `differential_testing.py` writes [`data/differential/differential_report.{txt,csv}`](../../data/differential/) — summary, per-axis pass rates, per-point pass rates, top failures. Any input cell the differential tries to set that is missing from the mvp graph appears under **ABSENT INPUTS** at the top of the report.
+- `differential_test_exported_library.py` writes [`data/differential/exported_library/parity_report.{txt,csv}`](../../data/differential/exported_library/) — summary, first divergence, full failure list. Pre-flight verifies path existence, workbook-vs-`dist/data.py` staleness, and that each setter/compute binding table matches the script's hardcoded cells.

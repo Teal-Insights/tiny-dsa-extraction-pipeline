@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import importlib
+import itertools
 import math
 import re
 import shutil
@@ -230,16 +231,46 @@ def _override_year(vec: tuple[float, ...], year: int, val: float) -> tuple[float
 
 
 def _build_axes() -> tuple[Axis, ...]:
-    """One Axis per parameter we vary, all others held at CANONICAL.
+    """Axes for the differential sweep.
 
-    Scope mirrors the input domains in tiny-dsa-guide.md Section II:
-    three countries, shock_year in 1..5, shock_type in 1..3, and a small
-    range around the default growth / interest / primary-balance values
-    for year 3.
+    Three groups:
+
+    - **single-axis isolation** — one parameter perturbed around CANONICAL.
+      Cheap regression checks; surfaces "this axis broke" cleanly in the
+      per-axis pass-rate table.
+
+    - **categorical_combo** — full factorial over the three categorical
+      axes (country × shock_type × shock_year) = 45 points. Covers every
+      2- and 3-way interaction the single-axis sweeps miss.
+
+    - **year-1 / year-5 continuous perturbations** — same shape as the
+      year-3 sweeps, but anchored at the boundary years of the 5-year
+      recursion. Year 1 is the first recursion step off the initial debt
+      stock; year 5 is the terminal step. Either is a likely site for
+      off-by-one or boundary-handling bugs that year-3-only sweeps miss.
     """
 
     def axis(name: str, points: list[AxisPoint]) -> Axis:
         return Axis(name=name, points=tuple(points))
+
+    def _override_continuous(name: str, year: int, values: tuple[float, ...]) -> Axis:
+        """Build an axis that perturbs one year of one continuous parameter.
+
+        `name` is the manifest field name on Inputs (e.g. `growth_baseline`);
+        `year` is 1-indexed; `values` are the perturbed values to sweep through.
+        """
+        attr = name  # field on Inputs dataclass
+        base_vec: tuple[float, ...] = getattr(CANONICAL, attr)
+        return axis(
+            f"{name}[year={year}]",
+            [
+                AxisPoint(
+                    f"{name}[year={year}]={v:+.1f}",
+                    replace(CANONICAL, **{attr: _override_year(base_vec, year, v)}),
+                )
+                for v in values
+            ],
+        )
 
     country_axis = axis(
         "country_name",
@@ -281,47 +312,37 @@ def _build_axes() -> tuple[Axis, ...]:
         ],
     )
 
-    growth_y3_axis = axis(
-        "growth_baseline[year=3]",
-        [
-            AxisPoint(
-                f"growth_baseline[year=3]={v:+.1f}",
-                replace(
-                    CANONICAL,
-                    growth_baseline=_override_year(CANONICAL.growth_baseline, 3, v),
-                ),
-            )
-            for v in (0.0, 1.5, 3.5, 5.5, 7.0)
-        ],
+    growth_values = (0.0, 1.5, 3.5, 5.5, 7.0)
+    interest_values = (0.0, 2.0, 4.0, 6.0, 8.0)
+    pb_values = (-3.0, -1.5, 0.0, 1.5, 3.0)
+
+    # Boundary-year coverage (flaw 2): years 1 and 5 are the recursion's
+    # endpoints. Year 3 already covered in the original sweep.
+    continuous_axes = tuple(
+        _override_continuous(name, year, values)
+        for name, values in (
+            ("growth_baseline", growth_values),
+            ("interest_baseline", interest_values),
+            ("primary_balance_baseline", pb_values),
+        )
+        for year in (1, 3, 5)
     )
 
-    interest_y3_axis = axis(
-        "interest_baseline[year=3]",
+    # Full factorial over the three categorical axes (flaw 1): covers every
+    # 2- and 3-way interaction the single-axis sweeps cannot reach.
+    # 3 countries × 3 shock types × 5 shock years = 45 points.
+    categorical_combo_axis = axis(
+        "categorical_combo: country x shock_type x shock_year",
         [
             AxisPoint(
-                f"interest_baseline[year=3]={v:+.1f}",
-                replace(
-                    CANONICAL,
-                    interest_baseline=_override_year(CANONICAL.interest_baseline, 3, v),
-                ),
+                f"country={c}, shock_type={t}, shock_year={y}",
+                replace(CANONICAL, country_name=c, shock_type=t, shock_year=y),
             )
-            for v in (0.0, 2.0, 4.0, 6.0, 8.0)
-        ],
-    )
-
-    pb_y3_axis = axis(
-        "primary_balance_baseline[year=3]",
-        [
-            AxisPoint(
-                f"primary_balance_baseline[year=3]={v:+.1f}",
-                replace(
-                    CANONICAL,
-                    primary_balance_baseline=_override_year(
-                        CANONICAL.primary_balance_baseline, 3, v
-                    ),
-                ),
+            for c, t, y in itertools.product(
+                ("Borvelia", "Litellia", "Aurelium"),
+                (1, 2, 3),
+                (1, 2, 3, 4, 5),
             )
-            for v in (-3.0, -1.5, 0.0, 1.5, 3.0)
         ],
     )
 
@@ -330,9 +351,8 @@ def _build_axes() -> tuple[Axis, ...]:
         shock_year_axis,
         shock_type_axis,
         shock_growth_mag_axis,
-        growth_y3_axis,
-        interest_y3_axis,
-        pb_y3_axis,
+        *continuous_axes,
+        categorical_combo_axis,
     )
 
 
