@@ -101,7 +101,7 @@ Binding schema and conventions:
 - Use one series[] entry per logical public input or output series.
 - Use layout: scalar for one-cell inputs and layout: row_series for one-row time series.
 - Use structure.measure.concept: OBS_VALUE with bind.kind: data_cell.
-- Use key fields only for record matching. For row time series, use TIME_PERIOD from the column header row. For scalar parameters, use a constant PARAMETER key. For shock magnitudes, use the shock-type header as the key.
+- Use key fields only for record matching. For row time series, use TIME_PERIOD from the column header row. For scalar parameters, use keyless bindings (`key: []`) and keep PARAMETER in series_context. For shock magnitudes, use the shock-type header as the key.
 - Add input.setter.name values matching set_[a-z][a-z0-9_]* for input series.
 - Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
 - Include useful series_context and UNIT_MEASURE attributes where they clarify records.
@@ -850,6 +850,7 @@ with CodeGenerator(graph) as generator:
         series_bindings=series_bindings,
         bindings_workbook=workbook_path,
         series_docstring_callback=callback_name,
+        docstring_renderer="google"
     )
 
 for filepath, code in modules.items():
@@ -895,15 +896,15 @@ ctx = make_context()
 # Scalar inputs
 set_country_name(
     ctx,
-    [{"PARAMETER": "country_name", "OBS_VALUE": "Litellia"}],
+    [{"OBS_VALUE": "Litellia"}],
 )
 set_shock_year(
     ctx,
-    [{"PARAMETER": "shock_year", "OBS_VALUE": 2}],
+    [{"OBS_VALUE": 2}],
 )
 set_shock_type(
     ctx,
-    [{"PARAMETER": "shock_type", "OBS_VALUE": 1}],  # growth shock
+    [{"OBS_VALUE": 1}],  # growth shock
 )
 
 # Baseline trajectories

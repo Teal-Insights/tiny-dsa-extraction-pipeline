@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "excel-grapher",
+    "openai>=2.38.0",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
 ]
 
 [tool.uv.sources]
@@ -21,11 +24,8 @@ dev = [
     "ruff>=0.15.12",
     "ty>=0.0.34",
     "xlwings>=0.35.3",
-    "python-dotenv>=1.2.2",
-    "openai>=2.36.0",
     "vl-convert-python>=1.9.0.post1",
     "matplotlib>=3.10.9",
-    "pydantic>=2.13.4",
 ]
 
 [tool.pytest.ini_options]

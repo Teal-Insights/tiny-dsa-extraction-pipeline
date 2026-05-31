@@ -41,14 +41,13 @@ series:
         bind:
           kind: data_cell
           read: string
-      dimensions:
+      dimensions: []
+      attributes:
         - concept: PARAMETER
-          role: key
-          scope: series
-          bind:
-            kind: constant
-            value: country_name
-    key: [PARAMETER]
+          role: attribute
+          value: country_name
+          include_in_record: false
+    key: []
     series_context:
       PARAMETER: country_name
     notes: Selected country name from the country profile table.
@@ -192,14 +191,13 @@ series:
         bind:
           kind: data_cell
           read: int
-      dimensions:
+      dimensions: []
+      attributes:
         - concept: PARAMETER
-          role: key
-          scope: series
-          bind:
-            kind: constant
-            value: shock_year
-    key: [PARAMETER]
+          role: attribute
+          value: shock_year
+          include_in_record: false
+    key: []
     series_context:
       PARAMETER: shock_year
     notes: First projection year in which the selected shock applies.
@@ -220,14 +218,13 @@ series:
         bind:
           kind: data_cell
           read: int
-      dimensions:
+      dimensions: []
+      attributes:
         - concept: PARAMETER
-          role: key
-          scope: series
-          bind:
-            kind: constant
-            value: shock_type
-    key: [PARAMETER]
+          role: attribute
+          value: shock_type
+          include_in_record: false
+    key: []
     series_context:
       PARAMETER: shock_type
     notes: "Shock type code: 1 for growth, 2 for interest, 3 for primary balance."

@@ -141,6 +141,7 @@ with CodeGenerator(graph) as generator:
         series_bindings=series_bindings,
         bindings_workbook=workbook_path,
         series_docstring_callback=available_docstring_callback(),
+        docstring_renderer="google",
     )
 
 for filepath, code in modules.items():
