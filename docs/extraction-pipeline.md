@@ -1467,7 +1467,7 @@ title: "{functional_overview_rewrite.title}"
 functional_overview_output.write_text(functional_overview_qmd, encoding="utf-8")
 ```
 
-    3938
+    5875
 
 Next, run the same workflow for `III. Illustrative Example`, with
 context focused on the executable scenario from this pipeline.
@@ -1530,7 +1530,7 @@ title: "{illustrative_example_rewrite.title}"
 illustrative_example_output.write_text(illustrative_example_qmd, encoding="utf-8")
 ```
 
-    4572
+    5057
 
 To keep documentation deployment reproducible, we also generate a GitHub
 Actions workflow in `dist/.github/workflows/` for the destination
@@ -1571,6 +1571,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
+      - name: Install Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+
       - name: Set up Python
         run: uv python install
 
@@ -1593,4 +1596,4 @@ jobs:
 docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
 ```
 
-    935
+    1014
