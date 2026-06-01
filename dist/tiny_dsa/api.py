@@ -21,6 +21,58 @@ Scalar = str | int | float | bool | None
 Record = dict[str, object]
 Records = list[Record]
 
+def _coerce_records(records, measure_field, *, allow_scalar=False) -> Records:
+    if not allow_scalar:
+        return records
+    if not isinstance(records, list):
+        if isinstance(records, dict):
+            return [records]
+        return [{measure_field: records}]
+    return records
+
+def _apply_series_records(
+    ctx,
+    records,
+    *,
+    key_fields,
+    allowed_fields,
+    measure_field,
+    leaf_index,
+    strict,
+    fn_name,
+    allow_address=False,
+    requires_address=False,
+) -> None:
+    updates: dict[str, object] = {}
+    for index, record in enumerate(records):
+        if strict:
+            unknown = set(record) - allowed_fields
+            if unknown:
+                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
+        if measure_field not in record:
+            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
+        address = None
+        if allow_address or requires_address:
+            address = record.get("address") or record.get("cell_address")
+        if requires_address and address is None:
+            raise ValueError(
+                f"record[{index}]: address required for {fn_name} (duplicate keys in binding)"
+            )
+        if address is None:
+            if not requires_address:
+                missing = [field for field in key_fields if field not in record]
+                if missing:
+                    raise ValueError(f"record[{index}]: missing key fields {missing!r}")
+                key_tuple = tuple((field, record[field]) for field in key_fields)
+                address = leaf_index.get(key_tuple)
+                if address is None:
+                    raise ValueError(
+                        f"record[{index}]: no leaf matches key {dict(key_tuple)!r}"
+                    )
+        updates[address] = record[measure_field]
+    if updates:
+        ctx.set_inputs(coerce_inputs_dict(updates))
+
 _LEAF_INDEX_COUNTRY_NAME = {
     (): 'Inputs!B5',
 }
@@ -56,40 +108,18 @@ def set_country_name(
             {'OBS_VALUE': 'Borvelia'},
         ])
     """
-    key_fields = ()
-    allow_address = False
-    requires_address = False
-    measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'OBS_VALUE'}
-    if not isinstance(records, list):
-        if isinstance(records, dict):
-            records = [records]
-        else:
-            records = [{measure_field: records}]
-    updates: dict[str, object] = {}
-    for index, record in enumerate(records):
-        if strict:
-            unknown = set(record) - allowed_fields
-            if unknown:
-                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
-        if measure_field not in record:
-            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
-        address = None
-        if allow_address or requires_address:
-            address = record.get("address") or record.get("cell_address")
-        if requires_address and address is None:
-            raise ValueError(f"record[{index}]: address required for set_country_name (duplicate keys in binding)")
-        if address is None:
-            missing = [field for field in key_fields if field not in record]
-            if missing:
-                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
-            key_tuple = tuple((field, record[field]) for field in key_fields)
-            address = _LEAF_INDEX_COUNTRY_NAME.get(key_tuple)
-            if address is None:
-                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
-        updates[address] = record[measure_field]
-    if updates:
-        ctx.set_inputs(coerce_inputs_dict(updates))
+    _apply_series_records(
+        ctx,
+        _coerce_records(records, 'OBS_VALUE', allow_scalar=True),
+        key_fields=(),
+        allowed_fields={'PARAMETER', 'OBS_VALUE'},
+        measure_field='OBS_VALUE',
+        leaf_index=_LEAF_INDEX_COUNTRY_NAME,
+        strict=strict,
+        fn_name='set_country_name',
+        allow_address=False,
+        requires_address=False,
+    )
 
 _LEAF_INDEX_GROWTH_BASELINE = {
     (('TIME_PERIOD', 1),): 'Inputs!C16',
@@ -133,35 +163,18 @@ def set_growth_baseline(
             {'TIME_PERIOD': 2, 'OBS_VALUE': 3.5},
         ])
     """
-    key_fields = ('TIME_PERIOD',)
-    allow_address = False
-    requires_address = False
-    measure_field = 'OBS_VALUE'
-    allowed_fields = {'UNIT_MEASURE', 'INDICATOR', 'OBS_VALUE', 'TIME_PERIOD'}
-    updates: dict[str, object] = {}
-    for index, record in enumerate(records):
-        if strict:
-            unknown = set(record) - allowed_fields
-            if unknown:
-                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
-        if measure_field not in record:
-            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
-        address = None
-        if allow_address or requires_address:
-            address = record.get("address") or record.get("cell_address")
-        if requires_address and address is None:
-            raise ValueError(f"record[{index}]: address required for set_growth_baseline (duplicate keys in binding)")
-        if address is None:
-            missing = [field for field in key_fields if field not in record]
-            if missing:
-                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
-            key_tuple = tuple((field, record[field]) for field in key_fields)
-            address = _LEAF_INDEX_GROWTH_BASELINE.get(key_tuple)
-            if address is None:
-                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
-        updates[address] = record[measure_field]
-    if updates:
-        ctx.set_inputs(coerce_inputs_dict(updates))
+    _apply_series_records(
+        ctx,
+        records,
+        key_fields=('TIME_PERIOD',),
+        allowed_fields={'TIME_PERIOD', 'INDICATOR', 'OBS_VALUE', 'UNIT_MEASURE'},
+        measure_field='OBS_VALUE',
+        leaf_index=_LEAF_INDEX_GROWTH_BASELINE,
+        strict=strict,
+        fn_name='set_growth_baseline',
+        allow_address=False,
+        requires_address=False,
+    )
 
 _LEAF_INDEX_INTEREST_BASELINE = {
     (('TIME_PERIOD', 1),): 'Inputs!C17',
@@ -205,35 +218,18 @@ def set_interest_baseline(
             {'TIME_PERIOD': 2, 'OBS_VALUE': 4.0},
         ])
     """
-    key_fields = ('TIME_PERIOD',)
-    allow_address = False
-    requires_address = False
-    measure_field = 'OBS_VALUE'
-    allowed_fields = {'UNIT_MEASURE', 'INDICATOR', 'OBS_VALUE', 'TIME_PERIOD'}
-    updates: dict[str, object] = {}
-    for index, record in enumerate(records):
-        if strict:
-            unknown = set(record) - allowed_fields
-            if unknown:
-                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
-        if measure_field not in record:
-            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
-        address = None
-        if allow_address or requires_address:
-            address = record.get("address") or record.get("cell_address")
-        if requires_address and address is None:
-            raise ValueError(f"record[{index}]: address required for set_interest_baseline (duplicate keys in binding)")
-        if address is None:
-            missing = [field for field in key_fields if field not in record]
-            if missing:
-                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
-            key_tuple = tuple((field, record[field]) for field in key_fields)
-            address = _LEAF_INDEX_INTEREST_BASELINE.get(key_tuple)
-            if address is None:
-                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
-        updates[address] = record[measure_field]
-    if updates:
-        ctx.set_inputs(coerce_inputs_dict(updates))
+    _apply_series_records(
+        ctx,
+        records,
+        key_fields=('TIME_PERIOD',),
+        allowed_fields={'TIME_PERIOD', 'INDICATOR', 'OBS_VALUE', 'UNIT_MEASURE'},
+        measure_field='OBS_VALUE',
+        leaf_index=_LEAF_INDEX_INTEREST_BASELINE,
+        strict=strict,
+        fn_name='set_interest_baseline',
+        allow_address=False,
+        requires_address=False,
+    )
 
 _LEAF_INDEX_PRIMARY_BALANCE_BASELINE = {
     (('TIME_PERIOD', 1),): 'Inputs!C18',
@@ -277,35 +273,18 @@ def set_primary_balance_baseline(
             {'TIME_PERIOD': 2, 'OBS_VALUE': -0.5},
         ])
     """
-    key_fields = ('TIME_PERIOD',)
-    allow_address = False
-    requires_address = False
-    measure_field = 'OBS_VALUE'
-    allowed_fields = {'UNIT_MEASURE', 'INDICATOR', 'OBS_VALUE', 'TIME_PERIOD'}
-    updates: dict[str, object] = {}
-    for index, record in enumerate(records):
-        if strict:
-            unknown = set(record) - allowed_fields
-            if unknown:
-                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
-        if measure_field not in record:
-            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
-        address = None
-        if allow_address or requires_address:
-            address = record.get("address") or record.get("cell_address")
-        if requires_address and address is None:
-            raise ValueError(f"record[{index}]: address required for set_primary_balance_baseline (duplicate keys in binding)")
-        if address is None:
-            missing = [field for field in key_fields if field not in record]
-            if missing:
-                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
-            key_tuple = tuple((field, record[field]) for field in key_fields)
-            address = _LEAF_INDEX_PRIMARY_BALANCE_BASELINE.get(key_tuple)
-            if address is None:
-                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
-        updates[address] = record[measure_field]
-    if updates:
-        ctx.set_inputs(coerce_inputs_dict(updates))
+    _apply_series_records(
+        ctx,
+        records,
+        key_fields=('TIME_PERIOD',),
+        allowed_fields={'TIME_PERIOD', 'INDICATOR', 'OBS_VALUE', 'UNIT_MEASURE'},
+        measure_field='OBS_VALUE',
+        leaf_index=_LEAF_INDEX_PRIMARY_BALANCE_BASELINE,
+        strict=strict,
+        fn_name='set_primary_balance_baseline',
+        allow_address=False,
+        requires_address=False,
+    )
 
 _LEAF_INDEX_SHOCK_YEAR = {
     (): 'Inputs!B21',
@@ -342,40 +321,18 @@ def set_shock_year(
             {'OBS_VALUE': 2},
         ])
     """
-    key_fields = ()
-    allow_address = False
-    requires_address = False
-    measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'OBS_VALUE'}
-    if not isinstance(records, list):
-        if isinstance(records, dict):
-            records = [records]
-        else:
-            records = [{measure_field: records}]
-    updates: dict[str, object] = {}
-    for index, record in enumerate(records):
-        if strict:
-            unknown = set(record) - allowed_fields
-            if unknown:
-                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
-        if measure_field not in record:
-            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
-        address = None
-        if allow_address or requires_address:
-            address = record.get("address") or record.get("cell_address")
-        if requires_address and address is None:
-            raise ValueError(f"record[{index}]: address required for set_shock_year (duplicate keys in binding)")
-        if address is None:
-            missing = [field for field in key_fields if field not in record]
-            if missing:
-                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
-            key_tuple = tuple((field, record[field]) for field in key_fields)
-            address = _LEAF_INDEX_SHOCK_YEAR.get(key_tuple)
-            if address is None:
-                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
-        updates[address] = record[measure_field]
-    if updates:
-        ctx.set_inputs(coerce_inputs_dict(updates))
+    _apply_series_records(
+        ctx,
+        _coerce_records(records, 'OBS_VALUE', allow_scalar=True),
+        key_fields=(),
+        allowed_fields={'PARAMETER', 'OBS_VALUE'},
+        measure_field='OBS_VALUE',
+        leaf_index=_LEAF_INDEX_SHOCK_YEAR,
+        strict=strict,
+        fn_name='set_shock_year',
+        allow_address=False,
+        requires_address=False,
+    )
 
 _LEAF_INDEX_SHOCK_TYPE = {
     (): 'Inputs!B22',
@@ -412,40 +369,18 @@ def set_shock_type(
             {'OBS_VALUE': 1},
         ])
     """
-    key_fields = ()
-    allow_address = False
-    requires_address = False
-    measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'OBS_VALUE'}
-    if not isinstance(records, list):
-        if isinstance(records, dict):
-            records = [records]
-        else:
-            records = [{measure_field: records}]
-    updates: dict[str, object] = {}
-    for index, record in enumerate(records):
-        if strict:
-            unknown = set(record) - allowed_fields
-            if unknown:
-                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
-        if measure_field not in record:
-            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
-        address = None
-        if allow_address or requires_address:
-            address = record.get("address") or record.get("cell_address")
-        if requires_address and address is None:
-            raise ValueError(f"record[{index}]: address required for set_shock_type (duplicate keys in binding)")
-        if address is None:
-            missing = [field for field in key_fields if field not in record]
-            if missing:
-                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
-            key_tuple = tuple((field, record[field]) for field in key_fields)
-            address = _LEAF_INDEX_SHOCK_TYPE.get(key_tuple)
-            if address is None:
-                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
-        updates[address] = record[measure_field]
-    if updates:
-        ctx.set_inputs(coerce_inputs_dict(updates))
+    _apply_series_records(
+        ctx,
+        _coerce_records(records, 'OBS_VALUE', allow_scalar=True),
+        key_fields=(),
+        allowed_fields={'PARAMETER', 'OBS_VALUE'},
+        measure_field='OBS_VALUE',
+        leaf_index=_LEAF_INDEX_SHOCK_TYPE,
+        strict=strict,
+        fn_name='set_shock_type',
+        allow_address=False,
+        requires_address=False,
+    )
 
 _LEAF_INDEX_SHOCK_MAGNITUDES = {
     (('SHOCK_PARAMETER', 'Growth'),): 'Inputs!B26',
@@ -487,35 +422,18 @@ def set_shock_magnitudes(
             {'SHOCK_PARAMETER': 'Interest', 'OBS_VALUE': 2.0},
         ])
     """
-    key_fields = ('SHOCK_PARAMETER',)
-    allow_address = False
-    requires_address = False
-    measure_field = 'OBS_VALUE'
-    allowed_fields = {'PARAMETER', 'UNIT_MEASURE', 'OBS_VALUE', 'SHOCK_PARAMETER'}
-    updates: dict[str, object] = {}
-    for index, record in enumerate(records):
-        if strict:
-            unknown = set(record) - allowed_fields
-            if unknown:
-                raise ValueError(f"record[{index}]: unknown fields {sorted(unknown)!r}")
-        if measure_field not in record:
-            raise ValueError(f"record[{index}]: missing required field {measure_field!r}")
-        address = None
-        if allow_address or requires_address:
-            address = record.get("address") or record.get("cell_address")
-        if requires_address and address is None:
-            raise ValueError(f"record[{index}]: address required for set_shock_magnitudes (duplicate keys in binding)")
-        if address is None:
-            missing = [field for field in key_fields if field not in record]
-            if missing:
-                raise ValueError(f"record[{index}]: missing key fields {missing!r}")
-            key_tuple = tuple((field, record[field]) for field in key_fields)
-            address = _LEAF_INDEX_SHOCK_MAGNITUDES.get(key_tuple)
-            if address is None:
-                raise ValueError(f"record[{index}]: no leaf matches key {dict(key_tuple)!r}")
-        updates[address] = record[measure_field]
-    if updates:
-        ctx.set_inputs(coerce_inputs_dict(updates))
+    _apply_series_records(
+        ctx,
+        records,
+        key_fields=('SHOCK_PARAMETER',),
+        allowed_fields={'PARAMETER', 'UNIT_MEASURE', 'SHOCK_PARAMETER', 'OBS_VALUE'},
+        measure_field='OBS_VALUE',
+        leaf_index=_LEAF_INDEX_SHOCK_MAGNITUDES,
+        strict=strict,
+        fn_name='set_shock_magnitudes',
+        allow_address=False,
+        requires_address=False,
+    )
 
 # --- Series binding output compute (Records API) ---
 

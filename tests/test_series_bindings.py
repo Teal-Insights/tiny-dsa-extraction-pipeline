@@ -100,7 +100,11 @@ def test_output_series_resolve_to_expected_cells():
 
 
 def test_generated_records_api_computes_and_sets_values():
-    from dist.api import compute_output_baseline, make_context, set_growth_baseline
+    from dist.tiny_dsa.api import (
+        compute_output_baseline,
+        make_context,
+        set_growth_baseline,
+    )
 
     ctx = make_context()
     baseline = compute_output_baseline(ctx=ctx)
