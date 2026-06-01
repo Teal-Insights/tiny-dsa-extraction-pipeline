@@ -29,6 +29,8 @@ jobs:
           sudo apt-get install -y -qq git-lfs
 
       - name: Run export pipeline
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: uv run python -m src.extraction_pipeline
 
       - name: Checkout target repository
