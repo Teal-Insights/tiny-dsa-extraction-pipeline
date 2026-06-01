@@ -885,6 +885,10 @@ name = "tiny-dsa"
 version = "0.1.0"
 description = "A Python implementation of the Tiny-DSA Excel workbook, a stylized debt-sustainability tool for computing debt-to-GDP ratio over a five-year horizon with one configurable shock."
 requires-python = ">=3.13"
+dependencies = [
+    "fastpyxl",
+    "numpy"
+]
 
 [tool.setuptools]
 packages = ["tiny_dsa"]
@@ -1467,7 +1471,7 @@ title: "{functional_overview_rewrite.title}"
 functional_overview_output.write_text(functional_overview_qmd, encoding="utf-8")
 ```
 
-    5875
+    5443
 
 Next, run the same workflow for `III. Illustrative Example`, with
 context focused on the executable scenario from this pipeline.
@@ -1530,7 +1534,7 @@ title: "{illustrative_example_rewrite.title}"
 illustrative_example_output.write_text(illustrative_example_qmd, encoding="utf-8")
 ```
 
-    5057
+    7656
 
 To keep documentation deployment reproducible, we also generate a GitHub
 Actions workflow in `dist/.github/workflows/` for the destination
