@@ -167,6 +167,12 @@ requires-python = ">=3.13"
 
 [tool.setuptools]
 packages = ["tiny_dsa"]
+
+[dependency-groups]
+dev = [
+    "quarto>=0.1.0",
+    "great-docs>=0.12.0",
+]
 """.lstrip()
 
 (dist_root / ".gitignore").write_text(gitignore_content, encoding="utf-8")

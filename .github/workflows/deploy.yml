@@ -1,0 +1,64 @@
+name: Deploy generated package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  generate-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install Git LFS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git-lfs
+
+      - name: Run export pipeline
+        run: uv run python -m src.extraction_pipeline
+
+      - name: Checkout target repository
+        uses: actions/checkout@v6
+        with:
+          repository: Teal-Insights/py-tiny-dsa
+          token: ${{ secrets.DEPLOY_TOKEN }}
+          path: py-tiny-dsa
+
+      - name: Sync dist to target repository
+        run: rsync -a --delete --exclude ".git/" dist/ py-tiny-dsa/
+
+      - name: Commit and push changes
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        working-directory: py-tiny-dsa
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet --exit-code && git diff --cached --quiet --exit-code; then
+            echo "No changes to deploy."
+            exit 0
+          fi
+
+          git add -A
+          if git diff --cached --quiet --exit-code; then
+            echo "No staged changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Deploy tiny-dsa artifacts from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git push origin HEAD:main

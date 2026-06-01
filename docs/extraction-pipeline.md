@@ -888,6 +888,12 @@ requires-python = ">=3.13"
 
 [tool.setuptools]
 packages = ["tiny_dsa"]
+
+[dependency-groups]
+dev = [
+    "quarto>=0.1.0",
+    "great-docs>=0.12.0",
+]
 """.lstrip()
 
 with open(dist_root / ".gitignore", "w", encoding="utf-8") as f:
@@ -1055,23 +1061,14 @@ import subprocess
 dist_root = (Path("..").resolve() / "dist").resolve()
 great_docs_yml = dist_root / "great-docs.yml"
 
-env = os.environ.copy()
-# Helps on Windows consoles
-env["PYTHONIOENCODING"] = "utf-8"
-
 def run_cmd(
     args: list[str],
     *,
     cwd: Path | None = None,
-    extra_env: dict[str, str] | None = None,
 ) -> None:
-    command_env = dict(env)
-    if extra_env is not None:
-        command_env.update(extra_env)
     subprocess.run(
         args,
         check=True,
-        env=command_env,
         cwd=str(cwd) if cwd is not None else None,
     )
 
@@ -1164,7 +1161,7 @@ user_guide_root = dist_root / "user_guide"
 rewrite_cache_path = Path("../.cache/guide-rewrites.json")
 
 SECTION_REWRITE_MODEL = "deepseek-v4-pro"
-SECTION_REWRITE_PROMPT_VERSION = 1
+SECTION_REWRITE_PROMPT_VERSION = 2
 
 
 class SectionRewriteResponse(BaseModel):
@@ -1181,7 +1178,8 @@ class SectionRewriteResponse(BaseModel):
     rewritten_markdown: str = Field(
         description=(
             "Final Markdown body for the section without top-level heading. "
-            "Include Python code examples where useful."
+            "Include Python code examples where useful, and use Quarto runnable "
+            "fences (` ```{python} `) for executable snippets."
         )
     )
     api_symbols_used: list[str] = Field(
@@ -1269,6 +1267,7 @@ Hard constraints:
 - Do not invent API symbols.
 - Do not mention internal pipeline implementation details unless explicitly present in provided context.
 - Do not include claims that conflict with provided API signatures.
+- For runnable code examples, use Quarto executable fences exactly as ` ```{python} ` and not ` ```python `.
 - Return valid JSON matching the response schema exactly.
 
 Section name: {section_name}
@@ -1468,7 +1467,7 @@ title: "{functional_overview_rewrite.title}"
 functional_overview_output.write_text(functional_overview_qmd, encoding="utf-8")
 ```
 
-    5343
+    3938
 
 Next, run the same workflow for `III. Illustrative Example`, with
 context focused on the executable scenario from this pipeline.
@@ -1531,28 +1530,67 @@ title: "{illustrative_example_rewrite.title}"
 illustrative_example_output.write_text(illustrative_example_qmd, encoding="utf-8")
 ```
 
-    5699
+    4572
 
-Once that’s done, we can build docs in two phases: first run
-`great-docs build` with freeze-only mode to avoid Quarto invoking system
-Python for post-render; then run the generated `post-render.py` directly
-under `uv` so enhancement transforms still apply.
+To keep documentation deployment reproducible, we also generate a GitHub
+Actions workflow in `dist/.github/workflows/` for the destination
+`py-tiny-dsa` repository. This workflow builds Great Docs on every push
+to `main` and deploys the site to GitHub Pages.
 
 ``` python
-# Build docs with freeze-only mode (avoids system Python mismatch in Quarto)
-run_cmd([
-    "uv", "run",
-    "--project", str(dist_root),
-    "--with", "great-docs",
-    "great-docs", "build",
-    "--project-path", str(dist_root),
-], extra_env={"GD_FREEZE_ONLY": "1"})
+workflow_dir = dist_root / ".github" / "workflows"
+workflow_dir.mkdir(parents=True, exist_ok=True)
+docs_workflow_path = workflow_dir / "deploy-docs.yml"
 
-# Apply post-render enhancements with project-managed Python
-run_cmd([
-    "uv", "run",
-    "--project", str(dist_root),
-    "--with", "great-docs",
-    "python", "scripts/post-render.py",
-], cwd=dist_root / "great-docs", extra_env={"PYTHONUTF8": "1"})
+docs_workflow = """name: Build and deploy docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install project dependencies
+        run: uv sync --group dev
+
+      - name: Build documentation site
+        run: uv run --with great-docs great-docs build --project-path .
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: great-docs/_site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+"""
+
+docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
 ```
+
+    935

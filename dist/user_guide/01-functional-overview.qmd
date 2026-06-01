@@ -1,109 +1,94 @@
 ---
-title: "Functional overview"
+title: "Functional Overview"
 ---
 
-Tiny-DSA’s Python API maintains the same logical separation as the original workbook but exposes it through typed, records-based interfaces. Instead of three worksheets (*Inputs*, *Engine*, *Outputs*), you work with a single evaluation context (`ctx`), a family of `set_*` functions that modify scenario inputs, and `compute_*` functions that return the output time series as structured records.
+The Tiny-DSA Python library provides a clean separation between configuration and computation, mirroring the Excel workbook's Inputs and Outputs sheets. You configure a scenario by calling **setter functions** that write values to an in-memory evaluation context (`EvalContext`). Once all inputs are set, you retrieve results through **compute functions** that return records-shaped output series.
 
-Every workbook named range maps to one of the following API symbols:
+### Selecting a country
 
-- **Scalar inputs** – `set_country_name`, `set_shock_year`, `set_shock_type`  
-- **Baseline trajectories** – `set_growth_baseline`, `set_interest_baseline`, `set_primary_balance_baseline`  
-- **Shock magnitudes** – `set_shock_magnitudes`  
-- **Output surfaces** – `compute_output_baseline`, `compute_output_shocked`, `compute_output_delta`
+The country selection determines the initial debt-to-GDP ratio that anchors the projection. Use `set_country_name` to choose from the available profiles: `Borvelia`, `Litellia`, or `Aurelium`. The library automatically resolves the country's initial debt via an internal lookup table, so no separate function call is needed.
 
-All input functions enforce record structure and optional metadata fields; passing `strict=True` (the default) rejects unexpected fields, mirroring the Excel data validation rules.
+```{python}
+import tiny_dsa.api as dsa
 
-### A. API design principles
-
-- **Inputs are mutable** – call `set_*` functions on an `EvalContext`; the context keeps the latest values for all named ranges.
-- **Outputs are computed on demand** – `compute_*` functions traverse the dependency graph and return the result for the *Outputs* ranges only; the internal *Engine* calculation surface is not exposed.
-- **Country profiles are constant** – the three pre‑loaded profiles (Borvelia, Litellia, Aurelium) are built‑in and cannot be altered through the API, preserving the workbook’s read‑only lookup table.
-- **Record keys carry metadata** – each record may include optional dimensions such as `INDICATOR`, `UNIT_MEASURE`, `SCENARIO`, or `PARAMETER`, which downstream consumers can use for validation or filtering.
-
-### B. Selecting a country
-
-Use `set_country_name` to pick one of the three built‑in profiles. The initial debt‑to‑GDP ratio is automatically derived from the constant profile table,”
-
-exactly as in the Excel `INDEX/MATCH` lookup.
-
-```python
-from tiny_dsa.api import make_context, set_country_name
-
-ctx = make_context()
-set_country_name(ctx, [{'OBS_VALUE': 'Litellia'}])
+ctx = dsa.make_context()
+dsa.set_country_name(ctx, [{"OBS_VALUE": "Litellia"}])
 ```
 
-The context now associates all other inputs with a country named “Litellia” and an initial debt of 80.0%. Any other country name would be rejected because the mapping is fixed.
+### Setting the baseline parameters
 
-### C. Setting the baseline parameters
+The baseline scenario is defined by three time-series inputs, each covering projection years 1 through 5. Use the corresponding setter functions with records keyed by `TIME_PERIOD`:
 
-Baseline trajectories are set with three `set_*` functions, each expecting a list of records keyed by `TIME_PERIOD` (1 to 5). The default trajectories match the Excel defaults exactly.
+* **Real GDP growth**: `set_growth_baseline` – rates in percent per annum.
+* **Real interest rate**: `set_interest_baseline` – effective real rate on debt, in percent per annum.
+* **Primary balance**: `set_primary_balance_baseline` – surplus/deficit as percent of GDP.
 
-```python
-from tiny_dsa.api import (
-    set_growth_baseline,
-    set_interest_baseline,
-    set_primary_balance_baseline,
-)
+```{python}
+import tiny_dsa.api as dsa
 
-# Real GDP growth rate (3.5% flat)
-set_growth_baseline(ctx, [
-    {'TIME_PERIOD': t, 'OBS_VALUE': 3.5} for t in range(1, 6)
+ctx = dsa.make_context()
+dsa.set_country_name(ctx, [{"OBS_VALUE": "Litellia"}])
+
+dsa.set_growth_baseline(ctx, [
+    {"TIME_PERIOD": 1, "OBS_VALUE": 3.5},
+    {"TIME_PERIOD": 2, "OBS_VALUE": 3.5},
+    {"TIME_PERIOD": 3, "OBS_VALUE": 3.5},
+    {"TIME_PERIOD": 4, "OBS_VALUE": 3.5},
+    {"TIME_PERIOD": 5, "OBS_VALUE": 3.5},
 ])
-
-# Real interest rate (4.0% flat)
-set_interest_baseline(ctx, [
-    {'TIME_PERIOD': t, 'OBS_VALUE': 4.0} for t in range(1, 6)
+dsa.set_interest_baseline(ctx, [
+    {"TIME_PERIOD": 1, "OBS_VALUE": 4.0},
+    {"TIME_PERIOD": 2, "OBS_VALUE": 4.0},
+    {"TIME_PERIOD": 3, "OBS_VALUE": 4.0},
+    {"TIME_PERIOD": 4, "OBS_VALUE": 4.0},
+    {"TIME_PERIOD": 5, "OBS_VALUE": 4.0},
 ])
-
-# Primary balance (-1.0 to 1.0 in steps of 0.5)
-set_primary_balance_baseline(ctx, [
-    {'TIME_PERIOD': 1, 'OBS_VALUE': -1.0},
-    {'TIME_PERIOD': 2, 'OBS_VALUE': -0.5},
-    {'TIME_PERIOD': 3, 'OBS_VALUE':  0.0},
-    {'TIME_PERIOD': 4, 'OBS_VALUE':  0.5},
-    {'TIME_PERIOD': 5, 'OBS_VALUE':  1.0},
+dsa.set_primary_balance_baseline(ctx, [
+    {"TIME_PERIOD": 1, "OBS_VALUE": -1.0},
+    {"TIME_PERIOD": 2, "OBS_VALUE": -0.5},
+    {"TIME_PERIOD": 3, "OBS_VALUE": 0.0},
+    {"TIME_PERIOD": 4, "OBS_VALUE": 0.5},
+    {"TIME_PERIOD": 5, "OBS_VALUE": 1.0},
 ])
 ```
 
-Any time‑varying path can be supplied by changing the `OBS_VALUE` entries. The functions enforce that each record contains a valid `TIME_PERIOD` and a numeric `OBS_VALUE`.
+### Configuring the shock
 
-### D. Configuring the shock
+A shock in the projection is specified by three inputs, all set through dedicated scalar or row-series functions:
 
-Three separate functions set the shock definition. `set_shock_year` and `set_shock_type` are scalar; `set_shock_magnitudes` is a row series identified by `SHOCK_PARAMETER`.
+* `set_shock_year` – the first year the shock applies (integer 1–5).
+* `set_shock_type` – the parameter affected: `1` (growth), `2` (interest rate), or `3` (primary balance).
+* `set_shock_magnitudes` – shock magnitudes for each parameter, identified by `SHOCK_PARAMETER`.
 
-```python
-from tiny_dsa.api import set_shock_year, set_shock_type, set_shock_magnitudes
+```{python}
+dsa.set_shock_year(ctx, [{"OBS_VALUE": 2}])
+dsa.set_shock_type(ctx, [{"OBS_VALUE": 1}])  # growth shock
 
-set_shock_year(ctx, [{'OBS_VALUE': 2}])          # shock starts in year 2
-set_shock_type(ctx, [{'OBS_VALUE': 1}])          # 1 → growth shock
-
-set_shock_magnitudes(ctx, [
-    {'SHOCK_PARAMETER': 'Growth',          'OBS_VALUE': -2.0},
-    {'SHOCK_PARAMETER': 'Interest',        'OBS_VALUE':  2.0},
-    {'SHOCK_PARAMETER': 'Primary balance', 'OBS_VALUE': -1.0},
+dsa.set_shock_magnitudes(ctx, [
+    {"SHOCK_PARAMETER": "Growth", "OBS_VALUE": -2.0},
+    {"SHOCK_PARAMETER": "Interest", "OBS_VALUE": 2.0},
+    {"SHOCK_PARAMETER": "Primary balance", "OBS_VALUE": -1.0},
 ])
 ```
 
-Only the magnitude matching the selected shock type is activated during computation; the other two records are present for completeness and inspection.
+### Reading outputs
 
-### E. Reading the outputs
+Outputs are obtained by calling the compute functions, which return lists of records for the 5‑year horizon:
 
-The three output time series are returned by dedicated `compute_*` functions. Each call yields a list of records, one per projection year, with the same `TIME_PERIOD`/`OBS_VALUE` structure.
+* `compute_output_baseline` – baseline debt-to-GDP path.
+* `compute_output_shocked` – shocked debt-to-GDP path.
+* `compute_output_delta` – difference (shocked minus baseline) in percentage points.
 
-```python
-from tiny_dsa.api import (
-    compute_output_baseline,
-    compute_output_shocked,
-    compute_output_delta,
-)
+Each record contains `TIME_PERIOD` and `OBS_VALUE` fields; the units are consistently percent of GDP for the levels and percentage points for the delta.
 
-baseline = compute_output_baseline(ctx=ctx)
-shocked  = compute_output_shocked(ctx)
-delta    = compute_output_delta(ctx)
+```{python}
+baseline = dsa.compute_output_baseline(ctx=ctx)
+shocked = dsa.compute_output_shocked(ctx=ctx)
+delta = dsa.compute_output_delta(ctx=ctx)
 
-# baseline[0] ≈ {'TIME_PERIOD': 1, 'OBS_VALUE': 80.0, 'SCENARIO': 'baseline', ...}
-# delta[2]   ≈ {'TIME_PERIOD': 3, 'OBS_VALUE': -1.23, 'SCENARIO': 'shocked_minus_baseline', ...}
+print("Baseline  :", baseline)
+print("Shocked   :", shocked)
+print("Delta     :", delta)
 ```
 
-These functions correspond to the *Outputs* sheet ranges `output_baseline`, `output_shocked`, and `output_delta`. The internal *Engine* sheet is never directly accessed; downstream consumers should always read through these stable compute functions.
+The compute functions are the stable, versioned API for downstream consumers. They correspond to the output named ranges in the Excel workbook and should be used for all analysis and reporting.

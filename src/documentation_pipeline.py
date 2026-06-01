@@ -1,4 +1,4 @@
-"""Generate GreatDocs site content and build the exported library documentation."""
+"""Generate Great Docs content and CI workflow for exported docs."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ api_module_path = dist_root / "tiny_dsa" / "api.py"
 user_guide_root = dist_root / "user_guide"
 rewrite_cache_path = repo_root / ".cache" / "guide-rewrites.json"
 great_docs_yml = dist_root / "great-docs.yml"
+docs_workflow_path = dist_root / ".github" / "workflows" / "deploy-docs.yml"
 
 SECTION_REWRITE_MODEL = "deepseek-v4-pro"
 SECTION_REWRITE_PROMPT_VERSION = 2
@@ -293,7 +294,6 @@ def run_cmd(
     extra_env: dict[str, str] | None = None,
 ) -> None:
     command_env = os.environ.copy()
-    command_env["PYTHONIOENCODING"] = "utf-8"
     if extra_env is not None:
         command_env.update(extra_env)
     subprocess.run(
@@ -407,36 +407,56 @@ title: "{illustrative_example_rewrite.title}"
     )
 
 
-def build_great_docs_site() -> None:
-    run_cmd(
-        [
-            "uv",
-            "run",
-            "--project",
-            str(dist_root),
-            "--with",
-            "great-docs",
-            "great-docs",
-            "build",
-            "--project-path",
-            str(dist_root),
-        ],
-        extra_env={"GD_FREEZE_ONLY": "1"},
-    )
-    run_cmd(
-        [
-            "uv",
-            "run",
-            "--project",
-            str(dist_root),
-            "--with",
-            "great-docs",
-            "python",
-            "scripts/post-render.py",
-        ],
-        cwd=dist_root / "great-docs",
-        extra_env={"PYTHONUTF8": "1"},
-    )
+def write_docs_deploy_workflow() -> None:
+    docs_workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    docs_workflow = """name: Build and deploy docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install project dependencies
+        run: uv sync --group dev
+
+      - name: Build documentation site
+        run: uv run --with great-docs great-docs build --project-path .
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: great-docs/_site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+"""
+    docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
 
 
 def run_documentation_pipeline() -> None:
@@ -468,5 +488,4 @@ def run_documentation_pipeline() -> None:
         else None
     )
     write_rewritten_guide_pages(section_client)
-
-    build_great_docs_site()
+    write_docs_deploy_workflow()

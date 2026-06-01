@@ -72,7 +72,7 @@ dynamic: true
 # This is set at the project level so it applies to all pages, including
 # auto-generated API reference pages. Can be overridden in individual .qmd
 # file frontmatter if needed for special cases.
-jupyter: python3
+jupyter: 'C:/Users/chris/Software/tiny-dsa-extraction-pipeline/.venv/Scripts/python.exe'
 
 # CLI Documentation
 # -----------------
