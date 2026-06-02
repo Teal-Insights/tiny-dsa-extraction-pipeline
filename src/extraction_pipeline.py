@@ -131,14 +131,7 @@ GENERATED_MODULE_NAMES = frozenset(
 )
 
 for filepath, code in modules.items():
-    module_path = Path(filepath)
-    if module_path.parts[:1] == ("tiny_dsa",):
-        module_path = Path(*module_path.parts[1:])
-    if module_path.parts[:-1]:
-        raise ValueError(
-            f"Expected flat module paths under dist/tiny_dsa, got: {filepath!r}"
-        )
-    output_path = package_root / module_path
+    output_path = package_root / filepath
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(code, encoding="utf-8")
 
@@ -166,7 +159,7 @@ description = "A Python implementation of the Tiny-DSA Excel workbook, a stylize
 requires-python = ">=3.13"
 dependencies = [
     "fastpyxl",
-    "numpy"
+    "numpy",
 ]
 
 [tool.setuptools]
@@ -176,6 +169,9 @@ packages = ["tiny_dsa"]
 dev = [
     "quarto>=0.1.0",
     "great-docs>=0.12.0",
+    "pandas",
+    "polars",
+    "matplotlib"
 ]
 """.lstrip()
 

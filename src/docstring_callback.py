@@ -219,10 +219,8 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
     )
 
 
-def available_docstring_callback() -> str | None:
-    if os.environ.get("DEEPSEEK_API_KEY") or DOCSTRING_CACHE_PATH.exists():
-        return CALLBACK_NAME
-    return None
+def available_docstring_callback() -> str:
+    return CALLBACK_NAME
 
 
 register_series_docstring_callback(

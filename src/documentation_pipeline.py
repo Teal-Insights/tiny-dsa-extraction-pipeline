@@ -25,11 +25,21 @@ docs_workflow_path = dist_root / ".github" / "workflows" / "deploy-docs.yml"
 
 SECTION_REWRITE_MODEL = "deepseek-v4-pro"
 SECTION_REWRITE_PROMPT_VERSION = 2
+NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
 
 GREAT_DOCS_SETTINGS = [
     ("display_name", "Tiny DSA"),
     ("homepage", "user_guide"),
 ]
+
+INTRODUCTION_FOCUS_INSTRUCTIONS = (
+    "Rewrite the source introduction as the landing page for the generated "
+    "Python package documentation. Recommend installing the package with uv "
+    "from https://github.com/Teal-Insights/py-tiny-dsa. Clarify that Tiny DSA "
+    "is a Python reimplementation of the illustrative Excel workbook, produced "
+    "using a combination of programmatic extraction, machine translation, and AI. "
+    "Keep the provenance concise and do not add pipeline details beyond that summary."
+)
 
 FUNCTIONAL_OVERVIEW_API_SYMBOLS = [
     "make_context",
@@ -151,6 +161,7 @@ Hard constraints:
 - Do not include claims that conflict with provided API signatures.
 - For runnable code examples, use Quarto executable fences exactly as ` ```{{python}} ` and not ` ```python `.
 - Return valid JSON matching the response schema exactly.
+- Runnable code may only use Python standard library and pandas, polars, and matplotlib.
 
 Section name: {section_name}
 
@@ -304,15 +315,24 @@ def run_cmd(
     )
 
 
-def write_introduction_page(guide_text: str) -> None:
+def write_introduction_page(client: OpenAI | None, guide_text: str) -> None:
     introduction_source = extract_markdown_section(guide_text, "I. Introduction[^1]")
+    introduction_rewrite = rewrite_guide_section(
+        client=client,
+        section_id="introduction",
+        section_name="Introduction",
+        source_section_markdown=introduction_source,
+        python_focus_instructions=INTRODUCTION_FOCUS_INSTRUCTIONS,
+        pipeline_context_blocks={},
+        api_signatures=NO_API_SIGNATURES,
+    )
     user_guide_root.mkdir(parents=True, exist_ok=True)
     landing_page_output = user_guide_root / "index.qmd"
     landing_page_qmd = f"""---
-title: "Introduction"
+title: "{introduction_rewrite.title}"
 ---
 
-{introduction_source}
+{introduction_rewrite.rewritten_markdown}
 """
     landing_page_output.write_text(landing_page_qmd, encoding="utf-8")
 
@@ -481,14 +501,13 @@ def run_documentation_pipeline() -> None:
 
     configure_great_docs_yml()
 
-    guide_text = guide_path.read_text(encoding="utf-8")
-    write_introduction_page(guide_text)
-
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     section_client = (
         OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
         if api_key
         else None
     )
+    guide_text = guide_path.read_text(encoding="utf-8")
+    write_introduction_page(section_client, guide_text)
     write_rewritten_guide_pages(section_client)
     write_docs_deploy_workflow()
