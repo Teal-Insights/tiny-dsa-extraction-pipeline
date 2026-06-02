@@ -869,49 +869,41 @@ for filepath, code in modules.items():
 
 We also write a `dist/.gitignore` file and a `dist/pyproject.toml` file
 so documentation tooling can auto-discover the generated library as
-project `tiny-dsa`.
+project `tiny-dsa`. The dev dependency list is defined once in
+`src/qmd_python_validation.py` as `DOCUMENTATION_BASELINE_DEV_DEPS`;
+`src/extraction_pipeline.py` uses `render_dist_pyproject_toml()` to
+write the initial `pyproject.toml`, and the documentation stage may
+append packages discovered while validating runnable user-guide cells.
 
 ``` python
+import sys
+
+repo_root = Path("..").resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from src.qmd_python_validation import (
+    DOCUMENTATION_BASELINE_DEV_DEPS,
+    render_dist_pyproject_toml,
+)
+
 gitignore_content = """
 *.egg-info/
 *.pyc
 __pycache__/
 .venv/
+_validate_user_guide_cells.py
 """
-
-pyproject_content = """
-[build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "tiny-dsa"
-version = "0.1.0"
-description = "A Python implementation of the Tiny-DSA Excel workbook, a stylized debt-sustainability tool for computing debt-to-GDP ratio over a five-year horizon with one configurable shock."
-requires-python = ">=3.13"
-dependencies = [
-    "fastpyxl",
-    "numpy"
-]
-
-[tool.setuptools]
-packages = ["tiny_dsa"]
-
-[dependency-groups]
-dev = [
-    "quarto>=0.1.0",
-    "great-docs>=0.12.0",
-    "pandas",
-    "polars",
-    "matplotlib"
-]
-""".lstrip()
 
 with open(dist_root / ".gitignore", "w", encoding="utf-8") as f:
     f.write(gitignore_content)
 
 with open(dist_root / "pyproject.toml", "w", encoding="utf-8") as f:
-    f.write(pyproject_content)
+    f.write(
+        render_dist_pyproject_toml(
+            dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
+        )
+    )
 ```
 
 ## Stage 3: Test
@@ -1057,6 +1049,68 @@ Figure 1: Tiny-DSA scenario outputs
 
 </div>
 
+## Canonical API usage
+
+User-guide runnable cells should follow this interaction model: import
+from `tiny_dsa.api`, create a context with `make_context()`, configure
+the scenario with `set_*` functions that take records, then read results
+with `compute_*`.
+
+Each `compute_output_*` call returns a list of records with fields such
+as `TIME_PERIOD`, `OBS_VALUE`, `SCENARIO`, and `UNIT_MEASURE`. For
+tables and plots, index by `TIME_PERIOD` and take the `OBS_VALUE` column
+rather than renaming DataFrame columns.
+
+``` python
+import pandas as pd
+
+from tiny_dsa.api import (
+    make_context,
+    set_country_name,
+    set_growth_baseline,
+    set_interest_baseline,
+    set_primary_balance_baseline,
+    set_shock_year,
+    set_shock_type,
+    set_shock_magnitudes,
+    compute_output_baseline,
+    compute_output_shocked,
+    compute_output_delta,
+)
+
+
+def time_series(values: list[float]) -> list[dict[str, float | int]]:
+    return [{"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)]
+
+
+def debt_to_gdp_series(records: list[dict[str, object]]) -> pd.Series:
+    series = pd.DataFrame(records).set_index("TIME_PERIOD")["OBS_VALUE"]
+    series.name = "Debt/GDP (%)"
+    return series
+
+
+ctx = make_context()
+set_country_name(ctx, [{"OBS_VALUE": "Litellia"}])
+set_growth_baseline(ctx, time_series([2.5, 2.4, 2.3, 2.2, 2.1]))
+set_interest_baseline(ctx, time_series([5.2, 5.1, 5.0, 4.9, 4.8]))
+set_primary_balance_baseline(ctx, time_series([-1.5, -1.0, -0.5, 0.0, 0.5]))
+set_shock_year(ctx, [{"OBS_VALUE": 2}])
+set_shock_type(ctx, [{"OBS_VALUE": 1}])
+set_shock_magnitudes(
+    ctx,
+    [
+        {"SHOCK_PARAMETER": "Growth", "OBS_VALUE": -3.0},
+        {"SHOCK_PARAMETER": "Interest", "OBS_VALUE": 2.5},
+        {"SHOCK_PARAMETER": "Primary balance", "OBS_VALUE": -1.5},
+    ],
+)
+
+baseline_debt = debt_to_gdp_series(compute_output_baseline(ctx=ctx))
+shocked_debt = debt_to_gdp_series(compute_output_shocked(ctx=ctx))
+delta_pp = pd.DataFrame(compute_output_delta(ctx=ctx)).set_index("TIME_PERIOD")["OBS_VALUE"]
+delta_pp.name = "Delta (pp GDP)"
+```
+
 ## Stage 4: Document
 
 To generate documentation for the generated library, we will use
@@ -1152,7 +1206,8 @@ with open(great_docs_yml, "w", encoding="utf-8") as f:
 
 Then we can use LLM calls to rewrite guide sections into Python-first
 user guide pages. We keep a cache, call the LLM only for uncached
-sections, and pass only the context each section needs.
+sections, and pass a focused reference example from the
+`Canonical API usage` section above (not the full Stage 3 test chapter).
 
 ``` python
 import ast
@@ -1172,8 +1227,25 @@ user_guide_root = dist_root / "user_guide"
 rewrite_cache_path = Path("../.cache/guide-rewrites.json")
 
 SECTION_REWRITE_MODEL = "deepseek-v4-pro"
-SECTION_REWRITE_PROMPT_VERSION = 2
+SECTION_REWRITE_PROMPT_VERSION = 3
+CANONICAL_API_USAGE_HEADING = "Canonical API usage"
 NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
+
+FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS = (
+    "Preserve section structure and conceptual flow, but replace workbook "
+    "navigation and manual cell editing with tiny_dsa.api usage. "
+    "Mirror the canonical_api_usage reference example for import style, "
+    "ctx = make_context(), records-shaped setters, and compute_output_* calls. "
+    "When tabulating outputs, index by TIME_PERIOD and use the OBS_VALUE field."
+)
+
+ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS = (
+    "Keep the scenario faithful to the original narrative. "
+    "Express each step with tiny_dsa.api using the same interaction model as "
+    "canonical_api_usage, including debt_to_gdp_series-style display of "
+    "compute_output_* results. Split the workflow into several short runnable "
+    "cells that reuse ctx = make_context() and records-shaped setters."
+)
 
 INTRODUCTION_FOCUS_INSTRUCTIONS = (
     "Rewrite the source introduction as the landing page for the generated "
@@ -1247,6 +1319,16 @@ def extract_qmd_section(qmd_text: str, heading: str) -> str:
     return match.group(1).strip()
 
 
+def load_canonical_api_example(pipeline_doc_text: str) -> str:
+    return extract_qmd_section(pipeline_doc_text, CANONICAL_API_USAGE_HEADING)
+
+
+def canonical_api_context(pipeline_doc_text: str) -> dict[str, str]:
+    return {
+        "canonical_api_usage": load_canonical_api_example(pipeline_doc_text),
+    }
+
+
 def extract_api_signatures(api_path: Path, symbol_names: list[str]) -> str:
     source = api_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -1272,7 +1354,7 @@ def build_section_prompt(
     api_signatures: str,
     response_schema: dict,
 ) -> str:
-    context_text = "\n\n".join(
+    reference_blocks = "\n\n".join(
         [f"[{label}]\n{text}" for label, text in pipeline_context_blocks.items()]
     )
     return f"""
@@ -1282,7 +1364,10 @@ Goals:
 - Stay faithful to the source section's structure and intent.
 - Replace Excel workbook/user-interface instructions with Python API usage.
 - Keep tone clear, concise, and production-ready.
-- Prefer concrete `tiny_dsa.api` examples over abstract statements.
+- Match the import and call style in the reference example for every runnable cell.
+
+Reference example (follow this interaction model):
+{reference_blocks}
 
 Hard constraints:
 - Do not invent API symbols.
@@ -1291,6 +1376,8 @@ Hard constraints:
 - For runnable code examples, use Quarto executable fences exactly as ` ```{python} ` and not ` ```python `.
 - Return valid JSON matching the response schema exactly.
 - Runnable code may only use Python standard library and pandas, polars, and matplotlib.
+- Do not use pandas APIs that require optional extras, including DataFrame.to_markdown() and to_latex().
+- Prefer displaying DataFrames directly or using print(df) for tabular output.
 
 Section name: {section_name}
 
@@ -1299,9 +1386,6 @@ Source section:
 
 Python focus instructions:
 {python_focus_instructions}
-
-Pipeline context:
-{context_text}
 
 tiny_dsa.api signatures:
 {api_signatures}
@@ -1375,7 +1459,10 @@ def rewrite_guide_section(
             {
                 "role": "system",
                 "content": (
-                    "You are a technical documentation writer for Python libraries. "
+                    "You are a technical documentation writer for the tiny_dsa library. "
+                    "Runnable examples use tiny_dsa.api with make_context(), "
+                    "records-shaped setters, and compute_output_* functions, "
+                    "as shown in the reference example. "
                     "Return only valid JSON matching the provided schema."
                 ),
             },
@@ -1435,7 +1522,7 @@ title: "{introduction_rewrite.title}"
 landing_page_output.write_text(landing_page_qmd, encoding="utf-8")
 ```
 
-    3619
+    3530
 
 Here is a concrete rewrite item for the `II. Functional Overview`
 section.
@@ -1448,16 +1535,7 @@ functional_overview_source = extract_markdown_section(
     guide_text,
     "II. Functional Overview",
 )
-functional_overview_context = {
-    "pipeline_stage_2b_export": extract_qmd_section(
-        pipeline_doc_text,
-        "Stage 2B: Export",
-    ),
-    "pipeline_stage_3_test": extract_qmd_section(
-        pipeline_doc_text,
-        "Stage 3: Test",
-    ),
-}
+functional_overview_context = canonical_api_context(pipeline_doc_text)
 functional_overview_api = extract_api_signatures(
     api_module_path,
     [
@@ -1480,12 +1558,7 @@ functional_overview_rewrite = rewrite_guide_section(
     section_id="functional_overview",
     section_name="Functional Overview",
     source_section_markdown=functional_overview_source,
-    python_focus_instructions=(
-        "Preserve section structure and conceptual flow, but replace workbook "
-        "navigation and manual cell editing with direct function calls to "
-        "tiny_dsa.api. Explain records-shaped setters and semantic compute "
-        "functions. Include one concise Python usage snippet."
-    ),
+    python_focus_instructions=FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS,
     pipeline_context_blocks=functional_overview_context,
     api_signatures=functional_overview_api,
 )
@@ -1506,22 +1579,17 @@ title: "{functional_overview_rewrite.title}"
 functional_overview_output.write_text(functional_overview_qmd, encoding="utf-8")
 ```
 
-    4570
+    4537
 
-Next, run the same workflow for `III. Illustrative Example`, with
-context focused on the executable scenario from this pipeline.
+Next, run the same workflow for `III. Illustrative Example`, using the
+same canonical API reference example.
 
 ``` python
 illustrative_example_source = extract_markdown_section(
     guide_text,
     "III. Illustrative Example",
 )
-illustrative_example_context = {
-    "pipeline_stage_3_test": extract_qmd_section(
-        pipeline_doc_text,
-        "Stage 3: Test",
-    ),
-}
+illustrative_example_context = canonical_api_context(pipeline_doc_text)
 illustrative_example_api = extract_api_signatures(
     api_module_path,
     [
@@ -1544,12 +1612,7 @@ illustrative_example_rewrite = rewrite_guide_section(
     section_id="illustrative_example",
     section_name="Illustrative Example",
     source_section_markdown=illustrative_example_source,
-    python_focus_instructions=(
-        "Keep the scenario faithful to the original narrative, but express each "
-        "step using tiny_dsa.api function calls and records-based inputs. "
-        "Include a complete runnable snippet that sets assumptions and computes "
-        "baseline, shocked, and delta outputs."
-    ),
+    python_focus_instructions=ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS,
     pipeline_context_blocks=illustrative_example_context,
     api_signatures=illustrative_example_api,
 )
@@ -1569,12 +1632,66 @@ title: "{illustrative_example_rewrite.title}"
 illustrative_example_output.write_text(illustrative_example_qmd, encoding="utf-8")
 ```
 
-    5503
+    8012
+
+### Validate runnable user-guide cells
+
+LLM-generated Quarto pages can fail at documentation render time when
+runnable ```` ```{python} ```` cells import missing packages or call
+APIs with hidden optional dependencies—for example,
+`DataFrame.to_markdown()` requires `tabulate` even though the cell only
+imports `pandas`.
+
+We do not run `great-docs build` during extraction because it is
+difficult to control which Python interpreter Great Docs uses. Instead,
+`src/qmd_python_validation.py` validates cells before export:
+
+1.  Extract every ```` ```{python} ```` block from
+    `dist/user_guide/*.qmd` and concatenate them in document order
+    (matching Quarto’s shared-kernel semantics), prefixing each block
+    with `# qmd: <filename> cell N`.
+2.  Write the aggregate to a temporary
+    `dist/_validate_user_guide_cells.py` and execute it with
+    `uv run --project dist --with pandas --with polars --with matplotlib python _validate_user_guide_cells.py`.
+3.  On `ModuleNotFoundError` or pandas-style
+    `` `Import <package>` failed `` messages, parse the package name,
+    add `--with <package>`, and retry (up to a fixed attempt limit).
+4.  On `NameError`, optionally call the LLM to rewrite only the failing
+    cell (requires `DEEPSEEK_API_KEY`, limited retries).
+5.  Remove the temporary script and rewrite `dist/pyproject.toml`,
+    merging any newly required packages into `[dependency-groups].dev`
+    alongside `DOCUMENTATION_BASELINE_DEV_DEPS`.
+
+`src/documentation_pipeline.py` runs this step after writing user-guide
+pages and before generating the deploy workflow:
+
+``` python
+import sys
+
+repo_root = Path("..").resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from src.qmd_python_validation import validate_qmd_files
+
+validate_qmd_files(
+    dist_root=dist_root,
+    qmd_paths=sorted(user_guide_root.glob("*.qmd")),
+    client=section_client,
+)
+```
+
+    []
+
+The automated entry point is `uv run src/extraction_pipeline.py`, which
+exports the package and then calls `run_documentation_pipeline()`.
 
 To keep documentation deployment reproducible, we also generate a GitHub
 Actions workflow in `dist/.github/workflows/` for the destination
 `py-tiny-dsa` repository. This workflow builds Great Docs on every push
-to `main` and deploys the site to GitHub Pages.
+to `main` and deploys the site to GitHub Pages. The workflow runs
+`uv sync --group dev`, so any packages recorded in `dist/pyproject.toml`
+during validation are available when Quarto executes the user guide.
 
 ``` python
 workflow_dir = dist_root / ".github" / "workflows"

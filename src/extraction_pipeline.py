@@ -16,6 +16,10 @@ from excel_grapher.series_bindings import (
 )
 
 from src.docstring_callback import available_docstring_callback
+from src.qmd_python_validation import (
+    render_dist_pyproject_toml,
+    DOCUMENTATION_BASELINE_DEV_DEPS,
+)
 
 repo_root = Path(__file__).resolve().parents[1]
 workbook_path = repo_root / "data/tiny-dsa.xlsx"
@@ -145,38 +149,16 @@ gitignore_content = """
 *.pyc
 __pycache__/
 .venv/
+_validate_user_guide_cells.py
 """
 
-pyproject_content = """
-[build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "tiny-dsa"
-version = "0.1.0"
-description = "A Python implementation of the Tiny-DSA Excel workbook, a stylized debt-sustainability tool for computing debt-to-GDP ratio over a five-year horizon with one configurable shock."
-requires-python = ">=3.13"
-dependencies = [
-    "fastpyxl",
-    "numpy",
-]
-
-[tool.setuptools]
-packages = ["tiny_dsa"]
-
-[dependency-groups]
-dev = [
-    "quarto>=0.1.0",
-    "great-docs>=0.12.0",
-    "pandas",
-    "polars",
-    "matplotlib"
-]
-""".lstrip()
-
 (dist_root / ".gitignore").write_text(gitignore_content, encoding="utf-8")
-(dist_root / "pyproject.toml").write_text(pyproject_content, encoding="utf-8")
+(dist_root / "pyproject.toml").write_text(
+    render_dist_pyproject_toml(
+        dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
+    ),
+    encoding="utf-8",
+)
 
 
 def main() -> None:

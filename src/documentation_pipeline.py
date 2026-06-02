@@ -13,6 +13,8 @@ from pathlib import Path
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.qmd_python_validation import validate_qmd_files
+
 repo_root = Path(__file__).resolve().parents[1]
 dist_root = repo_root / "dist"
 guide_path = repo_root / "data" / "tiny-dsa-guide.md"
@@ -24,8 +26,25 @@ great_docs_yml = dist_root / "great-docs.yml"
 docs_workflow_path = dist_root / ".github" / "workflows" / "deploy-docs.yml"
 
 SECTION_REWRITE_MODEL = "deepseek-v4-pro"
-SECTION_REWRITE_PROMPT_VERSION = 2
+SECTION_REWRITE_PROMPT_VERSION = 3
+CANONICAL_API_USAGE_HEADING = "Canonical API usage"
 NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
+
+FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS = (
+    "Preserve section structure and conceptual flow, but replace workbook "
+    "navigation and manual cell editing with tiny_dsa.api usage. "
+    "Mirror the canonical_api_usage reference example for import style, "
+    "ctx = make_context(), records-shaped setters, and compute_output_* calls. "
+    "Tabulate outputs with Polars using debt_to_gdp_frame-style select on OBS_VALUE."
+)
+
+ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS = (
+    "Keep the scenario faithful to the original narrative. "
+    "Express each step with tiny_dsa.api using the same interaction model as "
+    "canonical_api_usage, including debt_to_gdp_frame-style Polars tables for "
+    "compute_output_* results. Split the workflow into several short runnable "
+    "cells that reuse ctx = make_context() and records-shaped setters."
+)
 
 GREAT_DOCS_SETTINGS = [
     ("display_name", "Tiny DSA"),
@@ -118,6 +137,16 @@ def extract_qmd_section(qmd_text: str, heading: str) -> str:
     return match.group(1).strip()
 
 
+def load_canonical_api_example(pipeline_doc_text: str) -> str:
+    return extract_qmd_section(pipeline_doc_text, CANONICAL_API_USAGE_HEADING)
+
+
+def canonical_api_context(pipeline_doc_text: str) -> dict[str, str]:
+    return {
+        "canonical_api_usage": load_canonical_api_example(pipeline_doc_text),
+    }
+
+
 def extract_api_signatures(api_path: Path, symbol_names: list[str]) -> str:
     source = api_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -143,7 +172,7 @@ def build_section_prompt(
     api_signatures: str,
     response_schema: dict,
 ) -> str:
-    context_text = "\n\n".join(
+    reference_blocks = "\n\n".join(
         [f"[{label}]\n{text}" for label, text in pipeline_context_blocks.items()]
     )
     return f"""
@@ -153,7 +182,10 @@ Goals:
 - Stay faithful to the source section's structure and intent.
 - Replace Excel workbook/user-interface instructions with Python API usage.
 - Keep tone clear, concise, and production-ready.
-- Prefer concrete `tiny_dsa.api` examples over abstract statements.
+- Match the import and call style in the reference example for every runnable cell.
+
+Reference example (follow this interaction model):
+{reference_blocks}
 
 Hard constraints:
 - Do not invent API symbols.
@@ -161,7 +193,9 @@ Hard constraints:
 - Do not include claims that conflict with provided API signatures.
 - For runnable code examples, use Quarto executable fences exactly as ` ```{{python}} ` and not ` ```python `.
 - Return valid JSON matching the response schema exactly.
-- Runnable code may only use Python standard library and pandas, polars, and matplotlib.
+- Runnable code may only use Python standard library, polars, and matplotlib.
+- Tabulate compute_output_* results with polars, following the reference example.
+- Use matplotlib when plots are needed.
 
 Section name: {section_name}
 
@@ -170,9 +204,6 @@ Source section:
 
 Python focus instructions:
 {python_focus_instructions}
-
-Pipeline context:
-{context_text}
 
 tiny_dsa.api signatures:
 {api_signatures}
@@ -246,7 +277,10 @@ def rewrite_guide_section(
             {
                 "role": "system",
                 "content": (
-                    "You are a technical documentation writer for Python libraries. "
+                    "You are a technical documentation writer for the tiny_dsa library. "
+                    "Runnable examples use tiny_dsa.api with make_context(), "
+                    "records-shaped setters, and compute_output_* functions, "
+                    "as shown in the reference example. "
                     "Return only valid JSON matching the provided schema."
                 ),
             },
@@ -345,16 +379,7 @@ def write_rewritten_guide_pages(client: OpenAI | None) -> None:
         guide_text,
         "II. Functional Overview",
     )
-    functional_overview_context = {
-        "pipeline_stage_2b_export": extract_qmd_section(
-            pipeline_doc_text,
-            "Stage 2B: Export",
-        ),
-        "pipeline_stage_3_test": extract_qmd_section(
-            pipeline_doc_text,
-            "Stage 3: Test",
-        ),
-    }
+    functional_overview_context = canonical_api_context(pipeline_doc_text)
     functional_overview_api = extract_api_signatures(
         api_module_path,
         FUNCTIONAL_OVERVIEW_API_SYMBOLS,
@@ -364,12 +389,7 @@ def write_rewritten_guide_pages(client: OpenAI | None) -> None:
         section_id="functional_overview",
         section_name="Functional Overview",
         source_section_markdown=functional_overview_source,
-        python_focus_instructions=(
-            "Preserve section structure and conceptual flow, but replace workbook "
-            "navigation and manual cell editing with direct function calls to "
-            "tiny_dsa.api. Explain records-shaped setters and semantic compute "
-            "functions. Include one concise Python usage snippet."
-        ),
+        python_focus_instructions=FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS,
         pipeline_context_blocks=functional_overview_context,
         api_signatures=functional_overview_api,
     )
@@ -378,12 +398,7 @@ def write_rewritten_guide_pages(client: OpenAI | None) -> None:
         guide_text,
         "III. Illustrative Example",
     )
-    illustrative_example_context = {
-        "pipeline_stage_3_test": extract_qmd_section(
-            pipeline_doc_text,
-            "Stage 3: Test",
-        ),
-    }
+    illustrative_example_context = canonical_api_context(pipeline_doc_text)
     illustrative_example_api = extract_api_signatures(
         api_module_path,
         ILLUSTRATIVE_EXAMPLE_API_SYMBOLS,
@@ -393,12 +408,7 @@ def write_rewritten_guide_pages(client: OpenAI | None) -> None:
         section_id="illustrative_example",
         section_name="Illustrative Example",
         source_section_markdown=illustrative_example_source,
-        python_focus_instructions=(
-            "Keep the scenario faithful to the original narrative, but express each "
-            "step using tiny_dsa.api function calls and records-based inputs. "
-            "Include a complete runnable snippet that sets assumptions and computes "
-            "baseline, shocked, and delta outputs."
-        ),
+        python_focus_instructions=ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS,
         pipeline_context_blocks=illustrative_example_context,
         api_signatures=illustrative_example_api,
     )
@@ -510,4 +520,9 @@ def run_documentation_pipeline() -> None:
     guide_text = guide_path.read_text(encoding="utf-8")
     write_introduction_page(section_client, guide_text)
     write_rewritten_guide_pages(section_client)
+    validate_qmd_files(
+        dist_root=dist_root,
+        qmd_paths=sorted(user_guide_root.glob("*.qmd")),
+        client=section_client,
+    )
     write_docs_deploy_workflow()

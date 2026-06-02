@@ -28,6 +28,7 @@ dev = [
     "matplotlib>=3.10.9",
     "great-docs>=0.12.0",
     "pygments>=2.20.0",
+    "pandas>=3.0.3",
 ]
 
 [tool.pytest.ini_options]
