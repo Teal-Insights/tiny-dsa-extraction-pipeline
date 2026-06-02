@@ -222,7 +222,8 @@ constraints = constraints | {
 
 `excel-grapher` handles the deterministic parts of docstring construction: required and optional field sections, expected constant values, source binding metadata, and workbook-cached example records. But we must define a callback to return the prose fields that cannot be derived mechanically.
 
-This rendering cell calls DeepSeek once per generated series API function.
+This rendering cell uses the docstring cache when available and calls DeepSeek
+only for uncached generated series API functions.
 
 ```{python}
 import hashlib
@@ -347,10 +348,6 @@ guide_text = Path("../data/tiny-dsa-guide.md").read_text(encoding="utf-8")
 DOCSTRING_MODEL = "deepseek-v4-pro"
 DOCSTRING_PROMPT_VERSION = 2
 DOCSTRING_CACHE_PATH = Path("../.cache/series-docstrings.json")
-client = OpenAI(
-    api_key=os.environ["DEEPSEEK_API_KEY"],
-    base_url="https://api.deepseek.com",
-)
 
 
 def stable_json(value: object) -> str:
@@ -393,6 +390,12 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
     if cache_key in cache:
         content = cache[cache_key]
     else:
+        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "DEEPSEEK_API_KEY is required to generate uncached docstrings"
+            )
+        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
         response = client.chat.completions.create(
             model=DOCSTRING_MODEL,
             messages=[
@@ -414,6 +417,8 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
             extra_body={"thinking": {"type": "enabled"}},
         )
         content = response.choices[0].message.content
+        if content is None:
+            raise RuntimeError("DeepSeek returned empty docstring content")
         ResponseModel.model_validate_json(content)
         cache[cache_key] = content
         save_docstring_cache(cache)
@@ -586,6 +591,9 @@ packages = ["tiny_dsa"]
 dev = [
     "quarto>=0.1.0",
     "great-docs>=0.12.0",
+    "pandas",
+    "polars",
+    "matplotlib"
 ]
 """.lstrip()
 
@@ -805,7 +813,7 @@ with open(great_docs_yml, "w", encoding="utf-8") as f:
     f.write(content)
 ```
 
-Then we can use LLM calls to rewrite guide sections into Python-first user guide pages. We do one call per section, keep a cache, and pass only the context each section needs.
+Then we can use LLM calls to rewrite guide sections into Python-first user guide pages. We keep a cache, call the LLM only for uncached sections, and pass only the context each section needs.
 
 ```{python}
 import ast
@@ -826,6 +834,16 @@ rewrite_cache_path = Path("../.cache/guide-rewrites.json")
 
 SECTION_REWRITE_MODEL = "deepseek-v4-pro"
 SECTION_REWRITE_PROMPT_VERSION = 2
+NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
+
+INTRODUCTION_FOCUS_INSTRUCTIONS = (
+    "Rewrite the source introduction as the landing page for the generated "
+    "Python package documentation. Recommend installing the package with uv "
+    "from https://github.com/Teal-Insights/py-tiny-dsa. Clarify that Tiny DSA "
+    "is a Python reimplementation of the illustrative Excel workbook, produced "
+    "using a combination of programmatic extraction, machine translation, and AI. "
+    "Keep the provenance concise and do not add pipeline details beyond that summary."
+)
 
 
 class SectionRewriteResponse(BaseModel):
@@ -933,6 +951,7 @@ Hard constraints:
 - Do not include claims that conflict with provided API signatures.
 - For runnable code examples, use Quarto executable fences exactly as ` ```{{python}} ` and not ` ```python `.
 - Return valid JSON matching the response schema exactly.
+- Runnable code may only use Python standard library and pandas, polars, and matplotlib.
 
 Section name: {section_name}
 
@@ -977,7 +996,7 @@ def rewrite_cache_key(
 
 def rewrite_guide_section(
     *,
-    client: OpenAI,
+    client: OpenAI | None,
     section_id: str,
     section_name: str,
     source_section_markdown: str,
@@ -997,6 +1016,11 @@ def rewrite_guide_section(
     )
     if cache_key in cache:
         return SectionRewriteResponse.model_validate_json(cache[cache_key])
+
+    if client is None:
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY is required to generate uncached guide rewrites"
+        )
 
     prompt = build_section_prompt(
         section_name=section_name,
@@ -1032,22 +1056,38 @@ def rewrite_guide_section(
     return parsed
 ```
 
-We will copy the first section of the guide, `I. Introduction`, into the documentation website's landing page, which must be named `index.qmd`.
+We will rewrite the first section of the guide, `I. Introduction`, into the documentation website's landing page, which must be named `index.qmd`. The landing page should tell readers how to install the package and concisely explain its relationship to the illustrative workbook.
 
 ```{python}
+api_key = os.environ.get("DEEPSEEK_API_KEY")
+section_client = (
+    OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    if api_key
+    else None
+)
+
 guide_text = guide_path.read_text(encoding="utf-8")
 introduction_source = extract_markdown_section(
     guide_text,
     "I. Introduction[^1]",
 )
+introduction_rewrite = rewrite_guide_section(
+    client=section_client,
+    section_id="introduction",
+    section_name="Introduction",
+    source_section_markdown=introduction_source,
+    python_focus_instructions=INTRODUCTION_FOCUS_INSTRUCTIONS,
+    pipeline_context_blocks={},
+    api_signatures=NO_API_SIGNATURES,
+)
 
 user_guide_root.mkdir(parents=True, exist_ok=True)
 landing_page_output = user_guide_root / "index.qmd"
 landing_page_qmd = f"""---
-title: "Introduction"
+title: "{introduction_rewrite.title}"
 ---
 
-{introduction_source}
+{introduction_rewrite.rewritten_markdown}
 """
 landing_page_output.write_text(landing_page_qmd, encoding="utf-8")
 
@@ -1090,13 +1130,6 @@ functional_overview_api = extract_api_signatures(
     ],
 )
 
-api_key = os.environ.get("DEEPSEEK_API_KEY")
-if not api_key:
-    raise RuntimeError(
-        "DEEPSEEK_API_KEY is required to generate uncached guide rewrites"
-    )
-
-section_client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 functional_overview_rewrite = rewrite_guide_section(
     client=section_client,
     section_id="functional_overview",

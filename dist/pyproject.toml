@@ -19,4 +19,7 @@ packages = ["tiny_dsa"]
 dev = [
     "quarto>=0.1.0",
     "great-docs>=0.12.0",
+    "pandas",
+    "polars",
+    "matplotlib"
 ]
