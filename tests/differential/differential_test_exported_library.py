@@ -123,8 +123,8 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKBOOK_PATH = PROJECT_ROOT / "data" / "tiny-dsa.xlsx"
-EXPORTED_PACKAGE_DIR = PROJECT_ROOT / "dist"
-EXPORTED_PACKAGE_NAME = "dist.api"
+EXPORTED_PACKAGE_DIR = PROJECT_ROOT / "dist" / "tiny_dsa"
+EXPORTED_PACKAGE_NAME = "dist.tiny_dsa.api"
 REPORT_DIR = PROJECT_ROOT / "data" / "differential" / "exported_library"
 
 ATOL = 1e-6  # absolute tolerance against Excel; matches the principles doc
