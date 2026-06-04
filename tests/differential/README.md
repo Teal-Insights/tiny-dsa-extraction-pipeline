@@ -39,13 +39,19 @@ a missing input is itself a finding about the extraction.
 ### 2. `differential_test_exported_library.py` — validates the **shipped package**
 
 Puts the generated standalone package in [`dist/`](../../dist/) under test, imported as
-`dist.api` and exercised *only* through its public Records-shaped API
+`dist.tiny_dsa.api` and exercised *only* through its public Records-shaped API
 (`set_*` / `compute_*`) — the same surface a real consumer of `py-tiny-dsa` would call.
 The package never touches the workbook at runtime; all model constants are baked into
 its `data.py` snapshot. This answers a stronger question: *does the code we actually
 hand to users compute the same numbers as the spreadsheet?*
 
 Coverage: **118 scenarios × 15 output cells = 1,770 comparisons**.
+
+The same harness is copied into the exported project at `dist/tests/` during extraction, together with the workbook fixture and reference parity reports. From the exported `dist/` project on Windows with Excel:
+
+```pwsh
+uv run --project dist --group validation python tests/differential_test_exported_library.py --layout exported
+```
 
 **Why both matter:** a passing graph differential proves the *extraction* is faithful;
 a passing exported-library differential proves the *code generation* on top of it is
@@ -61,10 +67,13 @@ Microsoft Excel must be installed locally — `xlwings` drives it through COM au
 # Validate the dependency graph + evaluator against Excel
 uv run python tests/differential/differential_testing.py
 
-# Validate the shipped package against Excel
+# Validate the shipped package against Excel (extraction repo layout)
 #   Regenerate the package first if it is missing or stale:
 #   uv run python src/extraction_pipeline.py
 uv run python tests/differential/differential_test_exported_library.py
+
+# Same harness from the exported dist/tests copy (Windows + Excel)
+uv run --project dist --group validation python tests/differential_test_exported_library.py --layout exported
 ```
 
 Each script exits **`0`** when every comparison passes, **`1`** when any comparison
@@ -81,7 +90,7 @@ row per cell comparison) and a human-readable TXT summary:
   pass-rate tables, and the top failures ranked by absolute difference. Any input cell
   the test tried to set but that is absent from the graph is listed under **ABSENT
   INPUTS** at the top — itself a differential signal about the extraction.
-- `differential_test_exported_library.py` → [`data/differential/exported_library/parity_report.{txt,csv}`](../../data/differential/exported_library/).
+- `differential_test_exported_library.py` → [`data/differential/exported_library/parity_report.{txt,csv}`](../../data/differential/exported_library/) when run from the extraction repo (`--layout repo`, default). The exported copy writes local reruns to `dist/tests/results/local/` and ships reference reports under `dist/tests/results/reference/`.
   The TXT contains a timestamped header (workbook + package paths, tolerance), aggregate
   counts, the **first divergence** (scenario + cell), and the complete list of any
   failing comparisons.

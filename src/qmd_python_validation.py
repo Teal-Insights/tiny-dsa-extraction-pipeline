@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Callable, Iterable
@@ -18,6 +19,13 @@ DOCUMENTATION_BASELINE_DEV_DEPS: tuple[str, ...] = (
     "matplotlib",
 )
 
+VALIDATION_DEPENDENCY_GROUP = "validation"
+
+VALIDATION_BASELINE_DEV_DEPS: tuple[str, ...] = (
+    "xlwings>=0.35.3",
+    "pywin32>=311; sys_platform == 'win32'",
+)
+
 DOCUMENTATION_BASELINE_RUNTIME_WITH: tuple[str, ...] = (
     "pandas",
     "polars",
@@ -25,7 +33,8 @@ DOCUMENTATION_BASELINE_RUNTIME_WITH: tuple[str, ...] = (
 )
 
 MAX_IMPORT_FIX_ATTEMPTS = 20
-MAX_NAME_ERROR_LLM_ATTEMPTS = 2
+MAX_LLM_CELL_FIX_ATTEMPTS_PER_CELL = 2
+MAX_LLM_CELL_FIX_ATTEMPTS_TOTAL = 5
 
 VALIDATION_SCRIPT_NAME = "_validate_user_guide_cells.py"
 
@@ -118,8 +127,19 @@ def merge_dev_dependencies(
     return merged
 
 
-def render_dist_pyproject_toml(*, dev_dependencies: list[str]) -> str:
+def render_dist_pyproject_toml(
+    *,
+    dev_dependencies: list[str],
+    validation_dependencies: list[str] | None = None,
+) -> str:
     dep_lines = "\n".join(f'    "{dep}",' for dep in dev_dependencies)
+    validation_block = ""
+    if validation_dependencies:
+        validation_lines = "\n".join(f'    "{dep}",' for dep in validation_dependencies)
+        validation_block = f"""
+{VALIDATION_DEPENDENCY_GROUP} = [
+{validation_lines}
+]"""
     return f"""[build-system]
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -140,14 +160,22 @@ packages = ["tiny_dsa"]
 [dependency-groups]
 dev = [
 {dep_lines}
-]
+]{validation_block}
 """
 
 
-def write_dist_pyproject(dist_root: Path, *, dev_dependencies: list[str]) -> None:
+def write_dist_pyproject(
+    dist_root: Path,
+    *,
+    dev_dependencies: list[str],
+    validation_dependencies: list[str] | None = None,
+) -> None:
     pyproject_path = dist_root / "pyproject.toml"
     pyproject_path.write_text(
-        render_dist_pyproject_toml(dev_dependencies=dev_dependencies),
+        render_dist_pyproject_toml(
+            dev_dependencies=dev_dependencies,
+            validation_dependencies=validation_dependencies,
+        ),
         encoding="utf-8",
     )
 
@@ -172,6 +200,9 @@ def default_run_uv_script(
     with_packages: list[str],
 ) -> ScriptRunResult:
     script_relative = script_path.relative_to(dist_root)
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     command = [
         "uv",
         "run",
@@ -185,6 +216,9 @@ def default_run_uv_script(
         command,
         check=False,
         capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
         text=True,
         cwd=str(dist_root.resolve()),
     )
@@ -268,7 +302,21 @@ def _cell_number_from_script(script_text: str, error_text: str) -> int | None:
     return current_cell
 
 
-def _apply_name_error_fix(
+def _qmd_label_from_script(
+    *,
+    script_text: str,
+    cell_number: int,
+) -> str | None:
+    label_match = re.search(
+        rf"# qmd: (.+) cell {cell_number}\n",
+        script_text,
+    )
+    if label_match is None:
+        return None
+    return label_match.group(1)
+
+
+def _apply_runtime_cell_fix(
     *,
     script_text: str,
     error_text: str,
@@ -276,16 +324,14 @@ def _apply_name_error_fix(
     client: OpenAI,
 ) -> None:
     cell_number = _cell_number_from_script(script_text, error_text)
-    name_error = parse_name_error(error_text)
-    if cell_number is None or name_error is None:
-        raise RuntimeError(f"Could not map NameError to a QMD cell:\n{error_text}")
-    label_match = re.search(
-        rf"# qmd: (.+) cell {cell_number}\n",
-        script_text,
+    if cell_number is None:
+        raise RuntimeError(f"Could not map runtime error to a QMD cell:\n{error_text}")
+    qmd_label = _qmd_label_from_script(
+        script_text=script_text,
+        cell_number=cell_number,
     )
-    if label_match is None:
-        raise RuntimeError(f"Could not map NameError to a QMD file:\n{error_text}")
-    qmd_label = label_match.group(1)
+    if qmd_label is None:
+        raise RuntimeError(f"Could not map runtime error to a QMD file:\n{error_text}")
     qmd_path = next(
         (path for path in ordered_paths if path.name == qmd_label),
         None,
@@ -297,7 +343,7 @@ def _apply_name_error_fix(
     fixed_source = fix_python_cell_with_llm(
         client=client,
         cell_source=cell.source,
-        error_message=name_error,
+        error_message=error_text.strip(),
         qmd_label=qmd_label,
         cell_number=cell_number,
     )
@@ -326,7 +372,8 @@ def validate_qmd_files(
     script_path = dist_root / VALIDATION_SCRIPT_NAME
     discovered_packages: list[str] = []
     with_packages = list(DOCUMENTATION_BASELINE_RUNTIME_WITH)
-    name_error_fixes = 0
+    llm_fix_attempts_total = 0
+    llm_fix_attempts_by_cell: dict[tuple[str, int], int] = {}
 
     try:
         for _attempt in range(MAX_IMPORT_FIX_ATTEMPTS):
@@ -350,20 +397,31 @@ def validate_qmd_files(
                     discovered_packages.append(missing_package)
                 continue
 
-            name_error = parse_name_error(error_text)
-            if name_error is not None and client is not None:
-                if name_error_fixes >= MAX_NAME_ERROR_LLM_ATTEMPTS:
+            cell_number = _cell_number_from_script(script_text, error_text)
+            qmd_label = (
+                _qmd_label_from_script(script_text=script_text, cell_number=cell_number)
+                if cell_number is not None
+                else None
+            )
+            if cell_number is not None and qmd_label is not None and client is not None:
+                fix_key = (qmd_label, cell_number)
+                fix_attempts_for_cell = llm_fix_attempts_by_cell.get(fix_key, 0)
+                if (
+                    llm_fix_attempts_total >= MAX_LLM_CELL_FIX_ATTEMPTS_TOTAL
+                    or fix_attempts_for_cell >= MAX_LLM_CELL_FIX_ATTEMPTS_PER_CELL
+                ):
                     raise RuntimeError(
-                        "Exceeded LLM NameError fix attempts while validating "
+                        "Exceeded LLM cell fix attempts while validating "
                         f"runnable QMD cells:\n{error_text.strip()}"
                     )
-                _apply_name_error_fix(
+                _apply_runtime_cell_fix(
                     script_text=script_text,
                     error_text=error_text,
                     ordered_paths=ordered_paths,
                     client=client,
                 )
-                name_error_fixes += 1
+                llm_fix_attempts_total += 1
+                llm_fix_attempts_by_cell[fix_key] = fix_attempts_for_cell + 1
                 continue
 
             raise RuntimeError(
@@ -383,6 +441,7 @@ def validate_qmd_files(
                     DOCUMENTATION_BASELINE_DEV_DEPS,
                     discovered_packages,
                 ),
+                validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
             )
 
         return discovered_packages

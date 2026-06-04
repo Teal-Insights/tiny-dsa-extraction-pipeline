@@ -1,6 +1,9 @@
+import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
+from openai import OpenAI
 
 from src.qmd_python_validation import (
     aggregate_python_cells,
@@ -94,6 +97,42 @@ def test_render_dist_pyproject_toml_includes_dev_dependencies() -> None:
     assert 'name = "tiny-dsa"' in text
 
 
+def test_default_run_uv_script_forces_utf8_stdio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src import qmd_python_validation as validation
+
+    dist_root = tmp_path / "dist"
+    dist_root.mkdir()
+    script_path = dist_root / "_validate_user_guide_cells.py"
+    script_path.write_text("print('box drawing: ┌')\n", encoding="utf-8")
+    run_kwargs: dict[str, object] = {}
+
+    def fake_run(
+        args: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        run_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="ok", stderr=""
+        )
+
+    monkeypatch.setattr(validation.subprocess, "run", fake_run)
+
+    result = validation.default_run_uv_script(
+        dist_root=dist_root,
+        script_path=script_path,
+        with_packages=[],
+    )
+
+    env = cast(dict[str, str], run_kwargs["env"])
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONUTF8"] == "1"
+    assert run_kwargs["encoding"] == "utf-8"
+    assert run_kwargs["errors"] == "replace"
+    assert result.stdout == "ok"
+
+
 def test_validate_qmd_files_records_discovered_packages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -142,6 +181,85 @@ tabulate.tabulate([[1]])
     assert discovered == ["tabulate"]
     assert "tabulate" in calls[-1]
     assert not script_path.is_file()
+
+
+def test_validate_qmd_files_rewrites_runtime_error_cell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src import qmd_python_validation as validation
+
+    dist_root = tmp_path / "dist"
+    dist_root.mkdir()
+    qmd_path = dist_root / "user_guide" / "page.qmd"
+    qmd_path.parent.mkdir(parents=True)
+    qmd_path.write_text(
+        """---
+title: "T"
+---
+
+```{python}
+x = 1
+```
+
+```{python}
+table_1 = scenarios.round(2)
+print(table_1)
+```
+""",
+        encoding="utf-8",
+    )
+    run_count = 0
+    fix_calls: list[dict[str, object]] = []
+
+    def fake_run_uv_script(
+        *,
+        dist_root: Path,
+        script_path: Path,
+        with_packages: list[str],
+    ) -> validation.ScriptRunResult:
+        nonlocal run_count
+        run_count += 1
+        script_text = script_path.read_text(encoding="utf-8")
+        if ".round(2)" not in script_text:
+            return validation.ScriptRunResult(returncode=0, stdout="", stderr="")
+        line_number = script_text.splitlines().index("table_1 = scenarios.round(2)") + 1
+        return validation.ScriptRunResult(
+            returncode=1,
+            stdout="",
+            stderr=(
+                f'  File "{script_path}", line {line_number}, in <module>\n'
+                "AttributeError: 'DataFrame' object has no attribute 'round'"
+            ),
+        )
+
+    def fake_fix_python_cell_with_llm(**kwargs: object) -> str:
+        fix_calls.append(kwargs)
+        return "table_1 = scenarios\nprint(table_1)\n"
+
+    monkeypatch.setattr(
+        validation,
+        "fix_python_cell_with_llm",
+        fake_fix_python_cell_with_llm,
+    )
+
+    validation.validate_qmd_files(
+        dist_root=dist_root,
+        qmd_paths=[qmd_path],
+        run_uv_script=fake_run_uv_script,
+        client=cast(OpenAI, object()),
+        write_pyproject=False,
+    )
+
+    cells = validation.extract_python_cells(qmd_path.read_text(encoding="utf-8"))
+    assert run_count == 2
+    assert len(fix_calls) == 1
+    assert fix_calls[0]["cell_number"] == 2
+    assert fix_calls[0]["error_message"] == (
+        f'File "{dist_root / validation.VALIDATION_SCRIPT_NAME}", line 5, in <module>\n'
+        "AttributeError: 'DataFrame' object has no attribute 'round'"
+    )
+    assert cells[0].source.strip() == "x = 1"
+    assert cells[1].source.strip() == "table_1 = scenarios\nprint(table_1)"
 
 
 def test_validate_qmd_files_removes_script_on_failure(tmp_path: Path) -> None:

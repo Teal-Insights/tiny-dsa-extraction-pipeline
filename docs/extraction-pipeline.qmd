@@ -559,7 +559,9 @@ for filepath, code in modules.items():
         f.write(code)
 ```
 
-We also write a `dist/.gitignore` file and a `dist/pyproject.toml` file so documentation tooling can auto-discover the generated library as project `tiny-dsa`. The dev dependency list is defined once in `src/qmd_python_validation.py` as `DOCUMENTATION_BASELINE_DEV_DEPS`; `src/extraction_pipeline.py` uses `render_dist_pyproject_toml()` to write the initial `pyproject.toml`, and the documentation stage may append packages discovered while validating runnable user-guide cells.
+We also write a `dist/.gitignore` file and a `dist/pyproject.toml` file so documentation tooling can auto-discover the generated library as project `tiny-dsa`. The dev dependency list is defined once in `src/qmd_python_validation.py` as `DOCUMENTATION_BASELINE_DEV_DEPS`; Excel-parity validation dependencies live in a separate `validation` group as `VALIDATION_BASELINE_DEV_DEPS`. `src/extraction_pipeline.py` uses `render_dist_pyproject_toml()` to write the initial `pyproject.toml`, and the documentation stage may append packages discovered while validating runnable user-guide cells.
+
+We also export the Excel parity validation bundle into `dist/tests/`: the differential harness, workbook fixture, reference parity reports from `data/differential/exported_library/`, and a short README. The bundle is not included in the installed wheel; it documents correctness evidence and lets maintainers re-run the sweep on Windows with Excel.
 
 ```{python}
 import sys
@@ -568,8 +570,10 @@ repo_root = Path("..").resolve()
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from src.export_validation_assets import export_validation_assets
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
+    VALIDATION_BASELINE_DEV_DEPS,
     render_dist_pyproject_toml,
 )
 
@@ -579,6 +583,7 @@ gitignore_content = """
 __pycache__/
 .venv/
 _validate_user_guide_cells.py
+tests/results/local/
 """
 
 with open(dist_root / ".gitignore", "w", encoding="utf-8") as f:
@@ -588,13 +593,22 @@ with open(dist_root / "pyproject.toml", "w", encoding="utf-8") as f:
     f.write(
         render_dist_pyproject_toml(
             dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
+            validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
         )
     )
+
+export_validation_assets(repo_root=repo_root, dist_root=dist_root)
 ```
 
 ## Stage 3: Test
 
 Now we can test the semantic API from `dist/tiny_dsa/api.py` by running a full scenario with the generated `set_*` and `compute_*` functions.
+
+The extraction pipeline also ships an Excel parity validation bundle under `dist/tests/`. Reference reports in `dist/tests/results/reference/` were produced by [`tests/differential/differential_test_exported_library.py`](../tests/differential/differential_test_exported_library.py) in the extraction repo. Maintainers can re-run the same harness from the exported project on Windows with Excel:
+
+```pwsh
+uv run --project dist --group validation python tests/differential_test_exported_library.py --layout exported
+```
 
 ```{python}
 repo_root = Path("..").resolve()

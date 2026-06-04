@@ -871,9 +871,17 @@ We also write a `dist/.gitignore` file and a `dist/pyproject.toml` file
 so documentation tooling can auto-discover the generated library as
 project `tiny-dsa`. The dev dependency list is defined once in
 `src/qmd_python_validation.py` as `DOCUMENTATION_BASELINE_DEV_DEPS`;
-`src/extraction_pipeline.py` uses `render_dist_pyproject_toml()` to
-write the initial `pyproject.toml`, and the documentation stage may
-append packages discovered while validating runnable user-guide cells.
+Excel-parity validation dependencies live in a separate `validation`
+group as `VALIDATION_BASELINE_DEV_DEPS`. `src/extraction_pipeline.py`
+uses `render_dist_pyproject_toml()` to write the initial
+`pyproject.toml`, and the documentation stage may append packages
+discovered while validating runnable user-guide cells.
+
+We also export the Excel parity validation bundle into `dist/tests/`:
+the differential harness, workbook fixture, reference parity reports
+from `data/differential/exported_library/`, and a short README. The
+bundle is not included in the installed wheel; it documents correctness
+evidence and lets maintainers re-run the sweep on Windows with Excel.
 
 ``` python
 import sys
@@ -882,8 +890,10 @@ repo_root = Path("..").resolve()
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from src.export_validation_assets import export_validation_assets
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
+    VALIDATION_BASELINE_DEV_DEPS,
     render_dist_pyproject_toml,
 )
 
@@ -893,6 +903,7 @@ gitignore_content = """
 __pycache__/
 .venv/
 _validate_user_guide_cells.py
+tests/results/local/
 """
 
 with open(dist_root / ".gitignore", "w", encoding="utf-8") as f:
@@ -902,14 +913,28 @@ with open(dist_root / "pyproject.toml", "w", encoding="utf-8") as f:
     f.write(
         render_dist_pyproject_toml(
             dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
+            validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
         )
     )
+
+export_validation_assets(repo_root=repo_root, dist_root=dist_root)
 ```
 
 ## Stage 3: Test
 
 Now we can test the semantic API from `dist/tiny_dsa/api.py` by running
 a full scenario with the generated `set_*` and `compute_*` functions.
+
+The extraction pipeline also ships an Excel parity validation bundle
+under `dist/tests/`. Reference reports in
+`dist/tests/results/reference/` were produced by
+[`tests/differential/differential_test_exported_library.py`](../tests/differential/differential_test_exported_library.py)
+in the extraction repo. Maintainers can re-run the same harness from the
+exported project on Windows with Excel:
+
+``` pwsh
+uv run --project dist --group validation python tests/differential_test_exported_library.py --layout exported
+```
 
 ``` python
 repo_root = Path("..").resolve()
@@ -1057,12 +1082,12 @@ the scenario with `set_*` functions that take records, then read results
 with `compute_*`.
 
 Each `compute_output_*` call returns a list of records with fields such
-as `TIME_PERIOD`, `OBS_VALUE`, `SCENARIO`, and `UNIT_MEASURE`. For
-tables and plots, index by `TIME_PERIOD` and take the `OBS_VALUE` column
-rather than renaming DataFrame columns.
+as `TIME_PERIOD`, `OBS_VALUE`, `SCENARIO`, and `UNIT_MEASURE`. Tabulate
+results with Polars: sort by `TIME_PERIOD` and `select` the `OBS_VALUE`
+column (with a clear alias), as in the helper below.
 
 ``` python
-import pandas as pd
+import polars as pl
 
 from tiny_dsa.api import (
     make_context,
@@ -1083,10 +1108,15 @@ def time_series(values: list[float]) -> list[dict[str, float | int]]:
     return [{"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)]
 
 
-def debt_to_gdp_series(records: list[dict[str, object]]) -> pd.Series:
-    series = pd.DataFrame(records).set_index("TIME_PERIOD")["OBS_VALUE"]
-    series.name = "Debt/GDP (%)"
-    return series
+def debt_to_gdp_frame(records: list[dict[str, object]]) -> pl.DataFrame:
+    return (
+        pl.DataFrame(records)
+        .sort("TIME_PERIOD")
+        .select(
+            "TIME_PERIOD",
+            pl.col("OBS_VALUE").alias("Debt/GDP (%)"),
+        )
+    )
 
 
 ctx = make_context()
@@ -1105,10 +1135,16 @@ set_shock_magnitudes(
     ],
 )
 
-baseline_debt = debt_to_gdp_series(compute_output_baseline(ctx=ctx))
-shocked_debt = debt_to_gdp_series(compute_output_shocked(ctx=ctx))
-delta_pp = pd.DataFrame(compute_output_delta(ctx=ctx)).set_index("TIME_PERIOD")["OBS_VALUE"]
-delta_pp.name = "Delta (pp GDP)"
+baseline_debt = debt_to_gdp_frame(compute_output_baseline(ctx=ctx))
+shocked_debt = debt_to_gdp_frame(compute_output_shocked(ctx=ctx))
+delta_pp = (
+    pl.DataFrame(compute_output_delta(ctx=ctx))
+    .sort("TIME_PERIOD")
+    .select(
+        "TIME_PERIOD",
+        pl.col("OBS_VALUE").alias("Delta (pp GDP)"),
+    )
+)
 ```
 
 ## Stage 4: Document
@@ -1236,13 +1272,13 @@ FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS = (
     "navigation and manual cell editing with tiny_dsa.api usage. "
     "Mirror the canonical_api_usage reference example for import style, "
     "ctx = make_context(), records-shaped setters, and compute_output_* calls. "
-    "When tabulating outputs, index by TIME_PERIOD and use the OBS_VALUE field."
+    "Tabulate outputs with Polars using debt_to_gdp_frame-style select on OBS_VALUE."
 )
 
 ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS = (
     "Keep the scenario faithful to the original narrative. "
     "Express each step with tiny_dsa.api using the same interaction model as "
-    "canonical_api_usage, including debt_to_gdp_series-style display of "
+    "canonical_api_usage, including debt_to_gdp_frame-style Polars tables for "
     "compute_output_* results. Split the workflow into several short runnable "
     "cells that reuse ctx = make_context() and records-shaped setters."
 )
@@ -1375,9 +1411,9 @@ Hard constraints:
 - Do not include claims that conflict with provided API signatures.
 - For runnable code examples, use Quarto executable fences exactly as ` ```{python} ` and not ` ```python `.
 - Return valid JSON matching the response schema exactly.
-- Runnable code may only use Python standard library and pandas, polars, and matplotlib.
-- Do not use pandas APIs that require optional extras, including DataFrame.to_markdown() and to_latex().
-- Prefer displaying DataFrames directly or using print(df) for tabular output.
+- Runnable code may only use Python standard library, polars, and matplotlib.
+- Tabulate compute_output_* results with polars, following the reference example.
+- Use matplotlib when plots are needed.
 
 Section name: {section_name}
 
@@ -1579,7 +1615,7 @@ title: "{functional_overview_rewrite.title}"
 functional_overview_output.write_text(functional_overview_qmd, encoding="utf-8")
 ```
 
-    4537
+    8846
 
 Next, run the same workflow for `III. Illustrative Example`, using the
 same canonical API reference example.
@@ -1632,7 +1668,7 @@ title: "{illustrative_example_rewrite.title}"
 illustrative_example_output.write_text(illustrative_example_qmd, encoding="utf-8")
 ```
 
-    8012
+    4372
 
 ### Validate runnable user-guide cells
 

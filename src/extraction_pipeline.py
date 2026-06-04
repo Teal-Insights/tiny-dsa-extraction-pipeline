@@ -16,9 +16,11 @@ from excel_grapher.series_bindings import (
 )
 
 from src.docstring_callback import available_docstring_callback
+from src.export_validation_assets import export_validation_assets
 from src.qmd_python_validation import (
-    render_dist_pyproject_toml,
     DOCUMENTATION_BASELINE_DEV_DEPS,
+    VALIDATION_BASELINE_DEV_DEPS,
+    render_dist_pyproject_toml,
 )
 
 repo_root = Path(__file__).resolve().parents[1]
@@ -150,15 +152,19 @@ gitignore_content = """
 __pycache__/
 .venv/
 _validate_user_guide_cells.py
+tests/results/local/
 """
 
 (dist_root / ".gitignore").write_text(gitignore_content, encoding="utf-8")
 (dist_root / "pyproject.toml").write_text(
     render_dist_pyproject_toml(
         dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
+        validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
     ),
     encoding="utf-8",
 )
+
+export_validation_assets(repo_root=repo_root, dist_root=dist_root)
 
 
 def main() -> None:
