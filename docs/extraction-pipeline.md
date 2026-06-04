@@ -1668,7 +1668,7 @@ title: "{illustrative_example_rewrite.title}"
 illustrative_example_output.write_text(illustrative_example_qmd, encoding="utf-8")
 ```
 
-    4372
+    4399
 
 ### Validate runnable user-guide cells
 
@@ -1698,8 +1698,21 @@ difficult to control which Python interpreter Great Docs uses. Instead,
     merging any newly required packages into `[dependency-groups].dev`
     alongside `DOCUMENTATION_BASELINE_DEV_DEPS`.
 
-`src/documentation_pipeline.py` runs this step after writing user-guide
-pages and before generating the deploy workflow:
+Before validating runnable cells, `src/documentation_pipeline.py` also
+writes a deterministic `03-excel-parity-validation.qmd` page from
+`dist/tests/results/reference/parity_report.txt`. This page is not
+LLM-generated: it parses the parity report’s headline fields, links to
+the shipped validation bundle, and adds a landing-page pointer so users
+can find the correctness evidence on the GreatDocs site.
+
+After validation succeeds, the pipeline syncs validated LLM-authored
+pages back into `.cache/guide-rewrites.json`. This matters because QMD
+validation may repair runnable cells after a section rewrite cache hit;
+without the sync, the next run would reload the stale cached section and
+repair the same cell again.
+
+`src/documentation_pipeline.py` runs validation after writing all
+user-guide pages and before generating the deploy workflow:
 
 ``` python
 import sys
@@ -1709,15 +1722,23 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from src.qmd_python_validation import validate_qmd_files
+from src.documentation_pipeline import (
+    sync_validated_pages_to_rewrite_cache,
+    write_validation_page,
+)
 
+write_validation_page()
 validate_qmd_files(
     dist_root=dist_root,
     qmd_paths=sorted(user_guide_root.glob("*.qmd")),
     client=section_client,
 )
+pipeline_doc_text = pipeline_doc_path.read_text(encoding="utf-8")
+sync_validated_pages_to_rewrite_cache(
+    guide_text=guide_text,
+    pipeline_doc_text=pipeline_doc_text,
+)
 ```
-
-    []
 
 The automated entry point is `uv run src/extraction_pipeline.py`, which
 exports the package and then calls `run_documentation_pipeline()`.

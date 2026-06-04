@@ -234,6 +234,7 @@ def config_from_args(
         report_dir=args.report_dir,
     )
 
+
 COUNTRIES: tuple[str, ...] = ("Borvelia", "Litellia", "Aurelium")
 SHOCK_TYPES: tuple[int, ...] = (1, 2, 3)
 SHOCK_YEARS: tuple[int, ...] = (1, 2, 3, 4, 5)

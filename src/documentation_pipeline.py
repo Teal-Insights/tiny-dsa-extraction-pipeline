@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from openai import OpenAI
@@ -29,6 +30,18 @@ SECTION_REWRITE_MODEL = "deepseek-v4-pro"
 SECTION_REWRITE_PROMPT_VERSION = 3
 CANONICAL_API_USAGE_HEADING = "Canonical API usage"
 NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
+VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
+VALIDATION_REPORT_URL = (
+    "https://github.com/Teal-Insights/py-tiny-dsa/blob/main/"
+    "tests/results/reference/parity_report.txt"
+)
+VALIDATION_BUNDLE_README_URL = (
+    "https://github.com/Teal-Insights/py-tiny-dsa/blob/main/tests/README.md"
+)
+VALIDATION_HARNESS_URL = (
+    "https://github.com/Teal-Insights/py-tiny-dsa/blob/main/"
+    "tests/differential_test_exported_library.py"
+)
 
 FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS = (
     "Preserve section structure and conceptual flow, but replace workbook "
@@ -100,6 +113,143 @@ class SectionRewriteResponse(BaseModel):
         description=(
             "Short notes describing key Excel-to-Python rewrites while preserving intent."
         )
+    )
+
+
+@dataclass(frozen=True)
+class ParityReportSummary:
+    """Headline fields from the exported-library parity report."""
+
+    generated: str
+    tolerance: str
+    total_comparisons: int
+    passed: int
+    failed: int
+    pass_rate: str
+    acceptance_bar: str
+    result: str
+
+
+def parse_parity_report(report_text: str) -> ParityReportSummary:
+    """Parse the stable key-value header emitted by the parity report writer."""
+    fields: dict[str, str] = {}
+    for line in report_text.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip()
+
+    required = (
+        "Generated",
+        "Tolerance",
+        "Total comparisons",
+        "Passed",
+        "Failed",
+        "Pass rate",
+        "Acceptance bar",
+        "Result",
+    )
+    missing = [name for name in required if name not in fields]
+    if missing:
+        raise ValueError(f"Parity report missing required fields: {missing}")
+
+    return ParityReportSummary(
+        generated=fields["Generated"],
+        tolerance=fields["Tolerance"],
+        total_comparisons=int(fields["Total comparisons"]),
+        passed=int(fields["Passed"]),
+        failed=int(fields["Failed"]),
+        pass_rate=fields["Pass rate"],
+        acceptance_bar=fields["Acceptance bar"],
+        result=fields["Result"],
+    )
+
+
+def render_validation_page(summary: ParityReportSummary) -> str:
+    """Render the deterministic GreatDocs page for Excel parity validation."""
+    passed = f"{summary.passed:,}"
+    total = f"{summary.total_comparisons:,}"
+    failed = f"{summary.failed:,}"
+    return f"""---
+title: "Excel parity validation"
+---
+
+Tiny DSA includes an exported validation bundle that checks the generated
+`tiny_dsa` package against the illustrative Excel workbook. The test drives
+the workbook with Microsoft Excel through `xlwings`, applies the same inputs
+through the package's public `set_*` functions, and compares the public
+`compute_*` outputs cell by cell.
+
+## Current reference result
+
+The current reference run is **{summary.result}**: **{passed} / {total}**
+cell-level comparisons passed at `{summary.tolerance}`.
+
+- Result: **{summary.result}**
+- Generated: `{summary.generated}`
+- Passed: **{passed}**
+- Failed: **{failed}**
+- Pass rate: **{summary.pass_rate}**
+- Acceptance bar: **{summary.acceptance_bar}**
+
+The sweep covers 118 scenarios and 15 output cells, for 1,770 comparisons
+against Excel.
+
+## What Was Tested
+
+The validation checks the exported standalone library, not just the extraction
+graph. It imports `tiny_dsa.api`, creates a fresh context for each scenario,
+sets inputs through the records-shaped public setters, computes the exported
+output series, and compares those values against the workbook's calculated
+output cells.
+
+## Inspect Or Re-run
+
+The validation bundle is shipped in the source repository under `tests/`.
+Because the golden-master oracle uses Microsoft Excel through COM automation,
+reruns require Windows with Microsoft Excel installed.
+
+- [Reference parity report]({VALIDATION_REPORT_URL})
+- [Validation bundle README]({VALIDATION_BUNDLE_README_URL})
+- [Differential test harness]({VALIDATION_HARNESS_URL})
+
+To re-run the validation from the exported project:
+
+```pwsh
+uv run --project . --group validation python tests/differential_test_exported_library.py --layout exported
+```
+"""
+
+
+def render_introduction_validation_note() -> str:
+    """Return a short deterministic landing-page pointer to validation evidence."""
+    return (
+        "For correctness evidence, see "
+        f"[Excel parity validation]({VALIDATION_PAGE_FILENAME}), which summarizes "
+        "the exported-library differential test against the source workbook."
+    )
+
+
+def write_validation_page(
+    *,
+    dist_root_path: Path = dist_root,
+    user_guide_root_path: Path = user_guide_root,
+) -> None:
+    """Write the deterministic user-guide page from exported validation assets."""
+    report_path = (
+        dist_root_path / "tests" / "results" / "reference" / "parity_report.txt"
+    )
+    readme_path = dist_root_path / "tests" / "README.md"
+    if not readme_path.is_file():
+        raise FileNotFoundError(f"Validation README not found: {readme_path}")
+    if not report_path.is_file():
+        raise FileNotFoundError(f"Reference parity report not found: {report_path}")
+
+    summary = parse_parity_report(report_path.read_text(encoding="utf-8"))
+    user_guide_root_path.mkdir(parents=True, exist_ok=True)
+    (user_guide_root_path / VALIDATION_PAGE_FILENAME).write_text(
+        render_validation_page(summary),
+        encoding="utf-8",
     )
 
 
@@ -235,6 +385,94 @@ def rewrite_cache_key(
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
 
 
+def qmd_body_without_frontmatter(qmd_text: str) -> str:
+    """Return the body of a QMD page that starts with YAML frontmatter."""
+    match = re.match(r"^---\n.*?\n---\n\n(?P<body>.*)\Z", qmd_text, re.DOTALL)
+    if match is None:
+        raise ValueError("Expected QMD text to start with YAML frontmatter")
+    return match.group("body").rstrip("\n")
+
+
+def sync_cached_rewrite_from_qmd(
+    *,
+    cache_path: Path,
+    cache_key: str,
+    qmd_path: Path,
+) -> bool:
+    """Persist a validated QMD body back into the matching rewrite-cache entry."""
+    if not cache_path.is_file() or not qmd_path.is_file():
+        return False
+
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    cached_json = cache.get(cache_key)
+    if cached_json is None:
+        return False
+
+    cached_response = SectionRewriteResponse.model_validate_json(cached_json)
+    validated_body = qmd_body_without_frontmatter(qmd_path.read_text(encoding="utf-8"))
+    if cached_response.rewritten_markdown == validated_body:
+        return False
+
+    updated_response = cached_response.model_copy(
+        update={"rewritten_markdown": validated_body}
+    )
+    cache[cache_key] = updated_response.model_dump_json(indent=2)
+    cache_path.write_text(
+        json.dumps(cache, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return True
+
+
+def sync_validated_pages_to_rewrite_cache(
+    *,
+    guide_text: str,
+    pipeline_doc_text: str,
+) -> None:
+    """Update cached guide rewrites from validated generated QMD pages.
+
+    Only pure LLM-authored pages are synced. ``index.qmd`` gets a deterministic
+    validation note appended outside the cached rewrite and is intentionally
+    excluded.
+    """
+    response_schema = SectionRewriteResponse.model_json_schema()
+    functional_key = rewrite_cache_key(
+        section_id="functional_overview",
+        source_section_markdown=extract_markdown_section(
+            guide_text, "II. Functional Overview"
+        ),
+        python_focus_instructions=FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS,
+        pipeline_context_blocks=canonical_api_context(pipeline_doc_text),
+        api_signatures=extract_api_signatures(
+            api_module_path, FUNCTIONAL_OVERVIEW_API_SYMBOLS
+        ),
+        response_schema=response_schema,
+    )
+    illustrative_key = rewrite_cache_key(
+        section_id="illustrative_example",
+        source_section_markdown=extract_markdown_section(
+            guide_text, "III. Illustrative Example"
+        ),
+        python_focus_instructions=ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS,
+        pipeline_context_blocks=canonical_api_context(pipeline_doc_text),
+        api_signatures=extract_api_signatures(
+            api_module_path, ILLUSTRATIVE_EXAMPLE_API_SYMBOLS
+        ),
+        response_schema=response_schema,
+    )
+
+    sync_cached_rewrite_from_qmd(
+        cache_path=rewrite_cache_path,
+        cache_key=functional_key,
+        qmd_path=user_guide_root / "01-functional-overview.qmd",
+    )
+    sync_cached_rewrite_from_qmd(
+        cache_path=rewrite_cache_path,
+        cache_key=illustrative_key,
+        qmd_path=user_guide_root / "02-illustrative-example.qmd",
+    )
+
+
 def rewrite_guide_section(
     *,
     client: OpenAI | None,
@@ -367,6 +605,8 @@ title: "{introduction_rewrite.title}"
 ---
 
 {introduction_rewrite.rewritten_markdown}
+
+{render_introduction_validation_note()}
 """
     landing_page_output.write_text(landing_page_qmd, encoding="utf-8")
 
@@ -520,9 +760,15 @@ def run_documentation_pipeline() -> None:
     guide_text = guide_path.read_text(encoding="utf-8")
     write_introduction_page(section_client, guide_text)
     write_rewritten_guide_pages(section_client)
+    write_validation_page()
     validate_qmd_files(
         dist_root=dist_root,
         qmd_paths=sorted(user_guide_root.glob("*.qmd")),
         client=section_client,
+    )
+    pipeline_doc_text = pipeline_doc_path.read_text(encoding="utf-8")
+    sync_validated_pages_to_rewrite_cache(
+        guide_text=guide_text,
+        pipeline_doc_text=pipeline_doc_text,
     )
     write_docs_deploy_workflow()

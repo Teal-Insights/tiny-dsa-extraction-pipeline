@@ -120,9 +120,8 @@ table_1 = (
         "Interest shock",
         "Primary balance shock",
     )
-    .with_columns(pl.all().round(2))
+    .with_columns(pl.col(pl.Float64).round(2))
 )
 
 print(table_1)
 ```
-
