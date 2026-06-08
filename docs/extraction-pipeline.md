@@ -1868,6 +1868,8 @@ macrofinance-shaped rather than Excel-shaped.
 
 ### Human Hypothesis
 
+#### Exploring Graph Connectivity
+
 Before refactoring, it helps to explore the extracted graph
 interactively. We use the same pattern as workflow mapping elsewhere in
 Teal docs: Graphviz computes layout (`dot -Tjson`), then Cytoscape
@@ -1924,6 +1926,96 @@ Wrote interactive graph site to C:\Users\chris\Software\tiny-dsa-extraction-pipe
 Serve docs/dependency-graph and open index.html, e.g.:
   uv run python -m http.server 8000 --directory docs/dependency-graph
   http://localhost:8000/
+```
+
+One hypothesis is that we can modularize the internals by grouping
+non-constant, non-input, non-target cells into modules by looking for
+connected subgraphs that have only one cell with incoming edges.
+Eyeballing it, it looks like that would give the following groupings:
+
+``` python
+group_1 = [
+    "Engine!C10", "Engine!D10",
+    "Engine!C14", "Engine!D14",
+    "Engine!C15", "Engine!D15",
+    "Engine!C16", "Engine!D16",
+    "Engine!D18",
+    "Engine!B20", "Engine!C20", "Engine!D20"
+]
+group_2 = [
+    "Engine!E10", "Engine!F10",
+    "Engine!E14", "Engine!F14",
+    "Engine!E15", "Engine!F15",
+    "Engine!E16", "Engine!F16",
+    "Engine!E20", "Engine!F20"
+]
+group_3 = [
+    "Engine!G14", "Engine!G15", "Engine!G16", "Engine!G20"
+]
+ungrouped = [
+    "Inputs!B6",
+    "Engine!C6", "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6",
+    "Engine!B9", "Engine!G10"
+]
+```
+
+Note that I have listed cell addresses here roughly left to right, top
+to bottom (in the workbook), but the dependency order is roughly the
+reverse of that, because the direction of the dependency graph goes from
+targets to inputs, or right to left in the workbook.
+
+We also can look for formulas with similar patterns that could be
+refactored into helper functions. For example, the following ungrouped
+formulas all have the same pattern:
+
+``` python
+patternize_these = ["Engine!C6", "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6"]
+```
+
+#### Semantic Labeling
+
+To make internal graph nodes easier to refactor, we can ask an LLM to
+label each non-input, non-target graph cell with its surrounding table,
+row, and column context. The labels need more structure than plain
+strings: a label like `1` or `2024` may be a value in a known concept
+such as `TIME_PERIOD`, while a label like `Debt-to-GDP ratio` may be an
+`INDICATOR`. The metadata shape below keeps the familiar `table_labels`,
+`row_labels`, and `column_labels` keys, but stores each label as an
+object with an optional `concept` ID from the binding concept scheme.
+
+``` python
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from src.semantic_labeling import label_internal_graph_cells
+
+
+load_dotenv(Path("../.env"))
+
+semantic_label_summary = label_internal_graph_cells(
+    graph=graph,
+    workbook_path=workbook_path,
+    input_cells=input_cells,
+    target_cells=output_cells,
+    concept_scheme=series_bindings["concept_scheme"],
+    model=os.environ.get("SEMANTIC_LABEL_MODEL", "deepseek-v4-pro"),
+    cache_path=Path("../.cache/semantic-labels.json"),
+)
+
+print("```text")
+print(
+    "Labeled "
+    f"{semantic_label_summary.labeled_cell_count} "
+    "non-input, non-target graph cells across "
+    f"{semantic_label_summary.sheet_count} sheets."
+)
+print("```")
+```
+
+``` text
+Labeled 42 non-input, non-target graph cells across 2 sheets.
 ```
 
 ### Programmatic Graph Analysis
