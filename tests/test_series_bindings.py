@@ -28,6 +28,7 @@ def test_series_bindings_validate_against_graph():
 def test_binding_shards_merge_into_expected_series():
     expected_ids = {
         "country_name",
+        "country_initial_debt",
         "growth_baseline",
         "interest_baseline",
         "output_baseline",
@@ -47,6 +48,11 @@ def test_input_series_resolve_to_expected_cells():
     addresses = _series_addresses(input_series)
 
     assert addresses["country_name"] == ["Inputs!B5"]
+    assert addresses["country_initial_debt"] == [
+        "Inputs!B10",
+        "Inputs!B11",
+        "Inputs!B12",
+    ]
     assert addresses["growth_baseline"] == [
         "Inputs!C16",
         "Inputs!D16",
@@ -103,6 +109,7 @@ def test_generated_records_api_computes_and_sets_values():
     from dist.tiny_dsa.api import (
         compute_output_baseline,
         make_context,
+        set_country_initial_debt,
         set_growth_baseline,
     )
 
@@ -118,3 +125,24 @@ def test_generated_records_api_computes_and_sets_values():
     updated = compute_output_baseline(ctx=ctx)
 
     assert updated[0]["OBS_VALUE"] != baseline[0]["OBS_VALUE"]
+
+    set_country_initial_debt(ctx, [{"COUNTRY": "Borvelia", "OBS_VALUE": 70.0}])
+    updated_initial_debt = compute_output_baseline(ctx=ctx)
+
+    assert updated_initial_debt[0]["OBS_VALUE"] != updated[0]["OBS_VALUE"]
+
+
+def test_every_mutable_input_leaf_has_input_series_binding():
+    """Every codegen input leaf must be covered by inputs.bindings.yaml."""
+    from src.dependency_graph_viz import series_cell_keys
+    from src.extraction_pipeline import leaf_classification
+
+    mutable_input_leaves = {
+        key for key, kind in leaf_classification.items() if kind == "input"
+    }
+    bound_input_cells = series_cell_keys(input_series)
+    unbound = sorted(mutable_input_leaves - bound_input_cells)
+
+    assert unbound == [], (
+        "Mutable input leaves missing from inputs.bindings.yaml: " + ", ".join(unbound)
+    )

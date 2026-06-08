@@ -9,6 +9,9 @@ concept_scheme:
     - id: INDICATOR
       name: Indicator
       dtype: string
+    - id: COUNTRY
+      name: Country
+      dtype: string
     - id: TIME_PERIOD
       name: Projection year
       dtype: int
@@ -51,6 +54,48 @@ series:
     series_context:
       PARAMETER: country_name
     notes: Selected country name from the country profile table.
+
+  - id: country_initial_debt
+    sheet: Inputs
+    data_range: Inputs!B10:B12
+    layout: row_series
+    input:
+      setter:
+        name: set_country_initial_debt
+        record_contract: records
+        strict: true
+    structure:
+      measure:
+        concept: OBS_VALUE
+        dtype: float
+        bind:
+          kind: data_cell
+          read: float
+      dimensions:
+        - concept: COUNTRY
+          role: key
+          scope: cell
+          bind:
+            kind: row_label
+            label_column: A
+            read: string
+            normalize: strip
+        - concept: INDICATOR
+          role: key
+          scope: series
+          bind:
+            kind: constant
+            value: initial_debt_to_gdp
+          include_in_record: false
+      attributes:
+        - concept: UNIT_MEASURE
+          role: attribute
+          value: PC_GDP
+          include_in_record: true
+    key: [COUNTRY]
+    series_context:
+      INDICATOR: initial_debt_to_gdp
+    notes: Initial debt-to-GDP values in the country profile lookup table.
 
   - id: growth_baseline
     sheet: Inputs

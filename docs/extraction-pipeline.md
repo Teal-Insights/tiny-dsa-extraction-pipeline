@@ -266,6 +266,54 @@ constraints = constraints | {
 }
 ```
 
+Every leaf we classify as a mutable input for codegen must also appear
+in `inputs.bindings.yaml`. Otherwise the exported library can write
+cells that have no public setter on the API surface. As a sanity check,
+we can derive the input series and compare the leaves to the keys in
+`inputs.bindings.yaml`:
+
+``` python
+import sys
+from typing import Literal, get_args, get_origin
+
+repo_root = Path("..").resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from excel_grapher.grapher import DynamicRefConfig, create_dependency_graph
+from src.dependency_graph_viz import series_cell_keys
+
+
+def is_constant_constraint(constraint: object) -> bool:
+    return get_origin(constraint) is Literal and len(get_args(constraint)) == 1
+
+
+configure_graph = create_dependency_graph(
+    workbook_path,
+    targets,
+    load_values=True,
+    dynamic_refs=DynamicRefConfig.from_constraints(constraints, {}),
+)
+leaf_classification = {
+    key: "constant" if is_constant_constraint(constraints[key]) else "input"
+    for key in configure_graph.leaf_keys()
+}
+input_series_for_check = derive_input_series(
+    configure_graph,
+    series_bindings,
+    workbook=workbook_path,
+)
+mutable_input_leaves = {
+    key for key, kind in leaf_classification.items() if kind == "input"
+}
+bound_input_cells = series_cell_keys(input_series_for_check)
+unbound_input_leaves = sorted(mutable_input_leaves - bound_input_cells)
+assert not unbound_input_leaves, (
+    "Mutable input leaves missing from inputs.bindings.yaml: "
+    + ", ".join(unbound_input_leaves)
+)
+```
+
 ### Define the Docstring Callback
 
 `excel-grapher` handles the deterministic parts of docstring
@@ -787,6 +835,7 @@ print("```")
 
 ``` text
 input country_name: Inputs!B5
+input country_initial_debt: Inputs!B10, Inputs!B11, Inputs!B12
 input growth_baseline: Inputs!C16, Inputs!D16, Inputs!E16, Inputs!F16, Inputs!G16
 input interest_baseline: Inputs!C17, Inputs!D17, Inputs!E17, Inputs!F17, Inputs!G17
 input primary_balance_baseline: Inputs!C18, Inputs!D18, Inputs!E18, Inputs!F18, Inputs!G18
