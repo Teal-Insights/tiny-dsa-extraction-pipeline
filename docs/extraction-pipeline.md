@@ -1859,3 +1859,73 @@ docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
 ```
 
     1014
+
+## Stage 5: Refactor
+
+Now that we have a well documented user-facing API in the shape we want,
+we can work on refactoring the library internals to make it
+macrofinance-shaped rather than Excel-shaped.
+
+### Human Hypothesis
+
+Before refactoring, it helps to explore the extracted graph
+interactively. We use the same pattern as workflow mapping elsewhere in
+Teal docs: Graphviz computes layout (`dot -Tjson`), then Cytoscape
+renders those preset positions in the browser with pan/zoom and filters.
+
+`excel-grapher` exports the graph to DOT with `to_graphviz`. We wrap
+that output in one Graphviz cluster per worksheet, run `dot`, and write
+a small Cytoscape site you can browse with a local HTTP server.
+
+``` python
+import sys
+
+repo_root = Path("..").resolve()
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from src.dependency_graph_viz import (
+    constant_keys_from_leaf_classification,
+    series_cell_keys,
+    write_dependency_graph_site,
+)
+
+dependency_graph_dir = Path("dependency-graph")
+output_cells = series_cell_keys(output_series)
+input_cells = series_cell_keys(input_series)
+constant_cells = constant_keys_from_leaf_classification(leaf_classification)
+
+graph_site_meta = write_dependency_graph_site(
+    graph,
+    dependency_graph_dir,
+    target_keys=output_cells,
+    input_keys=input_cells,
+    output_keys=output_cells,
+    constant_keys=constant_cells,
+    rankdir="TB",
+)
+
+print("```text")
+print(f"Wrote interactive graph site to {dependency_graph_dir.resolve()}/")
+print(
+    f"{graph_site_meta['node_count']} cells · "
+    f"{graph_site_meta['edge_count']} edges · "
+    f"{graph_site_meta['cluster_count']} sheet clusters"
+)
+print("Serve docs/dependency-graph and open index.html, e.g.:")
+print("  uv run python -m http.server 8000 --directory docs/dependency-graph")
+print("  http://localhost:8000/")
+print("```")
+```
+
+``` text
+Wrote interactive graph site to C:\Users\chris\Software\tiny-dsa-extraction-pipeline\docs\dependency-graph/
+81 cells · 143 edges · 3 sheet clusters
+Serve docs/dependency-graph and open index.html, e.g.:
+  uv run python -m http.server 8000 --directory docs/dependency-graph
+  http://localhost:8000/
+```
+
+### Programmatic Graph Analysis
+
+### Programmatic Compression and Refactoring
