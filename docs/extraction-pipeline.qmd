@@ -1361,12 +1361,6 @@ After validation succeeds, the pipeline syncs validated LLM-authored pages back 
 `src/documentation_pipeline.py` runs validation after writing all user-guide pages and before generating the deploy workflow:
 
 ```{python}
-import sys
-
-repo_root = Path("..").resolve()
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
-
 from src.qmd_python_validation import validate_qmd_files
 from src.documentation_pipeline import (
     sync_validated_pages_to_rewrite_cache,
@@ -1455,94 +1449,11 @@ Now that we have a well documented user-facing API in the shape we want, we can 
 
 ### Human Hypothesis
 
-#### Exploring Graph Connectivity
-
-Before refactoring, it helps to explore the extracted graph interactively. We use the same pattern as workflow mapping elsewhere in Teal docs: Graphviz computes layout (`dot -Tjson`), then Cytoscape renders those preset positions in the browser with pan/zoom and filters.
-
-`excel-grapher` exports the graph to DOT with `to_graphviz`. We wrap that output in one Graphviz cluster per worksheet, run `dot`, and write a small Cytoscape site you can browse with a local HTTP server.
-
-```{python}
-import sys
-
-repo_root = Path("..").resolve()
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
-
-from src.dependency_graph_viz import (
-    constant_keys_from_leaf_classification,
-    series_cell_keys,
-    write_dependency_graph_site,
-)
-
-dependency_graph_dir = Path("dependency-graph")
-output_cells = series_cell_keys(output_series)
-input_cells = series_cell_keys(input_series)
-constant_cells = constant_keys_from_leaf_classification(leaf_classification)
-
-graph_site_meta = write_dependency_graph_site(
-    graph,
-    dependency_graph_dir,
-    target_keys=output_cells,
-    input_keys=input_cells,
-    output_keys=output_cells,
-    constant_keys=constant_cells,
-    rankdir="TB",
-)
-
-print("```text")
-print(f"Wrote interactive graph site to {dependency_graph_dir.resolve()}/")
-print(
-    f"{graph_site_meta['node_count']} cells · "
-    f"{graph_site_meta['edge_count']} edges · "
-    f"{graph_site_meta['cluster_count']} sheet clusters"
-)
-print("Serve docs/dependency-graph and open index.html, e.g.:")
-print("  uv run python -m http.server 8000 --directory docs/dependency-graph")
-print("  http://localhost:8000/")
-print("```")
-```
-
-One hypothesis is that we can modularize the internals by grouping non-constant, non-input, non-target cells into modules by looking for connected subgraphs that have only one cell with incoming edges. Eyeballing it, it looks like that would give the following groupings:
-
-``` {python}
-group_1 = [
-    "Engine!C10", "Engine!D10",
-    "Engine!C14", "Engine!D14",
-    "Engine!C15", "Engine!D15",
-    "Engine!C16", "Engine!D16",
-    "Engine!D18",
-    "Engine!B20", "Engine!C20", "Engine!D20"
-]
-group_2 = [
-    "Engine!E10", "Engine!F10",
-    "Engine!E14", "Engine!F14",
-    "Engine!E15", "Engine!F15",
-    "Engine!E16", "Engine!F16",
-    "Engine!E20", "Engine!F20"
-]
-group_3 = [
-    "Engine!G14", "Engine!G15", "Engine!G16", "Engine!G20"
-]
-ungrouped = [
-    "Inputs!B6",
-    "Engine!C6", "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6",
-    "Engine!B9", "Engine!G10"
-]
-```
-
-Note that I have listed cell addresses here roughly left to right, top to bottom (in the workbook), but the dependency order is roughly the reverse of that, because the direction of the dependency graph goes from targets to inputs, or right to left in the workbook.
-
-We also can look for formulas with similar patterns that could be refactored into helper functions. For example, the following ungrouped formulas all have the same pattern:
-
-```{python}
-patternize_these = ["Engine!C6", "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6"]
-```
-
 #### Semantic Labeling
 
 It's possible that semantic labels might also provide information that is useful for refactoring—especially for function naming and docstring authoring.
 
-We can ask an LLM to label each non-input, non-target graph cell with its surrounding table, row, and column context. The labels need more structure than plain strings: a label like `1` or `2024` may be a value in a known concept such as `TIME_PERIOD`, while a label like `Debt-to-GDP ratio` may be an `INDICATOR`. We store labels as node metadata under `table_labels`, `row_labels`, and `column_labels` keys, but with an optional `concept` ID from the binding concept scheme.
+We can ask an LLM to extract and annotate spreadsheet labels for each non-input, non-target graph cell. The labels need more structure than plain strings: a label like `1` or `2024` may be a value in a known concept such as `TIME_PERIOD`, while a label like `Debt-to-GDP ratio` may be an `INDICATOR`. We store labels as node metadata under `table_labels`, `row_labels`, and `column_labels` keys, but with an optional `concept` ID from the binding concept scheme.
 
 ```{python}
 import os
@@ -1550,10 +1461,19 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from src.dependency_graph_viz import (
+    constant_keys_from_leaf_classification,
+    semantic_node_labels,
+    series_cell_keys,
+)
 from src.semantic_labeling import label_internal_graph_cells
 
 
-load_dotenv(Path("../.env"))
+load_dotenv(Path("../.env")
+
+output_cells = series_cell_keys(output_series)
+input_cells = series_cell_keys(input_series)
+constant_cells = constant_keys_from_leaf_classification(leaf_classification))
 
 semantic_label_summary = label_internal_graph_cells(
     graph=graph,
@@ -1577,9 +1497,114 @@ print("```")
 
 Label information can be added to graph visualization as node labels, tooltips, or colors, or alternatively can be used for generating subgraph groupings or driving semantic cluster layout algorithms.
 
+#### Exploring Graph Connectivity
+
+Before refactoring, it helps to explore the extracted graph interactively. We use the same pattern as workflow mapping elsewhere in Teal docs: Graphviz computes layout (`dot -Tjson`), then Cytoscape renders those preset positions in the browser with pan/zoom and filters.
+
+`excel-grapher` exports the graph to DOT with `to_graphviz`. We wrap that output in one Graphviz cluster per worksheet, run `dot`, and write a small Cytoscape site you can browse with a local HTTP server.
+
+```{python}
+from src.dependency_graph_viz import write_dependency_graph_site
+
+dependency_graph_dir = Path("dependency-graph")
+
+graph_site_meta = write_dependency_graph_site(
+    graph,
+    dependency_graph_dir,
+    node_labels=semantic_node_labels(graph),
+    target_keys=output_cells,
+    input_keys=input_cells,
+    output_keys=output_cells,
+    constant_keys=constant_cells,
+    rankdir="TB",
+)
+
+print("```text")
+print(f"Wrote interactive graph site to {dependency_graph_dir.resolve()}/")
+print(
+    f"{graph_site_meta['node_count']} cells · "
+    f"{graph_site_meta['edge_count']} edges · "
+    f"{graph_site_meta['cluster_count']} sheet clusters"
+)
+print("Serve docs/dependency-graph and open index.html, e.g.:")
+print("  uv run python -m http.server 8000 --directory docs/dependency-graph")
+print("  http://localhost:8000/")
+print("```")
+```
+
+One hypothesis is that we can modularize the internals by grouping non-constant, non-input, non-target cells into modules by looking for connected subgraphs that have only one cell with incoming edges.
+
+There are a few different ways to group the cells that satisfy that constraint. But another thing we might want to do is create groups of the same shape, that could be represented by a single function.
+
+Eyeballing it, it looks like applying those two criteria would give the following groupings:
+
+``` {python}
+group_1 = [
+    "Engine!C10", "Engine!C14", "Engine!C15", "Engine!C16", "Engine!C20",
+]
+group_2 = [
+    "Engine!D10", "Engine!D14", "Engine!D15", "Engine!D16", "Engine!D20",
+]
+group_3 = [
+    "Engine!E10", "Engine!E14", "Engine!E15", "Engine!E16", "Engine!E20",
+]
+group_4 = [
+    "Engine!F10", "Engine!F14", "Engine!F15", "Engine!F16", "Engine!F20",
+]
+group_5 = [
+    "Engine!G10", "Engine!G14", "Engine!G15", "Engine!G16", "Engine!G20",
+]
+group_6 = ["Engine!B6", "Engine!C6"]
+ungrouped = [
+    "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6", "Engine!B9", "Engine!B20"
+]
+```
+
+Groups 1-5 are all the same shape and are good candidates for deduplication.
+
+Note that I have listed cell addresses here roughly left to right, top to bottom (in the workbook), but the dependency order is roughly the reverse of that, because the direction of the dependency graph goes from targets to inputs, or right to left in the workbook.
+
 #### Visualizing the Human Hypothesis
 
 Let's visualize the workbook graph with the groupings identified earlier (during our graph connectivity exploration) represented as subgraphs, and with row and column labels on the nodes to help us characterize the groupings.
+
+```{python}
+human_hypothesis_graph_dir = Path("human-hypothesis-graph")
+human_hypothesis_groups = {
+    "Group 1": group_1,
+    "Group 2": group_2,
+    "Group 3": group_3,
+    "Group 4": group_4,
+    "Group 5": group_5,
+    "Group 6": group_6,
+}
+
+human_hypothesis_graph_meta = write_dependency_graph_site(
+    graph,
+    human_hypothesis_graph_dir,
+    clusters=human_hypothesis_groups,
+    node_labels=semantic_node_labels(graph),
+    target_keys=output_cells,
+    input_keys=input_cells,
+    output_keys=output_cells,
+    constant_keys=constant_cells,
+    rankdir="TB",
+)
+
+print("```text")
+print(f"Wrote human hypothesis graph site to {human_hypothesis_graph_dir.resolve()}/")
+print(
+    f"{human_hypothesis_graph_meta['node_count']} cells · "
+    f"{human_hypothesis_graph_meta['edge_count']} edges · "
+    f"{human_hypothesis_graph_meta['cluster_count']} hypothesis clusters"
+)
+print("Serve docs/human-hypothesis-graph and open index.html, e.g.:")
+print("  uv run python -m http.server 8000 --directory docs/human-hypothesis-graph")
+print("  http://localhost:8000/")
+print("```")
+```
+
+Groups 1-5 appear to propagate the shocks for years 1-5, respectively. Group 6 will actually collapse into a single cell after graph compression, because it consists of just two cells, one of which is a pure transit cell.
 
 ### Programmatic Graph Analysis
 

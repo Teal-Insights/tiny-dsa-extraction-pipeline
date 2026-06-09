@@ -11,9 +11,11 @@ from excel_grapher.series_bindings import (
 
 from src.dependency_graph_viz import (
     build_cytoscape_preset_payload,
+    build_dot_with_clusters,
     build_dot_with_sheet_clusters,
     constant_keys_from_leaf_classification,
     parse_graphviz_json,
+    semantic_node_labels,
     series_cell_keys,
     write_dependency_graph_site,
 )
@@ -78,6 +80,102 @@ def test_parse_graphviz_json_and_build_payload(tiny_graph) -> None:
     assert constant_nodes
     assert payload["elements"]["nodes"]
     assert payload["elements"]["edges"]
+
+
+def test_build_dot_with_custom_clusters_and_node_labels(tiny_graph) -> None:
+    node_labels = {
+        "Engine!C10": "Engine!C10\nrow: Baseline debt",
+        "Engine!D10": "Engine!D10\nrow: Baseline debt",
+    }
+    dot_text = build_dot_with_clusters(
+        tiny_graph,
+        clusters={"Debt dynamics": ["Engine!C10", "Engine!D10"]},
+        node_labels=node_labels,
+        include_formula_on_nodes=False,
+    )
+    graphviz_json = parse_graphviz_json(dot_text)
+    payload = build_cytoscape_preset_payload(tiny_graph, graphviz_json)
+
+    cluster_nodes = [
+        node
+        for node in payload["elements"]["nodes"]
+        if node["data"].get("type") == "cluster"
+    ]
+    engine_c10 = next(
+        node
+        for node in payload["elements"]["nodes"]
+        if node["data"].get("id") == "Engine!C10"
+    )
+
+    assert any(node["data"].get("label") == "Debt dynamics" for node in cluster_nodes)
+    assert engine_c10["data"]["label"] == "Engine!C10\nrow: Baseline debt"
+    assert engine_c10["data"]["parent"].startswith("cluster::cluster_group_")
+
+
+def test_semantic_node_labels_include_row_and_column_metadata(tiny_graph) -> None:
+    tiny_graph.set_node_metadata(
+        "Engine!C10",
+        {
+            "table_labels": [
+                {
+                    "label": "Baseline debt dynamics",
+                    "source_address": "Engine!B8",
+                }
+            ],
+            "row_labels": [
+                {
+                    "label": "Debt-to-GDP ratio",
+                    "concept": "INDICATOR",
+                    "source_address": "Engine!B10",
+                }
+            ],
+            "column_labels": [
+                {
+                    "label": "1",
+                    "concept": "TIME_PERIOD",
+                    "source_address": "Engine!C9",
+                }
+            ],
+        },
+    )
+
+    labels = semantic_node_labels(tiny_graph, keys=["Engine!C10"])
+
+    formula = tiny_graph.get_node("Engine!C10").formula
+    assert formula is not None
+    assert labels == {
+        "Engine!C10": (
+            "Engine!C10\n"
+            f"{formula}\n"
+            "table: Baseline debt dynamics\n"
+            "row: Debt-to-GDP ratio\n"
+            "column: 1"
+        )
+    }
+
+
+def test_payload_node_data_includes_semantic_label_fields(tiny_graph) -> None:
+    tiny_graph.set_node_metadata(
+        "Engine!C10",
+        {
+            "table_labels": [{"label": "Baseline debt dynamics"}],
+            "row_labels": [{"label": "Debt-to-GDP ratio"}],
+            "column_labels": [{"label": "1"}],
+        },
+    )
+    dot_text = build_dot_with_sheet_clusters(tiny_graph, max_formula_length=40)
+    graphviz_json = parse_graphviz_json(dot_text)
+    payload = build_cytoscape_preset_payload(tiny_graph, graphviz_json)
+
+    engine_c10 = next(
+        node
+        for node in payload["elements"]["nodes"]
+        if node["data"].get("id") == "Engine!C10"
+    )
+
+    assert engine_c10["data"]["table_labels"] == "Baseline debt dynamics"
+    assert engine_c10["data"]["row_labels"] == "Debt-to-GDP ratio"
+    assert engine_c10["data"]["column_labels"] == "1"
 
 
 def test_write_dependency_graph_site(tmp_path: Path, tiny_graph) -> None:

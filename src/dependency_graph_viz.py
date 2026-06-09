@@ -22,13 +22,17 @@ DEFAULT_JSON_FILENAME = "dependency-graph.json"
 
 
 def _quote(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     return f'"{escaped}"'
 
 
+def _cluster_id(label: str, *, prefix: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", label)
+    return f"{prefix}_{safe}"
+
+
 def _sheet_cluster_id(sheet: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_]", "_", sheet)
-    return f"cluster_sheet_{safe}"
+    return _cluster_id(sheet, prefix="cluster_sheet")
 
 
 def _node_sheet(key: NodeKey, graph: DependencyGraph) -> str:
@@ -43,26 +47,39 @@ def _node_sheet(key: NodeKey, graph: DependencyGraph) -> str:
 def build_dot_with_sheet_clusters(
     graph: DependencyGraph,
     *,
+    node_labels: Mapping[NodeKey, str] | None = None,
     highlight: set[NodeKey] | None = None,
     rankdir: str = "TB",
     include_formula_on_nodes: bool = True,
     max_formula_length: int | None = 120,
 ) -> str:
     """Extend ``to_graphviz`` output with one Graphviz cluster per worksheet."""
-    flat_dot = to_graphviz(
+    return build_dot_with_clusters(
         graph,
+        node_labels=node_labels,
         highlight=highlight,
         rankdir=rankdir,
         include_formula_on_nodes=include_formula_on_nodes,
         max_formula_length=max_formula_length,
     )
 
-    sheets: dict[str, list[NodeKey]] = {}
-    for key in graph.keys(order="workbook"):
-        if graph.get_node(key) is None:
-            continue
-        sheets.setdefault(_node_sheet(key, graph), []).append(key)
 
+def _node_line_with_label(node_line: str, label: str) -> str:
+    return re.sub(
+        r'label="(?:\\.|[^"\\])*"',
+        f"label={_quote(label)}",
+        node_line,
+        count=1,
+    )
+
+
+def _graph_node_lines(
+    graph: DependencyGraph,
+    flat_dot: str,
+    *,
+    node_labels: Mapping[NodeKey, str] | None = None,
+) -> dict[NodeKey, str]:
+    labels = dict(node_labels or {})
     node_lines: dict[NodeKey, str] = {}
     for line in flat_dot.splitlines():
         stripped = line.strip()
@@ -72,7 +89,78 @@ def build_dot_with_sheet_clusters(
         if match is None:
             continue
         key = match.group(1).replace('\\"', '"').replace("\\\\", "\\")
-        node_lines[key] = stripped
+        if graph.get_node(key) is None:
+            continue
+        node_lines[key] = (
+            _node_line_with_label(stripped, labels[key]) if key in labels else stripped
+        )
+    return node_lines
+
+
+def _sheet_groups(graph: DependencyGraph) -> dict[str, list[NodeKey]]:
+    sheets: dict[str, list[NodeKey]] = {}
+    for key in graph.keys(order="workbook"):
+        if graph.get_node(key) is None:
+            continue
+        sheets.setdefault(_node_sheet(key, graph), []).append(key)
+    return sheets
+
+
+def _validate_cluster_groups(
+    graph: DependencyGraph,
+    clusters: Mapping[str, Iterable[NodeKey]],
+) -> dict[str, list[NodeKey]]:
+    graph_keys = set(graph.keys(order="workbook"))
+    grouped_keys: dict[NodeKey, str] = {}
+    normalized: dict[str, list[NodeKey]] = {}
+    for label, keys in clusters.items():
+        cluster_keys = list(keys)
+        unknown = sorted(set(cluster_keys) - graph_keys)
+        if unknown:
+            raise ValueError(f"Unknown graph cells in cluster {label!r}: {unknown}")
+        for key in cluster_keys:
+            existing_label = grouped_keys.get(key)
+            if existing_label is not None:
+                raise ValueError(
+                    f"Cell {key!r} appears in both {existing_label!r} and {label!r}"
+                )
+            grouped_keys[key] = label
+        normalized[label] = cluster_keys
+    return normalized
+
+
+def build_dot_with_clusters(
+    graph: DependencyGraph,
+    *,
+    clusters: Mapping[str, Iterable[NodeKey]] | None = None,
+    node_labels: Mapping[NodeKey, str] | None = None,
+    highlight: set[NodeKey] | None = None,
+    rankdir: str = "TB",
+    include_formula_on_nodes: bool = True,
+    max_formula_length: int | None = 120,
+) -> str:
+    """Build Graphviz DOT with worksheet clusters or caller-provided clusters."""
+    flat_dot = to_graphviz(
+        graph,
+        highlight=highlight,
+        rankdir=rankdir,
+        include_formula_on_nodes=include_formula_on_nodes,
+        max_formula_length=max_formula_length,
+    )
+
+    node_lines = _graph_node_lines(graph, flat_dot, node_labels=node_labels)
+    if clusters is None:
+        cluster_groups = _sheet_groups(graph)
+        cluster_id_for_label = {
+            label: _sheet_cluster_id(label) for label in cluster_groups
+        }
+    else:
+        cluster_groups = _validate_cluster_groups(graph, clusters)
+        cluster_id_for_label = {
+            label: f"{_cluster_id(label, prefix='cluster_group')}_{idx}"
+            for idx, label in enumerate(cluster_groups, start=1)
+        }
+    grouped_keys = {key for keys in cluster_groups.values() for key in keys}
 
     lines: list[str] = [
         "digraph dependencies {",
@@ -86,16 +174,25 @@ def build_dot_with_sheet_clusters(
         "",
     ]
 
-    for sheet in sorted(sheets):
-        lines.append(f'  subgraph "{_sheet_cluster_id(sheet)}" {{')
-        lines.append(f"    label={_quote(sheet)};")
+    for cluster_label, keys in cluster_groups.items():
+        lines.append(f'  subgraph "{cluster_id_for_label[cluster_label]}" {{')
+        lines.append(f"    label={_quote(cluster_label)};")
         lines.append("")
-        for key in sheets[sheet]:
+        for key in keys:
             node_line = node_lines.get(key)
             if node_line is None:
                 continue
             lines.append(f"    {node_line}")
         lines.append("  }")
+        lines.append("")
+
+    for key in graph.keys(order="workbook"):
+        if key in grouped_keys:
+            continue
+        node_line = node_lines.get(key)
+        if node_line is not None:
+            lines.append(f"  {node_line}")
+    if len(grouped_keys) < len(node_lines):
         lines.append("")
 
     for line in flat_dot.splitlines():
@@ -306,6 +403,10 @@ def build_cytoscape_preset_payload(
             "is_leaf": node.is_leaf,
             "formula": node.formula,
         }
+        for metadata_key in ("table_labels", "row_labels", "column_labels"):
+            label_text = _semantic_label_group_text(node.metadata.get(metadata_key))
+            if label_text is not None:
+                data[metadata_key] = label_text
         w_pt = _graphviz_size_inches_to_points(node_obj.get("width"))
         h_pt = _graphviz_size_inches_to_points(node_obj.get("height"))
         if w_pt is not None and h_pt is not None:
@@ -660,6 +761,63 @@ def build_index_html(*, json_filename: str = DEFAULT_JSON_FILENAME) -> str:
 """
 
 
+def _semantic_label_text(value: Any) -> str | None:
+    if isinstance(value, Mapping):
+        label = value.get("label")
+        return str(label) if label is not None else None
+    if isinstance(value, str | int | float):
+        return str(value)
+    return None
+
+
+def _semantic_label_group_text(value: Any) -> str | None:
+    if not isinstance(value, list):
+        return None
+    labels = [
+        label_text
+        for item in value
+        if (label_text := _semantic_label_text(item)) is not None
+    ]
+    if not labels:
+        return None
+    return " | ".join(labels)
+
+
+def semantic_node_labels(
+    graph: DependencyGraph,
+    *,
+    keys: Iterable[NodeKey] | None = None,
+    include_formula_on_nodes: bool = True,
+    max_formula_length: int | None = 120,
+) -> dict[NodeKey, str]:
+    """Format semantic node metadata as concise Graphviz/Cytoscape labels."""
+    node_labels: dict[NodeKey, str] = {}
+    for key in keys or graph.keys(order="workbook"):
+        node = graph.get_node(key)
+        if node is None:
+            continue
+        table_labels = _semantic_label_group_text(node.metadata.get("table_labels"))
+        row_labels = _semantic_label_group_text(node.metadata.get("row_labels"))
+        column_labels = _semantic_label_group_text(node.metadata.get("column_labels"))
+        if table_labels is None and row_labels is None and column_labels is None:
+            continue
+
+        parts = [key]
+        if include_formula_on_nodes and node.formula:
+            formula = node.formula
+            if max_formula_length is not None and len(formula) > max_formula_length:
+                formula = f"{formula[:max_formula_length]}..."
+            parts.append(formula)
+        if table_labels is not None:
+            parts.append(f"table: {table_labels}")
+        if row_labels is not None:
+            parts.append(f"row: {row_labels}")
+        if column_labels is not None:
+            parts.append(f"column: {column_labels}")
+        node_labels[key] = "\n".join(parts)
+    return node_labels
+
+
 def series_cell_keys(series_items: Iterable[Mapping[str, Any]]) -> set[NodeKey]:
     keys: set[NodeKey] = set()
     for item in series_items:
@@ -680,6 +838,8 @@ def write_dependency_graph_site(
     graph: DependencyGraph,
     output_dir: Path,
     *,
+    clusters: Mapping[str, Iterable[NodeKey]] | None = None,
+    node_labels: Mapping[NodeKey, str] | None = None,
     target_keys: set[NodeKey] | None = None,
     input_keys: set[NodeKey] | None = None,
     output_keys: set[NodeKey] | None = None,
@@ -689,7 +849,12 @@ def write_dependency_graph_site(
     json_filename: str = DEFAULT_JSON_FILENAME,
 ) -> dict[str, Any]:
     """Write Cytoscape preset JSON and HTML for a dependency graph."""
-    dot_text = build_dot_with_sheet_clusters(graph, rankdir=rankdir)
+    dot_text = build_dot_with_clusters(
+        graph,
+        clusters=clusters,
+        node_labels=node_labels,
+        rankdir=rankdir,
+    )
     graphviz_json = parse_graphviz_json(dot_text, dot_bin=dot_bin)
     payload = build_cytoscape_preset_payload(
         graph,

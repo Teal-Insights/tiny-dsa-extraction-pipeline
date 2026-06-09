@@ -1888,6 +1888,7 @@ if str(repo_root) not in sys.path:
 
 from src.dependency_graph_viz import (
     constant_keys_from_leaf_classification,
+    semantic_node_labels,
     series_cell_keys,
     write_dependency_graph_site,
 )
@@ -1931,57 +1932,57 @@ Serve docs/dependency-graph and open index.html, e.g.:
 One hypothesis is that we can modularize the internals by grouping
 non-constant, non-input, non-target cells into modules by looking for
 connected subgraphs that have only one cell with incoming edges.
-Eyeballing it, it looks like that would give the following groupings:
+
+There are a few different ways to group the cells that satisfy that
+constraint. But another thing we might want to do is create groups of
+the same shape, that could be represented by a single function.
+
+Eyeballing it, it looks like applying those two criteria would give the
+following groupings:
 
 ``` python
 group_1 = [
-    "Engine!C10", "Engine!D10",
-    "Engine!C14", "Engine!D14",
-    "Engine!C15", "Engine!D15",
-    "Engine!C16", "Engine!D16",
-    "Engine!D18",
-    "Engine!B20", "Engine!C20", "Engine!D20"
+    "Engine!C10", "Engine!C14", "Engine!C15", "Engine!C16", "Engine!C20",
 ]
 group_2 = [
-    "Engine!E10", "Engine!F10",
-    "Engine!E14", "Engine!F14",
-    "Engine!E15", "Engine!F15",
-    "Engine!E16", "Engine!F16",
-    "Engine!E20", "Engine!F20"
+    "Engine!D10", "Engine!D14", "Engine!D15", "Engine!D16", "Engine!D20",
 ]
 group_3 = [
-    "Engine!G14", "Engine!G15", "Engine!G16", "Engine!G20"
+    "Engine!E10", "Engine!E14", "Engine!E15", "Engine!E16", "Engine!E20",
 ]
+group_4 = [
+    "Engine!F10", "Engine!F14", "Engine!F15", "Engine!F16", "Engine!F20",
+]
+group_5 = [
+    "Engine!G10", "Engine!G14", "Engine!G15", "Engine!G16", "Engine!G20",
+]
+group_6 = ["Engine!B6", "Engine!C6"]
 ungrouped = [
-    "Inputs!B6",
-    "Engine!C6", "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6",
-    "Engine!B9", "Engine!G10"
+    "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6", "Engine!B9", "Engine!B20"
 ]
 ```
+
+Groups 1-5 are all the same shape and are good candidates for
+deduplication.
 
 Note that I have listed cell addresses here roughly left to right, top
 to bottom (in the workbook), but the dependency order is roughly the
 reverse of that, because the direction of the dependency graph goes from
 targets to inputs, or right to left in the workbook.
 
-We also can look for formulas with similar patterns that could be
-refactored into helper functions. For example, the following ungrouped
-formulas all have the same pattern:
-
-``` python
-patternize_these = ["Engine!C6", "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6"]
-```
-
 #### Semantic Labeling
 
-To make internal graph nodes easier to refactor, we can ask an LLM to
-label each non-input, non-target graph cell with its surrounding table,
-row, and column context. The labels need more structure than plain
-strings: a label like `1` or `2024` may be a value in a known concept
-such as `TIME_PERIOD`, while a label like `Debt-to-GDP ratio` may be an
-`INDICATOR`. The metadata shape below keeps the familiar `table_labels`,
-`row_labels`, and `column_labels` keys, but stores each label as an
-object with an optional `concept` ID from the binding concept scheme.
+It’s possible that semantic labels might also provide information that
+is useful for refactoring—especially for function naming and docstring
+authoring.
+
+We can ask an LLM to extract and annotate spreadsheet labels for each
+non-input, non-target graph cell. The labels need more structure than
+plain strings: a label like `1` or `2024` may be a value in a known
+concept such as `TIME_PERIOD`, while a label like `Debt-to-GDP ratio`
+may be an `INDICATOR`. We store labels as node metadata under
+`table_labels`, `row_labels`, and `column_labels` keys, but with an
+optional `concept` ID from the binding concept scheme.
 
 ``` python
 import os
@@ -2016,6 +2017,61 @@ print("```")
 
 ``` text
 Labeled 42 non-input, non-target graph cells across 2 sheets.
+```
+
+Label information can be added to graph visualization as node labels,
+tooltips, or colors, or alternatively can be used for generating
+subgraph groupings or driving semantic cluster layout algorithms.
+
+#### Visualizing the Human Hypothesis
+
+Let’s visualize the workbook graph with the groupings identified earlier
+(during our graph connectivity exploration) represented as subgraphs,
+and with row and column labels on the nodes to help us characterize the
+groupings.
+
+``` python
+human_hypothesis_graph_dir = Path("human-hypothesis-graph")
+human_hypothesis_groups = {
+    "Group 1": group_1,
+    "Group 2": group_2,
+    "Group 3": group_3,
+    "Group 4": group_4,
+    "Group 5": group_5,
+    "Group 6": group_6,
+}
+
+human_hypothesis_graph_meta = write_dependency_graph_site(
+    graph,
+    human_hypothesis_graph_dir,
+    clusters=human_hypothesis_groups,
+    node_labels=semantic_node_labels(graph),
+    target_keys=output_cells,
+    input_keys=input_cells,
+    output_keys=output_cells,
+    constant_keys=constant_cells,
+    rankdir="TB",
+)
+
+print("```text")
+print(f"Wrote human hypothesis graph site to {human_hypothesis_graph_dir.resolve()}/")
+print(
+    f"{human_hypothesis_graph_meta['node_count']} cells · "
+    f"{human_hypothesis_graph_meta['edge_count']} edges · "
+    f"{human_hypothesis_graph_meta['cluster_count']} hypothesis clusters"
+)
+print("Serve docs/human-hypothesis-graph and open index.html, e.g.:")
+print("  uv run python -m http.server 8000 --directory docs/human-hypothesis-graph")
+print("  http://localhost:8000/")
+print("```")
+```
+
+``` text
+Wrote human hypothesis graph site to C:\Users\chris\Software\tiny-dsa-extraction-pipeline\docs\human-hypothesis-graph/
+81 cells · 143 edges · 6 hypothesis clusters
+Serve docs/human-hypothesis-graph and open index.html, e.g.:
+  uv run python -m http.server 8000 --directory docs/human-hypothesis-graph
+  http://localhost:8000/
 ```
 
 ### Programmatic Graph Analysis
