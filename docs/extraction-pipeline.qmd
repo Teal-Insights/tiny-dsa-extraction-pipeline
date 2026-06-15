@@ -1469,11 +1469,11 @@ from src.dependency_graph_viz import (
 from src.semantic_labeling import label_internal_graph_cells
 
 
-load_dotenv(Path("../.env")
+load_dotenv(Path("../.env"))
 
 output_cells = series_cell_keys(output_series)
 input_cells = series_cell_keys(input_series)
-constant_cells = constant_keys_from_leaf_classification(leaf_classification))
+constant_cells = constant_keys_from_leaf_classification(leaf_classification)
 
 semantic_label_summary = label_internal_graph_cells(
     graph=graph,
@@ -1561,6 +1561,8 @@ ungrouped = [
 ```
 
 Groups 1-5 are all the same shape and are good candidates for deduplication.
+
+It also appears that Engine!C6:Engine!G6 are all the same shape and could be similarly deduplicated.
 
 Note that I have listed cell addresses here roughly left to right, top to bottom (in the workbook), but the dependency order is roughly the reverse of that, because the direction of the dependency graph goes from targets to inputs, or right to left in the workbook.
 

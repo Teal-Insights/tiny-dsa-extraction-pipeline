@@ -1764,12 +1764,6 @@ repair the same cell again.
 user-guide pages and before generating the deploy workflow:
 
 ``` python
-import sys
-
-repo_root = Path("..").resolve()
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
-
 from src.qmd_python_validation import validate_qmd_files
 from src.documentation_pipeline import (
     sync_validated_pages_to_rewrite_cache,
@@ -1868,6 +1862,68 @@ macrofinance-shaped rather than Excel-shaped.
 
 ### Human Hypothesis
 
+#### Semantic Labeling
+
+It’s possible that semantic labels might also provide information that
+is useful for refactoring—especially for function naming and docstring
+authoring.
+
+We can ask an LLM to extract and annotate spreadsheet labels for each
+non-input, non-target graph cell. The labels need more structure than
+plain strings: a label like `1` or `2024` may be a value in a known
+concept such as `TIME_PERIOD`, while a label like `Debt-to-GDP ratio`
+may be an `INDICATOR`. We store labels as node metadata under
+`table_labels`, `row_labels`, and `column_labels` keys, but with an
+optional `concept` ID from the binding concept scheme.
+
+``` python
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from src.dependency_graph_viz import (
+    constant_keys_from_leaf_classification,
+    semantic_node_labels,
+    series_cell_keys,
+)
+from src.semantic_labeling import label_internal_graph_cells
+
+
+load_dotenv(Path("../.env"))
+
+output_cells = series_cell_keys(output_series)
+input_cells = series_cell_keys(input_series)
+constant_cells = constant_keys_from_leaf_classification(leaf_classification)
+
+semantic_label_summary = label_internal_graph_cells(
+    graph=graph,
+    workbook_path=workbook_path,
+    input_cells=input_cells,
+    target_cells=output_cells,
+    concept_scheme=series_bindings["concept_scheme"],
+    model=os.environ.get("SEMANTIC_LABEL_MODEL", "deepseek-v4-pro"),
+    cache_path=Path("../.cache/semantic-labels.json"),
+)
+
+print("```text")
+print(
+    "Labeled "
+    f"{semantic_label_summary.labeled_cell_count} "
+    "non-input, non-target graph cells across "
+    f"{semantic_label_summary.sheet_count} sheets."
+)
+print("```")
+```
+
+``` text
+Labeled 42 non-input, non-target graph cells across 2 sheets.
+```
+
+Label information can be added to graph visualization as node labels,
+tooltips, or colors, or alternatively can be used for generating
+subgraph groupings or driving semantic cluster layout algorithms.
+
 #### Exploring Graph Connectivity
 
 Before refactoring, it helps to explore the extracted graph
@@ -1880,27 +1936,14 @@ that output in one Graphviz cluster per worksheet, run `dot`, and write
 a small Cytoscape site you can browse with a local HTTP server.
 
 ``` python
-import sys
-
-repo_root = Path("..").resolve()
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
-
-from src.dependency_graph_viz import (
-    constant_keys_from_leaf_classification,
-    semantic_node_labels,
-    series_cell_keys,
-    write_dependency_graph_site,
-)
+from src.dependency_graph_viz import write_dependency_graph_site
 
 dependency_graph_dir = Path("dependency-graph")
-output_cells = series_cell_keys(output_series)
-input_cells = series_cell_keys(input_series)
-constant_cells = constant_keys_from_leaf_classification(leaf_classification)
 
 graph_site_meta = write_dependency_graph_site(
     graph,
     dependency_graph_dir,
+    node_labels=semantic_node_labels(graph),
     target_keys=output_cells,
     input_keys=input_cells,
     output_keys=output_cells,
@@ -1965,63 +2008,13 @@ ungrouped = [
 Groups 1-5 are all the same shape and are good candidates for
 deduplication.
 
+It also appears that Engine!C6:Engine!G6 are all the same shape and
+could be similarly deduplicated.
+
 Note that I have listed cell addresses here roughly left to right, top
 to bottom (in the workbook), but the dependency order is roughly the
 reverse of that, because the direction of the dependency graph goes from
 targets to inputs, or right to left in the workbook.
-
-#### Semantic Labeling
-
-It’s possible that semantic labels might also provide information that
-is useful for refactoring—especially for function naming and docstring
-authoring.
-
-We can ask an LLM to extract and annotate spreadsheet labels for each
-non-input, non-target graph cell. The labels need more structure than
-plain strings: a label like `1` or `2024` may be a value in a known
-concept such as `TIME_PERIOD`, while a label like `Debt-to-GDP ratio`
-may be an `INDICATOR`. We store labels as node metadata under
-`table_labels`, `row_labels`, and `column_labels` keys, but with an
-optional `concept` ID from the binding concept scheme.
-
-``` python
-import os
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-from src.semantic_labeling import label_internal_graph_cells
-
-
-load_dotenv(Path("../.env"))
-
-semantic_label_summary = label_internal_graph_cells(
-    graph=graph,
-    workbook_path=workbook_path,
-    input_cells=input_cells,
-    target_cells=output_cells,
-    concept_scheme=series_bindings["concept_scheme"],
-    model=os.environ.get("SEMANTIC_LABEL_MODEL", "deepseek-v4-pro"),
-    cache_path=Path("../.cache/semantic-labels.json"),
-)
-
-print("```text")
-print(
-    "Labeled "
-    f"{semantic_label_summary.labeled_cell_count} "
-    "non-input, non-target graph cells across "
-    f"{semantic_label_summary.sheet_count} sheets."
-)
-print("```")
-```
-
-``` text
-Labeled 42 non-input, non-target graph cells across 2 sheets.
-```
-
-Label information can be added to graph visualization as node labels,
-tooltips, or colors, or alternatively can be used for generating
-subgraph groupings or driving semantic cluster layout algorithms.
 
 #### Visualizing the Human Hypothesis
 
@@ -2073,6 +2066,11 @@ Serve docs/human-hypothesis-graph and open index.html, e.g.:
   uv run python -m http.server 8000 --directory docs/human-hypothesis-graph
   http://localhost:8000/
 ```
+
+Groups 1-5 appear to propagate the shocks for years 1-5, respectively.
+Group 6 will actually collapse into a single cell after graph
+compression, because it consists of just two cells, one of which is a
+pure transit cell.
 
 ### Programmatic Graph Analysis
 
