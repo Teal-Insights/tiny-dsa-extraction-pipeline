@@ -578,15 +578,12 @@ leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_k
 graph.leaf_classification = leaf_classification
 ```
 
-Finally, we can generate the code and write a distributable package in `dist/tiny_dsa/`. Before export, we build the same refactor projection used by `src/extraction_pipeline.py`: the canonical `graph` remains unchanged, while `CodeGenerator` reads from the projected graph facade. Passing `series_bindings` and `bindings_workbook` emits records-shaped input setters such as `set_growth_baseline` and output compute functions such as `compute_output_baseline`.
+Finally, we can generate the code and write a distributable package in `dist/tiny_dsa/`. Passing `series_bindings` and `bindings_workbook` emits records-shaped input setters such as `set_growth_baseline` and output compute functions such as `compute_output_baseline`.
 
 ```{python}
 from excel_grapher.exporter import CodeGenerator
-from src.subgraph_projection import build_tiny_dsa_refactor_projection
 
-refactor_projection = build_tiny_dsa_refactor_projection(graph)
-
-with CodeGenerator(refactor_projection) as generator:
+with CodeGenerator(graph) as generator:
     modules = generator.generate_modules(
         targets,
         series_bindings=series_bindings,
@@ -1613,6 +1610,8 @@ Groups 1-5 appear to propagate the shocks for years 1-5, respectively. Group 6 w
 
 #### Operationalizing Graph Deduplication
 
+**Hypothesis**
+
 The way I see it, the process of getting library internals reduced and refactored is going to have several steps:
 
 1. Identify subgraphs with incoming edges to only the top-level node.
@@ -1689,29 +1688,255 @@ def debt-to-gdp(year: float) -> float:
 
 Perhaps it makes sense to do steps 2-4 over the graph, but step 5 over the Python code. But the challenge here is that if we permanently mutate the graph state by deleting nodes, then we lose information that could be useful for Python refactoring. The saving grace is that we already have support in `excel-grapher` for running arbitrary "export projection" as part of the export operation, and this projection doesn't permanently alter graph state; it only mutates the copy of the graph that informs export. So an LLM-powered Python refactor/postprocessing pipeline could still correlate against the unaltered graph, especially if the export projection is adding metadata to the condensed node that lists the addresses of all the original-graph nodes that contributed to the condensed node.
 
-### Programmatic Graph Analysis and Compression
+**Proof of Concept**
 
-The implementation now treats compression as an export projection rather
+This proof of concept treats compression as an export projection rather
 than a destructive mutation of the canonical workbook graph. The
 canonical `graph` remains useful for validation, semantic labeling, and
-workbook-address provenance; `refactor_projection` is the graph-like
-view used by code generation.
+workbook-address provenance; the notebook-local `refactor_projection` is
+the graph-like view used only for this demonstration.
 
-The projection step is implemented in `src.subgraph_projection`. It
-collapses the human-hypothesis groups into their retained root nodes,
-records lineage in a durable manifest, and then composes with
-`IdentityTransitCompression` for any safe identity-transit forwarding
-that the graph provenance supports.
+For now, this is intentionally a notebook-local proof of concept rather
+than the final reusable algorithm in `src/`. The code below takes the
+human-hypothesis groups we identified earlier, validates that each group
+has a single retained root, substitutes group-internal formulas into
+that root, removes the collapsed internal nodes from a copied graph, and
+records lineage in a durable projection manifest.
 
 ```{python}
-from src.subgraph_projection import build_tiny_dsa_refactor_projection
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+from excel_grapher.exporter import (
+    BaseProjectionManifest,
+    CollapsedGroup,
+    FormulaRewrite,
+    IdentityTransitCompression,
+    ProjectedNodeSnapshot,
+    ProjectionResult,
+    apply_projection,
+)
+from excel_grapher.grapher.graph import DependencyGraph
 
 
-refactor_projection = build_tiny_dsa_refactor_projection(graph)
+@dataclass(frozen=True)
+class FormulaPair:
+    formula: str
+    normalized_formula: str
+
+
+class NotebookSubgraphCollapse:
+    def __init__(self, groups: Mapping[str, Sequence[str]]) -> None:
+        self.groups = {label: tuple(keys) for label, keys in groups.items()}
+
+    def project(self, graph: DependencyGraph) -> ProjectionResult:
+        projected = graph.copy()
+        retained_to_collapsed_sources: dict[str, tuple[str, ...]] = {}
+        removed_node_snapshots: dict[str, ProjectedNodeSnapshot] = {}
+        formula_rewrites: list[FormulaRewrite] = []
+        collapsed_groups: list[CollapsedGroup] = []
+
+        for _label, group_keys in self.groups.items():
+            members = set(group_keys)
+            root = find_group_root(projected, group_keys)
+            removed = tuple(key for key in group_keys if key != root)
+
+            for key in removed:
+                outside_dependents = set(projected.get_dependents(key)) - members
+                if outside_dependents:
+                    raise ValueError(
+                        f"Cannot delete {key}; outside dependents: {outside_dependents}"
+                    )
+
+            before = projected.get_node(root)
+            if before is None:
+                raise KeyError(f"Cell {root} not found in graph")
+
+            expanded = expanded_group_formula(projected, root, members)
+            external_dependencies = tuple(
+                sorted(
+                    {
+                        dependency
+                        for key in group_keys
+                        for dependency in projected.get_dependencies(key)
+                        if dependency not in members
+                    }
+                )
+            )
+
+            formula_rewrites.append(
+                FormulaRewrite(
+                    dependent=root,
+                    before_formula=before.formula,
+                    after_formula=expanded.formula,
+                    before_normalized=before.normalized_formula,
+                    after_normalized=expanded.normalized_formula,
+                )
+            )
+
+            projected.set_node_formula(
+                root,
+                expanded.formula,
+                expanded.normalized_formula,
+            )
+            set_collapsed_metadata(projected, root, group_keys)
+            for dependency in external_dependencies:
+                projected.add_edge(root, dependency)
+
+            for key in removed:
+                removed_node_snapshots[key] = snapshot_node(projected, key)
+                projected.remove_node(key)
+
+            retained_to_collapsed_sources[root] = removed
+            collapsed_groups.append(
+                CollapsedGroup(
+                    retained=root,
+                    collapsed_sources=removed,
+                    statement_order=tuple(group_keys),
+                    external_dependencies=external_dependencies,
+                )
+            )
+
+        manifest = BaseProjectionManifest(
+            kind="notebook_subgraph_collapse",
+            forwarding_map={},
+            retained_to_collapsed_sources=retained_to_collapsed_sources,
+            removed_node_snapshots=removed_node_snapshots,
+            formula_rewrites=tuple(formula_rewrites),
+            collapsed_groups=tuple(collapsed_groups),
+        )
+        return ProjectionResult(graph, projected, manifest)
+
+
+def find_group_root(graph: DependencyGraph, group_keys: Sequence[str]) -> str:
+    members = set(group_keys)
+    roots = [
+        key for key in group_keys if not (set(graph.get_dependents(key)) & members)
+    ]
+    if len(roots) != 1:
+        raise ValueError(f"Expected one group root for {group_keys}, found {roots}")
+    return roots[0]
+
+
+def expanded_group_formula(
+    graph: DependencyGraph,
+    key: str,
+    members: set[str],
+    visiting: set[str] | None = None,
+) -> FormulaPair:
+    visiting = set() if visiting is None else visiting
+    if key in visiting:
+        raise ValueError(f"Cycle found while expanding {key}")
+    visiting.add(key)
+
+    node = graph.get_node(key)
+    if node is None:
+        raise KeyError(f"Cell {key} not found in graph")
+    if node.formula is None or node.normalized_formula is None:
+        raise ValueError(f"Cannot substitute non-formula group member {key}")
+
+    formula = node.formula
+    normalized_formula = node.normalized_formula
+    for dependency in sorted(set(graph.get_dependencies(key)) & members):
+        expanded_dependency = expanded_group_formula(
+            graph,
+            dependency,
+            members,
+            visiting,
+        )
+        formula = substitute_cell_reference(
+            formula,
+            dependency,
+            expanded_dependency.formula,
+        )
+        normalized_formula = substitute_cell_reference(
+            normalized_formula,
+            dependency,
+            expanded_dependency.normalized_formula,
+        )
+
+    visiting.remove(key)
+    return FormulaPair(formula=formula, normalized_formula=normalized_formula)
+
+
+def formula_body(formula: str) -> str:
+    return formula[1:] if formula.startswith("=") else formula
+
+
+def substitute_cell_reference(
+    formula: str,
+    cell_key: str,
+    replacement_formula: str,
+) -> str:
+    replacement = f"({formula_body(replacement_formula)})"
+    fully_qualified_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_.$!':]){re.escape(cell_key)}(?![A-Za-z0-9_.$:])"
+    )
+    substituted, replacements = fully_qualified_pattern.subn(replacement, formula)
+    if replacements > 0:
+        return substituted
+
+    local_reference = cell_key.split("!", 1)[1]
+    local_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_.$!':]){re.escape(local_reference)}(?![A-Za-z0-9_.$:])"
+    )
+    substituted, replacements = local_pattern.subn(replacement, formula)
+    if replacements == 0:
+        raise ValueError(f"Expected {cell_key} or {local_reference} in {formula!r}")
+    return substituted
+
+
+def snapshot_node(graph: DependencyGraph, key: str) -> ProjectedNodeSnapshot:
+    node = graph.get_node(key)
+    if node is None:
+        raise KeyError(f"Cell {key} not found in graph")
+    return ProjectedNodeSnapshot(
+        address=key,
+        sheet=node.sheet,
+        column=node.column,
+        row=node.row,
+        formula=node.formula,
+        normalized_formula=node.normalized_formula,
+        value=node.value,
+        is_target=node.is_target,
+        is_leaf=node.is_leaf,
+        metadata=dict(node.metadata),
+    )
+
+
+def set_collapsed_metadata(
+    graph: DependencyGraph,
+    root: str,
+    group_keys: Sequence[str],
+) -> None:
+    node = graph.get_node(root)
+    if node is None:
+        raise KeyError(f"Cell {root} not found in graph")
+    metadata = dict(node.metadata)
+    metadata["collapsed_from"] = tuple(group_keys)
+    graph.set_node_metadata(root, metadata)
+```
+
+Now we can apply the notebook-local subgraph projection and compose it
+with the built-in identity-transit projection step. The identity step
+does not materially change this graph unless the required edge
+provenance is available, but including it documents the intended
+projection pipeline.
+
+```{python}
+refactor_projection = apply_projection(
+    graph,
+    [
+        NotebookSubgraphCollapse(human_hypothesis_groups),
+        IdentityTransitCompression(),
+    ],
+)
+
 projection_manifest = refactor_projection.manifest.to_dict()
 projection_steps = projection_manifest.get("steps", [projection_manifest])
 subgraph_manifest = next(
-    step for step in projection_steps if step["kind"] == "tiny_dsa_subgraph_collapse"
+    step for step in projection_steps if step["kind"] == "notebook_subgraph_collapse"
 )
 
 original_edge_count = sum(len(graph.get_dependencies(key)) for key in graph)
@@ -1755,26 +1980,6 @@ for group in subgraph_manifest["collapsed_groups"]:
 print("```")
 ```
 
-The export script uses this projection directly:
-
-```python
-from excel_grapher.exporter import CodeGenerator
-from src.docstring_callback import available_docstring_callback
-from src.subgraph_projection import build_tiny_dsa_refactor_projection
-
-
-refactor_projection = build_tiny_dsa_refactor_projection(graph)
-
-with CodeGenerator(refactor_projection) as generator:
-    modules = generator.generate_modules(
-        targets,
-        series_bindings=series_bindings,
-        bindings_workbook=workbook_path,
-        series_docstring_callback=available_docstring_callback(),
-        docstring_renderer="google"
-    )
-```
-
 The resulting `internals.py` still preserves the public output API, but
 the shocked-path internals are emitted from the projected graph. For
 example, `cell_engine_c20` is retained and `cell_engine_c10`,
@@ -1782,7 +1987,16 @@ example, `cell_engine_c20` is retained and `cell_engine_c10`,
 longer emitted as standalone functions.
 
 ```{python}
-internals_code = modules["internals.py"]
+with CodeGenerator(refactor_projection) as generator:
+    projected_modules = generator.generate_modules(
+        targets,
+        series_bindings=series_bindings,
+        bindings_workbook=workbook_path,
+        series_docstring_callback=callback_name,
+        docstring_renderer="google"
+    )
+
+internals_code = projected_modules["internals.py"]
 
 print("```text")
 for function_name in [
@@ -1796,5 +2010,11 @@ for function_name in [
     print(f"{function_name}: {status}")
 print("```")
 ```
+
+The emitted `internals.py` is reduced in size by about 1/3.
+
+### Programmatic Graph Analysis and Compression
+
+
 
 ### Programmatic Python Deduplication and Refactoring

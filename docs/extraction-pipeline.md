@@ -1664,7 +1664,7 @@ title: "{functional_overview_rewrite.title}"
 functional_overview_output.write_text(functional_overview_qmd, encoding="utf-8")
 ```
 
-    8846
+    4824
 
 Next, run the same workflow for `III. Illustrative Example`, using the
 same canonical API reference example.
@@ -1717,7 +1717,7 @@ title: "{illustrative_example_rewrite.title}"
 illustrative_example_output.write_text(illustrative_example_qmd, encoding="utf-8")
 ```
 
-    4399
+    5919
 
 ### Validate runnable user-guide cells
 
@@ -2074,37 +2074,283 @@ pure transit cell.
 
 #### Operationalizing Graph Deduplication
 
+**Hypothesis**
+
+The way I see it, the process of getting library internals reduced and
+refactored is going to have several steps:
+
+1.  Identify subgraphs with incoming edges to only the top-level node.
+2.  Either do \#1 in a maximally greedy way or, once we’ve identified
+    all cartesian combinations of subgraphs that satisfy the incoming
+    edge constraint, select the one that maximizes formula similarity
+    across consolidated groups.
+3.  Compress the subgraphs by formula substitution and node deletion.
+4.  Pattern-match across formulas to find sets of formulas that are
+    similar enough to be represented by a single parameterizable
+    function.
+5.  Refactor the candidate formulas into parameterized functions with an
+    LLM, and delete the nodes and update all call sites to point to the
+    new function and specify parameters.
+6.  Re-run the differential test suite against the export library to
+    ensure all test cases still pass testing against the Excel golden
+    master.
+
+One difficult problem to solve here is which of steps 2-5 should be done
+over the DependencyGraph, with its Excel formula representation of the
+code logic, and which should be done over the exported standalone Python
+library. And part of what makes this difficult is that step 2 requires,
+to some degree, we have already solved step 4, and step 3 potentially
+loses information that could inform step 5.
+
+Consider Group 1:
+
+``` python
+group_1 = [
+    "Engine!C10", "Engine!C14", "Engine!C15", "Engine!C16", "Engine!C20",
+]
+
+data = [
+    {
+        "id": "Engine!C10",
+        "formula": "=IF(C5>=Inputs!$B$21,1,0)",
+        "row_labels": "Shock active (1 if year >= shock_year, else 0)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C14",
+        "formula": "=Inputs!C16+CHOOSE(Inputs!$B$22,$B$9,0,0)*C10",
+        "row_labels": "Real GDP growth, shocked (%)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C15",
+        "formula": "=Inputs!C17+CHOOSE(Inputs!$B$22,0,$B$9,0)*C10",
+        "row_labels": "Real interest rate, shocked (%)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C16",
+        "formula": "=Inputs!C18+CHOOSE(Inputs!$B$22,0,0,$B$9)*C10",
+        "row_labels": "Primary balance, shocked (% of GDP)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C20",
+        "formula": "=B20*(1+C15/100)/(1+C14/100)-C16",
+        "row_labels": "Debt-to-GDP (%)",
+        "column_labels": "1",
+    },
+]
+```
+
+If we merge the Excel formulas by substitution into a single
+`Engine!C20` formula, we get:
+
+    =Engine!B20*(1+(Inputs!C17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)/(1+(Inputs!C16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)-(Inputs!C18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!C5>=Inputs!B21,1,0)))
+
+This is arguably ideal for formula pattern-matching. However, the final
+ideal parameterized Python shape might be more like a series of
+assignment operations sequenced from leaf to root, with each assignment
+operation either handling a parameter-switching operation or
+representing a single cell’s formula body:
+
+``` python
+def debt-to-gdp(year: float) -> float:
+    """
+    "Engine!C10:G10", "Engine!C14:G14", "Engine!C15:G15", "Engine!C16:G16", "Engine!C20:G20"
+    """
+    output_cell = ("Engine!C20", "Engine!D20", "Engine!E20", "Engine!F20", "Engine!G20")[int(year)-1]
+    prior_debt_input = ("Engine!B20", "Engine!C20", "Engine!D20", "Engine!E20", "Engine!F20", "Engine!G20")[int(year)]
+    # (1 if year >= shock_year, else 0)
+    shock_active = (_t2 if isinstance((_t2 := to_bool((_t1 := xl_ge(year, xl_cell(ctx, 'Inputs!B21'))))), XlError) else ((1.0) if _t2 else (0.0)))
+    # %
+    real_gdp_growth_shocked = xl_add(xl_cell(ctx, 'Inputs!C16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), shock_active))
+    # and so on...
+```
+
+Perhaps it makes sense to do steps 2-4 over the graph, but step 5 over
+the Python code. But the challenge here is that if we permanently mutate
+the graph state by deleting nodes, then we lose information that could
+be useful for Python refactoring. The saving grace is that we already
+have support in `excel-grapher` for running arbitrary “export
+projection” as part of the export operation, and this projection doesn’t
+permanently alter graph state; it only mutates the copy of the graph
+that informs export. So an LLM-powered Python refactor/postprocessing
+pipeline could still correlate against the unaltered graph, especially
+if the export projection is adding metadata to the condensed node that
+lists the addresses of all the original-graph nodes that contributed to
+the condensed node.
+
+**Proof of Concept**
+
+This proof of concept treats compression as an export projection rather
+than a destructive mutation of the canonical workbook graph. The
+canonical `graph` remains useful for validation, semantic labeling, and
+workbook-address provenance; the notebook-local `refactor_projection` is
+the graph-like view used only for this demonstration.
+
+For now, this is intentionally a notebook-local proof of concept rather
+than the final reusable algorithm in `src/`. The code below takes the
+human-hypothesis groups we identified earlier, validates that each group
+has a single retained root, substitutes group-internal formulas into
+that root, removes the collapsed internal nodes from a copied graph, and
+records lineage in a durable projection manifest.
+
 ``` python
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from excel_grapher.exporter import (
+    BaseProjectionManifest,
+    CollapsedGroup,
+    FormulaRewrite,
+    IdentityTransitCompression,
+    ProjectedNodeSnapshot,
+    ProjectionResult,
+    apply_projection,
+)
+from excel_grapher.grapher.graph import DependencyGraph
 
-@dataclass
-class FormulaNode:
-    formula: str | None
-    dependencies: set[str]
-    dependents: set[str]
 
-
-@dataclass
-class CollapsedGroup:
-    label: str
-    root: str
+@dataclass(frozen=True)
+class FormulaPair:
     formula: str
-    dependencies: tuple[str, ...]
-    deleted: tuple[str, ...]
+    normalized_formula: str
 
 
-def snapshot_formula_graph() -> dict[str, FormulaNode]:
-    return {
-        key: FormulaNode(
-            formula=graph.get_node(key).normalized_formula,
-            dependencies=set(graph.get_dependencies(key)),
-            dependents=set(graph.get_dependents(key)),
+class NotebookSubgraphCollapse:
+    def __init__(self, groups: Mapping[str, Sequence[str]]) -> None:
+        self.groups = {label: tuple(keys) for label, keys in groups.items()}
+
+    def project(self, graph: DependencyGraph) -> ProjectionResult:
+        projected = graph.copy()
+        retained_to_collapsed_sources: dict[str, tuple[str, ...]] = {}
+        removed_node_snapshots: dict[str, ProjectedNodeSnapshot] = {}
+        formula_rewrites: list[FormulaRewrite] = []
+        collapsed_groups: list[CollapsedGroup] = []
+
+        for _label, group_keys in self.groups.items():
+            members = set(group_keys)
+            root = find_group_root(projected, group_keys)
+            removed = tuple(key for key in group_keys if key != root)
+
+            for key in removed:
+                outside_dependents = set(projected.get_dependents(key)) - members
+                if outside_dependents:
+                    raise ValueError(
+                        f"Cannot delete {key}; outside dependents: {outside_dependents}"
+                    )
+
+            before = projected.get_node(root)
+            if before is None:
+                raise KeyError(f"Cell {root} not found in graph")
+
+            expanded = expanded_group_formula(projected, root, members)
+            external_dependencies = tuple(
+                sorted(
+                    {
+                        dependency
+                        for key in group_keys
+                        for dependency in projected.get_dependencies(key)
+                        if dependency not in members
+                    }
+                )
+            )
+
+            formula_rewrites.append(
+                FormulaRewrite(
+                    dependent=root,
+                    before_formula=before.formula,
+                    after_formula=expanded.formula,
+                    before_normalized=before.normalized_formula,
+                    after_normalized=expanded.normalized_formula,
+                )
+            )
+
+            projected.set_node_formula(
+                root,
+                expanded.formula,
+                expanded.normalized_formula,
+            )
+            set_collapsed_metadata(projected, root, group_keys)
+            for dependency in external_dependencies:
+                projected.add_edge(root, dependency)
+
+            for key in removed:
+                removed_node_snapshots[key] = snapshot_node(projected, key)
+                projected.remove_node(key)
+
+            retained_to_collapsed_sources[root] = removed
+            collapsed_groups.append(
+                CollapsedGroup(
+                    retained=root,
+                    collapsed_sources=removed,
+                    statement_order=tuple(group_keys),
+                    external_dependencies=external_dependencies,
+                )
+            )
+
+        manifest = BaseProjectionManifest(
+            kind="notebook_subgraph_collapse",
+            forwarding_map={},
+            retained_to_collapsed_sources=retained_to_collapsed_sources,
+            removed_node_snapshots=removed_node_snapshots,
+            formula_rewrites=tuple(formula_rewrites),
+            collapsed_groups=tuple(collapsed_groups),
         )
-        for key in graph.keys(order="workbook")
-    }
+        return ProjectionResult(graph, projected, manifest)
+
+
+def find_group_root(graph: DependencyGraph, group_keys: Sequence[str]) -> str:
+    members = set(group_keys)
+    roots = [
+        key for key in group_keys if not (set(graph.get_dependents(key)) & members)
+    ]
+    if len(roots) != 1:
+        raise ValueError(f"Expected one group root for {group_keys}, found {roots}")
+    return roots[0]
+
+
+def expanded_group_formula(
+    graph: DependencyGraph,
+    key: str,
+    members: set[str],
+    visiting: set[str] | None = None,
+) -> FormulaPair:
+    visiting = set() if visiting is None else visiting
+    if key in visiting:
+        raise ValueError(f"Cycle found while expanding {key}")
+    visiting.add(key)
+
+    node = graph.get_node(key)
+    if node is None:
+        raise KeyError(f"Cell {key} not found in graph")
+    if node.formula is None or node.normalized_formula is None:
+        raise ValueError(f"Cannot substitute non-formula group member {key}")
+
+    formula = node.formula
+    normalized_formula = node.normalized_formula
+    for dependency in sorted(set(graph.get_dependencies(key)) & members):
+        expanded_dependency = expanded_group_formula(
+            graph,
+            dependency,
+            members,
+            visiting,
+        )
+        formula = substitute_cell_reference(
+            formula,
+            dependency,
+            expanded_dependency.formula,
+        )
+        normalized_formula = substitute_cell_reference(
+            normalized_formula,
+            dependency,
+            expanded_dependency.normalized_formula,
+        )
+
+    visiting.remove(key)
+    return FormulaPair(formula=formula, normalized_formula=normalized_formula)
 
 
 def formula_body(formula: str) -> str:
@@ -2116,146 +2362,192 @@ def substitute_cell_reference(
     cell_key: str,
     replacement_formula: str,
 ) -> str:
-    pattern = re.compile(
+    replacement = f"({formula_body(replacement_formula)})"
+    fully_qualified_pattern = re.compile(
         rf"(?<![A-Za-z0-9_.$!':]){re.escape(cell_key)}(?![A-Za-z0-9_.$:])"
     )
-    replacement = f"({formula_body(replacement_formula)})"
-    substituted, replacements = pattern.subn(replacement, formula)
+    substituted, replacements = fully_qualified_pattern.subn(replacement, formula)
+    if replacements > 0:
+        return substituted
+
+    local_reference = cell_key.split("!", 1)[1]
+    local_pattern = re.compile(
+        rf"(?<![A-Za-z0-9_.$!':]){re.escape(local_reference)}(?![A-Za-z0-9_.$:])"
+    )
+    substituted, replacements = local_pattern.subn(replacement, formula)
     if replacements == 0:
-        raise ValueError(f"Expected {cell_key} in {formula!r}")
+        raise ValueError(f"Expected {cell_key} or {local_reference} in {formula!r}")
     return substituted
 
 
-def find_group_root(nodes: Mapping[str, FormulaNode], group_keys: Sequence[str]) -> str:
-    members = set(group_keys)
-    roots = [key for key in group_keys if not (nodes[key].dependents & members)]
-    if len(roots) != 1:
-        raise ValueError(f"Expected one group root for {group_keys}, found {roots}")
-    return roots[0]
-
-
-def expanded_group_formula(
-    nodes: Mapping[str, FormulaNode],
-    key: str,
-    members: set[str],
-    visiting: set[str] | None = None,
-) -> str:
-    visiting = set() if visiting is None else visiting
-    if key in visiting:
-        raise ValueError(f"Cycle found while expanding {key}")
-    visiting.add(key)
-
-    formula = nodes[key].formula
-    if formula is None:
-        raise ValueError(f"Cannot substitute non-formula group member {key}")
-
-    for dependency in sorted(nodes[key].dependencies & members):
-        formula = substitute_cell_reference(
-            formula,
-            dependency,
-            expanded_group_formula(nodes, dependency, members, visiting),
-        )
-    visiting.remove(key)
-    return formula
-
-
-def collapse_group(
-    nodes: dict[str, FormulaNode],
-    label: str,
-    group_keys: Sequence[str],
-) -> CollapsedGroup:
-    members = set(group_keys)
-    root = find_group_root(nodes, group_keys)
-    deleted = tuple(key for key in group_keys if key != root)
-
-    for key in deleted:
-        outside_dependents = nodes[key].dependents - members
-        if outside_dependents:
-            raise ValueError(
-                f"Cannot delete {key}; outside dependents: {outside_dependents}"
-            )
-
-    collapsed_formula = expanded_group_formula(nodes, root, members)
-    collapsed_dependencies: set[str] = set()
-    for key in group_keys:
-        collapsed_dependencies.update(nodes[key].dependencies - members)
-
-    old_root_dependencies = set(nodes[root].dependencies)
-    nodes[root].formula = collapsed_formula
-    nodes[root].dependencies = collapsed_dependencies
-
-    for dependency in old_root_dependencies - collapsed_dependencies:
-        if dependency in nodes:
-            nodes[dependency].dependents.discard(root)
-    for dependency in collapsed_dependencies:
-        nodes[dependency].dependents.add(root)
-
-    for key in deleted:
-        for dependency in nodes[key].dependencies:
-            if dependency in nodes:
-                nodes[dependency].dependents.discard(key)
-        nodes.pop(key)
-
-    return CollapsedGroup(
-        label=label,
-        root=root,
-        formula=collapsed_formula,
-        dependencies=tuple(sorted(collapsed_dependencies)),
-        deleted=deleted,
+def snapshot_node(graph: DependencyGraph, key: str) -> ProjectedNodeSnapshot:
+    node = graph.get_node(key)
+    if node is None:
+        raise KeyError(f"Cell {key} not found in graph")
+    return ProjectedNodeSnapshot(
+        address=key,
+        sheet=node.sheet,
+        column=node.column,
+        row=node.row,
+        formula=node.formula,
+        normalized_formula=node.normalized_formula,
+        value=node.value,
+        is_target=node.is_target,
+        is_leaf=node.is_leaf,
+        metadata=dict(node.metadata),
     )
 
 
-compressed_nodes = snapshot_formula_graph()
-collapsed_groups = [
-    collapse_group(compressed_nodes, label, group_keys)
-    for label, group_keys in human_hypothesis_groups.items()
-]
+def set_collapsed_metadata(
+    graph: DependencyGraph,
+    root: str,
+    group_keys: Sequence[str],
+) -> None:
+    node = graph.get_node(root)
+    if node is None:
+        raise KeyError(f"Cell {root} not found in graph")
+    metadata = dict(node.metadata)
+    metadata["collapsed_from"] = tuple(group_keys)
+    graph.set_node_metadata(root, metadata)
+```
 
-assert all(
-    dependency in compressed_nodes
-    for node in compressed_nodes.values()
-    for dependency in node.dependencies
+Now we can apply the notebook-local subgraph projection and compose it
+with the built-in identity-transit projection step. The identity step
+does not materially change this graph unless the required edge
+provenance is available, but including it documents the intended
+projection pipeline.
+
+``` python
+refactor_projection = apply_projection(
+    graph,
+    [
+        NotebookSubgraphCollapse(human_hypothesis_groups),
+        IdentityTransitCompression(),
+    ],
+)
+
+projection_manifest = refactor_projection.manifest.to_dict()
+projection_steps = projection_manifest.get("steps", [projection_manifest])
+subgraph_manifest = next(
+    step for step in projection_steps if step["kind"] == "notebook_subgraph_collapse"
+)
+
+original_edge_count = sum(len(graph.get_dependencies(key)) for key in graph)
+projected_edge_count = sum(
+    len(refactor_projection.get_dependencies(key)) for key in refactor_projection
 )
 
 print("```text")
-for collapsed in collapsed_groups:
-    print(f"{collapsed.label} -> {collapsed.root}")
-    print(f"  deleted: {', '.join(collapsed.deleted)}")
-    print(f"  dependencies: {', '.join(collapsed.dependencies)}")
-    print(f"  formula: {collapsed.formula}")
-edge_count = sum(len(node.dependencies) for node in compressed_nodes.values())
-print(f"Compressed graph: {len(compressed_nodes)} nodes, {edge_count} edges")
+print(f"Original graph: {len(graph)} nodes, {original_edge_count} edges")
+print(
+    f"Refactor projection: {len(refactor_projection)} nodes, "
+    f"{projected_edge_count} edges"
+)
+print(
+    "Collapsed groups: "
+    f"{len(subgraph_manifest['collapsed_groups'])}"
+)
+print(
+    "Removed cells recorded in manifest: "
+    f"{len(subgraph_manifest['removed_node_snapshots'])}"
+)
 print("```")
 ```
 
 ``` text
-Group 1 -> Engine!C20
-  deleted: Engine!C10, Engine!C14, Engine!C15, Engine!C16
-  dependencies: Engine!B20, Engine!B9, Engine!C5, Inputs!B21, Inputs!B22, Inputs!C16, Inputs!C17, Inputs!C18
-  formula: =Engine!B20*(1+(Inputs!C17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)/(1+(Inputs!C16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)-(Inputs!C18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!C5>=Inputs!B21,1,0)))
-Group 2 -> Engine!D20
-  deleted: Engine!D10, Engine!D14, Engine!D15, Engine!D16
-  dependencies: Engine!B9, Engine!C20, Engine!D5, Inputs!B21, Inputs!B22, Inputs!D16, Inputs!D17, Inputs!D18
-  formula: =Engine!C20*(1+(Inputs!D17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!D5>=Inputs!B21,1,0)))/100)/(1+(Inputs!D16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!D5>=Inputs!B21,1,0)))/100)-(Inputs!D18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!D5>=Inputs!B21,1,0)))
-Group 3 -> Engine!E20
-  deleted: Engine!E10, Engine!E14, Engine!E15, Engine!E16
-  dependencies: Engine!B9, Engine!D20, Engine!E5, Inputs!B21, Inputs!B22, Inputs!E16, Inputs!E17, Inputs!E18
-  formula: =Engine!D20*(1+(Inputs!E17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!E5>=Inputs!B21,1,0)))/100)/(1+(Inputs!E16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!E5>=Inputs!B21,1,0)))/100)-(Inputs!E18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!E5>=Inputs!B21,1,0)))
-Group 4 -> Engine!F20
-  deleted: Engine!F10, Engine!F14, Engine!F15, Engine!F16
-  dependencies: Engine!B9, Engine!E20, Engine!F5, Inputs!B21, Inputs!B22, Inputs!F16, Inputs!F17, Inputs!F18
-  formula: =Engine!E20*(1+(Inputs!F17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!F5>=Inputs!B21,1,0)))/100)/(1+(Inputs!F16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!F5>=Inputs!B21,1,0)))/100)-(Inputs!F18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!F5>=Inputs!B21,1,0)))
-Group 5 -> Engine!G20
-  deleted: Engine!G10, Engine!G14, Engine!G15, Engine!G16
-  dependencies: Engine!B9, Engine!F20, Engine!G5, Inputs!B21, Inputs!B22, Inputs!G16, Inputs!G17, Inputs!G18
-  formula: =Engine!F20*(1+(Inputs!G17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!G5>=Inputs!B21,1,0)))/100)/(1+(Inputs!G16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!G5>=Inputs!B21,1,0)))/100)-(Inputs!G18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!G5>=Inputs!B21,1,0)))
-Group 6 -> Engine!C6
-  deleted: Engine!B6
-  dependencies: Inputs!B6, Inputs!C16, Inputs!C17, Inputs!C18
-  formula: =(Inputs!B6)*(1+Inputs!C17/100)/(1+Inputs!C16/100)-Inputs!C18
-Compressed graph: 60 nodes, 92 edges
+Original graph: 81 nodes, 143 edges
+Refactor projection: 60 nodes, 92 edges
+Collapsed groups: 6
+Removed cells recorded in manifest: 21
 ```
 
-### Programmatic Graph Analysis
+The manifest is intentionally richer than the projected formula graph.
+The projected graph gives codegen the simplified formulas and dependency
+closure; the manifest preserves the cell-level program that produced
+each retained node, including deleted node snapshots, original formulas,
+dependency-order statement lists, and external dependency boundaries.
+That is the information a later Python refactoring pass will need in
+order to turn a large substituted formula back into readable assignment
+steps.
 
-### Programmatic Compression and Refactoring
+``` python
+print("```text")
+for group in subgraph_manifest["collapsed_groups"]:
+    print(f"{group['retained']}")
+    print(f"  collapsed sources: {', '.join(group['collapsed_sources'])}")
+    print(f"  statement order: {', '.join(group['statement_order'])}")
+    print(f"  external dependencies: {', '.join(group['external_dependencies'])}")
+print("```")
+```
+
+``` text
+Engine!C20
+  collapsed sources: Engine!C10, Engine!C14, Engine!C15, Engine!C16
+  statement order: Engine!C10, Engine!C14, Engine!C15, Engine!C16, Engine!C20
+  external dependencies: Engine!B20, Engine!B9, Engine!C5, Inputs!B21, Inputs!B22, Inputs!C16, Inputs!C17, Inputs!C18
+Engine!D20
+  collapsed sources: Engine!D10, Engine!D14, Engine!D15, Engine!D16
+  statement order: Engine!D10, Engine!D14, Engine!D15, Engine!D16, Engine!D20
+  external dependencies: Engine!B9, Engine!C20, Engine!D5, Inputs!B21, Inputs!B22, Inputs!D16, Inputs!D17, Inputs!D18
+Engine!E20
+  collapsed sources: Engine!E10, Engine!E14, Engine!E15, Engine!E16
+  statement order: Engine!E10, Engine!E14, Engine!E15, Engine!E16, Engine!E20
+  external dependencies: Engine!B9, Engine!D20, Engine!E5, Inputs!B21, Inputs!B22, Inputs!E16, Inputs!E17, Inputs!E18
+Engine!F20
+  collapsed sources: Engine!F10, Engine!F14, Engine!F15, Engine!F16
+  statement order: Engine!F10, Engine!F14, Engine!F15, Engine!F16, Engine!F20
+  external dependencies: Engine!B9, Engine!E20, Engine!F5, Inputs!B21, Inputs!B22, Inputs!F16, Inputs!F17, Inputs!F18
+Engine!G20
+  collapsed sources: Engine!G10, Engine!G14, Engine!G15, Engine!G16
+  statement order: Engine!G10, Engine!G14, Engine!G15, Engine!G16, Engine!G20
+  external dependencies: Engine!B9, Engine!F20, Engine!G5, Inputs!B21, Inputs!B22, Inputs!G16, Inputs!G17, Inputs!G18
+Engine!C6
+  collapsed sources: Engine!B6
+  statement order: Engine!B6, Engine!C6
+  external dependencies: Inputs!B6, Inputs!C16, Inputs!C17, Inputs!C18
+```
+
+The resulting `internals.py` still preserves the public output API, but
+the shocked-path internals are emitted from the projected graph. For
+example, `cell_engine_c20` is retained and `cell_engine_c10`,
+`cell_engine_c14`, `cell_engine_c15`, and `cell_engine_c16` are no
+longer emitted as standalone functions.
+
+``` python
+with CodeGenerator(refactor_projection) as generator:
+    projected_modules = generator.generate_modules(
+        targets,
+        series_bindings=series_bindings,
+        bindings_workbook=workbook_path,
+        series_docstring_callback=callback_name,
+        docstring_renderer="google"
+    )
+
+internals_code = projected_modules["internals.py"]
+
+print("```text")
+for function_name in [
+    "cell_engine_c10",
+    "cell_engine_c14",
+    "cell_engine_c15",
+    "cell_engine_c16",
+    "cell_engine_c20",
+]:
+    status = "emitted" if f"def {function_name}" in internals_code else "collapsed"
+    print(f"{function_name}: {status}")
+print("```")
+```
+
+``` text
+cell_engine_c10: collapsed
+cell_engine_c14: collapsed
+cell_engine_c15: collapsed
+cell_engine_c16: collapsed
+cell_engine_c20: emitted
+```
+
+The emitted `internals.py` is reduced in size by about 1/3.
+
+### Programmatic Graph Analysis and Compression
+
+### Programmatic Python Deduplication and Refactoring
