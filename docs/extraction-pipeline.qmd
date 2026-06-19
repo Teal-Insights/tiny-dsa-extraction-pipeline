@@ -578,12 +578,15 @@ leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_k
 graph.leaf_classification = leaf_classification
 ```
 
-Finally, we can generate the code and write a distributable package in `dist/tiny_dsa/`. Passing `series_bindings` and `bindings_workbook` emits records-shaped input setters such as `set_growth_baseline` and output compute functions such as `compute_output_baseline`.
+Finally, we can generate the code and write a distributable package in `dist/tiny_dsa/`. Before export, we build the same refactor projection used by `src/extraction_pipeline.py`: the canonical `graph` remains unchanged, while `CodeGenerator` reads from the projected graph facade. Passing `series_bindings` and `bindings_workbook` emits records-shaped input setters such as `set_growth_baseline` and output compute functions such as `compute_output_baseline`.
 
 ```{python}
 from excel_grapher.exporter import CodeGenerator
+from src.subgraph_projection import build_tiny_dsa_refactor_projection
 
-with CodeGenerator(graph) as generator:
+refactor_projection = build_tiny_dsa_refactor_projection(graph)
+
+with CodeGenerator(refactor_projection) as generator:
     modules = generator.generate_modules(
         targets,
         series_bindings=series_bindings,
@@ -1608,6 +1611,190 @@ print("```")
 
 Groups 1-5 appear to propagate the shocks for years 1-5, respectively. Group 6 will actually collapse into a single cell after graph compression, because it consists of just two cells, one of which is a pure transit cell.
 
-### Programmatic Graph Analysis
+#### Operationalizing Graph Deduplication
 
-### Programmatic Compression and Refactoring
+The way I see it, the process of getting library internals reduced and refactored is going to have several steps:
+
+1. Identify subgraphs with incoming edges to only the top-level node.
+2. Either do #1 in a maximally greedy way or, once we've identified all cartesian combinations of subgraphs that satisfy the incoming edge constraint, select the one that maximizes formula similarity across consolidated groups.
+3. Compress the subgraphs by formula substitution and node deletion.
+4. Pattern-match across formulas to find sets of formulas that are similar enough to be represented by a single parameterizable function.
+5. Refactor the candidate formulas into parameterized functions with an LLM, and delete the nodes and update all call sites to point to the new function and specify parameters.
+6. Re-run the differential test suite against the export library to ensure all test cases still pass testing against the Excel golden master.
+
+One difficult problem to solve here is which of steps 2-5 should be done over the DependencyGraph, with its Excel formula representation of the code logic, and which should be done over the exported standalone Python library. And part of what makes this difficult is that step 2 requires, to some degree, we have already solved step 4, and step 3 potentially loses information that could inform step 5.
+
+Consider Group 1:
+
+``` python
+group_1 = [
+    "Engine!C10", "Engine!C14", "Engine!C15", "Engine!C16", "Engine!C20",
+]
+
+data = [
+    {
+        "id": "Engine!C10",
+        "formula": "=IF(C5>=Inputs!$B$21,1,0)",
+        "row_labels": "Shock active (1 if year >= shock_year, else 0)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C14",
+        "formula": "=Inputs!C16+CHOOSE(Inputs!$B$22,$B$9,0,0)*C10",
+        "row_labels": "Real GDP growth, shocked (%)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C15",
+        "formula": "=Inputs!C17+CHOOSE(Inputs!$B$22,0,$B$9,0)*C10",
+        "row_labels": "Real interest rate, shocked (%)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C16",
+        "formula": "=Inputs!C18+CHOOSE(Inputs!$B$22,0,0,$B$9)*C10",
+        "row_labels": "Primary balance, shocked (% of GDP)",
+        "column_labels": "1",
+    },
+    {
+        "id": "Engine!C20",
+        "formula": "=B20*(1+C15/100)/(1+C14/100)-C16",
+        "row_labels": "Debt-to-GDP (%)",
+        "column_labels": "1",
+    },
+]
+```
+
+If we merge the Excel formulas by substitution into a single `Engine!C20` formula, we get:
+
+```
+=Engine!B20*(1+(Inputs!C17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)/(1+(Inputs!C16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)-(Inputs!C18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!C5>=Inputs!B21,1,0)))
+```
+
+This is arguably ideal for formula pattern-matching. However, the final ideal parameterized Python shape might be more like a series of assignment operations sequenced from leaf to root, with each assignment operation either handling a parameter-switching operation or representing a single cell's formula body:
+
+```python
+def debt-to-gdp(year: float) -> float:
+    """
+    "Engine!C10:G10", "Engine!C14:G14", "Engine!C15:G15", "Engine!C16:G16", "Engine!C20:G20"
+    """
+    output_cell = ("Engine!C20", "Engine!D20", "Engine!E20", "Engine!F20", "Engine!G20")[int(year)-1]
+    prior_debt_input = ("Engine!B20", "Engine!C20", "Engine!D20", "Engine!E20", "Engine!F20", "Engine!G20")[int(year)]
+    # (1 if year >= shock_year, else 0)
+    shock_active = (_t2 if isinstance((_t2 := to_bool((_t1 := xl_ge(year, xl_cell(ctx, 'Inputs!B21'))))), XlError) else ((1.0) if _t2 else (0.0)))
+    # %
+    real_gdp_growth_shocked = xl_add(xl_cell(ctx, 'Inputs!C16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), shock_active))
+    # and so on...
+```
+
+Perhaps it makes sense to do steps 2-4 over the graph, but step 5 over the Python code. But the challenge here is that if we permanently mutate the graph state by deleting nodes, then we lose information that could be useful for Python refactoring. The saving grace is that we already have support in `excel-grapher` for running arbitrary "export projection" as part of the export operation, and this projection doesn't permanently alter graph state; it only mutates the copy of the graph that informs export. So an LLM-powered Python refactor/postprocessing pipeline could still correlate against the unaltered graph, especially if the export projection is adding metadata to the condensed node that lists the addresses of all the original-graph nodes that contributed to the condensed node.
+
+### Programmatic Graph Analysis and Compression
+
+The implementation now treats compression as an export projection rather
+than a destructive mutation of the canonical workbook graph. The
+canonical `graph` remains useful for validation, semantic labeling, and
+workbook-address provenance; `refactor_projection` is the graph-like
+view used by code generation.
+
+The projection step is implemented in `src.subgraph_projection`. It
+collapses the human-hypothesis groups into their retained root nodes,
+records lineage in a durable manifest, and then composes with
+`IdentityTransitCompression` for any safe identity-transit forwarding
+that the graph provenance supports.
+
+```{python}
+from src.subgraph_projection import build_tiny_dsa_refactor_projection
+
+
+refactor_projection = build_tiny_dsa_refactor_projection(graph)
+projection_manifest = refactor_projection.manifest.to_dict()
+projection_steps = projection_manifest.get("steps", [projection_manifest])
+subgraph_manifest = next(
+    step for step in projection_steps if step["kind"] == "tiny_dsa_subgraph_collapse"
+)
+
+original_edge_count = sum(len(graph.get_dependencies(key)) for key in graph)
+projected_edge_count = sum(
+    len(refactor_projection.get_dependencies(key)) for key in refactor_projection
+)
+
+print("```text")
+print(f"Original graph: {len(graph)} nodes, {original_edge_count} edges")
+print(
+    f"Refactor projection: {len(refactor_projection)} nodes, "
+    f"{projected_edge_count} edges"
+)
+print(
+    "Collapsed groups: "
+    f"{len(subgraph_manifest['collapsed_groups'])}"
+)
+print(
+    "Removed cells recorded in manifest: "
+    f"{len(subgraph_manifest['removed_node_snapshots'])}"
+)
+print("```")
+```
+
+The manifest is intentionally richer than the projected formula graph.
+The projected graph gives codegen the simplified formulas and dependency
+closure; the manifest preserves the cell-level program that produced
+each retained node, including deleted node snapshots, original formulas,
+dependency-order statement lists, and external dependency boundaries.
+That is the information a later Python refactoring pass will need in
+order to turn a large substituted formula back into readable assignment
+steps.
+
+```{python}
+print("```text")
+for group in subgraph_manifest["collapsed_groups"]:
+    print(f"{group['retained']}")
+    print(f"  collapsed sources: {', '.join(group['collapsed_sources'])}")
+    print(f"  statement order: {', '.join(group['statement_order'])}")
+    print(f"  external dependencies: {', '.join(group['external_dependencies'])}")
+print("```")
+```
+
+The export script uses this projection directly:
+
+```python
+from excel_grapher.exporter import CodeGenerator
+from src.docstring_callback import available_docstring_callback
+from src.subgraph_projection import build_tiny_dsa_refactor_projection
+
+
+refactor_projection = build_tiny_dsa_refactor_projection(graph)
+
+with CodeGenerator(refactor_projection) as generator:
+    modules = generator.generate_modules(
+        targets,
+        series_bindings=series_bindings,
+        bindings_workbook=workbook_path,
+        series_docstring_callback=available_docstring_callback(),
+        docstring_renderer="google"
+    )
+```
+
+The resulting `internals.py` still preserves the public output API, but
+the shocked-path internals are emitted from the projected graph. For
+example, `cell_engine_c20` is retained and `cell_engine_c10`,
+`cell_engine_c14`, `cell_engine_c15`, and `cell_engine_c16` are no
+longer emitted as standalone functions.
+
+```{python}
+internals_code = modules["internals.py"]
+
+print("```text")
+for function_name in [
+    "cell_engine_c10",
+    "cell_engine_c14",
+    "cell_engine_c15",
+    "cell_engine_c16",
+    "cell_engine_c20",
+]:
+    status = "emitted" if f"def {function_name}" in internals_code else "collapsed"
+    print(f"{function_name}: {status}")
+print("```")
+```
+
+### Programmatic Python Deduplication and Refactoring

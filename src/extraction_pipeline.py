@@ -22,6 +22,7 @@ from src.qmd_python_validation import (
     VALIDATION_BASELINE_DEV_DEPS,
     render_dist_pyproject_toml,
 )
+from src.subgraph_projection import build_tiny_dsa_refactor_projection
 
 repo_root = Path(__file__).resolve().parents[1]
 workbook_path = repo_root / "data/tiny-dsa.xlsx"
@@ -120,8 +121,9 @@ output_series = derive_output_series(graph, series_bindings, workbook=workbook_p
 
 leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_keys())
 graph.leaf_classification = leaf_classification
+refactor_projection = build_tiny_dsa_refactor_projection(graph)
 
-with CodeGenerator(graph) as generator:
+with CodeGenerator(refactor_projection) as generator:
     modules = generator.generate_modules(
         targets,
         series_bindings=series_bindings,

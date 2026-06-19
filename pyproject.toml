@@ -5,14 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "excel-grapher",
+    "excel-grapher>=0.5.0",
     "openai>=2.38.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
 ]
-
-[tool.uv.sources]
-excel-grapher = { git = "https://github.com/Teal-Insights/excel-grapher.git" }
 
 [dependency-groups]
 dev = [

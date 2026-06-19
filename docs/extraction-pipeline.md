@@ -2072,6 +2072,190 @@ Group 6 will actually collapse into a single cell after graph
 compression, because it consists of just two cells, one of which is a
 pure transit cell.
 
+#### Operationalizing Graph Deduplication
+
+``` python
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+
+@dataclass
+class FormulaNode:
+    formula: str | None
+    dependencies: set[str]
+    dependents: set[str]
+
+
+@dataclass
+class CollapsedGroup:
+    label: str
+    root: str
+    formula: str
+    dependencies: tuple[str, ...]
+    deleted: tuple[str, ...]
+
+
+def snapshot_formula_graph() -> dict[str, FormulaNode]:
+    return {
+        key: FormulaNode(
+            formula=graph.get_node(key).normalized_formula,
+            dependencies=set(graph.get_dependencies(key)),
+            dependents=set(graph.get_dependents(key)),
+        )
+        for key in graph.keys(order="workbook")
+    }
+
+
+def formula_body(formula: str) -> str:
+    return formula[1:] if formula.startswith("=") else formula
+
+
+def substitute_cell_reference(
+    formula: str,
+    cell_key: str,
+    replacement_formula: str,
+) -> str:
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_.$!':]){re.escape(cell_key)}(?![A-Za-z0-9_.$:])"
+    )
+    replacement = f"({formula_body(replacement_formula)})"
+    substituted, replacements = pattern.subn(replacement, formula)
+    if replacements == 0:
+        raise ValueError(f"Expected {cell_key} in {formula!r}")
+    return substituted
+
+
+def find_group_root(nodes: Mapping[str, FormulaNode], group_keys: Sequence[str]) -> str:
+    members = set(group_keys)
+    roots = [key for key in group_keys if not (nodes[key].dependents & members)]
+    if len(roots) != 1:
+        raise ValueError(f"Expected one group root for {group_keys}, found {roots}")
+    return roots[0]
+
+
+def expanded_group_formula(
+    nodes: Mapping[str, FormulaNode],
+    key: str,
+    members: set[str],
+    visiting: set[str] | None = None,
+) -> str:
+    visiting = set() if visiting is None else visiting
+    if key in visiting:
+        raise ValueError(f"Cycle found while expanding {key}")
+    visiting.add(key)
+
+    formula = nodes[key].formula
+    if formula is None:
+        raise ValueError(f"Cannot substitute non-formula group member {key}")
+
+    for dependency in sorted(nodes[key].dependencies & members):
+        formula = substitute_cell_reference(
+            formula,
+            dependency,
+            expanded_group_formula(nodes, dependency, members, visiting),
+        )
+    visiting.remove(key)
+    return formula
+
+
+def collapse_group(
+    nodes: dict[str, FormulaNode],
+    label: str,
+    group_keys: Sequence[str],
+) -> CollapsedGroup:
+    members = set(group_keys)
+    root = find_group_root(nodes, group_keys)
+    deleted = tuple(key for key in group_keys if key != root)
+
+    for key in deleted:
+        outside_dependents = nodes[key].dependents - members
+        if outside_dependents:
+            raise ValueError(
+                f"Cannot delete {key}; outside dependents: {outside_dependents}"
+            )
+
+    collapsed_formula = expanded_group_formula(nodes, root, members)
+    collapsed_dependencies: set[str] = set()
+    for key in group_keys:
+        collapsed_dependencies.update(nodes[key].dependencies - members)
+
+    old_root_dependencies = set(nodes[root].dependencies)
+    nodes[root].formula = collapsed_formula
+    nodes[root].dependencies = collapsed_dependencies
+
+    for dependency in old_root_dependencies - collapsed_dependencies:
+        if dependency in nodes:
+            nodes[dependency].dependents.discard(root)
+    for dependency in collapsed_dependencies:
+        nodes[dependency].dependents.add(root)
+
+    for key in deleted:
+        for dependency in nodes[key].dependencies:
+            if dependency in nodes:
+                nodes[dependency].dependents.discard(key)
+        nodes.pop(key)
+
+    return CollapsedGroup(
+        label=label,
+        root=root,
+        formula=collapsed_formula,
+        dependencies=tuple(sorted(collapsed_dependencies)),
+        deleted=deleted,
+    )
+
+
+compressed_nodes = snapshot_formula_graph()
+collapsed_groups = [
+    collapse_group(compressed_nodes, label, group_keys)
+    for label, group_keys in human_hypothesis_groups.items()
+]
+
+assert all(
+    dependency in compressed_nodes
+    for node in compressed_nodes.values()
+    for dependency in node.dependencies
+)
+
+print("```text")
+for collapsed in collapsed_groups:
+    print(f"{collapsed.label} -> {collapsed.root}")
+    print(f"  deleted: {', '.join(collapsed.deleted)}")
+    print(f"  dependencies: {', '.join(collapsed.dependencies)}")
+    print(f"  formula: {collapsed.formula}")
+edge_count = sum(len(node.dependencies) for node in compressed_nodes.values())
+print(f"Compressed graph: {len(compressed_nodes)} nodes, {edge_count} edges")
+print("```")
+```
+
+``` text
+Group 1 -> Engine!C20
+  deleted: Engine!C10, Engine!C14, Engine!C15, Engine!C16
+  dependencies: Engine!B20, Engine!B9, Engine!C5, Inputs!B21, Inputs!B22, Inputs!C16, Inputs!C17, Inputs!C18
+  formula: =Engine!B20*(1+(Inputs!C17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)/(1+(Inputs!C16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!C5>=Inputs!B21,1,0)))/100)-(Inputs!C18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!C5>=Inputs!B21,1,0)))
+Group 2 -> Engine!D20
+  deleted: Engine!D10, Engine!D14, Engine!D15, Engine!D16
+  dependencies: Engine!B9, Engine!C20, Engine!D5, Inputs!B21, Inputs!B22, Inputs!D16, Inputs!D17, Inputs!D18
+  formula: =Engine!C20*(1+(Inputs!D17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!D5>=Inputs!B21,1,0)))/100)/(1+(Inputs!D16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!D5>=Inputs!B21,1,0)))/100)-(Inputs!D18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!D5>=Inputs!B21,1,0)))
+Group 3 -> Engine!E20
+  deleted: Engine!E10, Engine!E14, Engine!E15, Engine!E16
+  dependencies: Engine!B9, Engine!D20, Engine!E5, Inputs!B21, Inputs!B22, Inputs!E16, Inputs!E17, Inputs!E18
+  formula: =Engine!D20*(1+(Inputs!E17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!E5>=Inputs!B21,1,0)))/100)/(1+(Inputs!E16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!E5>=Inputs!B21,1,0)))/100)-(Inputs!E18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!E5>=Inputs!B21,1,0)))
+Group 4 -> Engine!F20
+  deleted: Engine!F10, Engine!F14, Engine!F15, Engine!F16
+  dependencies: Engine!B9, Engine!E20, Engine!F5, Inputs!B21, Inputs!B22, Inputs!F16, Inputs!F17, Inputs!F18
+  formula: =Engine!E20*(1+(Inputs!F17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!F5>=Inputs!B21,1,0)))/100)/(1+(Inputs!F16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!F5>=Inputs!B21,1,0)))/100)-(Inputs!F18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!F5>=Inputs!B21,1,0)))
+Group 5 -> Engine!G20
+  deleted: Engine!G10, Engine!G14, Engine!G15, Engine!G16
+  dependencies: Engine!B9, Engine!F20, Engine!G5, Inputs!B21, Inputs!B22, Inputs!G16, Inputs!G17, Inputs!G18
+  formula: =Engine!F20*(1+(Inputs!G17+CHOOSE(Inputs!B22,0,Engine!B9,0)*(IF(Engine!G5>=Inputs!B21,1,0)))/100)/(1+(Inputs!G16+CHOOSE(Inputs!B22,Engine!B9,0,0)*(IF(Engine!G5>=Inputs!B21,1,0)))/100)-(Inputs!G18+CHOOSE(Inputs!B22,0,0,Engine!B9)*(IF(Engine!G5>=Inputs!B21,1,0)))
+Group 6 -> Engine!C6
+  deleted: Engine!B6
+  dependencies: Inputs!B6, Inputs!C16, Inputs!C17, Inputs!C18
+  formula: =(Inputs!B6)*(1+Inputs!C17/100)/(1+Inputs!C16/100)-Inputs!C18
+Compressed graph: 60 nodes, 92 edges
+```
+
 ### Programmatic Graph Analysis
 
 ### Programmatic Compression and Refactoring
