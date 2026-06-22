@@ -2657,9 +2657,16 @@ Engine!G20
 
 `src/extraction_pipeline.py` exports the distributable package from this
 optimal projection rather than the canonical graph. The public series
-API is unchanged; internals are emitted from the projected graph.
+API is unchanged; internals are emitted from the projected graph. The
+cell below overwrites the Stage 2B export in `dist/tiny_dsa/` with this
+compressed projection, matching what `uv run -m src.extraction_pipeline`
+produces.
 
 ``` python
+GENERATED_MODULE_NAMES = frozenset(
+    {"__init__.py", "api.py", "data.py", "runtime.py", "internals.py"}
+)
+
 with CodeGenerator(optimal_projection) as generator:
     optimal_modules = generator.generate_modules(
         targets,
@@ -2668,6 +2675,18 @@ with CodeGenerator(optimal_projection) as generator:
         series_docstring_callback=callback_name,
         docstring_renderer="google",
     )
+
+package_root.mkdir(parents=True, exist_ok=True)
+for filepath, code in optimal_modules.items():
+    output_path = package_root / filepath
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(code)
+
+for stale_module in GENERATED_MODULE_NAMES:
+    stale_path = dist_root / stale_module
+    if stale_path.is_file():
+        stale_path.unlink()
 
 optimal_internals = optimal_modules["internals.py"]
 
@@ -2682,6 +2701,7 @@ for function_name in [
 ]:
     status = "emitted" if f"def {function_name}" in optimal_internals else "collapsed"
     print(f"{function_name}: {status}")
+print(f"Wrote compressed package to {package_root.resolve()}")
 print("```")
 ```
 
@@ -2692,10 +2712,116 @@ cell_engine_c15: collapsed
 cell_engine_c16: emitted
 cell_engine_c20: emitted
 cell_engine_b6: collapsed
+Wrote compressed package to C:\Users\chris\Software\tiny-dsa-extraction-pipeline\dist\tiny_dsa
 ```
 
 Future work: replace or augment `OptimalCompression` with
 similarity-aware subgraph packing that targets parallel, parameterizable
 formula families across columns and years.
+
+### Programmatic Python Deduplication and Refactoring
+
+Graph compression gets us most of the way to a smaller export, but
+`dist/tiny_dsa/internals.py` still contains parallel column copies of
+the same logic. The next step is to cluster those copies by formula
+similarity, then (later) ask an LLM to rewrite each cluster as one
+parameterized helper with a first-year branch where needed.
+
+#### Formula similarity clustering
+
+We cluster on **normalized formulas** from the optimal export
+projection, not on emitted Python. Python adds `xl_eval` noise; the
+Excel-shaped `normalized_formula` strings preserve the parallel
+structure we care about.
+
+The first pass uses Levenshtein distance over a **canonical template**
+per cell:
+
+- `Inputs!C16` → `Inputs!{COL}16` for the cell’s logical Engine column
+- `Engine!D10` → `Engine!{COL}10`
+- first-year carry-ins (`Inputs!B6` on `Engine!C6`, or `Engine!C6` on
+  `Engine!D6`) → `{PRIOR_DEBT}` so year-one and chain columns land in
+  the same cluster
+
+With that preprocessing, Tiny DSA yields **five parallel families** of
+five cells each (rows 6, 10, 16, 20 on Engine, plus output deltas on row
+14) and two singletons (`Inputs!B6`, `Engine!B9`). Each family is a
+candidate for one parameterized Python function with a
+`column`/`year_index` argument and, where applicable, a first-year
+branch on `{PRIOR_DEBT}`.
+
+The implementation lives in `src/formula_clustering.py`:
+
+``` python
+from src.formula_clustering import cluster_graph_formulas
+
+formula_clusters = cluster_graph_formulas(optimal_projection)
+
+print("```text")
+print(f"Formula clusters: {len(formula_clusters)}")
+for cluster in formula_clusters:
+    members = ", ".join(cluster.members)
+    row = cluster.row if cluster.row is not None else "mixed"
+    print(f"[row {row}] {len(cluster.members)} cells")
+    print(f"  members: {members}")
+    print(f"  template: {cluster.canonical_template}")
+print("```")
+```
+
+``` text
+Formula clusters: 7
+[row 9] 1 cells
+  members: Engine!B9
+  template: =OFFSET(Inputs!B26,0,Inputs!B22-1)
+[row 10] 5 cells
+  members: Engine!C10, Engine!D10, Engine!E10, Engine!F10, Engine!G10
+  template: =IF(Engine!{COL}5>=Inputs!B21,1,0)
+[row 16] 5 cells
+  members: Engine!C16, Engine!D16, Engine!E16, Engine!F16, Engine!G16
+  template: =Inputs!{COL}18+CHOOSE(Inputs!B22,0,0,Engine!B9)*Engine!{COL}10
+[row 20] 5 cells
+  members: Engine!C20, Engine!D20, Engine!E20, Engine!F20, Engine!G20
+  template: ={PRIOR_DEBT}*(1+(Inputs!{COL}17+CHOOSE(Inputs!B22,0,Engine!B9,0)*Engine!{COL}10)/100)/(1+(Inputs!{COL}16+CHOOSE(Inputs!B22,Engine!B9,0,0)*Engine!{COL}10)/100)-Engine!{COL}16
+[row 6] 5 cells
+  members: Engine!C6, Engine!D6, Engine!E6, Engine!F6, Engine!G6
+  template: ={PRIOR_DEBT}*(1+Inputs!{COL}17/100)/(1+Inputs!{COL}16/100)-Inputs!{COL}18
+[row 6] 1 cells
+  members: Inputs!B6
+  template: =INDEX(Inputs!A10:Inputs!C12,MATCH(Inputs!B5,Inputs!A10:Inputs!A12,0),2)
+[row 14] 5 cells
+  members: Outputs!B14, Outputs!C14, Outputs!D14, Outputs!E14, Outputs!F14
+  template: =Engine!{COL}20-Engine!{COL}6
+```
+
+#### Expected parameterized shapes (illustrative)
+
+We have not wired the LLM rewrite yet. These are the shapes clustering
+is steering toward—one helper per family, with first-year logic inside
+the same function:
+
+``` python
+def shock_active(ctx, col: str) -> float:
+    """Engine!C10:G10 — 1 if projection year >= shock year."""
+
+def primary_balance_shocked(ctx, col: str) -> float:
+    """Engine!C16:G16 — sector-3 CHOOSE branch only."""
+
+def baseline_debt(ctx, col: str) -> float:
+    """Engine!C6:G6 — {PRIOR_DEBT} is Inputs!B6 in col C, prior column otherwise."""
+
+def debt_to_gdp(ctx, col: str) -> float:
+    """Engine!C20:G20 — inlined growth/rate shocks in col C; chain from prior col otherwise."""
+
+def output_delta(ctx, col: str) -> float:
+    """Outputs!B14:F14 — debt-to-GDP minus baseline debt."""
+```
+
+Later steps (not implemented here):
+
+1.  Feed each cluster’s emitted Python functions plus dependency context
+    to an LLM.
+2.  Apply the returned parameterized helper and update call sites
+    mechanically.
+3.  Run the differential test suite to confirm Excel parity.
 
 ### Programmatic Python Deduplication and Refactoring
