@@ -92,6 +92,46 @@ def test_subgraph_collapse_updates_root_formula_and_dependencies() -> None:
     }
 
 
+def test_optimal_refactor_projection_compresses_with_provenance() -> None:
+    projection = build_tiny_dsa_refactor_projection(graph)
+    manifest = _base_manifest(projection.manifest)
+
+    assert len(projection) == 59
+    assert len(graph) - len(projection) == 22
+    assert manifest.kind == "optimal_compression"
+    assert len(manifest.collapsed_groups) == 11
+    assert "Engine!B6" not in projection
+    assert "Engine!C6" in projection
+    assert "Engine!C10" in projection
+    assert "Engine!C14" not in projection
+    assert "Engine!C20" in projection
+
+
+def test_optimal_refactor_projection_matches_or_beats_human_hypothesis_size() -> None:
+    optimal = build_tiny_dsa_refactor_projection(graph)
+    hypothesis = SubgraphCollapse(TINY_DSA_HYPOTHESIS_GROUPS).project(graph)
+
+    hypothesis_removed = set(graph) - set(hypothesis)
+    optimal_removed = set(graph) - set(optimal)
+
+    assert len(optimal) <= len(hypothesis)
+    assert len(hypothesis_removed) == 21
+    assert len(optimal_removed) == 22
+    assert {
+        "Engine!C10",
+        "Engine!C16",
+        "Engine!D10",
+        "Engine!D16",
+        "Engine!E10",
+        "Engine!E16",
+        "Engine!F10",
+        "Engine!F16",
+        "Engine!G10",
+        "Engine!G16",
+    } <= hypothesis_removed - optimal_removed
+    assert {"Engine!B20", "Outputs!B13"} <= optimal_removed - hypothesis_removed
+
+
 def test_projected_codegen_preserves_public_series_api(tmp_path: Path) -> None:
     projection = build_tiny_dsa_refactor_projection(graph)
     modules = CodeGenerator(projection).generate_modules(
@@ -102,8 +142,10 @@ def test_projected_codegen_preserves_public_series_api(tmp_path: Path) -> None:
 
     assert "def compute_output_baseline" in modules["api.py"]
     assert "def compute_output_shocked" in modules["api.py"]
-    assert "def cell_engine_c10" not in modules["internals.py"]
+    assert "def cell_engine_c10" in modules["internals.py"]
+    assert "def cell_engine_c14" not in modules["internals.py"]
     assert "def cell_engine_c20" in modules["internals.py"]
+    assert "def cell_engine_b6" not in modules["internals.py"]
 
     package_dir = tmp_path / "tiny_dsa_projected"
     package_dir.mkdir()

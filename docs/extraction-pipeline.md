@@ -293,6 +293,7 @@ configure_graph = create_dependency_graph(
     targets,
     load_values=True,
     dynamic_refs=DynamicRefConfig.from_constraints(constraints, {}),
+    capture_dependency_provenance=True,
 )
 leaf_classification = {
     key: "constant" if is_constant_constraint(constraints[key]) else "input"
@@ -563,6 +564,7 @@ graph: DependencyGraph = create_dependency_graph(
     targets,
     load_values=True,
     dynamic_refs=config,
+    capture_dependency_provenance=True,
 )
 
 binding_validation_report = validate_series_bindings(
@@ -2080,10 +2082,11 @@ The way I see it, the process of getting library internals reduced and
 refactored is going to have several steps:
 
 1.  Identify subgraphs with incoming edges to only the top-level node.
-2.  Either do \#1 in a maximally greedy way or, once we’ve identified
-    all cartesian combinations of subgraphs that satisfy the incoming
-    edge constraint, select the one that maximizes formula similarity
-    across consolidated groups.
+2.  Either choose the “optimal” packing of subgraphs (by deleting all
+    nodes that only have to be substituted in one place), or, once we’ve
+    identified all cartesian combinations of subgraphs that satisfy the
+    incoming edge constraint, select the one that maximizes formula
+    similarity across consolidated groups.
 3.  Compress the subgraphs by formula substitution and node deletion.
 4.  Pattern-match across formulas to find sets of formulas that are
     similar enough to be represented by a single parameterizable
@@ -2412,10 +2415,11 @@ def set_collapsed_metadata(
 ```
 
 Now we can apply the notebook-local subgraph projection and compose it
-with the built-in identity-transit projection step. The identity step
-does not materially change this graph unless the required edge
-provenance is available, but including it documents the intended
-projection pipeline.
+with excel-grapher’s built-in optimal-compression step. That step is a
+superset of identity-transit forwarding: it also inlines safely
+substitutable formula nodes with a single call site. On this workbook it
+does not materially change the graph after subgraph collapse, but
+including it documents the intended projection pipeline.
 
 ``` python
 refactor_projection = apply_projection(
@@ -2456,7 +2460,7 @@ print("```")
 
 ``` text
 Original graph: 81 nodes, 143 edges
-Refactor projection: 60 nodes, 92 edges
+Refactor projection: 49 nodes, 81 edges
 Collapsed groups: 6
 Removed cells recorded in manifest: 21
 ```
@@ -2549,5 +2553,149 @@ cell_engine_c20: emitted
 The emitted `internals.py` is reduced in size by about 1/3.
 
 ### Programmatic Graph Analysis and Compression
+
+The proof of concept above demonstrates the *shape* of graph
+deduplication we want: multi-node subgraph collapse with manifest
+lineage. For the reusable pipeline in `src/`, we start with
+excel-grapher’s built-in `OptimalCompression` instead of hand-picked
+groups. That step is safe, provenance-aware compression over the
+dependency graph: it forwards identity transits and inlines
+single-call-site formula nodes when substitution is safe.
+
+`OptimalCompression` requires edge provenance. Stage 2A therefore builds
+the canonical `graph` with `capture_dependency_provenance=True`,
+matching `src/extraction_pipeline.py`.
+
+Similarity-aware packing from step 2 of the hypothesis
+workflow—enumerating candidate subgraphs, ranking packings by size
+reduction, and choosing the cluster-tightest formula family—is deferred
+as future work. For now, `build_tiny_dsa_refactor_projection()` in
+`src/subgraph_projection.py` applies `OptimalCompression` alone.
+
+``` python
+from src.subgraph_projection import (
+    TINY_DSA_HYPOTHESIS_GROUPS,
+    SubgraphCollapse,
+    build_tiny_dsa_refactor_projection,
+)
+
+optimal_projection = build_tiny_dsa_refactor_projection(graph)
+hypothesis_projection = SubgraphCollapse(TINY_DSA_HYPOTHESIS_GROUPS).project(graph)
+
+optimal_manifest = optimal_projection.manifest.to_dict()
+original_edge_count = sum(len(graph.get_dependencies(key)) for key in graph)
+optimal_edge_count = sum(
+    len(optimal_projection.get_dependencies(key)) for key in optimal_projection
+)
+
+print("```text")
+print(f"Canonical graph: {len(graph)} nodes, {original_edge_count} edges")
+print(
+    f"Optimal projection: {len(optimal_projection)} nodes, "
+    f"{optimal_edge_count} edges"
+)
+print(
+    f"Human-hypothesis projection: {len(hypothesis_projection)} nodes"
+)
+print(
+    "Optimal collapsed groups: "
+    f"{len(optimal_manifest['collapsed_groups'])}"
+)
+print(
+    "Removed cells recorded in manifest: "
+    f"{len(optimal_manifest['removed_node_snapshots'])}"
+)
+print("```")
+```
+
+``` text
+Canonical graph: 81 nodes, 143 edges
+Optimal projection: 59 nodes, 106 edges
+Human-hypothesis projection: 60 nodes
+Optimal collapsed groups: 11
+Removed cells recorded in manifest: 22
+```
+
+On this workbook, optimal compression removes slightly more nodes than
+the human-hypothesis packing (22 vs. 21). Optimal keeps shared
+shock-active cells such as `Engine!C10` because they have multiple
+dependents, while it removes output-layer identity transits and inlines
+intermediate growth cells into the debt-to-GDP formulas.
+
+``` python
+print("```text")
+for group in optimal_manifest["collapsed_groups"]:
+    print(f"{group['retained']}")
+    print(f"  collapsed sources: {', '.join(group['collapsed_sources'])}")
+print("```")
+```
+
+``` text
+Inputs!B6
+  collapsed sources: Engine!B20, Engine!B6
+Engine!C6
+  collapsed sources: Outputs!B12
+Engine!C20
+  collapsed sources: Outputs!B13, Engine!C14, Engine!C15
+Engine!D6
+  collapsed sources: Outputs!C12
+Engine!D20
+  collapsed sources: Outputs!C13, Engine!D14, Engine!D15
+Engine!E6
+  collapsed sources: Outputs!D12
+Engine!E20
+  collapsed sources: Outputs!D13, Engine!E14, Engine!E15
+Engine!F6
+  collapsed sources: Outputs!E12
+Engine!F20
+  collapsed sources: Outputs!E13, Engine!F14, Engine!F15
+Engine!G6
+  collapsed sources: Outputs!F12
+Engine!G20
+  collapsed sources: Outputs!F13, Engine!G14, Engine!G15
+```
+
+`src/extraction_pipeline.py` exports the distributable package from this
+optimal projection rather than the canonical graph. The public series
+API is unchanged; internals are emitted from the projected graph.
+
+``` python
+with CodeGenerator(optimal_projection) as generator:
+    optimal_modules = generator.generate_modules(
+        targets,
+        series_bindings=series_bindings,
+        bindings_workbook=workbook_path,
+        series_docstring_callback=callback_name,
+        docstring_renderer="google",
+    )
+
+optimal_internals = optimal_modules["internals.py"]
+
+print("```text")
+for function_name in [
+    "cell_engine_c10",
+    "cell_engine_c14",
+    "cell_engine_c15",
+    "cell_engine_c16",
+    "cell_engine_c20",
+    "cell_engine_b6",
+]:
+    status = "emitted" if f"def {function_name}" in optimal_internals else "collapsed"
+    print(f"{function_name}: {status}")
+print("```")
+```
+
+``` text
+cell_engine_c10: emitted
+cell_engine_c14: collapsed
+cell_engine_c15: collapsed
+cell_engine_c16: emitted
+cell_engine_c20: emitted
+cell_engine_b6: collapsed
+```
+
+Future work: replace or augment `OptimalCompression` with
+similarity-aware subgraph packing that targets parallel, parameterizable
+formula families across columns and years.
 
 ### Programmatic Python Deduplication and Refactoring

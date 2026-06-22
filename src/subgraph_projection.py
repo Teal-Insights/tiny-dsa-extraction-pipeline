@@ -8,10 +8,9 @@ from excel_grapher.exporter import (
     BaseProjectionManifest,
     CollapsedGroup,
     FormulaRewrite,
-    IdentityTransitCompression,
+    OptimalCompression,
     ProjectedNodeSnapshot,
     ProjectionResult,
-    apply_projection,
 )
 from excel_grapher.grapher.graph import DependencyGraph
 
@@ -152,13 +151,7 @@ class SubgraphCollapse:
 
 def build_tiny_dsa_refactor_projection(graph: DependencyGraph) -> ProjectionResult:
     """Build the Tiny DSA projection used for refactor-oriented exports."""
-    return apply_projection(
-        graph,
-        [
-            SubgraphCollapse(TINY_DSA_HYPOTHESIS_GROUPS),
-            IdentityTransitCompression(),
-        ],
-    )
+    return OptimalCompression().project(graph)
 
 
 def _snapshot_node(graph: DependencyGraph, key: str) -> ProjectedNodeSnapshot:

@@ -99,6 +99,7 @@ graph: DependencyGraph = create_dependency_graph(
     targets,
     load_values=True,
     dynamic_refs=config,
+    capture_dependency_provenance=True,
 )
 
 binding_validation_report = validate_series_bindings(
@@ -123,32 +124,35 @@ leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_k
 graph.leaf_classification = leaf_classification
 refactor_projection = build_tiny_dsa_refactor_projection(graph)
 
-with CodeGenerator(refactor_projection) as generator:
-    modules = generator.generate_modules(
-        targets,
-        series_bindings=series_bindings,
-        bindings_workbook=workbook_path,
-        series_docstring_callback=available_docstring_callback(),
-        docstring_renderer="google",
+
+def export_generated_package() -> None:
+    """Write the generated tiny-dsa package under dist/."""
+    with CodeGenerator(refactor_projection) as generator:
+        modules = generator.generate_modules(
+            targets,
+            series_bindings=series_bindings,
+            bindings_workbook=workbook_path,
+            series_docstring_callback=available_docstring_callback(),
+            docstring_renderer="google",
+        )
+
+    package_root.mkdir(parents=True, exist_ok=True)
+
+    GENERATED_MODULE_NAMES = frozenset(
+        {"__init__.py", "api.py", "data.py", "runtime.py", "internals.py"}
     )
 
-package_root.mkdir(parents=True, exist_ok=True)
+    for filepath, code in modules.items():
+        output_path = package_root / filepath
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(code, encoding="utf-8")
 
-GENERATED_MODULE_NAMES = frozenset(
-    {"__init__.py", "api.py", "data.py", "runtime.py", "internals.py"}
-)
+    for stale_module in GENERATED_MODULE_NAMES:
+        stale_path = dist_root / stale_module
+        if stale_path.is_file():
+            stale_path.unlink()
 
-for filepath, code in modules.items():
-    output_path = package_root / filepath
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(code, encoding="utf-8")
-
-for stale_module in GENERATED_MODULE_NAMES:
-    stale_path = dist_root / stale_module
-    if stale_path.is_file():
-        stale_path.unlink()
-
-gitignore_content = """
+    gitignore_content = """
 *.egg-info/
 *.pyc
 __pycache__/
@@ -157,19 +161,20 @@ _validate_user_guide_cells.py
 tests/results/local/
 """
 
-(dist_root / ".gitignore").write_text(gitignore_content, encoding="utf-8")
-(dist_root / "pyproject.toml").write_text(
-    render_dist_pyproject_toml(
-        dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
-        validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
-    ),
-    encoding="utf-8",
-)
+    (dist_root / ".gitignore").write_text(gitignore_content, encoding="utf-8")
+    (dist_root / "pyproject.toml").write_text(
+        render_dist_pyproject_toml(
+            dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
+            validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+        ),
+        encoding="utf-8",
+    )
 
-export_validation_assets(repo_root=repo_root, dist_root=dist_root)
+    export_validation_assets(repo_root=repo_root, dist_root=dist_root)
 
 
 def main() -> None:
+    export_generated_package()
     from src.documentation_pipeline import run_documentation_pipeline
 
     run_documentation_pipeline()
