@@ -172,6 +172,16 @@ tests/results/local/
 
     export_validation_assets(repo_root=repo_root, dist_root=dist_root)
 
+    from src.formula_clustering import cluster_graph_formulas
+    from src.internals_refactor import refactor_internals_all_clusters
+
+    formula_clusters = cluster_graph_formulas(refactor_projection)
+    refactor_internals_all_clusters(
+        refactor_projection,
+        formula_clusters,
+        internals_path=package_root / "internals.py",
+    )
+
 
 def main() -> None:
     export_generated_package()

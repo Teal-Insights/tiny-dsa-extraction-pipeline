@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
@@ -12,6 +12,16 @@ ClusterableGraph: TypeAlias = DependencyGraph | ProjectionResult
 ENGINE_COLUMNS: tuple[str, ...] = ("C", "D", "E", "F", "G")
 ENGINE_COLUMN_SET = frozenset(ENGINE_COLUMNS)
 OUTPUTS_COLUMN_TO_ENGINE = {"B": "C", "C": "D", "D": "E", "E": "F", "F": "G"}
+
+EngineColumn = Literal["C", "D", "E", "F", "G"]
+
+_ENGINE_COLUMN_BY_LETTER: dict[str, EngineColumn] = {
+    "C": "C",
+    "D": "D",
+    "E": "E",
+    "F": "F",
+    "G": "G",
+}
 
 
 @dataclass(frozen=True)
@@ -70,6 +80,14 @@ def logical_engine_column(address: str) -> str | None:
     if sheet == "Outputs":
         return OUTPUTS_COLUMN_TO_ENGINE.get(column)
     return None
+
+
+def engine_column_for_address(address: str) -> EngineColumn | None:
+    """Return the typed engine column for a clusterable address, if any."""
+    column = logical_engine_column(address)
+    if column is None:
+        return None
+    return _ENGINE_COLUMN_BY_LETTER.get(column)
 
 
 def previous_engine_column(column: str) -> str | None:
