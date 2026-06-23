@@ -8,6 +8,7 @@ from src.internals_refactor import (
     ClusterRefactorResponse,
     MemberBinding,
     PROJECTION_ALIASES_MARKER,
+    SemanticDependency,
     apply_phase_b_final_pass,
     apply_phase_c,
     apply_refactor_plan,
@@ -17,12 +18,16 @@ from src.internals_refactor import (
     deterministic_helper_name,
     prompt_payload,
     refactor_cache_key,
+    resolve_semantic_dependencies,
     validate_cluster_refactor_response,
     validate_google_style_docstring,
     validate_refactored_internals,
     validate_semantic_local_names,
     validate_singleton_refactor_response,
     wrapper_source,
+    _align_singleton_response_docstring,
+    _normalize_google_docstring,
+    _prepare_cluster_refactor_response,
 )
 
 from tests.fixtures.cluster_refactor_golden import (
@@ -118,6 +123,34 @@ def example(ctx, col):
 
 def test_validate_google_style_docstring_accepts_complete_docstring() -> None:
     validate_google_style_docstring(SHOCK_ACTIVE_DOCSTRING)
+
+
+def test_validate_google_style_docstring_accepts_returns_before_args() -> None:
+    docstring = """Resolve the shock magnitude.
+
+Returns:
+    Shock magnitude from the shock table.
+
+Args:
+    ctx: Workbook evaluation context.
+"""
+    validate_google_style_docstring(docstring)
+
+
+def test_normalize_google_docstring_strips_interstitial_prose() -> None:
+    docstring = """Look up the initial debt-to-GDP ratio.
+
+This helper reads the country profile table in Inputs.
+
+Args:
+    ctx: Workbook evaluation context.
+
+Returns:
+    Initial debt-to-GDP ratio.
+"""
+    normalized = _normalize_google_docstring(docstring)
+    validate_google_style_docstring(normalized)
+    assert normalized.startswith("Look up the initial debt-to-GDP ratio.\n\nArgs:\n")
 
 
 def test_build_singleton_refactor_context_inputs_b6(
@@ -276,14 +309,138 @@ def test_validate_cluster_refactor_response_rejects_docstring_mismatch(
         raise AssertionError("expected ValueError")
 
 
+def test_align_singleton_response_docstring_recovers_mismatch() -> None:
+    response = GOLDEN_SINGLETON_REFACTOR_RESPONSES["Inputs!B6"]
+    mismatched = response.model_copy(update={"symbol_docstring": "Stale duplicate."})
+    aligned = _align_singleton_response_docstring(mismatched)
+    assert aligned.symbol_docstring == response.symbol_docstring
+
+
+def test_prepare_cluster_refactor_response_aligns_docstring(
+    shock_cluster_context,
+    codegen_internals_source,
+) -> None:
+    response = _shock_active_response(shock_cluster_context)
+    mismatched = response.model_copy(
+        update={
+            "helper_docstring": "Different docstring.\n\nArgs:\n    ctx: x.\n\nReturns:\n    y."
+        }
+    )
+    prepared = _prepare_cluster_refactor_response(mismatched, shock_cluster_context)
+    assert prepared.helper_docstring.rstrip("\n") == response.helper_docstring.rstrip(
+        "\n"
+    )
+    validate_cluster_refactor_response(
+        shock_cluster_context,
+        prepared,
+        existing_names=_function_names(codegen_internals_source),
+    )
+
+
 def test_prompt_payload_includes_domain_glossary(shock_cluster_context) -> None:
     payload = prompt_payload(shock_cluster_context)
     glossary = cast(list[dict[str, str]], payload["domain_glossary"])
     symbols = {entry["symbol"] for entry in glossary}
     constraints = cast(dict[str, Any], payload["constraints"])
     assert "shock_magnitude_resolved" in symbols
+    assert "shock_active" in symbols
+    assert "primary_balance_shocked" in symbols
     assert constraints["docstring_style"] == "google"
     assert constraints["require_semantic_locals"] is True
+
+
+def test_resolve_semantic_dependencies_maps_thin_wrappers() -> None:
+    source = (
+        "def shock_active(ctx, col):\n"
+        "    return 1.0\n\n"
+        "def cell_engine_c10(ctx):\n"
+        '    return shock_active(ctx, "C")\n\n'
+        "def cell_engine_d10(ctx):\n"
+        '    return shock_active(ctx, "D")\n'
+    )
+    semantic, unresolved = resolve_semantic_dependencies(
+        source, ["Engine!D10", "Engine!C10"]
+    )
+    assert unresolved == ()
+    assert len(semantic) == 1
+    dependency = semantic[0]
+    assert isinstance(dependency, SemanticDependency)
+    assert dependency.helper_name == "shock_active"
+    assert dependency.call_form == "shock_active(ctx, col)"
+    assert dependency.address_template == "Engine!{col}10"
+    assert dependency.columns == ("C", "D")
+
+
+def test_resolve_semantic_dependencies_reports_unresolved_cell_helpers() -> None:
+    source = "def cell_engine_c10(ctx):\n    return xl_cell(ctx, 'Engine!C10')\n"
+    semantic, unresolved = resolve_semantic_dependencies(source, ["Engine!C10"])
+    assert semantic == ()
+    assert unresolved == ("cell_engine_c10",)
+
+
+def test_build_cluster_context_row_16_resolves_shock_active(
+    codegen_internals_source,
+    tiny_dsa_refactor_projection,
+    tmp_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
+    by_row = {
+        cluster.row: cluster
+        for cluster in clusters
+        if cluster.row is not None and len(cluster.members) >= 2
+    }
+    singleton_by_address = {
+        cluster.members[0]: cluster for cluster in clusters if len(cluster.members) == 1
+    }
+
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(codegen_internals_source, encoding="utf-8")
+
+    for address in ("Inputs!B6", "Engine!B9"):
+        singleton_ctx = build_singleton_refactor_context(
+            tiny_dsa_refactor_projection,
+            singleton_by_address[address],
+            internals_path,
+        )
+        assert singleton_ctx is not None
+        updated, _ = apply_singleton_refactor_plan(
+            internals_path.read_text(encoding="utf-8"),
+            GOLDEN_SINGLETON_REFACTOR_RESPONSES[address],
+            singleton_ctx,
+        )
+        internals_path.write_text(updated, encoding="utf-8")
+
+    cluster_ctx_10 = build_cluster_refactor_context(
+        tiny_dsa_refactor_projection,
+        by_row[10],
+        internals_path,
+    )
+    assert cluster_ctx_10 is not None
+    updated = apply_refactor_plan(
+        internals_path.read_text(encoding="utf-8"),
+        GOLDEN_CLUSTER_REFACTOR_RESPONSES[10],
+        cluster_ctx_10,
+        phase_b=False,
+    )
+    internals_path.write_text(updated, encoding="utf-8")
+
+    cluster_ctx_16 = build_cluster_refactor_context(
+        tiny_dsa_refactor_projection,
+        by_row[16],
+        internals_path,
+    )
+    assert cluster_ctx_16 is not None
+    resolved_helpers = {dep.helper_name for dep in cluster_ctx_16.semantic_dependencies}
+    assert "shock_active" in resolved_helpers
+    assert all(
+        not name.startswith("cell_") for name in cluster_ctx_16.external_dependencies
+    )
+
+    payload = prompt_payload(cluster_ctx_16)
+    semantic_payload = cast(list[dict[str, Any]], payload["semantic_dependencies"])
+    assert any(entry["helper_name"] == "shock_active" for entry in semantic_payload)
 
 
 def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
