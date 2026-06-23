@@ -28,6 +28,8 @@ REFACTOR_MODEL = "deepseek-v4-pro"
 REFACTOR_PROMPT_VERSION = 1
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
+PROJECTION_ALIASES_MARKER = "# --- Projection public address aliases ---"
+RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
 
 REFACTOR_ROW_ORDER: tuple[int, ...] = (10, 16, 6, 20, 14)
 
@@ -124,11 +126,22 @@ class ClusterRefactorResponse(BaseModel):
 
 
 @dataclass(frozen=True)
+class HelperRewriteBinding:
+    address: str
+    function_name: str
+    engine_column: EngineColumn
+    helper_name: str
+
+
+@dataclass(frozen=True)
 class ClusterRefactorApplyResult:
     source: str
     helper_name: str
     wrappers_applied: tuple[str, ...]
     dry_run: bool
+    response: ClusterRefactorResponse
+    phase_b_rewrites: int = 0
+    phase_c_pruned: int = 0
 
 
 def stable_json(value: object) -> str:
@@ -462,6 +475,8 @@ def apply_refactor_plan(
     source: str,
     response: ClusterRefactorResponse,
     ctx: ClusterRefactorContext,
+    *,
+    phase_b: bool = False,
 ) -> str:
     updated = insert_helper_source(source, response.helper_source)
     wrappers_applied: list[str] = []
@@ -473,7 +488,277 @@ def apply_refactor_plan(
             engine_column=binding.engine_column,
         )
         wrappers_applied.append(binding.function_name)
+    if phase_b:
+        updated, _rewrite_count = apply_phase_b_for_response(updated, response)
     return updated
+
+
+def helper_rewrite_bindings(
+    response: ClusterRefactorResponse,
+) -> tuple[HelperRewriteBinding, ...]:
+    return tuple(
+        HelperRewriteBinding(
+            address=binding.address,
+            function_name=binding.function_name,
+            engine_column=binding.engine_column,
+            helper_name=response.helper_name,
+        )
+        for binding in response.member_bindings
+    )
+
+
+def apply_phase_b_for_response(
+    source: str,
+    response: ClusterRefactorResponse,
+) -> tuple[str, int]:
+    return apply_phase_b(source, helper_rewrite_bindings(response))
+
+
+def apply_phase_b(
+    source: str,
+    bindings: tuple[HelperRewriteBinding, ...],
+) -> tuple[str, int]:
+    """Replace xl_eval/direct member call sites with parameterized helper calls."""
+    wrapper_functions = frozenset(binding.function_name for binding in bindings)
+    updated = _simplify_known_parameterized_helpers(source)
+    rewrite_count = 0
+
+    updated, count = _rewrite_xl_eval_bindings(updated, bindings, wrapper_functions)
+    rewrite_count += count
+    updated, count = _rewrite_direct_bindings(updated, bindings, wrapper_functions)
+    rewrite_count += count
+    updated, count = _rewrite_projection_aliases(updated, bindings)
+    rewrite_count += count
+    updated = _simplify_known_parameterized_helpers(updated)
+    return updated, rewrite_count
+
+
+def apply_phase_b_final_pass(
+    source: str,
+    responses: tuple[ClusterRefactorResponse, ...],
+) -> tuple[str, int]:
+    bindings: list[HelperRewriteBinding] = []
+    for response in responses:
+        bindings.extend(helper_rewrite_bindings(response))
+    return apply_phase_b(source, tuple(bindings))
+
+
+def collect_static_cell_function_references(source: str) -> frozenset[str]:
+    module = ast.parse(source)
+    references: set[str] = set()
+    for node in ast.walk(module):
+        if not isinstance(node, ast.Call):
+            continue
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "xl_eval"
+            and len(node.args) >= 3
+            and isinstance(node.args[2], ast.Name)
+        ):
+            references.add(node.args[2].id)
+        if isinstance(node.func, ast.Name) and node.func.id.startswith("cell_"):
+            references.add(node.func.id)
+    return frozenset(references)
+
+
+def parse_thin_wrapper(function_def: ast.FunctionDef) -> tuple[str, str] | None:
+    body = function_def.body
+    start = 0
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        start = 1
+    executable_body = body[start:]
+    if len(executable_body) != 1:
+        return None
+    statement = executable_body[0]
+    if not isinstance(statement, ast.Return) or statement.value is None:
+        return None
+    call = statement.value
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and len(call.args) == 2
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "ctx"
+        and isinstance(call.args[1], ast.Constant)
+        and isinstance(call.args[1].value, str)
+    ):
+        return None
+    return call.func.id, call.args[1].value
+
+
+def function_name_to_workbook_address(function_name: str) -> str | None:
+    return _caller_address(function_name)
+
+
+def address_needs_resolver_dispatch(address: str) -> bool:
+    """Engine cells are reached via helpers; only external entry addresses need dispatch."""
+    return not address.startswith("Engine!")
+
+
+def apply_phase_c(source: str) -> tuple[str, int]:
+    """Drop unreferenced thin ``cell_*`` wrappers and route them via ``_ADDRESS_DISPATCH``."""
+    referenced = collect_static_cell_function_references(source)
+    module = ast.parse(source)
+    dispatch: dict[str, tuple[str, str]] = {}
+    to_prune: set[str] = set()
+
+    for node in module.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("cell_"):
+            continue
+        thin_wrapper = parse_thin_wrapper(node)
+        if thin_wrapper is None:
+            continue
+        if node.name in referenced:
+            continue
+        address = function_name_to_workbook_address(node.name)
+        if address is None:
+            continue
+        helper_name, engine_column = thin_wrapper
+        if address_needs_resolver_dispatch(address):
+            dispatch[address] = (helper_name, engine_column)
+        to_prune.add(node.name)
+
+    if not to_prune:
+        return _trim_engine_dispatch_entries(source)
+
+    updated = _remove_function_definitions(source, frozenset(to_prune))
+    updated = _remove_projection_aliases_section(updated)
+    updated = _replace_resolver_section(updated, dispatch)
+    return updated, len(to_prune)
+
+
+def _parse_address_dispatch(source: str) -> dict[str, tuple[str, str]] | None:
+    module = ast.parse(source)
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "_ADDRESS_DISPATCH":
+                if not isinstance(node.value, ast.Dict):
+                    raise ValueError("_ADDRESS_DISPATCH must be a dict literal")
+                dispatch: dict[str, tuple[str, str]] = {}
+                for key, value in zip(node.value.keys, node.value.values):
+                    if not (
+                        isinstance(key, ast.Constant)
+                        and isinstance(key.value, str)
+                        and isinstance(value, ast.Tuple)
+                        and len(value.elts) == 2
+                        and isinstance(value.elts[0], ast.Constant)
+                        and isinstance(value.elts[0].value, str)
+                        and isinstance(value.elts[1], ast.Constant)
+                        and isinstance(value.elts[1].value, str)
+                    ):
+                        raise ValueError("_ADDRESS_DISPATCH has unexpected entry shape")
+                    dispatch[key.value] = (
+                        value.elts[0].value,
+                        value.elts[1].value,
+                    )
+                return dispatch
+    return None
+
+
+def _trim_engine_dispatch_entries(source: str) -> tuple[str, int]:
+    dispatch = _parse_address_dispatch(source)
+    if dispatch is None:
+        return source, 0
+    trimmed = {
+        address: spec
+        for address, spec in dispatch.items()
+        if address_needs_resolver_dispatch(address)
+    }
+    removed = len(dispatch) - len(trimmed)
+    if removed == 0:
+        return source, 0
+    return _replace_resolver_section(source, trimmed), removed
+
+
+def _remove_function_definitions(source: str, function_names: frozenset[str]) -> str:
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    spans: list[tuple[int, int]] = []
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name in function_names:
+            start = node.lineno - 1
+            end = node.end_lineno or node.lineno
+            while end < len(lines) and lines[end].strip() == "":
+                end += 1
+            spans.append((start, end))
+    for start, end in sorted(spans, key=lambda item: item[0], reverse=True):
+        del lines[start:end]
+    return "".join(lines)
+
+
+def _remove_projection_aliases_section(source: str) -> str:
+    if PROJECTION_ALIASES_MARKER not in source:
+        return source
+    pattern = re.compile(
+        rf"\n{re.escape(PROJECTION_ALIASES_MARKER)}\n.*?(?=\n{re.escape(RESOLVER_SECTION_MARKER)})",
+        re.DOTALL,
+    )
+    return pattern.sub("\n", source)
+
+
+def _replace_resolver_section(
+    source: str,
+    dispatch: dict[str, tuple[str, str]],
+) -> str:
+    if RESOLVER_SECTION_MARKER not in source:
+        raise ValueError(f"Missing section marker {RESOLVER_SECTION_MARKER!r}")
+    head = source[: source.index(RESOLVER_SECTION_MARKER)]
+    return head + _render_resolver_section(dispatch)
+
+
+def _render_resolver_section(dispatch: dict[str, tuple[str, str]]) -> str:
+    dispatch_lines = [
+        f"    {address!r}: ({helper!r}, {column!r}),"
+        for address, (helper, column) in sorted(dispatch.items())
+    ]
+    dispatch_body = "{\n" + "\n".join(dispatch_lines) + "\n}"
+    return f"""{RESOLVER_SECTION_MARKER}
+_RESOLVED_FORMULAS = {{}}
+_ADDRESS_DISPATCH = {dispatch_body}
+
+def _address_to_func_name(address):
+    name = []
+    prev_underscore = False
+    for ch in address.lower():
+        if ch == "'":
+            continue
+        if "a" <= ch <= "z" or "0" <= ch <= "9":
+            name.append(ch)
+            prev_underscore = False
+        else:
+            if not prev_underscore:
+                name.append("_")
+                prev_underscore = True
+    base = "".join(name).strip("_")
+    return f"cell_{{base}}"
+
+def _resolve_formula(address):
+    fn = _RESOLVED_FORMULAS.get(address)
+    if fn is not None:
+        return fn
+    dispatch = _ADDRESS_DISPATCH.get(address)
+    if dispatch is not None:
+        helper_name, column = dispatch
+        helper = globals()[helper_name]
+
+        def _bound(ctx, _helper=helper, _column=column):
+            return _helper(ctx, _column)
+
+        _RESOLVED_FORMULAS[address] = _bound
+        return _bound
+    name = _address_to_func_name(address)
+    fn = globals().get(name)
+    if fn is not None:
+        _RESOLVED_FORMULAS[address] = fn
+    return fn
+"""
 
 
 def insert_helper_source(source: str, helper_source: str) -> str:
@@ -524,15 +809,484 @@ def rewrite_xl_eval_call_sites(
     bindings: tuple[MemberBinding, ...],
     helper_name: str,
 ) -> str:
-    updated = source
-    for binding in bindings:
-        pattern = (
-            rf"xl_eval\(ctx,\s*'{re.escape(binding.address)}',\s*"
-            rf"{re.escape(binding.function_name)}\)"
+    helper_bindings = tuple(
+        HelperRewriteBinding(
+            address=binding.address,
+            function_name=binding.function_name,
+            engine_column=binding.engine_column,
+            helper_name=helper_name,
         )
-        replacement = f'{helper_name}(ctx, "{binding.engine_column}")'
-        updated = re.sub(pattern, replacement, updated)
+        for binding in bindings
+    )
+    updated, _count = _rewrite_xl_eval_bindings(
+        source,
+        helper_bindings,
+        wrapper_functions=frozenset(),
+    )
     return updated
+
+
+def _helper_call_expr(binding: HelperRewriteBinding, *, use_col_parameter: bool) -> str:
+    column = "col" if use_col_parameter else f'"{binding.engine_column}"'
+    return f"{binding.helper_name}(ctx, {column})"
+
+
+def _function_has_col_parameter(function_def: ast.FunctionDef) -> bool:
+    return any(arg.arg == "col" for arg in function_def.args.args)
+
+
+def _engine_row_from_address(address: str) -> int:
+    match = re.search(r"\d+", address.split("!", 1)[1])
+    if match is None:
+        raise ValueError(f"Cannot parse engine row from address {address!r}")
+    return int(match.group())
+
+
+def _xl_eval_address_arg(node: ast.Call) -> str | None:
+    if len(node.args) < 2:
+        return None
+    address_arg = node.args[1]
+    if isinstance(address_arg, ast.Constant) and isinstance(address_arg.value, str):
+        return address_arg.value
+    if isinstance(address_arg, ast.JoinedStr):
+        parts: list[str] = []
+        for value in address_arg.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                parts.append("{col}")
+        return "".join(parts)
+    return None
+
+
+def _xl_eval_callee_function(node: ast.Call) -> str | None:
+    if len(node.args) < 3:
+        return None
+    callee_arg = node.args[2]
+    if isinstance(callee_arg, ast.Name):
+        return callee_arg.id
+    return None
+
+
+def _xl_eval_matches_binding(
+    node: ast.Call,
+    binding: HelperRewriteBinding,
+) -> bool:
+    if not (isinstance(node.func, ast.Name) and node.func.id == "xl_eval"):
+        return False
+
+    address_pattern = _xl_eval_address_arg(node)
+    if address_pattern is None:
+        return False
+
+    callee_function = _xl_eval_callee_function(node)
+    if address_pattern == binding.address:
+        return callee_function == binding.function_name
+
+    row = _engine_row_from_address(binding.address)
+    if address_pattern == f"Engine!{{col}}{row}":
+        return True
+    return False
+
+
+class _XlEvalRewriteVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        *,
+        binding: HelperRewriteBinding,
+        caller_has_col: bool,
+        source: str,
+        replacements: list[tuple[int, int, str, str]],
+    ) -> None:
+        self.binding = binding
+        self.caller_has_col = caller_has_col
+        self.source = source
+        self.replacements = replacements
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if _xl_eval_matches_binding(node, self.binding):
+            segment = ast.get_source_segment(self.source, node)
+            if segment is not None:
+                self.replacements.append(
+                    (
+                        node.lineno,
+                        node.end_lineno or node.lineno,
+                        segment,
+                        _helper_call_expr(
+                            self.binding,
+                            use_col_parameter=self.caller_has_col,
+                        ),
+                    )
+                )
+        self.generic_visit(node)
+
+
+class _DirectCallRewriteVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        *,
+        binding: HelperRewriteBinding,
+        caller_has_col: bool,
+        source: str,
+        replacements: list[tuple[int, int, str, str]],
+    ) -> None:
+        self.binding = binding
+        self.caller_has_col = caller_has_col
+        self.source = source
+        self.replacements = replacements
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == self.binding.function_name
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "ctx"
+        ):
+            segment = ast.get_source_segment(self.source, node)
+            if segment is not None:
+                self.replacements.append(
+                    (
+                        node.lineno,
+                        node.end_lineno or node.lineno,
+                        segment,
+                        _helper_call_expr(
+                            self.binding,
+                            use_col_parameter=self.caller_has_col,
+                        ),
+                    )
+                )
+        self.generic_visit(node)
+
+
+def _rewrite_xl_eval_bindings(
+    source: str,
+    bindings: tuple[HelperRewriteBinding, ...],
+    wrapper_functions: frozenset[str],
+) -> tuple[str, int]:
+    module = ast.parse(source)
+    segment_replacements: list[tuple[int, int, str, str]] = []
+
+    for binding in bindings:
+        for function_def in _iter_function_defs(module.body):
+            if function_def.name in wrapper_functions:
+                continue
+            visitor = _XlEvalRewriteVisitor(
+                binding=binding,
+                caller_has_col=_function_has_col_parameter(function_def),
+                source=source,
+                replacements=segment_replacements,
+            )
+            visitor.visit(function_def)
+
+    if not segment_replacements:
+        return source, 0
+
+    return _apply_segment_replacements(source, segment_replacements), len(
+        segment_replacements
+    )
+
+
+def _rewrite_direct_bindings(
+    source: str,
+    bindings: tuple[HelperRewriteBinding, ...],
+    wrapper_functions: frozenset[str],
+) -> tuple[str, int]:
+    module = ast.parse(source)
+    segment_replacements: list[tuple[int, int, str, str]] = []
+
+    for binding in bindings:
+        for function_def in _iter_function_defs(module.body):
+            if function_def.name in wrapper_functions:
+                continue
+            if function_def.name == binding.function_name:
+                continue
+            visitor = _DirectCallRewriteVisitor(
+                binding=binding,
+                caller_has_col=_function_has_col_parameter(function_def),
+                source=source,
+                replacements=segment_replacements,
+            )
+            visitor.visit(function_def)
+
+    if not segment_replacements:
+        return source, 0
+
+    return _apply_segment_replacements(source, segment_replacements), len(
+        segment_replacements
+    )
+
+
+def _rewrite_projection_aliases(
+    source: str,
+    bindings: tuple[HelperRewriteBinding, ...],
+) -> tuple[str, int]:
+    binding_by_function = {binding.function_name: binding for binding in bindings}
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    replacements: list[tuple[int, int, str]] = []
+
+    for function_def in _iter_function_defs(module.body):
+        if len(function_def.body) != 1:
+            continue
+        statement = function_def.body[0]
+        if not isinstance(statement, ast.Return) or statement.value is None:
+            continue
+        call = statement.value
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "xl_eval"
+            and len(call.args) >= 3
+            and isinstance(call.args[1], ast.Constant)
+            and isinstance(call.args[1].value, str)
+            and isinstance(call.args[2], ast.Name)
+        ):
+            continue
+        binding = binding_by_function.get(call.args[2].id)
+        if binding is None:
+            continue
+        indent = " " * (getattr(statement, "col_offset", 4) or 4)
+        replacements.append(
+            (
+                statement.lineno,
+                statement.end_lineno or statement.lineno,
+                f'{indent}return {binding.helper_name}(ctx, "{binding.engine_column}")\n',
+            )
+        )
+
+    if not replacements:
+        return source, 0
+    return _apply_line_replacements(lines, replacements), len(replacements)
+
+
+def _simplify_known_parameterized_helpers(source: str) -> str:
+    function_names = _function_names(source)
+    updated = source
+    if "primary_balance_shocked" in function_names and "shock_active" in function_names:
+        updated = _simplify_primary_balance_shocked(updated)
+    if (
+        "output_delta" in function_names
+        and "debt_to_gdp" in function_names
+        and "baseline_debt" in function_names
+    ):
+        updated = _simplify_output_delta(updated)
+    if (
+        "debt_to_gdp" in function_names
+        and "shock_active" in function_names
+        and "primary_balance_shocked" in function_names
+    ):
+        updated = _simplify_debt_to_gdp(updated)
+    return updated
+
+
+def _simplify_primary_balance_shocked(source: str) -> str:
+    module = ast.parse(source)
+    segment_replacements: list[tuple[int, int, str, str]] = []
+    for node in module.body:
+        if (
+            not isinstance(node, ast.FunctionDef)
+            or node.name != "primary_balance_shocked"
+        ):
+            continue
+        visitor = _XlEvalRewriteVisitor(
+            binding=HelperRewriteBinding(
+                address="Engine!C10",
+                function_name="cell_engine_c10",
+                engine_column="C",
+                helper_name="shock_active",
+            ),
+            caller_has_col=True,
+            source=source,
+            replacements=segment_replacements,
+        )
+        visitor.visit(node)
+        updated = (
+            _apply_segment_replacements(source, segment_replacements)
+            if segment_replacements
+            else source
+        )
+        return _remove_unused_func_map(updated, "primary_balance_shocked")
+    return source
+
+
+def _remove_unused_func_map(source: str, function_name: str) -> str:
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in module.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != function_name:
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            if len(statement.targets) != 1:
+                continue
+            target = statement.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            if "func_map" not in target.id:
+                continue
+            loaded_names = {
+                name.id
+                for name in ast.walk(node)
+                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Load)
+            }
+            if target.id in loaded_names:
+                continue
+            start = statement.lineno
+            end = statement.end_lineno or start
+            return "".join(lines[: start - 1]) + "".join(lines[end:])
+    return source
+
+
+def _simplify_output_delta(source: str) -> str:
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "output_delta":
+            body_start = _wrapper_body_start_line(node)
+            body_end = node.end_lineno or body_start
+            new_body = (
+                "    return xl_sub(debt_to_gdp(ctx, col), baseline_debt(ctx, col))\n"
+            )
+            return (
+                "".join(lines[: body_start - 1]) + new_body + "".join(lines[body_end:])
+            )
+    return source
+
+
+def _simplify_debt_to_gdp(source: str) -> str:
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in module.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != "debt_to_gdp":
+            continue
+        assign_start: int | None = None
+        assign_end: int | None = None
+        for statement in node.body:
+            if not isinstance(statement, ast.If):
+                continue
+            if _if_block_is_column_member_dispatch(statement):
+                assign_start = statement.lineno
+                assign_end = statement.end_lineno
+                break
+        if assign_start is None or assign_end is None:
+            return source
+        replacement = (
+            "    eng10 = shock_active(ctx, col)\n"
+            "    eng16 = primary_balance_shocked(ctx, col)\n"
+        )
+        tail = "".join(lines[assign_end:])
+        tail = tail.replace("col10", "eng10").replace("col16", "eng16")
+        return "".join(lines[: assign_start - 1]) + replacement + tail
+    return source
+
+
+def _if_block_assigns_uniform_eng_values(statement: ast.If) -> bool:
+    branches = _collect_if_branches(statement)
+    if len(branches) < 2:
+        return False
+    expected = (
+        ("eng10", "shock_active"),
+        ("eng16", "primary_balance_shocked"),
+    )
+    for branch in branches[:-1]:
+        assigns = _branch_eng_assignments(branch)
+        if assigns != expected:
+            return False
+    return True
+
+
+def _collect_if_branches(statement: ast.If) -> list[list[ast.stmt]]:
+    branches: list[list[ast.stmt]] = [statement.body]
+    current = statement
+    while (
+        current.orelse
+        and len(current.orelse) == 1
+        and isinstance(current.orelse[0], ast.If)
+    ):
+        current = current.orelse[0]
+        branches.append(current.body)
+    if current.orelse:
+        branches.append(current.orelse)
+    return branches
+
+
+def _branch_eng_assignments(body: list[ast.stmt]) -> tuple[tuple[str, str], ...] | None:
+    assignments: list[tuple[str, str]] = []
+    for statement in body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id not in {"eng10", "eng16"}:
+            continue
+        if not (
+            isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Name)
+        ):
+            return None
+        assignments.append((target.id, statement.value.func.id))
+    ordered = tuple(
+        item for name in ("eng10", "eng16") for item in assignments if item[0] == name
+    )
+    if len(ordered) != 2:
+        return None
+    return ordered
+
+
+def _if_block_is_column_member_dispatch(statement: ast.If) -> bool:
+    if _if_block_assigns_uniform_eng_values(statement):
+        return True
+    for node in ast.walk(statement):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "xl_eval":
+            callee = _xl_eval_callee_function(node)
+            if callee is not None and _is_column_engine_cell_wrapper(callee):
+                return True
+    return False
+
+
+def _is_column_engine_cell_wrapper(name: str) -> bool:
+    if not name.startswith("cell_engine_"):
+        return False
+    suffix = name[len("cell_engine_") :]
+    return len(suffix) >= 2 and suffix[0] in "cdefg"
+
+
+def _apply_segment_replacements(
+    source: str,
+    replacements: list[tuple[int, int, str, str]],
+) -> str:
+    updated = source
+    for _start_line, _end_line, old_segment, new_segment in sorted(
+        replacements,
+        key=lambda item: updated.find(item[2]) if item[2] in updated else -1,
+        reverse=True,
+    ):
+        if old_segment not in updated:
+            continue
+        updated = updated.replace(old_segment, new_segment, 1)
+    return updated
+
+
+def _apply_line_replacements(
+    lines: list[str],
+    replacements: list[tuple[int, int, str]],
+) -> str:
+    for start_line, end_line, new_text in sorted(
+        replacements,
+        key=lambda item: item[0],
+        reverse=True,
+    ):
+        lines[start_line - 1 : end_line] = [new_text]
+    return "".join(lines)
+
+
+def _iter_function_defs(body: list[ast.stmt]) -> list[ast.FunctionDef]:
+    return [node for node in body if isinstance(node, ast.FunctionDef)]
 
 
 def validate_refactored_internals(source: str) -> None:
@@ -552,7 +1306,7 @@ def refactor_internals_cluster(
     if response is None:
         response = llm_refactor_cluster(ctx, internals_path=internals_path)
     validate_cluster_refactor_response(ctx, response, existing_names=existing_names)
-    updated = apply_refactor_plan(source, response, ctx)
+    updated = apply_refactor_plan(source, response, ctx, phase_b=False)
     validate_refactored_internals(updated)
     if not dry_run:
         internals_path.write_text(updated, encoding="utf-8")
@@ -563,6 +1317,7 @@ def refactor_internals_cluster(
             binding.function_name for binding in response.member_bindings
         ),
         dry_run=dry_run,
+        response=response,
     )
 
 
@@ -580,6 +1335,7 @@ def refactor_internals_all_clusters(
         if cluster.row is not None and len(cluster.members) >= 2
     }
     results: list[ClusterRefactorApplyResult] = []
+    responses: list[ClusterRefactorResponse] = []
     for row in REFACTOR_ROW_ORDER:
         cluster = clusters_by_row.get(row)
         if cluster is None:
@@ -587,13 +1343,32 @@ def refactor_internals_all_clusters(
         ctx = build_cluster_refactor_context(projection, cluster, internals_path)
         if ctx is None:
             continue
-        results.append(
-            refactor_internals_cluster(
-                ctx,
-                internals_path=internals_path,
-                dry_run=dry_run,
-            )
+        result = refactor_internals_cluster(
+            ctx,
+            internals_path=internals_path,
+            dry_run=dry_run,
         )
+        results.append(result)
+        responses.append(result.response)
+
+    if not dry_run and responses:
+        source = internals_path.read_text(encoding="utf-8")
+        updated, phase_b_rewrites = apply_phase_b_final_pass(source, tuple(responses))
+        updated, phase_c_pruned = apply_phase_c(updated)
+        validate_refactored_internals(updated)
+        internals_path.write_text(updated, encoding="utf-8")
+        if results:
+            last = results[-1]
+            results[-1] = ClusterRefactorApplyResult(
+                source=updated,
+                helper_name=last.helper_name,
+                wrappers_applied=last.wrappers_applied,
+                dry_run=last.dry_run,
+                response=last.response,
+                phase_b_rewrites=phase_b_rewrites,
+                phase_c_pruned=phase_c_pruned,
+            )
+
     return tuple(results)
 
 

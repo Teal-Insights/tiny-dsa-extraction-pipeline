@@ -2148,9 +2148,10 @@ columns and years.
 Graph compression gets us most of the way to a smaller export, but
 `dist/tiny_dsa/internals.py` still contains parallel column copies of the same
 logic after codegen. We cluster those copies by formula similarity, ask the LLM
-for one parameterized helper body per cluster, validate the response, apply Phase
-A (helper insert plus thin wrappers), and **write the refactored source back to
-`internals.py`**. That post-refactor file is what the differential suite exercises.
+for one parameterized helper body per cluster, validate the response, run Phase A
+(helper insert plus thin wrappers), Phase B (call-site lowering), and Phase C
+(wrapper pruning), then **write the refactored source back to `internals.py`**.
+That post-refactor file is what the differential suite exercises.
 
 #### Formula similarity clustering
 
@@ -2231,8 +2232,12 @@ flowchart LR
   B --> C[LLM]
   C --> D[ClusterRefactorResponse]
   D --> E[validate response]
-  E --> F[apply_refactor_plan]
-  F --> G[differential tests]
+  E --> F[Phase A: apply_refactor_plan]
+  F --> G{more clusters?}
+  G -->|yes| B
+  G -->|no| H[Phase B: apply_phase_b_final_pass]
+  H --> I[Phase C: apply_phase_c]
+  I --> J[differential tests]
 ```
 
 Steps in order:
@@ -2244,13 +2249,18 @@ Steps in order:
    `helper_source` and metadata only, not edits to other functions.
 4. **Validate** — Pydantic parse plus hard constraints (AST, bindings, allowed
    call targets); fail fast before any file write.
-5. **Apply Phase A** — insert the helper and replace member bodies with thin
-   wrappers (deterministic), then write `internals.py`.
-6. **Test** — `ast.parse`, `compile`, then the exported-library differential script.
+5. **Apply Phase A** — for each cluster in `REFACTOR_ROW_ORDER`, insert the helper
+   and replace member bodies with thin wrappers (deterministic).
+6. **Apply Phase B** — one final pass over the Phase A module: rewrite
+   `xl_eval`/direct `cell_*` call sites to helper calls, simplify known
+   parameterized helpers, and rewrite projection alias wrappers.
+7. **Apply Phase C** — prune unreferenced thin `cell_*` wrappers; route pruned
+   `Outputs!*` addresses through `_ADDRESS_DISPATCH` in `_resolve_formula`.
+8. **Write** — persist `internals.py`, then run differential tests.
 
-Phase B (optional direct-call substitution at `xl_eval` sites) is implemented
-but not wired into the default apply path. Phase A alone preserves the entire
-`_resolve_formula` / `xl_eval` machinery.
+`refactor_internals_all_clusters()` runs steps 5–8. Per-cluster Phase A applies
+re-extract context after each cluster so later LLM calls see upstream wrappers.
+Phase B and Phase C run once after all five clusters are applied.
 
 #### Building refactor context
 
@@ -2308,9 +2318,9 @@ Row 10 is a leaf cluster within the Engine block: its members depend only on
 leaf inputs (`Engine!C5`, `Inputs!B21`), so `external_dependencies` is empty.
 On the codegen export, downstream cells such as `cell_engine_c16` call
 `xl_eval(ctx, 'Engine!C10', cell_engine_c10)`; those sites appear in
-`call_sites`. After the full refactor pass, equivalent references often live
-inside parameterized helpers such as `debt_to_gdp` instead, while Phase A leaves
-the original `xl_eval(..., cell_engine_c10)` call sites in place.
+`call_sites`. After Phase A they still call through thin wrappers; Phase B
+rewrites them to `shock_active(ctx, col)` inside parameterized helpers such as
+`debt_to_gdp`.
 
 #### LLM input and output contracts
 
@@ -2388,8 +2398,9 @@ Phase A—they still resolve through the wrapper and `_resolve_formula`.
 The cell below applies Phase A to the row-10 cluster using a hand-authored
 `shock_active` helper (the same golden body used in
 `tests/test_internals_refactor.py`). It demonstrates the apply path **in memory
-only**—no LLM call and no file write. The next cell runs the full five-cluster
-pass for real.
+only**—no LLM call and no file write. Later cells run all five clusters through
+Phases B and C; the final cell writes `internals.py` via
+`refactor_internals_all_clusters()`.
 
 ```{python}
 from src.internals_refactor import (
@@ -2457,16 +2468,159 @@ print("```")
 
 Thin wrappers add a few lines per member, but the duplicated `xl_*` bodies move
 into one shared helper. For all five Tiny DSA clusters, Phase A alone removes
-hundreds of lines of parallel logic.
+hundreds of lines of parallel logic. Phase B and Phase C (below) shrink the file
+further by calling helpers directly and pruning dead wrappers.
+
+#### Phase B — call-site lowering
+
+After every cluster has been through Phase A, `apply_phase_b_final_pass()` runs
+one AST pass over the full module. For each `ClusterRefactorResponse` it builds
+`HelperRewriteBinding` records and then:
+
+1. **Simplify known helpers** — Tiny-DSA-specific rewrites such as replacing
+   column-dispatch `if` ladders inside `debt_to_gdp` with
+   `shock_active(ctx, col)` / `primary_balance_shocked(ctx, col)`, collapsing
+   `output_delta` to `debt_to_gdp - baseline_debt`, and removing unused
+   `func_map` tables in `primary_balance_shocked`.
+2. **Rewrite `xl_eval` sites** — patterns like
+   `xl_eval(ctx, 'Engine!C10', cell_engine_c10)` and
+   `xl_eval(ctx, f'Engine!{col}10', ...)` become `shock_active(ctx, col)` or
+   `shock_active(ctx, "C")` depending on whether the caller already has a `col`
+   parameter.
+3. **Rewrite direct `cell_*` calls** — `cell_engine_c10(ctx)` →
+   `shock_active(ctx, "C")` outside the member wrapper bodies.
+4. **Rewrite projection aliases** — `cell_outputs_b12` bodies become
+   `return baseline_debt(ctx, "C")` instead of forwarding through Engine wrappers.
+
+Member thin wrappers from Phase A remain until Phase C. Between Phase A and Phase
+C, `xl_eval(ctx, 'Outputs!B12')` still resolves through wrappers and
+`_resolve_formula`; after Phase C only `Outputs!*` entry points use
+`_ADDRESS_DISPATCH`.
+
+The cell below rebuilds Phase A in memory on the codegen string (same path as
+`tests/conftest.py`), loads cached LLM responses, and runs Phase B. It prints the
+same structural checks as `tests/test_internals_refactor.py`.
+
+```{python}
+import ast
+
+from src.internals_refactor import (
+    REFACTOR_ROW_ORDER,
+    apply_phase_b_final_pass,
+    apply_refactor_plan,
+    llm_refactor_cluster,
+    validate_refactored_internals,
+)
+
+codegen_source = optimal_modules["internals.py"]
+clusters_by_row = {
+    cluster.row: cluster
+    for cluster in formula_clusters
+    if cluster.row is not None and len(cluster.members) >= 2
+}
+
+phase_a_source = codegen_source
+cluster_responses = []
+for row in REFACTOR_ROW_ORDER:
+    cluster = clusters_by_row.get(row)
+    if cluster is None:
+        continue
+    ctx = build_cluster_refactor_context(
+        optimal_projection, cluster, internals_path
+    )
+    assert ctx is not None
+    response = llm_refactor_cluster(ctx, internals_path=internals_path)
+    cluster_responses.append(response)
+    phase_a_source = apply_refactor_plan(phase_a_source, response, ctx, phase_b=False)
+
+validate_refactored_internals(phase_a_source)
+phase_b_source, phase_b_rewrites = apply_phase_b_final_pass(
+    phase_a_source, tuple(cluster_responses)
+)
+validate_refactored_internals(phase_b_source)
+
+
+def _extract_function(source: str, function_name: str) -> str:
+    module = ast.parse(source)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            lines = source.splitlines()
+            return "\n".join(lines[node.lineno - 1 : node.end_lineno])
+    raise KeyError(function_name)
+
+
+debt_to_gdp = _extract_function(phase_b_source, "debt_to_gdp")
+output_delta = _extract_function(phase_b_source, "output_delta")
+outputs_b12 = _extract_function(phase_b_source, "cell_outputs_b12")
+
+print("```text")
+print(f"Phase A size: {len(phase_a_source)} bytes")
+print(f"Phase B size: {len(phase_b_source)} bytes")
+print(f"Phase B rewrites: {phase_b_rewrites}")
+print()
+print("debt_to_gdp uses shock_active:", "shock_active(ctx, col)" in debt_to_gdp)
+print(
+    "debt_to_gdp still xl_evals cell_engine_c10:",
+    "xl_eval(ctx, 'Engine!C10', cell_engine_c10)" in debt_to_gdp,
+)
+print("output_delta uses helpers:", "debt_to_gdp(ctx, col)" in output_delta)
+print('cell_outputs_b12:', outputs_b12.strip().splitlines()[-1])
+print("```")
+```
+
+#### Phase C — wrapper pruning and resolver dispatch
+
+`apply_phase_c()` scans for thin wrappers (`return helper(ctx, "C")` bodies) that
+are no longer referenced by static `xl_eval(..., cell_*)` or direct `cell_*`
+calls. Unreferenced wrappers are removed. For addresses that still need
+`_resolve_formula` entry (today: non-`Engine!*` cells, mainly `Outputs!*`), Phase
+C records a dispatch tuple `(helper_name, engine_column)` in `_ADDRESS_DISPATCH`.
+
+`cell_inputs_b6` and `cell_engine_b9` survive because helpers still call them via
+`xl_eval`. Pruned `cell_engine_c16`-style wrappers are not dispatched — Engine
+cells are reached only through parameterized helpers on the hot path.
+
+The cell below continues from the Phase B output above.
+
+```{python}
+from src.internals_refactor import PROJECTION_ALIASES_MARKER, apply_phase_c
+
+phase_c_source, phase_c_pruned = apply_phase_c(phase_b_source)
+validate_refactored_internals(phase_c_source)
+
+dispatch = None
+module = ast.parse(phase_c_source)
+for node in module.body:
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "_ADDRESS_DISPATCH":
+                dispatch = {
+                    key.value: (value.elts[0].value, value.elts[1].value)
+                    for key, value in zip(node.value.keys, node.value.values)
+                    if isinstance(key, ast.Constant) and isinstance(value, ast.Tuple)
+                }
+
+print("```text")
+print(f"Phase C size: {len(phase_c_source)} bytes")
+print(f"Pruned thin wrappers: {phase_c_pruned}")
+print(f"Dispatch entries: {len(dispatch or {})}")
+print("Engine!C16 in dispatch:", "Engine!C16" in (dispatch or {}))
+print("Outputs!B12 in dispatch:", (dispatch or {}).get("Outputs!B12"))
+print("Outputs!B14 in dispatch:", (dispatch or {}).get("Outputs!B14"))
+print("cell_engine_c16 present:", "def cell_engine_c16(ctx)" in phase_c_source)
+print("cell_inputs_b6 present:", "def cell_inputs_b6(ctx)" in phase_c_source)
+print("projection aliases section:", PROJECTION_ALIASES_MARKER in phase_c_source)
+print("```")
+```
 
 #### Apply all clusters and write `internals.py`
 
 `refactor_internals_all_clusters()` walks `REFACTOR_ROW_ORDER` — `(10, 16, 6,
-20, 14)` — re-extracting `ClusterRefactorContext` after each apply so later LLM
-calls see upstream wrappers. Responses come from `.cache/internals-refactors.json`
-when available; uncached clusters call DeepSeek (requires `DEEPSEEK_API_KEY` in
-`.env`). Each successful apply validates the response, runs Phase A, and writes
-the updated source to `internals_path`.
+20, 14)` — re-extracting `ClusterRefactorContext` after each Phase A apply so
+later LLM calls see upstream wrappers. Responses come from
+`.cache/internals-refactors.json` when available; uncached clusters call DeepSeek
+(requires `DEEPSEEK_API_KEY` in `.env`). After all clusters pass Phase A, the
+function runs Phase B and Phase C once, validates, and writes `internals_path`.
 
 Per-cluster control remains available via `refactor_internals_cluster(ctx,
 internals_path=..., dry_run=False)`. Pass an explicit `response=` to apply a
@@ -2479,7 +2633,7 @@ from src.internals_refactor import (
     validate_refactored_internals,
 )
 
-codegen_size = internals_path.stat().st_size
+codegen_size = len(optimal_modules["internals.py"])
 refactor_results = refactor_internals_all_clusters(
     optimal_projection,
     formula_clusters,
@@ -2487,6 +2641,7 @@ refactor_results = refactor_internals_all_clusters(
 )
 refactored_source = internals_path.read_text(encoding="utf-8")
 validate_refactored_internals(refactored_source)
+last = refactor_results[-1]
 
 print("```text")
 for result in refactor_results:
@@ -2495,28 +2650,11 @@ for result in refactor_results:
     )
 print(f"Codegen internals: {codegen_size} bytes")
 print(f"Refactored internals: {internals_path.stat().st_size} bytes")
+print(f"Phase B rewrites (final pass): {last.phase_b_rewrites}")
+print(f"Phase C pruned wrappers: {last.phase_c_pruned}")
 print(f"Wrote {internals_path.resolve()}")
 print("```")
 ```
-
-#### Phase B — optional direct-call substitution
-
-After Phase A passes differential tests, `rewrite_xl_eval_call_sites()` can
-replace patterns like:
-
-```python
-xl_eval(ctx, 'Engine!C10', cell_engine_c10)
-```
-
-with:
-
-```python
-shock_active(ctx, "C")
-```
-
-inside functions **outside** the member set. Member wrappers would remain as the
-stable address→callable binding for `_resolve_formula` unless the resolver is
-extended. **We ship Phase A only first**; Phase B is an optional size win.
 
 #### Apply order across clusters
 
@@ -2540,8 +2678,18 @@ refactored_source = internals_path.read_text(encoding="utf-8")
 validate_refactored_internals(refactored_source)
 print("```text")
 print(f"Validated {internals_path.name}: {len(refactored_source)} bytes")
+print(
+    "Parameterized helpers present:",
+    all(f"def {name}" in refactored_source for name in ("shock_active", "debt_to_gdp", "output_delta")),
+)
+print("Has _ADDRESS_DISPATCH:", "_ADDRESS_DISPATCH" in refactored_source)
 print("```")
 ```
+
+Unit tests in `tests/test_internals_refactor.py` exercise the same Phase A→B→C
+pipeline via session-scoped fixtures in `tests/conftest.py` (codegen into a temp
+directory, cached LLM responses, no reads or writes to `dist/`). The Phase B and
+Phase C cells above mirror those tests.
 
 Then run the exported-library differential script (118 scenarios × 15 output
 cells = 1,770 Excel-vs-Python comparisons):
