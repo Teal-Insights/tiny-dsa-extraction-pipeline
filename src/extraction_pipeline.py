@@ -174,12 +174,14 @@ tests/results/local/
 
     from src.formula_clustering import cluster_graph_formulas
     from src.internals_refactor import refactor_internals_all_clusters
+    from src.tiny_dsa_phase_b_plugins import TINY_DSA_PHASE_B_PLUGINS
 
     formula_clusters = cluster_graph_formulas(refactor_projection)
     refactor_internals_all_clusters(
         refactor_projection,
         formula_clusters,
         internals_path=package_root / "internals.py",
+        phase_b_plugins=TINY_DSA_PHASE_B_PLUGINS,
     )
 
 

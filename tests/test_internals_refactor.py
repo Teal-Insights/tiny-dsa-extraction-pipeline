@@ -29,6 +29,7 @@ from src.internals_refactor import (
     _normalize_google_docstring,
     _prepare_cluster_refactor_response,
 )
+from src.tiny_dsa_phase_b_plugins import TINY_DSA_PHASE_B_PLUGINS
 
 from tests.fixtures.cluster_refactor_golden import (
     GOLDEN_CLUSTER_REFACTOR_RESPONSES,
@@ -250,21 +251,22 @@ def test_golden_cluster_refactor_responses_validate(
 ) -> None:
     from src.formula_clustering import cluster_graph_formulas
 
-    clusters_by_row = {
-        cluster.row: cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.row is not None and len(cluster.members) >= 2
-    }
+    from src.refactor_order import compute_multi_member_cluster_refactor_order
+
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
     existing_names = _function_names(singleton_refactored_internals_source)
-    for row in (10, 16, 6, 20, 14):
-        cluster = clusters_by_row[row]
+    for cluster in compute_multi_member_cluster_refactor_order(
+        tiny_dsa_refactor_projection, clusters
+    ):
+        if cluster.row is None:
+            continue
         ctx = build_cluster_refactor_context(
             tiny_dsa_refactor_projection,
             cluster,
             codegen_internals_path,
         )
         assert ctx is not None
-        response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[row]
+        response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[cluster.row]
         validate_cluster_refactor_response(
             ctx,
             response,
@@ -522,6 +524,24 @@ def test_apply_phase_a_row_10(
         assert "xl_ge" not in function_block
 
 
+def test_apply_phase_b_without_plugins_performs_binding_rewrites_only(
+    phase_a_internals_source,
+    cluster_refactor_responses,
+) -> None:
+    updated, rewrite_count = apply_phase_b_final_pass(
+        phase_a_internals_source,
+        cluster_refactor_responses,
+    )
+    validate_refactored_internals(updated)
+    assert rewrite_count > 0
+
+    assert 'return baseline_debt(ctx, "C")' in _extract_function(
+        updated, "cell_outputs_b12"
+    )
+    debt_to_gdp = _extract_function(updated, "debt_to_gdp")
+    assert "xl_eval(ctx, 'Engine!C10', cell_engine_c10)" not in debt_to_gdp
+
+
 def test_apply_phase_b_rewrites_helper_and_projection_call_sites(
     phase_a_internals_source,
     cluster_refactor_responses,
@@ -529,6 +549,7 @@ def test_apply_phase_b_rewrites_helper_and_projection_call_sites(
     updated, rewrite_count = apply_phase_b_final_pass(
         phase_a_internals_source,
         cluster_refactor_responses,
+        plugins=TINY_DSA_PHASE_B_PLUGINS,
     )
     validate_refactored_internals(updated)
 
@@ -556,6 +577,7 @@ def test_apply_phase_b_rewrites_helper_and_projection_call_sites(
     second_pass, second_rewrite_count = apply_phase_b_final_pass(
         updated,
         cluster_refactor_responses,
+        plugins=TINY_DSA_PHASE_B_PLUGINS,
     )
     assert second_pass == updated
     assert second_rewrite_count == 0
@@ -569,6 +591,7 @@ def test_apply_phase_c_prunes_unreferenced_thin_wrappers(
     phase_b_source, _phase_b_rewrites = apply_phase_b_final_pass(
         phase_a_internals_source,
         cluster_refactor_responses,
+        plugins=TINY_DSA_PHASE_B_PLUGINS,
     )
     updated, pruned = apply_phase_c(phase_b_source)
     validate_refactored_internals(updated)
