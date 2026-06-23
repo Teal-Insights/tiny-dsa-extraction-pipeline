@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import replace
+from typing import Any, cast
 
 from src.internals_refactor import (
     ClusterRefactorResponse,
@@ -10,29 +11,26 @@ from src.internals_refactor import (
     apply_phase_b_final_pass,
     apply_phase_c,
     apply_refactor_plan,
+    apply_singleton_refactor_plan,
+    build_cluster_refactor_context,
+    build_singleton_refactor_context,
     deterministic_helper_name,
+    prompt_payload,
     refactor_cache_key,
     validate_cluster_refactor_response,
+    validate_google_style_docstring,
     validate_refactored_internals,
+    validate_semantic_local_names,
+    validate_singleton_refactor_response,
     wrapper_source,
 )
 
-SHOCK_ACTIVE_HELPER = '''
-def shock_active(ctx, col):
-    """Engine!C10:G10 — 1 if projection year >= shock year."""
-    return (
-        _t2
-        if isinstance(
-            (
-                _t2 := to_bool(
-                    (_t1 := xl_ge(xl_cell(ctx, f"Engine!{col}5"), xl_cell(ctx, "Inputs!B21")))
-                )
-            ),
-            XlError,
-        )
-        else ((1.0) if _t2 else (0.0))
-    )
-'''.strip()
+from tests.fixtures.cluster_refactor_golden import (
+    GOLDEN_CLUSTER_REFACTOR_RESPONSES,
+    SHOCK_ACTIVE_DOCSTRING,
+    SHOCK_ACTIVE_HELPER,
+)
+from tests.fixtures.singleton_refactor_golden import GOLDEN_SINGLETON_REFACTOR_RESPONSES
 
 TRIM_FIXTURE_SOURCE = """
 from .runtime import XlError, xl_cell
@@ -46,6 +44,7 @@ _ADDRESS_DISPATCH = {
     'Engine!C10': ('shock_active', 'C'),
     'Outputs!B14': ('output_delta', 'C'),
 }
+_SYMBOL_DISPATCH = {}
 
 def _address_to_func_name(address):
     return "cell_placeholder"
@@ -66,6 +65,225 @@ def _resolve_formula(address):
         return _bound
     return None
 """
+
+
+def test_validate_runnable_cell_imports_rejects_workbook() -> None:
+    from src.qmd_python_validation import validate_runnable_cell_imports
+
+    source = (
+        "from tiny_dsa.api import Workbook, compute_output_baseline\n"
+        "compute_output_baseline(ctx=ctx)\n"
+    )
+    try:
+        validate_runnable_cell_imports(source)
+    except ValueError as error:
+        assert "Workbook" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_validate_no_cell_function_references_rejects_cell_helpers() -> None:
+    from src.internals_refactor import validate_no_cell_function_references
+
+    source = """
+def debt_to_gdp(ctx, col):
+    return xl_eval(ctx, 'Engine!C10', cell_engine_c10)
+"""
+    function_def = ast.parse(source).body[0]
+    assert isinstance(function_def, ast.FunctionDef)
+    try:
+        validate_no_cell_function_references(function_def)
+    except ValueError as error:
+        assert "cell_engine_c10" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_validate_semantic_local_names_rejects_excel_shaped_names() -> None:
+    source = """
+def example(ctx, col):
+    t1 = xl_cell(ctx, "Inputs!B21")
+    return t1
+"""
+    function_def = ast.parse(source).body[0]
+    assert isinstance(function_def, ast.FunctionDef)
+    try:
+        validate_semantic_local_names(function_def)
+    except ValueError as error:
+        assert "excel-shaped" in str(error)
+        assert "t1" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_validate_google_style_docstring_accepts_complete_docstring() -> None:
+    validate_google_style_docstring(SHOCK_ACTIVE_DOCSTRING)
+
+
+def test_build_singleton_refactor_context_inputs_b6(
+    tiny_dsa_refactor_projection,
+    codegen_internals_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    cluster = next(
+        cluster
+        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if cluster.members == ("Inputs!B6",)
+    )
+    ctx = build_singleton_refactor_context(
+        tiny_dsa_refactor_projection,
+        cluster,
+        codegen_internals_path,
+    )
+    assert ctx is not None
+    assert ctx.address == "Inputs!B6"
+    assert ctx.function_name == "cell_inputs_b6"
+    assert ctx.symbol_name == "initial_debt_to_gdp"
+    assert "def cell_inputs_b6" in ctx.python_source
+
+
+def test_apply_singleton_rename_rewrites_xl_eval_call_sites(
+    codegen_internals_source,
+    tiny_dsa_refactor_projection,
+    codegen_internals_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    cluster = next(
+        cluster
+        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if cluster.members == ("Inputs!B6",)
+    )
+    ctx = build_singleton_refactor_context(
+        tiny_dsa_refactor_projection,
+        cluster,
+        codegen_internals_path,
+    )
+    assert ctx is not None
+    response = GOLDEN_SINGLETON_REFACTOR_RESPONSES["Inputs!B6"]
+    validate_singleton_refactor_response(
+        ctx,
+        response,
+        existing_names=_function_names(codegen_internals_source),
+    )
+    updated, rewrite_count = apply_singleton_refactor_plan(
+        codegen_internals_source,
+        response,
+        ctx,
+    )
+    validate_refactored_internals(updated)
+
+    assert "def initial_debt_to_gdp(ctx)" in updated
+    assert "def cell_inputs_b6(ctx)" not in updated
+    assert "cell_inputs_b6" not in updated
+    assert rewrite_count > 0
+    assert "'Inputs!B6': 'initial_debt_to_gdp'" in updated
+
+
+def test_golden_singleton_refactor_responses_validate(
+    codegen_internals_source,
+    tiny_dsa_refactor_projection,
+    codegen_internals_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    singleton_clusters = {
+        cluster.members[0]: cluster
+        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if len(cluster.members) == 1
+    }
+    existing_names = _function_names(codegen_internals_source)
+    for address in ("Inputs!B6", "Engine!B9"):
+        ctx = build_singleton_refactor_context(
+            tiny_dsa_refactor_projection,
+            singleton_clusters[address],
+            codegen_internals_path,
+        )
+        assert ctx is not None
+        response = GOLDEN_SINGLETON_REFACTOR_RESPONSES[address]
+        validate_singleton_refactor_response(
+            ctx,
+            response,
+            existing_names=existing_names,
+        )
+        existing_names = existing_names | {response.symbol_name}
+
+
+def test_golden_cluster_refactor_responses_validate(
+    singleton_refactored_internals_source,
+    tiny_dsa_refactor_projection,
+    codegen_internals_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    clusters_by_row = {
+        cluster.row: cluster
+        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if cluster.row is not None and len(cluster.members) >= 2
+    }
+    existing_names = _function_names(singleton_refactored_internals_source)
+    for row in (10, 16, 6, 20, 14):
+        cluster = clusters_by_row[row]
+        ctx = build_cluster_refactor_context(
+            tiny_dsa_refactor_projection,
+            cluster,
+            codegen_internals_path,
+        )
+        assert ctx is not None
+        response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[row]
+        validate_cluster_refactor_response(
+            ctx,
+            response,
+            existing_names=existing_names,
+        )
+        existing_names = existing_names | {response.helper_name}
+
+
+def test_validate_google_style_docstring_rejects_missing_args() -> None:
+    docstring = """Return the shocked path.
+
+Returns:
+    Debt-to-GDP ratio.
+"""
+    try:
+        validate_google_style_docstring(docstring)
+    except ValueError as error:
+        assert "Args" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_validate_cluster_refactor_response_rejects_docstring_mismatch(
+    shock_cluster_context,
+    codegen_internals_source,
+) -> None:
+    response = _shock_active_response(shock_cluster_context)
+    mismatched = response.model_copy(
+        update={
+            "helper_docstring": "Different docstring.\n\nArgs:\n    ctx: x.\n\nReturns:\n    y."
+        }
+    )
+    try:
+        validate_cluster_refactor_response(
+            shock_cluster_context,
+            mismatched,
+            existing_names=_function_names(codegen_internals_source),
+        )
+    except ValueError as error:
+        assert "must match" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_prompt_payload_includes_domain_glossary(shock_cluster_context) -> None:
+    payload = prompt_payload(shock_cluster_context)
+    glossary = cast(list[dict[str, str]], payload["domain_glossary"])
+    symbols = {entry["symbol"] for entry in glossary}
+    constraints = cast(dict[str, Any], payload["constraints"])
+    assert "shock_magnitude_resolved" in symbols
+    assert constraints["docstring_style"] == "google"
+    assert constraints["require_semantic_locals"] is True
 
 
 def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
@@ -202,8 +420,10 @@ def test_apply_phase_c_prunes_unreferenced_thin_wrappers(
     assert "def cell_engine_c16(ctx)" not in updated
     assert "def cell_outputs_b14(ctx)" not in updated
     assert "def cell_outputs_b12(ctx)" not in updated
-    assert "def cell_inputs_b6(ctx)" in updated
-    assert "def cell_engine_b9(ctx)" in updated
+    assert "def initial_debt_to_gdp(ctx)" in updated
+    assert "def shock_magnitude_resolved(ctx)" in updated
+    assert "def cell_inputs_b6(ctx)" not in updated
+    assert "def cell_engine_b9(ctx)" not in updated
     dispatch = _extract_address_dispatch(updated)
     assert "Engine!C16" not in dispatch
     assert dispatch["Outputs!B14"] == ("output_delta", "C")
@@ -315,7 +535,7 @@ def _extract_function(source: str, function_name: str) -> str:
 def _shock_active_response(ctx) -> ClusterRefactorResponse:
     return ClusterRefactorResponse(
         helper_name=deterministic_helper_name(ctx),
-        helper_docstring="Engine!C10:G10 — 1 if projection year >= shock year.",
+        helper_docstring=SHOCK_ACTIVE_DOCSTRING,
         uses_first_year_branch=False,
         helper_source=SHOCK_ACTIVE_HELPER,
         member_bindings=tuple(

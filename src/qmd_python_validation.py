@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -30,6 +31,20 @@ DOCUMENTATION_BASELINE_RUNTIME_WITH: tuple[str, ...] = (
     "pandas",
     "polars",
     "matplotlib",
+)
+
+TINY_DSA_API_SYMBOLS: tuple[str, ...] = (
+    "make_context",
+    "set_country_name",
+    "set_growth_baseline",
+    "set_interest_baseline",
+    "set_primary_balance_baseline",
+    "set_shock_year",
+    "set_shock_type",
+    "set_shock_magnitudes",
+    "compute_output_baseline",
+    "compute_output_shocked",
+    "compute_output_delta",
 )
 
 MAX_IMPORT_FIX_ATTEMPTS = 20
@@ -229,6 +244,22 @@ def default_run_uv_script(
     )
 
 
+def validate_runnable_cell_imports(source: str) -> None:
+    module = ast.parse(source)
+    for node in ast.walk(module):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module != "tiny_dsa.api":
+            continue
+        for alias in node.names:
+            symbol = alias.name
+            if symbol not in TINY_DSA_API_SYMBOLS:
+                raise ValueError(
+                    f"invalid tiny_dsa.api import {symbol!r}; "
+                    f"allowed: {list(TINY_DSA_API_SYMBOLS)}"
+                )
+
+
 def fix_python_cell_with_llm(
     *,
     client: OpenAI,
@@ -244,7 +275,8 @@ def fix_python_cell_with_llm(
                 "role": "system",
                 "content": (
                     "You fix runnable Quarto Python cells for library documentation. "
-                    "Return only the corrected Python source code with no fences or commentary."
+                    "Return only the corrected Python source code with no fences or commentary. "
+                    "Never import Workbook or other symbols that are not exported by tiny_dsa.api."
                 ),
             },
             {
@@ -256,6 +288,8 @@ Constraints:
 - Use only the Python standard library, polars, and matplotlib.
 - Tabulate compute_output_* results with polars (sort by TIME_PERIOD, select OBS_VALUE).
 - Keep tiny_dsa.api usage intact.
+- tiny_dsa.api exports only: {", ".join(TINY_DSA_API_SYMBOLS)}.
+- Do not import Workbook or any other symbol from tiny_dsa.api.
 - Return only valid Python source for the cell body.
 
 Execution error:
@@ -347,6 +381,7 @@ def _apply_runtime_cell_fix(
         qmd_label=qmd_label,
         cell_number=cell_number,
     )
+    validate_runnable_cell_imports(fixed_source)
     qmd_path.write_text(
         replace_python_cell(qmd_text, cell.index, fixed_source),
         encoding="utf-8",

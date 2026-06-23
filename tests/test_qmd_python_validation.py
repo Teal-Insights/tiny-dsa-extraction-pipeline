@@ -133,6 +133,14 @@ def test_default_run_uv_script_forces_utf8_stdio(
     assert result.stdout == "ok"
 
 
+def test_validate_runnable_cell_imports_accepts_api_symbols() -> None:
+    from src.qmd_python_validation import validate_runnable_cell_imports
+
+    validate_runnable_cell_imports(
+        "from tiny_dsa.api import make_context, compute_output_baseline\n"
+    )
+
+
 def test_validate_qmd_files_records_discovered_packages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

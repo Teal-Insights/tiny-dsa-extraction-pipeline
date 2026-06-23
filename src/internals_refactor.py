@@ -25,7 +25,7 @@ from src.formula_clustering import (
 repo_root = Path(__file__).resolve().parents[1]
 
 REFACTOR_MODEL = "deepseek-v4-pro"
-REFACTOR_PROMPT_VERSION = 1
+REFACTOR_PROMPT_VERSION = 3
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
 PROJECTION_ALIASES_MARKER = "# --- Projection public address aliases ---"
@@ -40,6 +40,26 @@ ROW_HELPER_NAMES: dict[int, str] = {
     16: "primary_balance_shocked",
     20: "debt_to_gdp",
 }
+
+DOMAIN_GLOSSARY: tuple[tuple[str, str], ...] = (
+    ("initial_debt_to_gdp", "Inputs!B6 — country initial debt-to-GDP ratio"),
+    ("growth_baseline", "Inputs!C16:G16 — real GDP growth rates"),
+    ("interest_baseline", "Inputs!C17:G17 — real interest rates"),
+    ("primary_balance_baseline", "Inputs!C18:G18 — primary balance"),
+    ("shock_year", "Inputs!B21 — first projection year the shock applies"),
+    ("shock_type", "Inputs!B22 — shocked parameter selector (1–3)"),
+    ("shock_magnitude_resolved", "Engine!B9 — resolved shock magnitude"),
+    ("baseline_path", "Engine!C6:G6 — baseline debt-to-GDP path"),
+    ("shocked_path", "Engine!C20:G20 — shocked debt-to-GDP path"),
+    ("output_delta", "Outputs!B14:F14 — shocked minus baseline debt-to-GDP"),
+)
+
+SINGLETON_SYMBOL_NAMES: dict[str, str] = {
+    "Inputs!B6": "initial_debt_to_gdp",
+    "Engine!B9": "shock_magnitude_resolved",
+}
+
+SINGLETON_REFACTOR_ORDER: tuple[str, ...] = ("Inputs!B6", "Engine!B9")
 
 ALLOWED_RUNTIME_SYMBOLS: tuple[str, ...] = (
     "XlError",
@@ -108,20 +128,57 @@ class ClusterRefactorResponse(BaseModel):
         description="New snake_case function in internals.py, e.g. shock_active."
     )
     helper_docstring: str = Field(
-        description="One-line docstring listing covered addresses, e.g. 'Engine!C10:G10'."
+        description=(
+            "Google-style docstring for the helper; must match the docstring "
+            "embedded in helper_source exactly. Include Args and Returns sections."
+        )
     )
     uses_first_year_branch: bool = Field(
         description="True when helper branches on engine_column == first_year_column."
     )
     helper_source: str = Field(
         description=(
-            "Complete Python function definition including def line and body. "
-            "Signature must be (ctx, col). "
+            "Complete Python function definition including def line, Google-style "
+            "docstring, and body. Signature must be (ctx, col). "
             "Use only runtime symbols from allowed_runtime_symbols."
         )
     )
     member_bindings: tuple[MemberBinding, ...] = Field(
         description="One entry per cluster member; must cover all members exactly."
+    )
+
+
+@dataclass(frozen=True)
+class SingletonRefactorContext:
+    address: str
+    function_name: str
+    symbol_name: str
+    canonical_template: str
+    normalized_formula: str
+    python_source: str
+    dependency_addresses: tuple[str, ...]
+    external_dependencies: tuple[str, ...]
+    call_sites: tuple[CallSite, ...]
+    allowed_runtime_symbols: tuple[str, ...]
+
+
+class SingletonRefactorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol_name: str = Field(
+        description="Semantic snake_case function name, e.g. initial_debt_to_gdp."
+    )
+    symbol_docstring: str = Field(
+        description=(
+            "Google-style docstring; must match the docstring embedded in "
+            "symbol_source exactly. Include Args and Returns sections."
+        )
+    )
+    symbol_source: str = Field(
+        description=(
+            "Complete Python function definition including def line, Google-style "
+            "docstring, and body. Signature must be (ctx)."
+        )
     )
 
 
@@ -142,6 +199,16 @@ class ClusterRefactorApplyResult:
     response: ClusterRefactorResponse
     phase_b_rewrites: int = 0
     phase_c_pruned: int = 0
+
+
+@dataclass(frozen=True)
+class SingletonRefactorApplyResult:
+    source: str
+    symbol_name: str
+    old_function_name: str
+    reference_rewrites: int
+    dry_run: bool
+    response: SingletonRefactorResponse
 
 
 def stable_json(value: object) -> str:
@@ -170,6 +237,10 @@ def deterministic_helper_name(ctx: ClusterRefactorContext) -> str:
     if ctx.row is not None:
         return f"engine_row_{ctx.row}"
     return f"cluster_{ctx.cluster_id}"
+
+
+def deterministic_singleton_name(address: str) -> str | None:
+    return SINGLETON_SYMBOL_NAMES.get(address)
 
 
 def wrapper_source(helper_name: str, engine_column: str) -> str:
@@ -254,6 +325,60 @@ def build_cluster_refactor_context(
         external_dependencies=external_dependencies,
         call_sites=scan_call_sites(source, member_addresses, member_functions),
         first_year_column=ENGINE_COLUMNS[0],
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+    )
+
+
+def build_singleton_refactor_context(
+    projection: ProjectionResult,
+    cluster: FormulaCluster,
+    internals_path: Path,
+) -> SingletonRefactorContext | None:
+    if len(cluster.members) != 1:
+        return None
+
+    address = cluster.members[0]
+    symbol_name = deterministic_singleton_name(address)
+    if symbol_name is None:
+        return None
+
+    source = internals_path.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    defined_functions = {
+        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
+    }
+
+    function_name = address_to_function_name(address)
+    if function_name not in defined_functions:
+        return None
+
+    node = projection.get_node(address)
+    if node is None or node.normalized_formula is None:
+        return None
+
+    dependency_addresses = tuple(sorted(projection.get_dependencies(address)))
+    external_dependencies = tuple(
+        sorted(
+            address_to_function_name(dependency)
+            for dependency in dependency_addresses
+            if address_to_function_name(dependency) in defined_functions
+        )
+    )
+
+    return SingletonRefactorContext(
+        address=address,
+        function_name=function_name,
+        symbol_name=symbol_name,
+        canonical_template=cluster.canonical_template,
+        normalized_formula=node.normalized_formula,
+        python_source=extract_function_source(source, function_name),
+        dependency_addresses=dependency_addresses,
+        external_dependencies=external_dependencies,
+        call_sites=scan_call_sites(
+            source,
+            frozenset({address}),
+            {function_name},
+        ),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
     )
 
@@ -362,7 +487,13 @@ def prompt_payload(ctx: ClusterRefactorContext) -> dict[str, object]:
             "signature": "(ctx, col)",
             "preserve_semantics": True,
             "no_algebraic_simplification": True,
+            "docstring_style": "google",
+            "require_semantic_locals": True,
         },
+        "domain_glossary": [
+            {"symbol": symbol, "description": description}
+            for symbol, description in DOMAIN_GLOSSARY
+        ],
     }
 
 
@@ -378,6 +509,111 @@ def save_refactor_cache(cache: dict[str, str]) -> None:
         json.dumps(cache, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def validate_google_style_docstring(docstring: str) -> None:
+    text = docstring.strip()
+    if not text:
+        raise ValueError("helper docstring must be non-empty")
+    if "Args:" not in text:
+        raise ValueError("helper docstring must include an Args section")
+    if "Returns:" not in text:
+        raise ValueError("helper docstring must include a Returns section")
+    summary, _, remainder = text.partition("\n")
+    if not summary.strip():
+        raise ValueError("helper docstring must begin with a one-line summary")
+    if remainder.strip() and not remainder.lstrip().startswith(("Args:", "Note:")):
+        raise ValueError(
+            "helper docstring summary must be followed by Args, Returns, or Note"
+        )
+
+
+def _function_docstring(function_def: ast.FunctionDef) -> str | None:
+    if not function_def.body:
+        return None
+    first = function_def.body[0]
+    if not isinstance(first, ast.Expr):
+        return None
+    value = first.value
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return value.value
+    return None
+
+
+EXCEL_SHAPED_LOCAL_NAME_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^_t\d+$"),
+    re.compile(r"^t\d+$"),
+    re.compile(r"^b\d+$"),
+    re.compile(r"^col\d+$"),
+    re.compile(r"^choose\d+$"),
+    re.compile(r"^chooser\d+$"),
+    re.compile(r"^func_map$"),
+    re.compile(r"^input_?\d+$"),
+    re.compile(r"^term\d+"),
+)
+
+
+def _names_from_target(target: ast.expr) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: set[str] = set()
+        for element in target.elts:
+            names.update(_names_from_target(element))
+        return names
+    return set()
+
+
+def _local_binding_names(function_def: ast.FunctionDef) -> set[str]:
+    parameter_names = {arg.arg for arg in function_def.args.args}
+    names: set[str] = set()
+    for node in ast.walk(function_def):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                names.update(_names_from_target(target))
+        elif isinstance(node, ast.NamedExpr):
+            names.update(_names_from_target(node.target))
+        elif isinstance(node, ast.AugAssign):
+            names.update(_names_from_target(node.target))
+        elif isinstance(node, ast.For):
+            names.update(_names_from_target(node.target))
+        elif isinstance(node, ast.comprehension):
+            names.update(_names_from_target(node.target))
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+            names.add(node.name)
+    return names - parameter_names
+
+
+def is_excel_shaped_local_name(name: str) -> bool:
+    return any(pattern.fullmatch(name) for pattern in EXCEL_SHAPED_LOCAL_NAME_PATTERNS)
+
+
+def validate_semantic_local_names(function_def: ast.FunctionDef) -> None:
+    excel_shaped = sorted(
+        name
+        for name in _local_binding_names(function_def)
+        if is_excel_shaped_local_name(name)
+    )
+    if excel_shaped:
+        raise ValueError(
+            "function body uses excel-shaped local names "
+            f"{excel_shaped}; use domain-meaningful snake_case instead"
+        )
+
+
+def validate_no_cell_function_references(function_def: ast.FunctionDef) -> None:
+    cell_references = sorted(
+        {
+            node.id
+            for node in ast.walk(function_def)
+            if isinstance(node, ast.Name) and node.id.startswith("cell_")
+        }
+    )
+    if cell_references:
+        raise ValueError(
+            "function body must not reference excel cell helpers "
+            f"{cell_references}; use semantic helpers from upstream refactors"
+        )
 
 
 def validate_cluster_refactor_response(
@@ -438,6 +674,18 @@ def validate_cluster_refactor_response(
             f"({response.helper_name!r})"
         )
 
+    source_docstring = _function_docstring(helper_def)
+    if source_docstring is None:
+        raise ValueError("helper_source must include a docstring")
+    validate_google_style_docstring(source_docstring)
+    if source_docstring != response.helper_docstring:
+        raise ValueError(
+            "helper_docstring must match the docstring embedded in helper_source"
+        )
+
+    validate_semantic_local_names(helper_def)
+    validate_no_cell_function_references(helper_def)
+
     arg_names = [arg.arg for arg in helper_def.args.args]
     if arg_names != ["ctx", "col"]:
         raise ValueError(
@@ -456,6 +704,7 @@ def validate_cluster_refactor_response(
         | {member.function_name for member in ctx.members}
         | {response.helper_name}
         | _applied_helper_names(existing_names)
+        | _applied_singleton_names(existing_names)
         | {"ctx", "col"}
     )
     builtin_names = set(dir(builtins))
@@ -469,6 +718,208 @@ def validate_cluster_refactor_response(
             f"helper_source calls disallowed function {name!r}; "
             f"allowed: {sorted(allowed_names)}"
         )
+
+
+def singleton_refactor_cache_key(
+    ctx: SingletonRefactorContext,
+    internals_bytes: bytes,
+    response_schema: dict[str, object],
+) -> str:
+    payload = {
+        "kind": "singleton",
+        "model": REFACTOR_MODEL,
+        "prompt_version": REFACTOR_PROMPT_VERSION,
+        "address": ctx.address,
+        "canonical_template": ctx.canonical_template,
+        "formula_sha256": hashlib.sha256(ctx.normalized_formula.encode()).hexdigest(),
+        "source_sha256": hashlib.sha256(ctx.python_source.encode()).hexdigest(),
+        "internals_sha256": hashlib.sha256(internals_bytes).hexdigest(),
+        "response_schema_sha256": hashlib.sha256(
+            stable_json(response_schema).encode()
+        ).hexdigest(),
+    }
+    return hashlib.sha256(stable_json(payload).encode()).hexdigest()
+
+
+def singleton_prompt_payload(ctx: SingletonRefactorContext) -> dict[str, object]:
+    return {
+        "address": ctx.address,
+        "function_name": ctx.function_name,
+        "canonical_template": ctx.canonical_template,
+        "normalized_formula": ctx.normalized_formula,
+        "python_source": ctx.python_source,
+        "dependency_addresses": list(ctx.dependency_addresses),
+        "external_dependencies": list(ctx.external_dependencies),
+        "call_sites": [
+            {
+                "caller_function": site.caller_function,
+                "caller_address": site.caller_address,
+                "callee_function": site.callee_function,
+                "callee_address": site.callee_address,
+                "pattern": site.pattern,
+                "line": site.line,
+                "snippet": site.snippet,
+            }
+            for site in ctx.call_sites
+        ],
+        "constraints": {
+            "allowed_runtime_symbols": list(ctx.allowed_runtime_symbols),
+            "symbol_name": ctx.symbol_name,
+            "signature": "(ctx)",
+            "preserve_semantics": True,
+            "no_algebraic_simplification": True,
+            "docstring_style": "google",
+            "require_semantic_locals": True,
+        },
+        "domain_glossary": [
+            {"symbol": symbol, "description": description}
+            for symbol, description in DOMAIN_GLOSSARY
+        ],
+    }
+
+
+def validate_singleton_refactor_response(
+    ctx: SingletonRefactorContext,
+    response: SingletonRefactorResponse,
+    *,
+    existing_names: frozenset[str],
+) -> None:
+    if response.symbol_name != ctx.symbol_name:
+        raise ValueError(
+            f"symbol_name must be {ctx.symbol_name!r}, got {response.symbol_name!r}"
+        )
+
+    if not response.symbol_name.isidentifier():
+        raise ValueError(
+            f"symbol_name is not a valid identifier: {response.symbol_name!r}"
+        )
+    if (
+        response.symbol_name in existing_names
+        and response.symbol_name != ctx.symbol_name
+    ):
+        raise ValueError(
+            f"symbol_name {response.symbol_name!r} collides with existing function"
+        )
+
+    symbol_module = ast.parse(response.symbol_source)
+    function_defs = [
+        node for node in symbol_module.body if isinstance(node, ast.FunctionDef)
+    ]
+    if len(function_defs) != 1:
+        raise ValueError("symbol_source must contain exactly one FunctionDef")
+    symbol_def = function_defs[0]
+    if symbol_def.name != response.symbol_name:
+        raise ValueError(
+            "symbol_source function name must match symbol_name "
+            f"({response.symbol_name!r})"
+        )
+
+    source_docstring = _function_docstring(symbol_def)
+    if source_docstring is None:
+        raise ValueError("symbol_source must include a docstring")
+    validate_google_style_docstring(source_docstring)
+    if source_docstring != response.symbol_docstring:
+        raise ValueError(
+            "symbol_docstring must match the docstring embedded in symbol_source"
+        )
+
+    validate_semantic_local_names(symbol_def)
+    validate_no_cell_function_references(symbol_def)
+
+    arg_names = [arg.arg for arg in symbol_def.args.args]
+    if arg_names != ["ctx"]:
+        raise ValueError(
+            f"singleton must accept exactly (ctx); got ({', '.join(arg_names)})"
+        )
+
+    if any(
+        isinstance(node, (ast.Import, ast.ImportFrom))
+        for node in ast.walk(symbol_module)
+    ):
+        raise ValueError("symbol_source must not contain imports")
+
+    allowed_names = (
+        set(ctx.allowed_runtime_symbols)
+        | set(ctx.external_dependencies)
+        | {ctx.function_name}
+        | _applied_helper_names(existing_names)
+        | _applied_singleton_names(existing_names)
+        | {"ctx"}
+    )
+    builtin_names = set(dir(builtins))
+    for node in ast.walk(symbol_def):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        name = node.func.id
+        if name in builtin_names or name in allowed_names:
+            continue
+        raise ValueError(
+            f"symbol_source calls disallowed function {name!r}; "
+            f"allowed: {sorted(allowed_names)}"
+        )
+
+
+def _replace_function_definition(source: str, old_name: str, new_source: str) -> str:
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == old_name:
+            start = node.lineno - 1
+            end = node.end_lineno or node.lineno
+            while end < len(lines) and lines[end].strip() == "":
+                end += 1
+            replacement = new_source.strip() + "\n\n"
+            return "".join(lines[:start]) + replacement + "".join(lines[end:])
+    raise KeyError(f"Function {old_name!r} not found")
+
+
+def rename_function_references(
+    source: str,
+    old_name: str,
+    new_name: str,
+) -> tuple[str, int]:
+    module = ast.parse(source)
+    replacements: list[tuple[int, int, str, str]] = []
+
+    for top_level in module.body:
+        if not isinstance(top_level, ast.FunctionDef):
+            continue
+        visitor = _FunctionReferenceRenameVisitor(
+            old_name=old_name,
+            new_name=new_name,
+            source=source,
+            replacements=replacements,
+        )
+        visitor.visit(top_level)
+
+    if not replacements:
+        return source, 0
+    return _apply_segment_replacements(source, replacements), len(replacements)
+
+
+def apply_singleton_refactor_plan(
+    source: str,
+    response: SingletonRefactorResponse,
+    ctx: SingletonRefactorContext,
+) -> tuple[str, int]:
+    updated = _replace_function_definition(
+        source,
+        ctx.function_name,
+        response.symbol_source,
+    )
+    updated, rewrite_count = rename_function_references(
+        updated,
+        ctx.function_name,
+        response.symbol_name,
+    )
+    symbol_dispatch = _parse_symbol_dispatch(source)
+    symbol_dispatch[ctx.address] = response.symbol_name
+    updated = _replace_resolver_section(
+        updated,
+        _parse_address_dispatch(updated) or {},
+        symbol_dispatch=symbol_dispatch,
+    )
+    return updated, rewrite_count
 
 
 def apply_refactor_plan(
@@ -628,7 +1079,11 @@ def apply_phase_c(source: str) -> tuple[str, int]:
 
     updated = _remove_function_definitions(source, frozenset(to_prune))
     updated = _remove_projection_aliases_section(updated)
-    updated = _replace_resolver_section(updated, dispatch)
+    updated = _replace_resolver_section(
+        updated,
+        dispatch,
+        symbol_dispatch=_parse_symbol_dispatch(source),
+    )
     return updated, len(to_prune)
 
 
@@ -674,7 +1129,34 @@ def _trim_engine_dispatch_entries(source: str) -> tuple[str, int]:
     removed = len(dispatch) - len(trimmed)
     if removed == 0:
         return source, 0
-    return _replace_resolver_section(source, trimmed), removed
+    return _replace_resolver_section(
+        source,
+        trimmed,
+        symbol_dispatch=_parse_symbol_dispatch(source),
+    ), removed
+
+
+def _parse_symbol_dispatch(source: str) -> dict[str, str]:
+    module = ast.parse(source)
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "_SYMBOL_DISPATCH":
+                if not isinstance(node.value, ast.Dict):
+                    raise ValueError("_SYMBOL_DISPATCH must be a dict literal")
+                dispatch: dict[str, str] = {}
+                for key, value in zip(node.value.keys, node.value.values):
+                    if not (
+                        isinstance(key, ast.Constant)
+                        and isinstance(key.value, str)
+                        and isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)
+                    ):
+                        raise ValueError("_SYMBOL_DISPATCH has unexpected entry shape")
+                    dispatch[key.value] = value.value
+                return dispatch
+    return {}
 
 
 def _remove_function_definitions(source: str, function_names: frozenset[str]) -> str:
@@ -705,23 +1187,37 @@ def _remove_projection_aliases_section(source: str) -> str:
 
 def _replace_resolver_section(
     source: str,
-    dispatch: dict[str, tuple[str, str]],
+    address_dispatch: dict[str, tuple[str, str]],
+    *,
+    symbol_dispatch: dict[str, str] | None = None,
 ) -> str:
+    if symbol_dispatch is None:
+        symbol_dispatch = _parse_symbol_dispatch(source)
     if RESOLVER_SECTION_MARKER not in source:
         raise ValueError(f"Missing section marker {RESOLVER_SECTION_MARKER!r}")
     head = source[: source.index(RESOLVER_SECTION_MARKER)]
-    return head + _render_resolver_section(dispatch)
+    return head + _render_resolver_section(address_dispatch, symbol_dispatch)
 
 
-def _render_resolver_section(dispatch: dict[str, tuple[str, str]]) -> str:
+def _render_resolver_section(
+    address_dispatch: dict[str, tuple[str, str]],
+    symbol_dispatch: dict[str, str] | None = None,
+) -> str:
+    symbol_dispatch = symbol_dispatch or {}
     dispatch_lines = [
         f"    {address!r}: ({helper!r}, {column!r}),"
-        for address, (helper, column) in sorted(dispatch.items())
+        for address, (helper, column) in sorted(address_dispatch.items())
     ]
     dispatch_body = "{\n" + "\n".join(dispatch_lines) + "\n}"
+    symbol_lines = [
+        f"    {address!r}: {symbol!r},"
+        for address, symbol in sorted(symbol_dispatch.items())
+    ]
+    symbol_body = "{\n" + "\n".join(symbol_lines) + "\n}" if symbol_lines else "{}"
     return f"""{RESOLVER_SECTION_MARKER}
 _RESOLVED_FORMULAS = {{}}
 _ADDRESS_DISPATCH = {dispatch_body}
+_SYMBOL_DISPATCH = {symbol_body}
 
 def _address_to_func_name(address):
     name = []
@@ -750,6 +1246,15 @@ def _resolve_formula(address):
 
         def _bound(ctx, _helper=helper, _column=column):
             return _helper(ctx, _column)
+
+        _RESOLVED_FORMULAS[address] = _bound
+        return _bound
+    symbol_name = _SYMBOL_DISPATCH.get(address)
+    if symbol_name is not None:
+        helper = globals()[symbol_name]
+
+        def _bound(ctx, _helper=helper):
+            return _helper(ctx)
 
         _RESOLVED_FORMULAS[address] = _bound
         return _bound
@@ -1294,6 +1799,59 @@ def validate_refactored_internals(source: str) -> None:
     compile(source, "internals.py", "exec")
 
 
+def refactor_internals_singleton(
+    ctx: SingletonRefactorContext,
+    *,
+    internals_path: Path,
+    response: SingletonRefactorResponse | None = None,
+    dry_run: bool = False,
+) -> SingletonRefactorApplyResult:
+    source = internals_path.read_text(encoding="utf-8")
+    existing_names = _function_names(source)
+    if response is None:
+        response = llm_refactor_singleton(ctx, internals_path=internals_path)
+    validate_singleton_refactor_response(ctx, response, existing_names=existing_names)
+    updated, rewrite_count = apply_singleton_refactor_plan(source, response, ctx)
+    validate_refactored_internals(updated)
+    if not dry_run:
+        internals_path.write_text(updated, encoding="utf-8")
+    return SingletonRefactorApplyResult(
+        source=updated,
+        symbol_name=response.symbol_name,
+        old_function_name=ctx.function_name,
+        reference_rewrites=rewrite_count,
+        dry_run=dry_run,
+        response=response,
+    )
+
+
+def refactor_internals_all_singletons(
+    projection: ProjectionResult,
+    clusters: tuple[FormulaCluster, ...],
+    *,
+    internals_path: Path,
+    dry_run: bool = False,
+) -> tuple[SingletonRefactorApplyResult, ...]:
+    singleton_clusters = {
+        cluster.members[0]: cluster for cluster in clusters if len(cluster.members) == 1
+    }
+    results: list[SingletonRefactorApplyResult] = []
+    for address in SINGLETON_REFACTOR_ORDER:
+        cluster = singleton_clusters.get(address)
+        if cluster is None:
+            continue
+        ctx = build_singleton_refactor_context(projection, cluster, internals_path)
+        if ctx is None:
+            continue
+        result = refactor_internals_singleton(
+            ctx,
+            internals_path=internals_path,
+            dry_run=dry_run,
+        )
+        results.append(result)
+    return tuple(results)
+
+
 def refactor_internals_cluster(
     ctx: ClusterRefactorContext,
     *,
@@ -1328,7 +1886,13 @@ def refactor_internals_all_clusters(
     internals_path: Path,
     dry_run: bool = False,
 ) -> tuple[ClusterRefactorApplyResult, ...]:
-    """Refactor every multi-member cluster in dependency order, re-extracting context after each apply."""
+    """Refactor singletons, then every multi-member cluster in dependency order."""
+    refactor_internals_all_singletons(
+        projection,
+        clusters,
+        internals_path=internals_path,
+        dry_run=dry_run,
+    )
     clusters_by_row = {
         cluster.row: cluster
         for cluster in clusters
@@ -1375,6 +1939,72 @@ def refactor_internals_all_clusters(
 load_dotenv(repo_root / ".env")
 
 
+def llm_refactor_singleton(
+    ctx: SingletonRefactorContext,
+    *,
+    internals_path: Path,
+) -> SingletonRefactorResponse:
+    schema = SingletonRefactorResponse.model_json_schema()
+    internals_bytes = internals_path.read_bytes()
+    cache = load_refactor_cache()
+    cache_key = singleton_refactor_cache_key(ctx, internals_bytes, schema)
+    if cache_key in cache:
+        content = cache[cache_key]
+    else:
+        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "DEEPSEEK_API_KEY is required to generate uncached refactor responses"
+            )
+        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        payload = singleton_prompt_payload(ctx)
+        response = client.chat.completions.create(
+            model=REFACTOR_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You rename and refactor one Excel-generated singleton helper "
+                        "into a semantic function. Return only JSON matching the schema. "
+                        "Preserve semantics exactly; do not algebraically simplify. "
+                        "Write Google-style docstrings with Args and Returns sections."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": _prompt_for_singleton_refactor(payload, schema),
+                },
+            ],
+            stream=False,
+            reasoning_effort="high",
+            response_format={"type": "json_object"},
+            extra_body={"thinking": {"type": "enabled"}},
+        )
+        content = response.choices[0].message.content
+        if content is None:
+            raise RuntimeError("DeepSeek returned empty singleton refactor content")
+        parsed = SingletonRefactorResponse.model_validate_json(content)
+        if parsed.symbol_name != ctx.symbol_name:
+            parsed = parsed.model_copy(update={"symbol_name": ctx.symbol_name})
+        validate_singleton_refactor_response(
+            ctx,
+            parsed,
+            existing_names=_function_names(internals_path.read_text(encoding="utf-8")),
+        )
+        cache[cache_key] = content
+        save_refactor_cache(cache)
+
+    parsed = SingletonRefactorResponse.model_validate_json(content)
+    if parsed.symbol_name != ctx.symbol_name:
+        parsed = parsed.model_copy(update={"symbol_name": ctx.symbol_name})
+    validate_singleton_refactor_response(
+        ctx,
+        parsed,
+        existing_names=_function_names(internals_path.read_text(encoding="utf-8")),
+    )
+    return parsed
+
+
 def llm_refactor_cluster(
     ctx: ClusterRefactorContext,
     *,
@@ -1402,7 +2032,8 @@ def llm_refactor_cluster(
                     "content": (
                         "You refactor parallel Excel-generated Python helpers into one "
                         "parameterized function. Return only JSON matching the schema. "
-                        "Preserve semantics exactly; do not algebraically simplify."
+                        "Preserve semantics exactly; do not algebraically simplify. "
+                        "Write Google-style docstrings with Args and Returns sections."
                     ),
                 },
                 {
@@ -1446,6 +2077,54 @@ def _applied_helper_names(existing_names: frozenset[str]) -> frozenset[str]:
     return frozenset(ROW_HELPER_NAMES.values()) & existing_names
 
 
+def _applied_singleton_names(existing_names: frozenset[str]) -> frozenset[str]:
+    return frozenset(SINGLETON_SYMBOL_NAMES.values()) & existing_names
+
+
+def _prompt_for_singleton_refactor(
+    payload: dict[str, object], response_schema: dict[str, object]
+) -> str:
+    payload_json = json.dumps(payload, indent=2, default=str)
+    schema_json = json.dumps(response_schema, indent=2)
+    return f"""
+Rename and refactor one Excel-generated singleton helper into a semantic function.
+
+Rules:
+- Keep signature (ctx) exactly; do not add a col parameter.
+- Do not rename dependency functions.
+- Rename local temporaries to domain-meaningful snake_case using domain_glossary.
+- Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
+- Do not reference cell_* helpers; call semantic helpers (e.g. shock_active, initial_debt_to_gdp).
+- Prefer readable if/else over walrus/ternary chains when refactoring for clarity.
+- Emit one complete symbol_source function with signature (ctx).
+- symbol_source must include a Google-style docstring with Args and Returns sections.
+- symbol_docstring must match the docstring embedded in symbol_source exactly.
+- Include a Note section listing the workbook address and Excel formula.
+- Set symbol_name to constraints.symbol_name exactly.
+- Return only JSON matching the response schema.
+
+Example docstring shape:
+\"\"\"
+Look up the initial debt-to-GDP ratio for the selected country.
+
+Args:
+    ctx: Workbook evaluation context.
+
+Returns:
+    Initial debt-to-GDP ratio from the country profile table.
+
+Note:
+    Covers Inputs!B6. Excel: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2).
+\"\"\"
+
+Singleton context:
+{payload_json}
+
+Response schema:
+{schema_json}
+""".strip()
+
+
 def _prompt_for_refactor(
     payload: dict[str, object], response_schema: dict[str, object]
 ) -> str:
@@ -1459,9 +2138,31 @@ Rules:
 - Use col == first_year_column branch for first-year {{PRIOR_DEBT}} logic when needed.
 - Keep xl_eval for dependencies outside this cluster.
 - Do not rename dependency functions.
+- Rename local temporaries to domain-meaningful snake_case using domain_glossary.
+- Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
+- Do not reference cell_* helpers; call semantic helpers (e.g. shock_active, initial_debt_to_gdp).
+- Prefer readable if/else over walrus/ternary chains when refactoring for clarity.
 - Emit one complete helper_source function with signature (ctx, col).
+- helper_source must include a Google-style docstring with Args and Returns sections.
+- helper_docstring must match the docstring embedded in helper_source exactly.
+- Include a Note section listing covered workbook addresses and the Excel formula.
 - Set helper_name to constraints.helper_name exactly.
 - Return only JSON matching the response schema.
+
+Example docstring shape:
+\"\"\"
+Return 1.0 when the shock is active for the given projection column.
+
+Args:
+    ctx: Workbook evaluation context.
+    col: Engine column letter (C through G).
+
+Returns:
+    1.0 if the projection year is at or after the shock year, else 0.0.
+
+Note:
+    Covers Engine!C10:G10. Excel: =IF(Engine!{{col}}5>=Inputs!$B$21,1,0).
+\"\"\"
 
 Cluster context:
 {payload_json}
@@ -1469,6 +2170,52 @@ Cluster context:
 Response schema:
 {schema_json}
 """.strip()
+
+
+class _FunctionReferenceRenameVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        *,
+        old_name: str,
+        new_name: str,
+        source: str,
+        replacements: list[tuple[int, int, str, str]],
+    ) -> None:
+        self.old_name = old_name
+        self.new_name = new_name
+        self.source = source
+        self.replacements = replacements
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "xl_eval"
+            and len(node.args) >= 3
+            and isinstance(node.args[2], ast.Name)
+            and node.args[2].id == self.old_name
+        ):
+            segment = ast.get_source_segment(self.source, node.args[2])
+            if segment is not None:
+                self.replacements.append(
+                    (
+                        node.args[2].lineno,
+                        node.args[2].end_lineno or node.args[2].lineno,
+                        segment,
+                        self.new_name,
+                    )
+                )
+        elif isinstance(node.func, ast.Name) and node.func.id == self.old_name:
+            segment = ast.get_source_segment(self.source, node.func)
+            if segment is not None:
+                self.replacements.append(
+                    (
+                        node.func.lineno,
+                        node.func.end_lineno or node.func.lineno,
+                        segment,
+                        self.new_name,
+                    )
+                )
+        self.generic_visit(node)
 
 
 class _CallSiteVisitor(ast.NodeVisitor):

@@ -16,13 +16,17 @@ from src.formula_clustering import cluster_graph_formulas
 from src.internals_refactor import (
     ClusterRefactorResponse,
     REFACTOR_ROW_ORDER,
+    SINGLETON_REFACTOR_ORDER,
     apply_phase_b_final_pass,
     apply_phase_c,
     apply_refactor_plan,
+    apply_singleton_refactor_plan,
     build_cluster_refactor_context,
-    llm_refactor_cluster,
+    build_singleton_refactor_context,
     validate_refactored_internals,
 )
+from tests.fixtures.cluster_refactor_golden import GOLDEN_CLUSTER_REFACTOR_RESPONSES
+from tests.fixtures.singleton_refactor_golden import GOLDEN_SINGLETON_REFACTOR_RESPONSES
 from src.subgraph_projection import build_tiny_dsa_refactor_projection
 
 
@@ -90,6 +94,34 @@ def codegen_internals_source(codegen_internals_path) -> str:
 
 
 @pytest.fixture(scope="session")
+def singleton_refactored_internals_source(
+    codegen_internals_source,
+    tiny_dsa_refactor_projection,
+    codegen_internals_path,
+) -> str:
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
+    singleton_clusters = {
+        cluster.members[0]: cluster for cluster in clusters if len(cluster.members) == 1
+    }
+    updated = codegen_internals_source
+    for address in SINGLETON_REFACTOR_ORDER:
+        cluster = singleton_clusters.get(address)
+        if cluster is None:
+            continue
+        ctx = build_singleton_refactor_context(
+            tiny_dsa_refactor_projection,
+            cluster,
+            codegen_internals_path,
+        )
+        assert ctx is not None
+        response = GOLDEN_SINGLETON_REFACTOR_RESPONSES[address]
+        updated, _rewrite_count = apply_singleton_refactor_plan(updated, response, ctx)
+    validate_refactored_internals(updated)
+    codegen_internals_path.write_text(updated, encoding="utf-8")
+    return updated
+
+
+@pytest.fixture(scope="session")
 def cluster_refactor_responses(
     tiny_dsa_refactor_projection,
     codegen_internals_path,
@@ -110,15 +142,13 @@ def cluster_refactor_responses(
             codegen_internals_path,
         )
         assert ctx is not None
-        responses.append(
-            llm_refactor_cluster(ctx, internals_path=codegen_internals_path)
-        )
+        responses.append(GOLDEN_CLUSTER_REFACTOR_RESPONSES[row])
     return tuple(responses)
 
 
 @pytest.fixture(scope="session")
 def phase_a_internals_source(
-    codegen_internals_source,
+    singleton_refactored_internals_source,
     cluster_refactor_responses,
     tiny_dsa_refactor_projection,
     codegen_internals_path,
@@ -128,7 +158,7 @@ def phase_a_internals_source(
         for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
         if cluster.row is not None and len(cluster.members) >= 2
     }
-    updated = codegen_internals_source
+    updated = singleton_refactored_internals_source
     response_iter = iter(cluster_refactor_responses)
     for row in REFACTOR_ROW_ORDER:
         cluster = clusters_by_row.get(row)
