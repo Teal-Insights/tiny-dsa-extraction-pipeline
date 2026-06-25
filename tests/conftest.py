@@ -15,9 +15,7 @@ from src.extraction_pipeline import (
 from src.formula_clustering import cluster_graph_formulas
 from src.internals_refactor import (
     ClusterRefactorResponse,
-    REFACTOR_ROW_ORDER,
     SINGLETON_REFACTOR_ORDER,
-    apply_phase_b_final_pass,
     apply_phase_c,
     apply_refactor_plan,
     apply_singleton_refactor_plan,
@@ -25,6 +23,7 @@ from src.internals_refactor import (
     build_singleton_refactor_context,
     validate_refactored_internals,
 )
+from src.refactor_order import compute_multi_member_cluster_refactor_order
 from tests.fixtures.cluster_refactor_golden import GOLDEN_CLUSTER_REFACTOR_RESPONSES
 from tests.fixtures.singleton_refactor_golden import GOLDEN_SINGLETON_REFACTOR_RESPONSES
 from src.subgraph_projection import build_tiny_dsa_refactor_projection
@@ -126,15 +125,12 @@ def cluster_refactor_responses(
     tiny_dsa_refactor_projection,
     codegen_internals_path,
 ) -> tuple[ClusterRefactorResponse, ...]:
-    clusters_by_row = {
-        cluster.row: cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.row is not None and len(cluster.members) >= 2
-    }
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
     responses: list[ClusterRefactorResponse] = []
-    for row in REFACTOR_ROW_ORDER:
-        cluster = clusters_by_row.get(row)
-        if cluster is None:
+    for cluster in compute_multi_member_cluster_refactor_order(
+        tiny_dsa_refactor_projection, clusters
+    ):
+        if cluster.row is None:
             continue
         ctx = build_cluster_refactor_context(
             tiny_dsa_refactor_projection,
@@ -142,7 +138,7 @@ def cluster_refactor_responses(
             codegen_internals_path,
         )
         assert ctx is not None
-        responses.append(GOLDEN_CLUSTER_REFACTOR_RESPONSES[row])
+        responses.append(GOLDEN_CLUSTER_REFACTOR_RESPONSES[cluster.row])
     return tuple(responses)
 
 
@@ -153,16 +149,13 @@ def phase_a_internals_source(
     tiny_dsa_refactor_projection,
     codegen_internals_path,
 ) -> str:
-    clusters_by_row = {
-        cluster.row: cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.row is not None and len(cluster.members) >= 2
-    }
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
     updated = singleton_refactored_internals_source
     response_iter = iter(cluster_refactor_responses)
-    for row in REFACTOR_ROW_ORDER:
-        cluster = clusters_by_row.get(row)
-        if cluster is None:
+    for cluster in compute_multi_member_cluster_refactor_order(
+        tiny_dsa_refactor_projection, clusters
+    ):
+        if cluster.row is None:
             continue
         response = next(response_iter)
         ctx = build_cluster_refactor_context(
@@ -179,13 +172,8 @@ def phase_a_internals_source(
 @pytest.fixture(scope="session")
 def phase_bc_internals_source(
     phase_a_internals_source,
-    cluster_refactor_responses,
 ) -> str:
-    phase_b_source, _phase_b_rewrites = apply_phase_b_final_pass(
-        phase_a_internals_source,
-        cluster_refactor_responses,
-    )
-    updated, _pruned = apply_phase_c(phase_b_source)
+    updated, _pruned = apply_phase_c(phase_a_internals_source)
     validate_refactored_internals(updated)
     return updated
 
@@ -217,7 +205,11 @@ def refactored_tiny_dsa_api(refactored_package_root):
 
 
 @pytest.fixture
-def shock_cluster_context(tiny_dsa_refactor_projection, codegen_internals_path):
+def shock_cluster_context(
+    tiny_dsa_refactor_projection, codegen_internals_source, tmp_path
+):
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(codegen_internals_source, encoding="utf-8")
     cluster = next(
         cluster
         for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
@@ -226,7 +218,7 @@ def shock_cluster_context(tiny_dsa_refactor_projection, codegen_internals_path):
     ctx = build_cluster_refactor_context(
         tiny_dsa_refactor_projection,
         cluster,
-        codegen_internals_path,
+        internals_path,
     )
     assert ctx is not None
     return ctx

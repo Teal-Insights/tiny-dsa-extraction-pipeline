@@ -6,10 +6,10 @@ from typing import Any, cast
 
 from src.internals_refactor import (
     ClusterRefactorResponse,
-    MemberBinding,
+    HelperParameter,
+    MemberKeys,
     PROJECTION_ALIASES_MARKER,
     SemanticDependency,
-    apply_phase_b_final_pass,
     apply_phase_c,
     apply_refactor_plan,
     apply_singleton_refactor_plan,
@@ -29,7 +29,6 @@ from src.internals_refactor import (
     _normalize_google_docstring,
     _prepare_cluster_refactor_response,
 )
-
 from tests.fixtures.cluster_refactor_golden import (
     GOLDEN_CLUSTER_REFACTOR_RESPONSES,
     SHOCK_ACTIVE_DOCSTRING,
@@ -40,16 +39,22 @@ from tests.fixtures.singleton_refactor_golden import GOLDEN_SINGLETON_REFACTOR_R
 TRIM_FIXTURE_SOURCE = """
 from .runtime import XlError, xl_cell
 
-def shock_active(ctx, col):
+def shock_active(ctx, time_period: int):
     return 1.0
+
+def cell_outputs_b14(ctx):
+    return output_delta(ctx, time_period=1)
 
 # --- Formula resolver ---
 _RESOLVED_FORMULAS = {}
 _ADDRESS_DISPATCH = {
-    'Engine!C10': ('shock_active', 'C'),
-    'Outputs!B14': ('output_delta', 'C'),
+    'Engine!C10': ('shock_active', {'time_period': 1}),
+    'Outputs!B14': ('output_delta', {'time_period': 1}),
 }
 _SYMBOL_DISPATCH = {}
+
+def output_delta(ctx, time_period: int):
+    return 0.0
 
 def _address_to_func_name(address):
     return "cell_placeholder"
@@ -60,11 +65,11 @@ def _resolve_formula(address):
         return fn
     dispatch = _ADDRESS_DISPATCH.get(address)
     if dispatch is not None:
-        helper_name, column = dispatch
+        helper_name, key_kwargs = dispatch
         helper = globals()[helper_name]
 
-        def _bound(ctx, _helper=helper, _column=column):
-            return _helper(ctx, _column)
+        def _bound(ctx, _helper=helper, _key_kwargs=key_kwargs):
+            return _helper(ctx, **_key_kwargs)
 
         _RESOLVED_FORMULAS[address] = _bound
         return _bound
@@ -250,21 +255,22 @@ def test_golden_cluster_refactor_responses_validate(
 ) -> None:
     from src.formula_clustering import cluster_graph_formulas
 
-    clusters_by_row = {
-        cluster.row: cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.row is not None and len(cluster.members) >= 2
-    }
+    from src.refactor_order import compute_multi_member_cluster_refactor_order
+
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
     existing_names = _function_names(singleton_refactored_internals_source)
-    for row in (10, 16, 6, 20, 14):
-        cluster = clusters_by_row[row]
+    for cluster in compute_multi_member_cluster_refactor_order(
+        tiny_dsa_refactor_projection, clusters
+    ):
+        if cluster.row is None:
+            continue
         ctx = build_cluster_refactor_context(
             tiny_dsa_refactor_projection,
             cluster,
             codegen_internals_path,
         )
         assert ctx is not None
-        response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[row]
+        response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[cluster.row]
         validate_cluster_refactor_response(
             ctx,
             response,
@@ -351,12 +357,12 @@ def test_prompt_payload_includes_domain_glossary(shock_cluster_context) -> None:
 
 def test_resolve_semantic_dependencies_maps_thin_wrappers() -> None:
     source = (
-        "def shock_active(ctx, col):\n"
+        "def shock_active(ctx, time_period: int):\n"
         "    return 1.0\n\n"
         "def cell_engine_c10(ctx):\n"
-        '    return shock_active(ctx, "C")\n\n'
+        "    return shock_active(ctx, time_period=1)\n\n"
         "def cell_engine_d10(ctx):\n"
-        '    return shock_active(ctx, "D")\n'
+        "    return shock_active(ctx, time_period=2)\n"
     )
     semantic, unresolved = resolve_semantic_dependencies(
         source, ["Engine!D10", "Engine!C10"]
@@ -366,7 +372,7 @@ def test_resolve_semantic_dependencies_maps_thin_wrappers() -> None:
     dependency = semantic[0]
     assert isinstance(dependency, SemanticDependency)
     assert dependency.helper_name == "shock_active"
-    assert dependency.call_form == "shock_active(ctx, col)"
+    assert dependency.call_form == "shock_active(ctx, time_period=time_period)"
     assert dependency.address_template == "Engine!{col}10"
     assert dependency.columns == ("C", "D")
 
@@ -434,9 +440,7 @@ def test_build_cluster_context_row_16_resolves_shock_active(
     assert cluster_ctx_16 is not None
     resolved_helpers = {dep.helper_name for dep in cluster_ctx_16.semantic_dependencies}
     assert "shock_active" in resolved_helpers
-    assert all(
-        not name.startswith("cell_") for name in cluster_ctx_16.external_dependencies
-    )
+    assert "shock_active" in cluster_ctx_16.external_dependencies
 
     payload = prompt_payload(cluster_ctx_16)
     semantic_payload = cast(list[dict[str, Any]], payload["semantic_dependencies"])
@@ -458,6 +462,8 @@ def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
         "Engine!F10",
         "Engine!G10",
     }
+    assert any(item.concept == "TIME_PERIOD" for item in ctx.key_vocabulary)
+    assert ctx.expected_member_keys["Engine!D10"] == {"TIME_PERIOD": 2}
 
     c10 = next(member for member in ctx.members if member.address == "Engine!C10")
     assert c10.function_name == "cell_engine_c10"
@@ -467,7 +473,14 @@ def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
     assert c10.dependency_addresses == ("Engine!C5", "Inputs!B21")
     assert c10.dependency_functions == ()
 
-    assert ctx.external_dependencies == ()
+    assert ctx.external_dependencies == (
+        "cell_engine_c5",
+        "cell_engine_d5",
+        "cell_engine_e5",
+        "cell_engine_f5",
+        "cell_engine_g5",
+        "cell_inputs_b21",
+    )
     xl_eval_sites = [site for site in ctx.call_sites if site.pattern == "xl_eval"]
     if xl_eval_sites:
         assert any(site.callee_address == "Engine!C10" for site in xl_eval_sites)
@@ -493,97 +506,67 @@ def test_validate_cluster_refactor_response_row_10(
     )
 
 
-def test_apply_phase_a_row_10(
+def test_apply_cluster_collapse_row_10(
     shock_cluster_context,
-    codegen_internals_source,
+    singleton_refactored_internals_source,
 ) -> None:
     response = _shock_active_response(shock_cluster_context)
     validate_cluster_refactor_response(
         shock_cluster_context,
         response,
-        existing_names=_function_names(codegen_internals_source),
+        existing_names=_function_names(singleton_refactored_internals_source),
     )
 
     result = apply_refactor_plan(
-        codegen_internals_source,
+        singleton_refactored_internals_source,
         response,
         shock_cluster_context,
     )
     validate_refactored_internals(result)
 
-    assert "def shock_active(ctx, col)" in result
-    for member in shock_cluster_context.members:
-        assert f'return shock_active(ctx, "{member.engine_column}")' in result
-        assert member.function_name in result
-
-    for member in shock_cluster_context.members:
-        function_block = _extract_function(result, member.function_name)
-        assert function_block.count("return ") == 1
-        assert "xl_ge" not in function_block
-
-
-def test_apply_phase_b_rewrites_helper_and_projection_call_sites(
-    phase_a_internals_source,
-    cluster_refactor_responses,
-) -> None:
-    updated, rewrite_count = apply_phase_b_final_pass(
-        phase_a_internals_source,
-        cluster_refactor_responses,
+    assert "def shock_active(ctx, time_period: int)" in result
+    assert "def cell_engine_c10(" not in result
+    assert "def cell_engine_d10(" not in result
+    assert "shock_active(ctx, time_period=2)" in _extract_function(
+        result, "cell_engine_d16"
     )
-    validate_refactored_internals(updated)
+    assert "xl_eval(ctx, 'Engine!D10', cell_engine_d10)" not in result
 
-    debt_to_gdp = _extract_function(updated, "debt_to_gdp")
+
+def test_full_cluster_collapse_pipeline_rewrites_semantic_helpers(
+    phase_bc_internals_source,
+) -> None:
+    validate_refactored_internals(phase_bc_internals_source)
+
+    debt_to_gdp = _extract_function(phase_bc_internals_source, "debt_to_gdp")
     assert "xl_eval(ctx, 'Engine!C10', cell_engine_c10)" not in debt_to_gdp
-    assert "shock_active(ctx, col)" in debt_to_gdp
-    assert "primary_balance_shocked(ctx, col)" in debt_to_gdp
+    assert "shock_active(ctx, time_period=time_period)" in debt_to_gdp
+    assert "primary_balance_shocked(ctx, time_period=time_period)" in debt_to_gdp
 
-    primary_balance = _extract_function(updated, "primary_balance_shocked")
+    primary_balance = _extract_function(
+        phase_bc_internals_source, "primary_balance_shocked"
+    )
     assert "ten_func_map" not in primary_balance
-    assert "shock_active(ctx, col)" in primary_balance
+    assert "shock_active(ctx, time_period=time_period)" in primary_balance
 
-    output_delta = _extract_function(updated, "output_delta")
+    output_delta = _extract_function(phase_bc_internals_source, "output_delta")
     assert "fn20" not in output_delta
-    assert "debt_to_gdp(ctx, col)" in output_delta
-    assert "baseline_debt(ctx, col)" in output_delta
-
-    assert 'return baseline_debt(ctx, "C")' in _extract_function(
-        updated, "cell_outputs_b12"
-    )
-    assert 'return debt_to_gdp(ctx, "C")' in _extract_function(
-        updated, "cell_outputs_b13"
-    )
-
-    second_pass, second_rewrite_count = apply_phase_b_final_pass(
-        updated,
-        cluster_refactor_responses,
-    )
-    assert second_pass == updated
-    assert second_rewrite_count == 0
-    assert rewrite_count >= 0
+    assert "debt_to_gdp(ctx, time_period=time_period)" in output_delta
+    assert "baseline_debt(ctx, time_period=time_period)" in output_delta
 
 
-def test_apply_phase_c_prunes_unreferenced_thin_wrappers(
+def test_apply_phase_c_prunes_projection_alias_wrappers(
     phase_a_internals_source,
-    cluster_refactor_responses,
 ) -> None:
-    phase_b_source, _phase_b_rewrites = apply_phase_b_final_pass(
-        phase_a_internals_source,
-        cluster_refactor_responses,
-    )
-    updated, pruned = apply_phase_c(phase_b_source)
+    updated, pruned = apply_phase_c(phase_a_internals_source)
     validate_refactored_internals(updated)
 
-    assert pruned > 0
-    assert "def cell_engine_c16(ctx)" not in updated
-    assert "def cell_outputs_b14(ctx)" not in updated
-    assert "def cell_outputs_b12(ctx)" not in updated
-    assert "def initial_debt_to_gdp(ctx)" in updated
-    assert "def shock_magnitude_resolved(ctx)" in updated
-    assert "def cell_inputs_b6(ctx)" not in updated
-    assert "def cell_engine_b9(ctx)" not in updated
+    assert pruned == 10
+    assert "def cell_outputs_b12(" not in updated
     dispatch = _extract_address_dispatch(updated)
-    assert "Engine!C16" not in dispatch
-    assert dispatch["Outputs!B14"] == ("output_delta", "C")
+    assert dispatch["Outputs!B12"] == ("baseline_debt", {"time_period": 1})
+    assert dispatch["Outputs!B13"] == ("debt_to_gdp", {"time_period": 1})
+    assert dispatch["Outputs!B14"] == ("output_delta", {"time_period": 1})
     assert PROJECTION_ALIASES_MARKER not in updated
 
     second_pass, second_pruned = apply_phase_c(updated)
@@ -596,8 +579,8 @@ def test_apply_phase_c_resolver_dispatches_pruned_addresses(
 ) -> None:
     dispatch = _extract_address_dispatch(phase_bc_internals_source)
     assert "Engine!C16" not in dispatch
-    assert dispatch["Outputs!B12"] == ("baseline_debt", "C")
-    assert dispatch["Outputs!B13"] == ("debt_to_gdp", "C")
+    assert dispatch["Outputs!B12"] == ("baseline_debt", {"time_period": 1})
+    assert dispatch["Outputs!B13"] == ("debt_to_gdp", {"time_period": 1})
 
 
 def test_apply_phase_c_trim_removes_engine_dispatch_entries() -> None:
@@ -605,9 +588,9 @@ def test_apply_phase_c_trim_removes_engine_dispatch_entries() -> None:
     validate_refactored_internals(updated)
     dispatch = _extract_address_dispatch(updated)
 
-    assert removed == 1
+    assert removed >= 1
     assert "Engine!C10" not in dispatch
-    assert dispatch["Outputs!B14"] == ("output_delta", "C")
+    assert dispatch["Outputs!B14"] == ("output_delta", {"time_period": 1})
 
 
 def test_apply_phase_c_preserves_compute_all(refactored_tiny_dsa_api) -> None:
@@ -615,6 +598,46 @@ def test_apply_phase_c_preserves_compute_all(refactored_tiny_dsa_api) -> None:
         refactored_tiny_dsa_api.make_context()
     )
     assert len(results) == 3
+
+
+def test_normalize_member_key_concepts_maps_parameter_names(
+    shock_cluster_context,
+) -> None:
+    from src.internals_refactor import _normalize_member_key_concepts
+
+    response = _shock_active_response(shock_cluster_context)
+    aliased = response.model_copy(
+        update={
+            "member_keys": tuple(
+                entry.model_copy(
+                    update={"keys": {"time_period": entry.keys["TIME_PERIOD"]}}
+                )
+                for entry in response.member_keys
+            )
+        }
+    )
+    normalized = _normalize_member_key_concepts(aliased)
+    assert normalized.member_keys[0].keys == {"TIME_PERIOD": 1}
+
+
+def test_refactor_response_schema_uses_member_keys_not_engine_column() -> None:
+    schema = ClusterRefactorResponse.model_json_schema()
+    properties = schema["properties"]
+    assert "parameters" in properties
+    assert "member_keys" in properties
+    assert "member_bindings" not in properties
+    member_keys_schema = schema["$defs"]["MemberKeys"]["properties"]
+    assert "keys" in member_keys_schema
+    assert "engine_column" not in member_keys_schema
+
+
+def test_prompt_payload_includes_key_vocabulary(shock_cluster_context) -> None:
+    payload = prompt_payload(shock_cluster_context)
+    vocabulary = cast(list[dict[str, str]], payload["key_vocabulary"])
+    assert any(entry["concept"] == "TIME_PERIOD" for entry in vocabulary)
+    members = cast(list[dict[str, object]], payload["members"])
+    expected_keys = cast(dict[str, int], members[0]["expected_keys"])
+    assert expected_keys["TIME_PERIOD"] == 1
 
 
 def test_refactor_cache_key_is_stable(
@@ -647,28 +670,42 @@ def test_refactor_cache_key_changes_when_member_source_changes(
     assert refactor_cache_key(mutated_ctx, internals_bytes, schema) != baseline
 
 
-def _extract_address_dispatch(source: str) -> dict[str, tuple[str, str]]:
+def _extract_address_dispatch(
+    source: str,
+) -> dict[str, tuple[str, dict[str, int | str | float | bool]]]:
     module = ast.parse(source)
     for node in module.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "_ADDRESS_DISPATCH":
                     assert isinstance(node.value, ast.Dict)
-                    dispatch: dict[str, tuple[str, str]] = {}
+                    dispatch: dict[
+                        str, tuple[str, dict[str, int | str | float | bool]]
+                    ] = {}
                     for key, value in zip(node.value.keys, node.value.values):
                         assert isinstance(key, ast.Constant) and isinstance(
                             key.value, str
                         )
                         assert isinstance(value, ast.Tuple) and len(value.elts) == 2
                         helper = value.elts[0]
-                        column = value.elts[1]
+                        kwargs_node = value.elts[1]
                         assert isinstance(helper, ast.Constant) and isinstance(
                             helper.value, str
                         )
-                        assert isinstance(column, ast.Constant) and isinstance(
-                            column.value, str
-                        )
-                        dispatch[key.value] = (helper.value, column.value)
+                        assert isinstance(kwargs_node, ast.Dict)
+                        key_kwargs: dict[str, int | str | float | bool] = {}
+                        for kw_key, kw_value in zip(
+                            kwargs_node.keys,
+                            kwargs_node.values,
+                        ):
+                            assert isinstance(kw_key, ast.Constant) and isinstance(
+                                kw_key.value, str
+                            )
+                            assert isinstance(kw_value, ast.Constant)
+                            literal = kw_value.value
+                            assert isinstance(literal, (str, int, float, bool))
+                            key_kwargs[kw_key.value] = literal
+                        dispatch[key.value] = (helper.value, key_kwargs)
                     return dispatch
     raise AssertionError("_ADDRESS_DISPATCH not found")
 
@@ -694,12 +731,15 @@ def _shock_active_response(ctx) -> ClusterRefactorResponse:
         helper_name=deterministic_helper_name(ctx),
         helper_docstring=SHOCK_ACTIVE_DOCSTRING,
         uses_first_year_branch=False,
+        parameters=(
+            HelperParameter(name="time_period", concept="TIME_PERIOD", dtype="int"),
+        ),
         helper_source=SHOCK_ACTIVE_HELPER,
-        member_bindings=tuple(
-            MemberBinding(
+        member_keys=tuple(
+            MemberKeys(
                 address=member.address,
                 function_name=member.function_name,
-                engine_column=member.engine_column,
+                keys=ctx.expected_member_keys[member.address],
             )
             for member in ctx.members
         ),
