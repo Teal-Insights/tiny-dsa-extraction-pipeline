@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import shutil
 from dataclasses import replace
 from typing import Any, cast
 
@@ -35,6 +36,11 @@ from tests.fixtures.cluster_refactor_golden import (
     SHOCK_ACTIVE_HELPER,
 )
 from tests.fixtures.singleton_refactor_golden import GOLDEN_SINGLETON_REFACTOR_RESPONSES
+from src.refactor_parity import (
+    RefactorParityError,
+    validate_cluster_refactor_parity,
+    validate_singleton_refactor_parity,
+)
 
 TRIM_FIXTURE_SOURCE = """
 from .runtime import XlError, xl_cell
@@ -668,6 +674,151 @@ def test_refactor_cache_key_changes_when_member_source_changes(
     )
     mutated_ctx = replace(shock_cluster_context, members=mutated_members)
     assert refactor_cache_key(mutated_ctx, internals_bytes, schema) != baseline
+
+
+def test_golden_singleton_refactor_responses_pass_parity_gate(
+    codegen_internals_source,
+    tiny_dsa_refactor_projection,
+    codegen_package_root,
+    tmp_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    package_root = tmp_path / "parity_package"
+    shutil.copytree(codegen_package_root / "tiny_dsa", package_root / "tiny_dsa")
+    internals_path = package_root / "tiny_dsa" / "internals.py"
+    internals_path.write_text(codegen_internals_source, encoding="utf-8")
+
+    singleton_clusters = {
+        cluster.members[0]: cluster
+        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if len(cluster.members) == 1
+    }
+    for address in ("Inputs!B6", "Engine!B9"):
+        ctx = build_singleton_refactor_context(
+            tiny_dsa_refactor_projection,
+            singleton_clusters[address],
+            internals_path,
+        )
+        assert ctx is not None
+        validate_singleton_refactor_parity(
+            ctx,
+            GOLDEN_SINGLETON_REFACTOR_RESPONSES[address],
+            internals_path=internals_path,
+        )
+
+
+def test_golden_cluster_refactor_responses_pass_parity_gate(
+    singleton_refactored_internals_source,
+    tiny_dsa_refactor_projection,
+    codegen_package_root,
+    tmp_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    from src.refactor_order import compute_multi_member_cluster_refactor_order
+
+    package_root = tmp_path / "parity_package"
+    shutil.copytree(codegen_package_root / "tiny_dsa", package_root / "tiny_dsa")
+    internals_path = package_root / "tiny_dsa" / "internals.py"
+    internals_path.write_text(singleton_refactored_internals_source, encoding="utf-8")
+
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
+    updated = singleton_refactored_internals_source
+    for cluster in compute_multi_member_cluster_refactor_order(
+        tiny_dsa_refactor_projection, clusters
+    ):
+        if cluster.row is None:
+            continue
+        internals_path.write_text(updated, encoding="utf-8")
+        ctx = build_cluster_refactor_context(
+            tiny_dsa_refactor_projection,
+            cluster,
+            internals_path,
+        )
+        assert ctx is not None
+        response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[cluster.row]
+        validate_cluster_refactor_parity(
+            ctx,
+            response,
+            internals_path=internals_path,
+        )
+        updated = apply_refactor_plan(updated, response, ctx, phase_b=False)
+
+
+def test_wrong_baseline_debt_cluster_fails_parity_gate(
+    singleton_refactored_internals_source,
+    tiny_dsa_refactor_projection,
+    codegen_package_root,
+    tmp_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    from tests.fixtures.cluster_refactor_golden import (
+        BASELINE_DEBT_DOCSTRING,
+        ENGINE_ROW_MEMBER_KEYS,
+    )
+
+    package_root = tmp_path / "parity_package"
+    shutil.copytree(codegen_package_root / "tiny_dsa", package_root / "tiny_dsa")
+    internals_path = package_root / "tiny_dsa" / "internals.py"
+    internals_path.write_text(singleton_refactored_internals_source, encoding="utf-8")
+
+    cluster = next(
+        item
+        for item in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if item.row == 6 and len(item.members) == 5
+    )
+    ctx = build_cluster_refactor_context(
+        tiny_dsa_refactor_projection,
+        cluster,
+        internals_path,
+    )
+    assert ctx is not None
+
+    wrong_helper = f"""\
+def baseline_debt(ctx, time_period: int):
+    \"\"\"{BASELINE_DEBT_DOCSTRING.strip()}\"\"\"
+    if time_period == 1:
+        prior_debt = initial_debt_to_gdp(ctx)
+    else:
+        prior_debt = baseline_debt(ctx, time_period=time_period - 1)
+    column = {{1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}}[time_period]
+    growth_rate = xl_cell(ctx, f'Inputs!{{column}}16')
+    interest_rate = xl_cell(ctx, f'Inputs!{{column}}17')
+    primary_balance = xl_cell(ctx, f'Inputs!{{column}}18')
+    growth_term = xl_add(1.0, xl_div(growth_rate, 100.0))
+    interest_term = xl_add(1.0, xl_div(interest_rate, 100.0))
+    scaled_debt = xl_mul(prior_debt, xl_div(growth_term, interest_term))
+    return xl_sub(scaled_debt, primary_balance)"""
+
+    wrong_response = ClusterRefactorResponse(
+        helper_name="baseline_debt",
+        helper_docstring=BASELINE_DEBT_DOCSTRING,
+        uses_first_year_branch=True,
+        parameters=(
+            HelperParameter(name="time_period", concept="TIME_PERIOD", dtype="int"),
+        ),
+        helper_source=wrong_helper,
+        member_keys=ENGINE_ROW_MEMBER_KEYS[6],
+    )
+    validate_cluster_refactor_response(
+        ctx,
+        wrong_response,
+        existing_names=_function_names(singleton_refactored_internals_source),
+    )
+
+    try:
+        validate_cluster_refactor_parity(
+            ctx,
+            wrong_response,
+            internals_path=internals_path,
+        )
+    except RefactorParityError as error:
+        assert error.address.startswith("Engine!")
+        assert "baseline_debt" in error.label
+    else:
+        raise AssertionError("expected RefactorParityError")
 
 
 def _extract_address_dispatch(

@@ -38,6 +38,11 @@ from src.refactor_bindings import (
     render_literal_helper_call,
 )
 from src.refactor_order import compute_multi_member_cluster_refactor_order
+from src.refactor_parity import (
+    RefactorParityError,
+    validate_cluster_refactor_parity,
+    validate_singleton_refactor_parity,
+)
 
 repo_root = Path(__file__).resolve().parents[1]
 BINDINGS_PATH = repo_root / "bindings"
@@ -45,6 +50,7 @@ DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
 
 REFACTOR_MODEL = "deepseek-v4-pro"
 REFACTOR_PROMPT_VERSION = 6
+REFACTOR_PARITY_MAX_RETRIES = int(os.environ.get("REFACTOR_PARITY_MAX_RETRIES", "3"))
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
 PROJECTION_ALIASES_MARKER = "# --- Projection public address aliases ---"
@@ -2514,6 +2520,46 @@ def refactor_internals_all_clusters(
 load_dotenv(repo_root / ".env")
 
 
+def _accept_singleton_refactor_response(
+    ctx: SingletonRefactorContext,
+    response: SingletonRefactorResponse,
+    *,
+    internals_path: Path,
+    cache: dict[str, str],
+    cache_key: str,
+) -> SingletonRefactorResponse:
+    existing_names = _function_names(internals_path.read_text(encoding="utf-8"))
+    validate_singleton_refactor_response(ctx, response, existing_names=existing_names)
+    validate_singleton_refactor_parity(ctx, response, internals_path=internals_path)
+    cache[cache_key] = response.model_dump_json()
+    save_refactor_cache(cache)
+    return response
+
+
+def _accept_cluster_refactor_response(
+    ctx: ClusterRefactorContext,
+    response: ClusterRefactorResponse,
+    *,
+    internals_path: Path,
+    cache: dict[str, str],
+    cache_key: str,
+) -> ClusterRefactorResponse:
+    existing_names = _function_names(internals_path.read_text(encoding="utf-8"))
+    validate_cluster_refactor_response(ctx, response, existing_names=existing_names)
+    validate_cluster_refactor_parity(ctx, response, internals_path=internals_path)
+    cache[cache_key] = response.model_dump_json()
+    save_refactor_cache(cache)
+    return response
+
+
+def _parity_failure_context(error: RefactorParityError) -> str:
+    return (
+        "The previous response passed structural validation but failed the parity gate "
+        f"at {error.address}: expected {error.expected!r}, got {error.actual!r}. "
+        "Preserve semantics exactly on default workbook inputs."
+    )
+
+
 def llm_refactor_singleton(
     ctx: SingletonRefactorContext,
     *,
@@ -2524,15 +2570,34 @@ def llm_refactor_singleton(
     cache = load_refactor_cache()
     cache_key = singleton_refactor_cache_key(ctx, internals_bytes, schema)
     if cache_key in cache:
-        content = cache[cache_key]
-    else:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached refactor responses"
+        parsed = SingletonRefactorResponse.model_validate_json(cache[cache_key])
+        parsed = _prepare_singleton_refactor_response(parsed, ctx)
+        try:
+            return _accept_singleton_refactor_response(
+                ctx,
+                parsed,
+                internals_path=internals_path,
+                cache=cache,
+                cache_key=cache_key,
             )
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-        payload = singleton_prompt_payload(ctx)
+        except RefactorParityError:
+            cache.pop(cache_key, None)
+            save_refactor_cache(cache)
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY is required to generate uncached refactor responses"
+        )
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    payload = singleton_prompt_payload(ctx)
+    failure_context: str | None = None
+    last_parity_error: RefactorParityError | None = None
+
+    for attempt in range(REFACTOR_PARITY_MAX_RETRIES):
+        user_content = _prompt_for_singleton_refactor(payload, schema)
+        if failure_context is not None:
+            user_content = f"{user_content}\n\nParity failure:\n{failure_context}"
         response = client.chat.completions.create(
             model=REFACTOR_MODEL,
             messages=[
@@ -2547,7 +2612,7 @@ def llm_refactor_singleton(
                 },
                 {
                     "role": "user",
-                    "content": _prompt_for_singleton_refactor(payload, schema),
+                    "content": user_content,
                 },
             ],
             stream=False,
@@ -2560,22 +2625,25 @@ def llm_refactor_singleton(
             raise RuntimeError("DeepSeek returned empty singleton refactor content")
         parsed = SingletonRefactorResponse.model_validate_json(content)
         parsed = _prepare_singleton_refactor_response(parsed, ctx)
-        validate_singleton_refactor_response(
-            ctx,
-            parsed,
-            existing_names=_function_names(internals_path.read_text(encoding="utf-8")),
-        )
-        cache[cache_key] = parsed.model_dump_json()
-        save_refactor_cache(cache)
+        try:
+            return _accept_singleton_refactor_response(
+                ctx,
+                parsed,
+                internals_path=internals_path,
+                cache=cache,
+                cache_key=cache_key,
+            )
+        except RefactorParityError as error:
+            last_parity_error = error
+            failure_context = _parity_failure_context(error)
+            if attempt + 1 >= REFACTOR_PARITY_MAX_RETRIES:
+                break
 
-    parsed = SingletonRefactorResponse.model_validate_json(content)
-    parsed = _prepare_singleton_refactor_response(parsed, ctx)
-    validate_singleton_refactor_response(
-        ctx,
-        parsed,
-        existing_names=_function_names(internals_path.read_text(encoding="utf-8")),
-    )
-    return parsed
+    assert last_parity_error is not None
+    raise RuntimeError(
+        "Singleton refactor parity could not be restored after "
+        f"{REFACTOR_PARITY_MAX_RETRIES} attempts: {last_parity_error}"
+    ) from last_parity_error
 
 
 def llm_refactor_cluster(
@@ -2588,15 +2656,34 @@ def llm_refactor_cluster(
     cache = load_refactor_cache()
     cache_key = refactor_cache_key(ctx, internals_bytes, schema)
     if cache_key in cache:
-        content = cache[cache_key]
-    else:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached refactor responses"
+        parsed = ClusterRefactorResponse.model_validate_json(cache[cache_key])
+        parsed = _prepare_cluster_refactor_response(parsed, ctx)
+        try:
+            return _accept_cluster_refactor_response(
+                ctx,
+                parsed,
+                internals_path=internals_path,
+                cache=cache,
+                cache_key=cache_key,
             )
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-        payload = prompt_payload(ctx)
+        except RefactorParityError:
+            cache.pop(cache_key, None)
+            save_refactor_cache(cache)
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY is required to generate uncached refactor responses"
+        )
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    payload = prompt_payload(ctx)
+    failure_context: str | None = None
+    last_parity_error: RefactorParityError | None = None
+
+    for attempt in range(REFACTOR_PARITY_MAX_RETRIES):
+        user_content = _prompt_for_refactor(payload, schema)
+        if failure_context is not None:
+            user_content = f"{user_content}\n\nParity failure:\n{failure_context}"
         response = client.chat.completions.create(
             model=REFACTOR_MODEL,
             messages=[
@@ -2611,7 +2698,7 @@ def llm_refactor_cluster(
                 },
                 {
                     "role": "user",
-                    "content": _prompt_for_refactor(payload, schema),
+                    "content": user_content,
                 },
             ],
             stream=False,
@@ -2624,22 +2711,25 @@ def llm_refactor_cluster(
             raise RuntimeError("DeepSeek returned empty refactor content")
         parsed = ClusterRefactorResponse.model_validate_json(content)
         parsed = _prepare_cluster_refactor_response(parsed, ctx)
-        validate_cluster_refactor_response(
-            ctx,
-            parsed,
-            existing_names=_function_names(internals_path.read_text(encoding="utf-8")),
-        )
-        cache[cache_key] = parsed.model_dump_json()
-        save_refactor_cache(cache)
+        try:
+            return _accept_cluster_refactor_response(
+                ctx,
+                parsed,
+                internals_path=internals_path,
+                cache=cache,
+                cache_key=cache_key,
+            )
+        except RefactorParityError as error:
+            last_parity_error = error
+            failure_context = _parity_failure_context(error)
+            if attempt + 1 >= REFACTOR_PARITY_MAX_RETRIES:
+                break
 
-    parsed = ClusterRefactorResponse.model_validate_json(content)
-    parsed = _prepare_cluster_refactor_response(parsed, ctx)
-    validate_cluster_refactor_response(
-        ctx,
-        parsed,
-        existing_names=_function_names(internals_path.read_text(encoding="utf-8")),
-    )
-    return parsed
+    assert last_parity_error is not None
+    raise RuntimeError(
+        "Cluster refactor parity could not be restored after "
+        f"{REFACTOR_PARITY_MAX_RETRIES} attempts: {last_parity_error}"
+    ) from last_parity_error
 
 
 def _applied_helper_names(existing_names: frozenset[str]) -> frozenset[str]:
