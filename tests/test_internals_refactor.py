@@ -5,6 +5,8 @@ import shutil
 from dataclasses import replace
 from typing import Any, cast
 
+import pytest
+
 from src.internals_refactor import (
     ClusterRefactorResponse,
     HelperParameter,
@@ -19,6 +21,7 @@ from src.internals_refactor import (
     deterministic_helper_name,
     prompt_payload,
     refactor_cache_key,
+    normalize_source_bytes,
     resolve_semantic_dependencies,
     validate_cluster_refactor_response,
     validate_google_style_docstring,
@@ -111,8 +114,23 @@ def debt_to_gdp(ctx, col):
         validate_no_cell_function_references(function_def)
     except ValueError as error:
         assert "cell_engine_c10" in str(error)
+        assert "call" in str(error)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_validate_no_cell_function_references_allows_semantic_locals() -> None:
+    from src.internals_refactor import validate_no_cell_function_references
+
+    source = """
+def initial_debt_to_gdp(ctx):
+    cell_value = xl_cell(ctx, 'Inputs!B5')
+    country_name = cell_value
+    return country_name
+"""
+    function_def = ast.parse(source).body[0]
+    assert isinstance(function_def, ast.FunctionDef)
+    validate_no_cell_function_references(function_def)
 
 
 def test_validate_semantic_local_names_rejects_excel_shaped_names() -> None:
@@ -359,6 +377,30 @@ def test_prompt_payload_includes_domain_glossary(shock_cluster_context) -> None:
     assert "primary_balance_shocked" in symbols
     assert constraints["docstring_style"] == "google"
     assert constraints["require_semantic_locals"] is True
+
+
+def test_cluster_refactor_prompt_uses_time_period_example() -> None:
+    from src.internals_refactor import (
+        CLUSTER_REFACTOR_BODY_EXAMPLE,
+        _prompt_for_refactor,
+    )
+
+    prompt = _prompt_for_refactor({}, {})
+    assert CLUSTER_REFACTOR_BODY_EXAMPLE in prompt
+    assert "time_period: Projection year index" in prompt
+    assert "col: Engine column letter" not in prompt
+    assert "baseline_debt(ctx, time_period: int)" in prompt
+
+
+def test_singleton_refactor_prompt_includes_accepted_body_example() -> None:
+    from src.internals_refactor import (
+        SINGLETON_REFACTOR_BODY_EXAMPLE,
+        _prompt_for_singleton_refactor,
+    )
+
+    prompt = _prompt_for_singleton_refactor({}, {})
+    assert SINGLETON_REFACTOR_BODY_EXAMPLE in prompt
+    assert "initial_debt_to_gdp(ctx)" in prompt
 
 
 def test_resolve_semantic_dependencies_maps_thin_wrappers() -> None:
@@ -646,6 +688,18 @@ def test_prompt_payload_includes_key_vocabulary(shock_cluster_context) -> None:
     assert expected_keys["TIME_PERIOD"] == 1
 
 
+def test_refactor_cache_key_is_invariant_to_line_endings(
+    shock_cluster_context,
+    codegen_internals_path,
+) -> None:
+    schema = ClusterRefactorResponse.model_json_schema()
+    lf_bytes = normalize_source_bytes(codegen_internals_path.read_bytes())
+    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+    lf_key = refactor_cache_key(shock_cluster_context, lf_bytes, schema)
+    crlf_key = refactor_cache_key(shock_cluster_context, crlf_bytes, schema)
+    assert lf_key == crlf_key
+
+
 def test_refactor_cache_key_is_stable(
     shock_cluster_context,
     codegen_internals_path,
@@ -674,6 +728,94 @@ def test_refactor_cache_key_changes_when_member_source_changes(
     )
     mutated_ctx = replace(shock_cluster_context, members=mutated_members)
     assert refactor_cache_key(mutated_ctx, internals_bytes, schema) != baseline
+
+
+def test_refactor_retry_context_includes_structural_validation_message() -> None:
+    from src.internals_refactor import _refactor_retry_context
+
+    message = _refactor_retry_context(
+        ValueError(
+            "function body uses excel-shaped local names ['term1']; "
+            "use domain-meaningful snake_case instead"
+        )
+    )
+    assert "structural validation" in message
+    assert "term1" in message
+
+
+def test_llm_refactor_singleton_retries_after_structural_validation_failure(
+    codegen_internals_source,
+    tiny_dsa_refactor_projection,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from src.formula_clustering import cluster_graph_formulas
+    from src.internals_refactor import (
+        SingletonRefactorResponse,
+        build_singleton_refactor_context,
+        llm_refactor_singleton,
+    )
+
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(codegen_internals_source, encoding="utf-8")
+    cluster = next(
+        item
+        for item in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if item.members == ("Inputs!B6",)
+    )
+    ctx = build_singleton_refactor_context(
+        tiny_dsa_refactor_projection,
+        cluster,
+        internals_path,
+    )
+    assert ctx is not None
+
+    accepted = GOLDEN_SINGLETON_REFACTOR_RESPONSES["Inputs!B6"]
+    invalid_json = accepted.model_dump_json()
+    invalid = SingletonRefactorResponse.model_validate_json(invalid_json)
+    invalid_source = invalid.symbol_source.replace(
+        "country_name = xl_cell(ctx, 'Inputs!B5')",
+        "term1 = xl_cell(ctx, 'Inputs!B5')\n    country_name = term1",
+    )
+    invalid = invalid.model_copy(update={"symbol_source": invalid_source})
+
+    completion = MagicMock()
+    completion.choices = [
+        MagicMock(message=MagicMock(content=invalid.model_dump_json()))
+    ]
+    client = MagicMock()
+    client.chat.completions.create.return_value = completion
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "src.internals_refactor.OpenAI",
+        lambda *args, **kwargs: client,
+    )
+
+    accept_calls = 0
+
+    def accept_side_effect(*args, **kwargs):
+        nonlocal accept_calls
+        accept_calls += 1
+        if accept_calls == 1:
+            raise ValueError("function body uses excel-shaped local names ['term1']")
+        return accepted
+
+    monkeypatch.setattr(
+        "src.internals_refactor._accept_singleton_refactor_response",
+        accept_side_effect,
+    )
+
+    result = llm_refactor_singleton(ctx, internals_path=internals_path)
+
+    assert result.symbol_name == "initial_debt_to_gdp"
+    assert client.chat.completions.create.call_count == 2
+    retry_prompt = client.chat.completions.create.call_args_list[1].kwargs["messages"][
+        1
+    ]["content"]
+    assert "Previous attempt failed:" in retry_prompt
+    assert "term1" in retry_prompt
 
 
 def test_golden_singleton_refactor_responses_pass_parity_gate(

@@ -20,34 +20,35 @@ from .runtime import (
 # --- Formula cell functions ---
 
 def output_delta(ctx, time_period: int):
-    """Return the debt-to-GDP delta between shocked and baseline paths.
+    """Return the output delta (shocked minus baseline debt-to-GDP) for the given projection year.
 
-Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection year index (1 through 5).
+    Args:
+        ctx: Workbook evaluation context.
+        time_period: Projection year index (1 through 5).
 
-Returns:
-    Shocked debt-to-GDP minus baseline debt-to-GDP for the year.
+    Returns:
+        The difference between the shocked and baseline debt-to-GDP ratio for the year.
 
-Note:
-    Covers Outputs!B14:F14."""
-    return xl_sub(
-        debt_to_gdp(ctx, time_period=time_period),
-        baseline_debt(ctx, time_period=time_period),
-    )
+    Note:
+        Covers Outputs!B14:F14.
+"""
+    shocked = debt_to_gdp(ctx, time_period=time_period)
+    baseline = baseline_debt(ctx, time_period=time_period)
+    return xl_sub(shocked, baseline)
 
 def baseline_debt(ctx, time_period: int):
     """Return the baseline debt-to-GDP ratio for the given projection year.
 
-Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection year index (1 through 5).
+    Args:
+        ctx: Workbook evaluation context.
+        time_period: Projection year index (1 through 5).
 
-Returns:
-    Recursed baseline debt-to-GDP ratio for the year.
+    Returns:
+        Recursed baseline debt-to-GDP ratio for the year.
 
-Note:
-    Covers Engine!C6:G6."""
+    Note:
+        Covers Engine!C6:G6.
+"""
     if time_period == 1:
         prior_debt = xl_eval(ctx, 'Inputs!B6', initial_debt_to_gdp)
     else:
@@ -61,107 +62,112 @@ Note:
     scaled_debt = xl_mul(prior_debt, xl_div(growth_term, interest_term))
     return xl_sub(scaled_debt, primary_balance)
 
-def debt_to_gdp(ctx, time_period: int):
+def debt_to_gdp(ctx, time_period):
     """Return the shocked debt-to-GDP ratio for the given projection year.
 
-Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection year index (1 through 5).
+    Args:
+        ctx: Workbook evaluation context.
+        time_period: Projection year index (1 through 5).
 
-Returns:
-    Recursed shocked debt-to-GDP ratio for the year.
+    Returns:
+        Shocked debt-to-GDP ratio for the year.
 
-Note:
-    Covers Engine!C20:G20."""
+    Note:
+        Covers Engine!C20:G20.
+"""
     if time_period == 1:
         prior_debt = xl_eval(ctx, 'Inputs!B6', initial_debt_to_gdp)
     else:
         prior_debt = debt_to_gdp(ctx, time_period=time_period - 1)
     column = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}[time_period]
-    shock_type = xl_cell(ctx, 'Inputs!B22')
-    if isinstance(shock_type, XlError):
-        growth_shock_factor = shock_type
-        interest_shock_factor = shock_type
+    interest_rate = xl_cell(ctx, f'Inputs!{column}17')
+    growth_rate = xl_cell(ctx, f'Inputs!{column}16')
+    shock_type_cell = xl_cell(ctx, 'Inputs!B22')
+    if isinstance(shock_type_cell, XlError):
+        shock_type_int = shock_type_cell
     else:
-        shock_type_index = to_int(shock_type)
-        if isinstance(shock_type_index, XlError):
-            growth_shock_factor = shock_type_index
-            interest_shock_factor = shock_type_index
-        elif shock_type_index < 1 or shock_type_index > 3:
-            growth_shock_factor = XlError.VALUE
-            interest_shock_factor = XlError.VALUE
+        shock_type_int = to_int(shock_type_cell)
+    if isinstance(shock_type_int, XlError):
+        numerator_shock = denominator_shock = shock_type_int
+    elif shock_type_int < 1 or shock_type_int > 3:
+        numerator_shock = denominator_shock = XlError.VALUE
+    else:
+        shock_mag = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
+        if shock_type_int == 1:
+            numerator_shock = 0.0
+            denominator_shock = shock_mag
+        elif shock_type_int == 2:
+            numerator_shock = shock_mag
+            denominator_shock = 0.0
         else:
-            shock_magnitude = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
-            if shock_type_index == 1:
-                growth_shock_factor = 0.0
-                interest_shock_factor = shock_magnitude
-            elif shock_type_index == 2:
-                growth_shock_factor = shock_magnitude
-                interest_shock_factor = 0.0
-            else:
-                growth_shock_factor = 0.0
-                interest_shock_factor = 0.0
-    growth_rate = xl_cell(ctx, f'Inputs!{column}17')
-    interest_rate = xl_cell(ctx, f'Inputs!{column}16')
-    shock_activation = shock_active(ctx, time_period=time_period)
-    shocked_primary_balance = primary_balance_shocked(ctx, time_period=time_period)
-    growth_numerator = xl_add(growth_rate, xl_mul(growth_shock_factor, shock_activation))
-    growth_term = xl_add(1.0, xl_div(growth_numerator, 100.0))
-    interest_denominator = xl_add(interest_rate, xl_mul(interest_shock_factor, shock_activation))
-    interest_term = xl_add(1.0, xl_div(interest_denominator, 100.0))
-    debt_ratio = xl_mul(prior_debt, xl_div(growth_term, interest_term))
-    return xl_sub(debt_ratio, shocked_primary_balance)
+            numerator_shock = 0.0
+            denominator_shock = 0.0
+    is_active = shock_active(ctx, time_period=time_period)
+    numerator_adjust = xl_mul(numerator_shock, is_active)
+    denominator_adjust = xl_mul(denominator_shock, is_active)
+    primary_balance = primary_balance_shocked(ctx, time_period=time_period)
+    interest_term = xl_add(1.0, xl_div(xl_add(interest_rate, numerator_adjust), 100.0))
+    growth_term = xl_add(1.0, xl_div(xl_add(growth_rate, denominator_adjust), 100.0))
+    scaled_debt = xl_div(xl_mul(prior_debt, interest_term), growth_term)
+    return xl_sub(scaled_debt, primary_balance)
 
 def primary_balance_shocked(ctx, time_period: int):
-    """Return the shocked primary balance for the given projection year.
+    """Return the primary balance including shock adjustments for the given projection year.
 
 Args:
     ctx: Workbook evaluation context.
     time_period: Projection year index (1 through 5).
 
 Returns:
-    Baseline primary balance plus the shock adjustment for the year.
+    Computed primary balance after shock for the year.
 
 Note:
-    Covers Engine!C16:G16."""
+    Covers Engine!C16:G16.
+"""
     column = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}[time_period]
-    shock_type = xl_cell(ctx, 'Inputs!B22')
-    if isinstance(shock_type, XlError):
-        shock_multiplier = shock_type
+    primary_balance_baseline = xl_cell(ctx, f'Inputs!{column}18')
+    shock_type_raw = xl_cell(ctx, 'Inputs!B22')
+    if isinstance(shock_type_raw, XlError):
+        shock_factor = shock_type_raw
     else:
-        shock_type_index = to_int(shock_type)
-        if isinstance(shock_type_index, XlError):
-            shock_multiplier = shock_type_index
-        elif shock_type_index < 1 or shock_type_index > 3:
-            shock_multiplier = XlError.VALUE
-        elif shock_type_index == 1 or shock_type_index == 2:
-            shock_multiplier = 0.0
+        shock_type = to_int(shock_type_raw)
+        if isinstance(shock_type, XlError):
+            shock_factor = shock_type
+        elif shock_type < 1 or shock_type > 3:
+            shock_factor = XlError.VALUE
+        elif shock_type == 1:
+            shock_factor = 0.0
+        elif shock_type == 2:
+            shock_factor = 0.0
+        elif shock_type == 3:
+            shock_factor = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
         else:
-            shock_multiplier = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
-    baseline_primary_balance = xl_cell(ctx, f'Inputs!{column}18')
-    shock_adjustment = xl_mul(shock_multiplier, shock_active(ctx, time_period=time_period))
-    return xl_add(baseline_primary_balance, shock_adjustment)
+            shock_factor = XlError.VALUE
+    shocked_primary_adjustment = xl_mul(shock_factor, shock_active(ctx, time_period=time_period))
+    return xl_add(primary_balance_baseline, shocked_primary_adjustment)
 
 def shock_active(ctx, time_period: int):
-    """Return 1.0 when the shock is active for the given projection year.
+    """Return 1.0 if the shock is active for the given time period, otherwise 0.0.
 
-Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection year index (1 through 5).
+    Args:
+        ctx: Workbook evaluation context.
+        time_period: Projection year index (1 through 5).
 
-Returns:
-    1.0 if the projection year is at or after the shock year, else 0.0.
+    Returns:
+        1.0 when Engine!{column}5 >= Inputs!B21, else 0.0.
 
-Note:
-    Covers Engine!C10:G10. Excel: =IF(Engine!{col}5>=Inputs!$B$21,1,0)."""
+    Note:
+        Covers Engine!C10:G10.
+"""
     column = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}[time_period]
-    projection_year = xl_cell(ctx, f'Engine!{column}5')
-    shock_year = xl_cell(ctx, 'Inputs!B21')
-    year_at_or_after_shock = xl_ge(projection_year, shock_year)
-    is_active = to_bool(year_at_or_after_shock)
-    if isinstance(is_active, XlError):
-        return is_active
-    return 1.0 if is_active else 0.0
+    ge_result = xl_ge(xl_cell(ctx, f'Engine!{column}5'), xl_cell(ctx, 'Inputs!B21'))
+    bool_result = to_bool(ge_result)
+    if isinstance(bool_result, XlError):
+        return bool_result
+    if bool_result:
+        return 1.0
+    else:
+        return 0.0
 
 def initial_debt_to_gdp(ctx):
     """Look up the initial debt-to-GDP ratio for the selected country.
@@ -173,43 +179,29 @@ Returns:
     Initial debt-to-GDP ratio from the country profile table.
 
 Note:
-    Covers Inputs!B6. Excel: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2)."""
+    Covers Inputs!B6. Excel: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2).
+"""
     country_name = xl_cell(ctx, 'Inputs!B5')
-    country_codes = np.array(
-        [
-            [xl_cell(ctx, 'Inputs!A10')],
-            [xl_cell(ctx, 'Inputs!A11')],
-            [xl_cell(ctx, 'Inputs!A12')],
-        ],
-        dtype=object,
-    )
-    match_index = xl_match(
-        country_name,
-        np.array(country_codes, dtype=object),
-        0.0,
-    )
+    country_codes = np.array([[xl_cell(ctx, 'Inputs!A10')], [xl_cell(ctx, 'Inputs!A11')], [xl_cell(ctx, 'Inputs!A12')]], dtype=object)
+    match_index = xl_match(country_name, np.array(country_codes, dtype=object), 0.0)
     profile_table = ('Inputs', 10, 1, 12, 3)
-    return xl_offset(
-        ctx,
-        xl_index_ref(profile_table, match_index, 2.0),
-        0.0,
-        0.0,
-    )
+    return xl_offset(ctx, xl_index_ref(profile_table, match_index, 2.0), 0.0, 0.0)
 
 def shock_magnitude_resolved(ctx):
-    """Resolve the shock magnitude for the selected shock type.
+    """Resolved shock magnitude for the selected shock type.
 
 Args:
     ctx: Workbook evaluation context.
 
 Returns:
-    Shock magnitude from the shock table for Inputs!B22.
+    The shock magnitude value from the shock magnitude lookup row.
 
 Note:
-    Covers Engine!B9. Excel: =OFFSET(Inputs!$B$26,0,Inputs!$B$22-1)."""
+    Covers Inputs!B26:D26. Excel: =OFFSET(Inputs!$B$26,0,Inputs!$B$22-1).
+"""
     shock_type = xl_cell(ctx, 'Inputs!B22')
-    type_offset = xl_sub(shock_type, 1.0)
-    return xl_offset(ctx, ('Inputs', 26, 2), 0.0, type_offset, None, None)
+    col_offset = xl_sub(shock_type, 1.0)
+    return xl_offset(ctx, ('Inputs', 26, 2), 0.0, col_offset, None, None)
 
 
 # --- Formula resolver ---

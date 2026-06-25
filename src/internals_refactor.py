@@ -49,7 +49,7 @@ BINDINGS_PATH = repo_root / "bindings"
 DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
 
 REFACTOR_MODEL = "deepseek-v4-pro"
-REFACTOR_PROMPT_VERSION = 6
+REFACTOR_PROMPT_VERSION = 8
 REFACTOR_PARITY_MAX_RETRIES = int(os.environ.get("REFACTOR_PARITY_MAX_RETRIES", "3"))
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
@@ -298,6 +298,26 @@ class SingletonRefactorApplyResult:
 
 def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def normalize_source_bytes(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def normalize_source_text(text: str) -> str:
+    return normalize_source_bytes(text.encode("utf-8")).decode("utf-8")
+
+
+def hash_source_bytes(data: bytes) -> str:
+    return hashlib.sha256(normalize_source_bytes(data)).hexdigest()
+
+
+def hash_source_text(text: str) -> str:
+    return hashlib.sha256(normalize_source_text(text).encode("utf-8")).hexdigest()
+
+
+def write_internals_source(path: Path, source: str) -> None:
+    path.write_text(normalize_source_text(source), encoding="utf-8", newline="\n")
 
 
 def address_to_function_name(address: str) -> str:
@@ -559,13 +579,11 @@ def refactor_cache_key(
                 "formula_sha256": hashlib.sha256(
                     member.normalized_formula.encode()
                 ).hexdigest(),
-                "source_sha256": hashlib.sha256(
-                    member.python_source.encode()
-                ).hexdigest(),
+                "source_sha256": hash_source_text(member.python_source),
             }
             for member in ctx.members
         ],
-        "internals_sha256": hashlib.sha256(internals_bytes).hexdigest(),
+        "internals_sha256": hash_source_bytes(internals_bytes),
         "response_schema_sha256": hashlib.sha256(
             stable_json(response_schema).encode()
         ).hexdigest(),
@@ -913,18 +931,31 @@ def validate_semantic_local_names(function_def: ast.FunctionDef) -> None:
 
 
 def validate_no_cell_function_references(function_def: ast.FunctionDef) -> None:
-    cell_references = sorted(
-        {
-            node.id
-            for node in ast.walk(function_def)
-            if isinstance(node, ast.Name) and node.id.startswith("cell_")
-        }
-    )
+    cell_references = sorted(_cell_helper_call_references(function_def))
     if cell_references:
         raise ValueError(
-            "function body must not reference excel cell helpers "
+            "function body must not call excel cell helpers "
             f"{cell_references}; use semantic helpers from upstream refactors"
         )
+
+
+def _cell_helper_call_references(function_def: ast.FunctionDef) -> set[str]:
+    references: set[str] = set()
+    for node in ast.walk(function_def):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id.startswith("cell_"):
+            references.add(node.func.id)
+            continue
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "xl_eval"
+            and len(node.args) >= 3
+            and isinstance(node.args[2], ast.Name)
+            and node.args[2].id.startswith("cell_")
+        ):
+            references.add(node.args[2].id)
+    return references
 
 
 def validate_cluster_refactor_response(
@@ -1103,8 +1134,8 @@ def singleton_refactor_cache_key(
         "address": ctx.address,
         "canonical_template": ctx.canonical_template,
         "formula_sha256": hashlib.sha256(ctx.normalized_formula.encode()).hexdigest(),
-        "source_sha256": hashlib.sha256(ctx.python_source.encode()).hexdigest(),
-        "internals_sha256": hashlib.sha256(internals_bytes).hexdigest(),
+        "source_sha256": hash_source_text(ctx.python_source),
+        "internals_sha256": hash_source_bytes(internals_bytes),
         "response_schema_sha256": hashlib.sha256(
             stable_json(response_schema).encode()
         ).hexdigest(),
@@ -2404,7 +2435,7 @@ def refactor_internals_singleton(
     updated, rewrite_count = apply_singleton_refactor_plan(source, response, ctx)
     validate_refactored_internals(updated)
     if not dry_run:
-        internals_path.write_text(updated, encoding="utf-8")
+        write_internals_source(internals_path, updated)
     return SingletonRefactorApplyResult(
         source=updated,
         symbol_name=response.symbol_name,
@@ -2457,7 +2488,7 @@ def refactor_internals_cluster(
     updated = apply_refactor_plan(source, response, ctx, phase_b=False)
     validate_refactored_internals(updated)
     if not dry_run:
-        internals_path.write_text(updated, encoding="utf-8")
+        write_internals_source(internals_path, updated)
     return ClusterRefactorApplyResult(
         source=updated,
         helper_name=response.helper_name,
@@ -2501,7 +2532,7 @@ def refactor_internals_all_clusters(
         source = internals_path.read_text(encoding="utf-8")
         updated, phase_c_pruned = apply_phase_c(source)
         validate_refactored_internals(updated)
-        internals_path.write_text(updated, encoding="utf-8")
+        write_internals_source(internals_path, updated)
         if results:
             last = results[-1]
             results[-1] = ClusterRefactorApplyResult(
@@ -2560,6 +2591,15 @@ def _parity_failure_context(error: RefactorParityError) -> str:
     )
 
 
+def _refactor_retry_context(error: RefactorParityError | ValueError) -> str:
+    if isinstance(error, RefactorParityError):
+        return _parity_failure_context(error)
+    return (
+        "The previous response failed structural validation: "
+        f"{error} Preserve semantics exactly on default workbook inputs."
+    )
+
+
 def llm_refactor_singleton(
     ctx: SingletonRefactorContext,
     *,
@@ -2580,7 +2620,7 @@ def llm_refactor_singleton(
                 cache=cache,
                 cache_key=cache_key,
             )
-        except RefactorParityError:
+        except (RefactorParityError, ValueError):
             cache.pop(cache_key, None)
             save_refactor_cache(cache)
 
@@ -2592,12 +2632,14 @@ def llm_refactor_singleton(
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     payload = singleton_prompt_payload(ctx)
     failure_context: str | None = None
-    last_parity_error: RefactorParityError | None = None
+    last_error: RefactorParityError | ValueError | None = None
 
     for attempt in range(REFACTOR_PARITY_MAX_RETRIES):
         user_content = _prompt_for_singleton_refactor(payload, schema)
         if failure_context is not None:
-            user_content = f"{user_content}\n\nParity failure:\n{failure_context}"
+            user_content = (
+                f"{user_content}\n\nPrevious attempt failed:\n{failure_context}"
+            )
         response = client.chat.completions.create(
             model=REFACTOR_MODEL,
             messages=[
@@ -2633,17 +2675,17 @@ def llm_refactor_singleton(
                 cache=cache,
                 cache_key=cache_key,
             )
-        except RefactorParityError as error:
-            last_parity_error = error
-            failure_context = _parity_failure_context(error)
+        except (RefactorParityError, ValueError) as error:
+            last_error = error
+            failure_context = _refactor_retry_context(error)
             if attempt + 1 >= REFACTOR_PARITY_MAX_RETRIES:
                 break
 
-    assert last_parity_error is not None
+    assert last_error is not None
     raise RuntimeError(
-        "Singleton refactor parity could not be restored after "
-        f"{REFACTOR_PARITY_MAX_RETRIES} attempts: {last_parity_error}"
-    ) from last_parity_error
+        "Singleton refactor could not be accepted after "
+        f"{REFACTOR_PARITY_MAX_RETRIES} attempts: {last_error}"
+    ) from last_error
 
 
 def llm_refactor_cluster(
@@ -2666,7 +2708,7 @@ def llm_refactor_cluster(
                 cache=cache,
                 cache_key=cache_key,
             )
-        except RefactorParityError:
+        except (RefactorParityError, ValueError):
             cache.pop(cache_key, None)
             save_refactor_cache(cache)
 
@@ -2678,12 +2720,14 @@ def llm_refactor_cluster(
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     payload = prompt_payload(ctx)
     failure_context: str | None = None
-    last_parity_error: RefactorParityError | None = None
+    last_error: RefactorParityError | ValueError | None = None
 
     for attempt in range(REFACTOR_PARITY_MAX_RETRIES):
         user_content = _prompt_for_refactor(payload, schema)
         if failure_context is not None:
-            user_content = f"{user_content}\n\nParity failure:\n{failure_context}"
+            user_content = (
+                f"{user_content}\n\nPrevious attempt failed:\n{failure_context}"
+            )
         response = client.chat.completions.create(
             model=REFACTOR_MODEL,
             messages=[
@@ -2719,17 +2763,17 @@ def llm_refactor_cluster(
                 cache=cache,
                 cache_key=cache_key,
             )
-        except RefactorParityError as error:
-            last_parity_error = error
-            failure_context = _parity_failure_context(error)
+        except (RefactorParityError, ValueError) as error:
+            last_error = error
+            failure_context = _refactor_retry_context(error)
             if attempt + 1 >= REFACTOR_PARITY_MAX_RETRIES:
                 break
 
-    assert last_parity_error is not None
+    assert last_error is not None
     raise RuntimeError(
-        "Cluster refactor parity could not be restored after "
-        f"{REFACTOR_PARITY_MAX_RETRIES} attempts: {last_parity_error}"
-    ) from last_parity_error
+        "Cluster refactor could not be accepted after "
+        f"{REFACTOR_PARITY_MAX_RETRIES} attempts: {last_error}"
+    ) from last_error
 
 
 def _applied_helper_names(existing_names: frozenset[str]) -> frozenset[str]:
@@ -2740,31 +2784,9 @@ def _applied_singleton_names(existing_names: frozenset[str]) -> frozenset[str]:
     return frozenset(SINGLETON_SYMBOL_NAMES.values()) & existing_names
 
 
-def _prompt_for_singleton_refactor(
-    payload: dict[str, object], response_schema: dict[str, object]
-) -> str:
-    payload_json = json.dumps(payload, indent=2, default=str)
-    schema_json = json.dumps(response_schema, indent=2)
-    return f"""
-Rename and refactor one Excel-generated singleton helper into a semantic function.
-
-Rules:
-- Keep signature (ctx) exactly; do not add a col parameter.
-- Do not rename dependency functions.
-- Rename local temporaries to domain-meaningful snake_case using domain_glossary.
-- Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
-- Do not reference cell_* helpers; call semantic helpers (e.g. shock_active, initial_debt_to_gdp).
-- Prefer readable if/else over walrus/ternary chains when refactoring for clarity.
-- Emit one complete symbol_source function with signature (ctx).
-- symbol_source must include a Google-style docstring with Args and Returns sections.
-- symbol_docstring must match the docstring embedded in symbol_source exactly.
-- Include a Note section listing the workbook address and Excel formula.
-- Set symbol_name to constraints.symbol_name exactly.
-- Return only JSON matching the response schema.
-
-Example docstring shape:
-\"\"\"
-Look up the initial debt-to-GDP ratio for the selected country.
+SINGLETON_REFACTOR_BODY_EXAMPLE = """\
+def initial_debt_to_gdp(ctx):
+    \"\"\"Look up the initial debt-to-GDP ratio for the selected country.
 
 Args:
     ctx: Workbook evaluation context.
@@ -2773,8 +2795,76 @@ Returns:
     Initial debt-to-GDP ratio from the country profile table.
 
 Note:
-    Covers Inputs!B6. Excel: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2).
-\"\"\"
+    Covers Inputs!B6. Excel: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2).\"\"\"
+    country_name = xl_cell(ctx, 'Inputs!B5')
+    country_codes = np.array(
+        [
+            [xl_cell(ctx, 'Inputs!A10')],
+            [xl_cell(ctx, 'Inputs!A11')],
+            [xl_cell(ctx, 'Inputs!A12')],
+        ],
+        dtype=object,
+    )
+    match_index = xl_match(
+        country_name,
+        np.array(country_codes, dtype=object),
+        0.0,
+    )
+    profile_table = ('Inputs', 10, 1, 12, 3)
+    return xl_offset(
+        ctx,
+        xl_index_ref(profile_table, match_index, 2.0),
+        0.0,
+        0.0,
+    )"""
+
+
+CLUSTER_REFACTOR_BODY_EXAMPLE = """\
+def baseline_debt(ctx, time_period: int):
+    \"\"\"Return the baseline debt-to-GDP ratio for the given projection year.
+
+Args:
+    ctx: Workbook evaluation context.
+    time_period: Projection year index (1 through 5).
+
+Returns:
+    Recursed baseline debt-to-GDP ratio for the year.
+
+Note:
+    Covers Engine!C6:G6.\"\"\"
+    if time_period == 1:
+        prior_debt = xl_eval(ctx, 'Inputs!B6', initial_debt_to_gdp)
+    else:
+        prior_debt = baseline_debt(ctx, time_period=time_period - 1)
+    column = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}[time_period]
+    growth_rate = xl_cell(ctx, f'Inputs!{column}17')
+    interest_rate = xl_cell(ctx, f'Inputs!{column}16')
+    primary_balance = xl_cell(ctx, f'Inputs!{column}18')
+    growth_term = xl_add(1.0, xl_div(growth_rate, 100.0))
+    interest_term = xl_add(1.0, xl_div(interest_rate, 100.0))
+    scaled_debt = xl_mul(prior_debt, xl_div(growth_term, interest_term))
+    return xl_sub(scaled_debt, primary_balance)"""
+
+
+def _prompt_for_singleton_refactor(
+    payload: dict[str, object], response_schema: dict[str, object]
+) -> str:
+    payload_json = json.dumps(payload, indent=2, default=str)
+    schema_json = json.dumps(response_schema, indent=2)
+    return f"""
+Rename and refactor one Excel-generated singleton helper into a semantic function.
+
+Write symbol_source in the same style as this accepted example:
+{SINGLETON_REFACTOR_BODY_EXAMPLE}
+
+Naming and structure:
+- Name computed values with domain terms from domain_glossary (country_name, match_index, shock_type, ...).
+- Use xl_cell, xl_eval, xl_offset, and xl_index_ref for leaf workbook reads.
+- Call upstream semantic helpers through xl_eval when the address maps to one (e.g. initial_debt_to_gdp).
+- Keep signature (ctx) exactly; set symbol_name to constraints.symbol_name.
+- Prefer readable if/else over walrus/ternary chains from the source.
+- Include a Google-style docstring; symbol_docstring must match symbol_source exactly.
+- Return only JSON matching the response schema.
 
 Singleton context:
 {payload_json}
@@ -2792,42 +2882,18 @@ def _prompt_for_refactor(
     return f"""
 Refactor one parallel formula cluster into a single parameterized helper.
 
-Rules:
-- Declare parameters[] using binding key concepts from key_vocabulary; do not use column letters.
-- For each cluster member, emit member_keys[] with literal key values from expected_keys.
-- Series-constant binding keys (scope: series) are not parameters; bake them into the helper.
-- Emit helper_source with signature (ctx, <parameters>) using semantic parameter names.
-- Use time_period == 1 branch for first-year {{PRIOR_DEBT}} logic when needed.
-- Map time_period to workbook columns internally when reading xl_cell addresses.
-- Keep xl_eval only for leaf inputs read with xl_cell; never for refactored cells.
-- Do not rename dependency functions.
-- Rename local temporaries to domain-meaningful snake_case using domain_glossary.
-- Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
-- Do not reference cell_* helpers anywhere in the body.
-- For every entry in semantic_dependencies, replace reads with call_form using pass-through
-  parameter names, e.g. shock_active(ctx, time_period=time_period).
-- Prefer readable if/else over walrus/ternary chains when refactoring for clarity.
-- Emit one complete helper_source function.
-- helper_source must include a Google-style docstring with Args and Returns sections.
-- helper_docstring must match the docstring embedded in helper_source exactly.
-- Include a Note section listing covered workbook addresses and the Excel formula.
-- Set helper_name to constraints.helper_name exactly.
+Write helper_source in the same style as this accepted example:
+{CLUSTER_REFACTOR_BODY_EXAMPLE}
+
+Naming and structure:
+- Parameters come from key_vocabulary concepts (e.g. time_period); emit matching member_keys[] literals.
+- Name computed values with domain terms from domain_glossary (prior_debt, growth_rate, growth_term, ...).
+- Map time_period to a column letter locally when building xl_cell addresses (column = {{1: 'C', ...}}[time_period]).
+- Use xl_eval for leaf singleton inputs; call upstream semantic helpers from semantic_dependencies.
+- Branch on time_period == 1 when the Excel template uses {{PRIOR_DEBT}}.
+- Set helper_name to constraints.helper_name; include a Google-style docstring with time_period in Args.
+- helper_docstring must match helper_source exactly.
 - Return only JSON matching the response schema.
-
-Example docstring shape:
-\"\"\"
-Return 1.0 when the shock is active for the given projection column.
-
-Args:
-    ctx: Workbook evaluation context.
-    col: Engine column letter (C through G).
-
-Returns:
-    1.0 if the projection year is at or after the shock year, else 0.0.
-
-Note:
-    Covers Engine!C10:G10. Excel: =IF(Engine!{{col}}5>=Inputs!$B$21,1,0).
-\"\"\"
 
 Cluster context:
 {payload_json}

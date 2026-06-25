@@ -83,17 +83,17 @@ def set_country_name(
     *,
     strict: bool = True,
 ) -> None:
-    """Set the country name in the workbook.
+    """Set the country name for the debt sustainability analysis.
 
-    Updates the country name cell (Inputs!B5) to the provided value.
-    Each record writes its OBS_VALUE to the country_name named range.
+    Updates the country name in the Inputs sheet, which drives the initial debt-to-GDP lookup from the country profile table.
+    Each record corresponds to the scalar input cell Inputs!B5; the OBS_VALUE field provides the value to write.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - OBS_VALUE: The country name to set in the workbook.
+                - OBS_VALUE: The country name to set, as listed in the country profile table.
             Optional record fields:
-                - PARAMETER: Identifies the parameter being set. If supplied, expected value: "country_name".
+                - PARAMETER: Identifies the parameter as the country name. If supplied, expected value: "country_name".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -133,19 +133,19 @@ def set_country_initial_debt(
     *,
     strict: bool = True,
 ) -> None:
-    """Set country initial debt-to-GDP values in the profile lookup table.
+    """Set the country initial debt values in the Tiny-DSA workbook’s country profile table.
 
-    Updates the initial general-government debt-to-GDP ratios for countries in the Inputs sheet.
-    Each record maps to a row in the country profile table, matched on the COUNTRY key.
+    Updates the initial debt-to-GDP series for the countries in the country profile lookup table.
+    Each record corresponds to a row in the country profile table; the COUNTRY is written to column A and the OBS_VALUE to column B.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - COUNTRY: Name of the country for which the initial debt value is being set.
-                - OBS_VALUE: Initial general-government debt-to-GDP ratio, in percent of GDP.
+                - COUNTRY: The country name.
+                - OBS_VALUE: The initial debt-to-GDP ratio.
             Optional record fields:
-                - INDICATOR: The economic indicator that the observation values represent. If supplied, expected value: "initial_debt_to_gdp".
-                - UNIT_MEASURE: The unit of measure for the observation values. If supplied, expected value: "PC_GDP".
+                - INDICATOR: The indicator type for this series. If supplied, expected value: "initial_debt_to_gdp".
+                - UNIT_MEASURE: The unit of measure for the observation value. If supplied, expected value: "PC_GDP".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -188,19 +188,19 @@ def set_growth_baseline(
     *,
     strict: bool = True,
 ) -> None:
-    """Set baseline real GDP growth rates for projection years 1 through 5.
+    """Set the baseline real GDP growth rates for projection years 1 through 5.
 
-    Updates the growth_baseline range on the Inputs sheet with provided records.
-    Each record is identified by TIME_PERIOD; OBS_VALUE is written to the corresponding cell in Inputs!C16:G16.
+    Updates the growth_baseline series on the Inputs sheet with new values for each year.
+    Each record provides a projection year (TIME_PERIOD) and the corresponding real GDP growth rate (OBS_VALUE), which are written to the Inputs sheet range C16:G16.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - TIME_PERIOD: The projection year (1 through 5) for which the growth rate applies.
-                - OBS_VALUE: The baseline real GDP growth rate, expressed in percent per annum.
+                - TIME_PERIOD: Projection year.
+                - OBS_VALUE: Real GDP growth rate for the projection year.
             Optional record fields:
-                - INDICATOR: The indicator code for the series. If supplied, expected value: "real_gdp_growth".
-                - UNIT_MEASURE: The unit of measure for the observation values. If supplied, expected value: "PERCENT_PER_ANNUM".
+                - INDICATOR: Economic indicator identifier (constant). If supplied, expected value: "real_gdp_growth".
+                - UNIT_MEASURE: Unit of measurement for the series (constant). If supplied, expected value: "PERCENT_PER_ANNUM".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -243,19 +243,19 @@ def set_interest_baseline(
     *,
     strict: bool = True,
 ) -> None:
-    """Set baseline real interest rates for projection years 1 through 5.
+    """Set baseline real interest rates for the five-year projection horizon.
 
-    Updates the baseline real interest rate path in the Inputs sheet.
-    Each record corresponds to a year in the range Inputs!C17:G17, with TIME_PERIOD mapping to the year column and OBS_VALUE to the rate value.
+    Updates the real interest rate assumption in the baseline scenario.
+    Each record corresponds to one cell in the `interest_baseline` named range (Inputs!C17:G17), matched by the TIME_PERIOD key.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - TIME_PERIOD: Projection year.
-                - OBS_VALUE: Observation value.
+                - TIME_PERIOD: Projection year index, from 1 to 5.
+                - OBS_VALUE: Real interest rate value, in percent per annum.
             Optional record fields:
-                - INDICATOR: The series indicator, identifying this as the real interest rate. If supplied, expected value: "real_interest_rate".
-                - UNIT_MEASURE: The unit of measurement, indicating percent per annum. If supplied, expected value: "PERCENT_PER_ANNUM".
+                - INDICATOR: Constant identifier denoting the real interest rate series. If supplied, expected value: "real_interest_rate".
+                - UNIT_MEASURE: Unit of measure for the interest rate observation. If supplied, expected value: "PERCENT_PER_ANNUM".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -298,19 +298,19 @@ def set_primary_balance_baseline(
     *,
     strict: bool = True,
 ) -> None:
-    """Set the baseline primary balance trajectory for all five projection years.
+    """Set the baseline primary balance trajectory for projection years 1 through 5.
 
-    Updates the primary balance baseline values in the Inputs sheet, which are used to compute the baseline debt-to-GDP path.
-    Each record corresponds to one projection year in the five-year horizon, identified by TIME_PERIOD.
+    Updates the primary balance path used to compute the baseline debt-to-GDP trajectory in the DSA workbook.
+    Each record maps to a cell in the Inputs!C18:G18 range: TIME_PERIOD selects the year column, and OBS_VALUE is written to that cell.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - TIME_PERIOD: Projection year in the five-year horizon, ranging from 1 to 5.
-                - OBS_VALUE: Primary balance for the projection year, expressed as a percent of GDP. Positive values indicate a surplus.
+                - TIME_PERIOD: Projection year identifier, from 1 to 5.
+                - OBS_VALUE: Primary balance as a percentage of GDP, where positive values denote a surplus.
             Optional record fields:
-                - INDICATOR: Identifies the series as the primary balance baseline. If supplied, expected value: "primary_balance".
-                - UNIT_MEASURE: Specifies the unit of measure as percent of GDP. If supplied, expected value: "PC_GDP".
+                - INDICATOR: Identifies the series as the primary balance. If supplied, expected value: "primary_balance".
+                - UNIT_MEASURE: Indicates the values are expressed as a percentage of GDP. If supplied, expected value: "PC_GDP".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -349,17 +349,17 @@ def set_shock_year(
     *,
     strict: bool = True,
 ) -> None:
-    """Set the shock start year for the debt projection.
+    """Set the first projection year in which the selected shock applies.
 
-    Updates the first projection year in which the configured shock applies.
-    The record's OBS_VALUE is written to the scalar cell Inputs!B21.
+    Updates the shock_year scalar input on the Inputs sheet to the given year.
+    Each record supplies the OBS_VALUE to write to the single-cell named range `shock_year`.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - OBS_VALUE: The first year, counted from the start of the projection horizon, when the shock takes effect.
+                - OBS_VALUE: The projection year, an integer between 1 and 5, in which the shock takes effect and persists through the horizon.
             Optional record fields:
-                - PARAMETER: Identifies the parameter as the shock year configuration. If supplied, expected value: "shock_year".
+                - PARAMETER: The parameter identifier; always 'shock_year' for this setter. If supplied, expected value: "shock_year".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -397,17 +397,17 @@ def set_shock_type(
     *,
     strict: bool = True,
 ) -> None:
-    """Set the shock type for the debt sustainability scenario.
+    """Set the shock type code indicating which parameter the shock affects.
 
-    Updates the workbook’s shock type to the supplied integer code.
-    A single record provides the shock type value that is written to the workbook’s shock type cell.
+    Write the selected shock type integer to the Inputs sheet.
+    The OBS_VALUE field is written directly to the scalar cell Inputs!B22.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - OBS_VALUE: Integer code specifying which parameter the shock affects: 1 for real GDP growth, 2 for real interest rate, 3 for primary balance.
+                - OBS_VALUE: Integer code selecting the parameter affected by the shock: 1 for real GDP growth, 2 for real interest rate, 3 for primary balance.
             Optional record fields:
-                - PARAMETER: Identifies the measure as the shock type parameter. If supplied, expected value: "shock_type".
+                - PARAMETER: Constant attribute identifying this series as the shock type parameter. If supplied, expected value: "shock_type".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -447,19 +447,19 @@ def set_shock_magnitudes(
     *,
     strict: bool = True,
 ) -> None:
-    """Set the shock magnitudes for the three shock types (growth, interest, primary balance).
+    """Set shock magnitudes for the debt sustainability scenario.
 
-    Updates the shock magnitude values in the shock table for each affected parameter.
-    Each record maps to a cell in the shock table, with SHOCK_PARAMETER identifying the column and OBS_VALUE setting the magnitude.
+    Update the three shock magnitude cells (Inputs!B26:D26) that define the step-change deviations applied to growth, the interest rate, or the primary balance under a configured shock.
+    Records are matched to the shock_table columns by the SHOCK_PARAMETER key against the column headers in row 25, with OBS_VALUE written to the corresponding data cell.
 
     Args:
         records (Records): Records to apply to the workbook inputs.
             Required record fields:
-                - SHOCK_PARAMETER: Identifies which shock parameter the magnitude applies to.
-                - OBS_VALUE: The magnitude of the shock in percentage points.
+                - SHOCK_PARAMETER: The name of the macro-fiscal variable whose shock magnitude is being set.
+                - OBS_VALUE: The size of the shock, in percentage points, to be applied when a corresponding shock type is selected.
             Optional record fields:
-                - PARAMETER: Indicates the series parameter type, constant across all records. If supplied, expected value: "shock_magnitude".
-                - UNIT_MEASURE: Specifies the unit of measurement for the shock magnitude. If supplied, expected value: "PP".
+                - PARAMETER: A constant field denoting the parameter role of the series. If supplied, expected value: "shock_magnitude".
+                - UNIT_MEASURE: The measurement unit for the shock magnitude. If supplied, expected value: "PP".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -499,10 +499,10 @@ _OUTPUT_LEAVES_OUTPUT_BASELINE = [
 ]
 
 def compute_output_baseline(ctx=None, *, inputs=None) -> Records:
-    """Compute the baseline debt-to-GDP path over the five-year projection horizon.
+    """Compute the baseline debt-to-GDP path records for the five-year projection horizon.
 
-    Return the baseline debt-to-GDP ratio for each projection year as a list of records.
-    Records correspond to cells in the Outputs!B12:F12 range, with TIME_PERIOD indexing the projection year.
+    Return the computed baseline debt-to-GDP trajectory as a series of records.
+    Each record maps to one projection year; TIME_PERIOD is derived from column headers in row 11 and OBS_VALUE from the corresponding data cell in Outputs!B12:F12.
 
     Args:
         ctx (EvalContext | None): Existing evaluation context, if available.
@@ -511,11 +511,11 @@ def compute_output_baseline(ctx=None, *, inputs=None) -> Records:
     Returns:
         Records: Computed output records.
             Required record fields:
-                - TIME_PERIOD: Projection year.
-                - OBS_VALUE: Baseline debt-to-GDP ratio expressed as a percentage of GDP.
+                - TIME_PERIOD: Projection year index (1 to 5).
+                - OBS_VALUE: Baseline debt-to-GDP ratio for the projection year.
             Optional record fields:
-                - SCENARIO: Scenario classification for the debt path. If supplied, expected value: "baseline".
-                - UNIT_MEASURE: Unit of measure for the observation value. If supplied, expected value: "PC_GDP".
+                - SCENARIO: Scenario identifier for the output series. If supplied, expected value: "baseline".
+                - UNIT_MEASURE: Unit of measure for the observation values. If supplied, expected value: "PC_GDP".
 
     Source binding:
         Workbook range: Outputs!B12:F12
@@ -549,10 +549,10 @@ _OUTPUT_LEAVES_OUTPUT_SHOCKED = [
 ]
 
 def compute_output_shocked(ctx=None, *, inputs=None) -> Records:
-    """Return the shocked debt-to-GDP path for projection years 1 through 5.
+    """Compute the shocked debt-to-GDP ratio path over the projection horizon.
 
-    Returns a list of records, each containing the debt-to-GDP ratio for a given year under the shocked scenario.
-    Each record corresponds to one cell in the Outputs!B13:F13 range, with the year from column headers in row 11.
+    Returns the debt-to-GDP ratio under the shocked scenario for each projection year (1 to 5).
+    Each record corresponds to a single column in the Outputs!B13:F13 range, keyed by projection year.
 
     Args:
         ctx (EvalContext | None): Existing evaluation context, if available.
@@ -561,11 +561,11 @@ def compute_output_shocked(ctx=None, *, inputs=None) -> Records:
     Returns:
         Records: Computed output records.
             Required record fields:
-                - TIME_PERIOD: Projection year.
-                - OBS_VALUE: Debt-to-GDP ratio (percent of GDP) under the shocked scenario.
+                - TIME_PERIOD: The projection year index (1 to 5).
+                - OBS_VALUE: The shocked debt-to-GDP ratio, expressed in percent of GDP.
             Optional record fields:
-                - SCENARIO: Scenario classification. If supplied, expected value: "shocked".
-                - UNIT_MEASURE: Unit of measure for the observation value. If supplied, expected value: "PC_GDP".
+                - SCENARIO: Identifies the record as belonging to the shocked scenario. If supplied, expected value: "shocked".
+                - UNIT_MEASURE: Indicates that the observation is measured as a percent of GDP. If supplied, expected value: "PC_GDP".
 
     Source binding:
         Workbook range: Outputs!B13:F13
@@ -599,10 +599,10 @@ _OUTPUT_LEAVES_OUTPUT_DELTA = [
 ]
 
 def compute_output_delta(ctx=None, *, inputs=None) -> Records:
-    """Compute the difference between the shocked and baseline debt-to-GDP paths as a time series.
+    """Return the difference between shocked and baseline debt-to-GDP projections for years 1 to 5.
 
-    Returns the year-by-year difference in percentage points between the shocked and baseline debt-to-GDP projections.
-    Each record corresponds to a cell in the Outputs!B14:F14 row, with TIME_PERIOD taken from the column headers in row 11 and OBS_VALUE from the cell content.
+    Provides the delta (shocked minus baseline) computed from the Outputs sheet's output_delta range.
+    Each record corresponds to a cell in Outputs!B14:F14, with TIME_PERIOD from the column header and OBS_VALUE as the cell value.
 
     Args:
         ctx (EvalContext | None): Existing evaluation context, if available.
@@ -611,11 +611,11 @@ def compute_output_delta(ctx=None, *, inputs=None) -> Records:
     Returns:
         Records: Computed output records.
             Required record fields:
-                - TIME_PERIOD: Projection year, from 1 to 5.
-                - OBS_VALUE: Difference between the shocked and baseline debt-to-GDP ratio, expressed in percentage points of GDP.
+                - TIME_PERIOD: Projection year within the five-year horizon.
+                - OBS_VALUE: Difference between the shocked and baseline debt-to-GDP ratio for the year.
             Optional record fields:
-                - SCENARIO: Scenario identifier for this series, indicating the shocked-minus-baseline difference. If supplied, expected value: "shocked_minus_baseline".
-                - UNIT_MEASURE: Unit of measurement for the observation value. If supplied, expected value: "PP".
+                - SCENARIO: Scenario identifier indicating the delta series. If supplied, expected value: "shocked_minus_baseline".
+                - UNIT_MEASURE: Unit of measurement for the observation values. If supplied, expected value: "PP".
 
     Source binding:
         Workbook range: Outputs!B14:F14
