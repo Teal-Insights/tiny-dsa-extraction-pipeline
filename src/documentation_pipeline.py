@@ -27,7 +27,7 @@ great_docs_yml = dist_root / "great-docs.yml"
 docs_workflow_path = dist_root / ".github" / "workflows" / "deploy-docs.yml"
 
 SECTION_REWRITE_MODEL = "deepseek-v4-pro"
-SECTION_REWRITE_PROMPT_VERSION = 3
+SECTION_REWRITE_PROMPT_VERSION = 4
 CANONICAL_API_USAGE_HEADING = "Canonical API usage"
 NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
 VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
@@ -47,7 +47,10 @@ FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS = (
     "Preserve section structure and conceptual flow, but replace workbook "
     "navigation and manual cell editing with tiny_dsa.api usage. "
     "Mirror the canonical_api_usage reference example for import style, "
-    "ctx = make_context(), records-shaped setters, and compute_output_* calls. "
+    "ctx = make_context(), and compute_output_* calls. Setters accept "
+    "whichever input shape reads most naturally: a bare scalar for "
+    "single-cell setters, and records, a single record, a tidy Polars "
+    "DataFrame, or a 1D sequence of measure values for multi-cell setters. "
     "Tabulate outputs with Polars using debt_to_gdp_frame-style select on OBS_VALUE."
 )
 
@@ -56,7 +59,10 @@ ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS = (
     "Express each step with tiny_dsa.api using the same interaction model as "
     "canonical_api_usage, including debt_to_gdp_frame-style Polars tables for "
     "compute_output_* results. Split the workflow into several short runnable "
-    "cells that reuse ctx = make_context() and records-shaped setters."
+    "cells that reuse ctx = make_context(), passing each setter the input "
+    "shape that reads most naturally: a bare scalar for single-cell setters, "
+    "and records, a single record, a tidy Polars DataFrame, or a 1D sequence "
+    "of measure values for multi-cell setters."
 )
 
 GREAT_DOCS_SETTINGS = [

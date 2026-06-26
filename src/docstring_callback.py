@@ -18,7 +18,7 @@ repo_root = Path(__file__).resolve().parents[1]
 guide_path = repo_root / "data/tiny-dsa-guide.md"
 
 DOCSTRING_MODEL = "deepseek-v4-pro"
-DOCSTRING_PROMPT_VERSION = 2
+DOCSTRING_PROMPT_VERSION = 3
 DOCSTRING_CACHE_PATH = repo_root / ".cache/series-docstrings.json"
 CALLBACK_NAME = "tiny_dsa_series_docs"
 
@@ -106,8 +106,10 @@ For fields with an expected_value in the contract, describe the field's role
 only; the template will add the expected value.
 
 For input setter functions, avoid language that says the setter validates
-input domains, units, or context constants. The setter currently checks
-record shape and key matching.
+input domains, units, or context constants. Depending on layout, the setter
+accepts a scalar, a single record, a list of records, a 1D sequence of
+measure values, or a tidy DataFrame; it normalizes these into records and
+checks record shape and key matching, but does not validate domains or units.
 
 Function name: {ctx.function_name}
 Function kind: {ctx.function_kind}
