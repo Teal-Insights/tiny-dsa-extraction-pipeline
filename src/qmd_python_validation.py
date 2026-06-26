@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -53,6 +54,40 @@ MAX_LLM_CELL_FIX_ATTEMPTS_TOTAL = 5
 
 VALIDATION_SCRIPT_NAME = "_validate_user_guide_cells.py"
 
+
+@dataclass(frozen=True)
+class DistProjectMetadata:
+    project_name: str
+    package_name: str
+    library_name: str
+    description: str
+    documentation_url: str
+    repository_url: str | None = None
+    install_command: str | None = None
+
+    def resolved_install_command(self) -> str:
+        if self.install_command is not None:
+            return self.install_command
+        if self.repository_url is not None:
+            return f'uv add "{self.project_name} @ git+{self.repository_url}"'
+        return f"uv add {self.project_name}"
+
+
+DEFAULT_DIST_PROJECT_METADATA = DistProjectMetadata(
+    project_name="tiny-dsa",
+    package_name="tiny_dsa",
+    library_name="Tiny DSA",
+    description=(
+        "A Python implementation of the Tiny-DSA Excel workbook, a stylized "
+        "debt-sustainability tool for computing debt-to-GDP ratio over a "
+        "five-year horizon with one configurable shock.\n"
+        "Created by Teal Insights.\n"
+        "![Teal Insights logo](https://teal-insights.github.io/assets/logo.svg)"
+    ),
+    documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
+    repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
+)
+
 _PYTHON_CELL_PATTERN = re.compile(
     r"^```\{python\}\s*\n(.*?)^```\s*$",
     re.MULTILINE | re.DOTALL,
@@ -68,7 +103,7 @@ _NAME_ERROR_PATTERN = re.compile(
     re.DOTALL,
 )
 
-_CELL_FIX_MODEL = "deepseek-v4-pro"
+_CELL_FIX_MODEL = "gpt-5.5"
 
 
 @dataclass(frozen=True)
@@ -146,6 +181,7 @@ def render_dist_pyproject_toml(
     *,
     dev_dependencies: list[str],
     validation_dependencies: list[str] | None = None,
+    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
 ) -> str:
     dep_lines = "\n".join(f'    "{dep}",' for dep in dev_dependencies)
     validation_block = ""
@@ -160,9 +196,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tiny-dsa"
+name = {_toml_string(metadata.project_name)}
 version = "0.1.0"
-description = "A Python implementation of the Tiny-DSA Excel workbook, a stylized debt-sustainability tool for computing debt-to-GDP ratio over a five-year horizon with one configurable shock."
+description = {_toml_string(metadata.description)}
 requires-python = ">=3.13"
 dependencies = [
     "fastpyxl",
@@ -170,7 +206,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["tiny_dsa"]
+packages = [{_toml_string(metadata.package_name)}]
 
 [dependency-groups]
 dev = [
@@ -179,17 +215,54 @@ dev = [
 """
 
 
+def _toml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def render_dist_readme_markdown(
+    *,
+    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
+) -> str:
+    return f"""# {metadata.library_name}
+
+{metadata.description}
+
+## Installation
+
+```bash
+{metadata.resolved_install_command()}
+```
+
+## Documentation
+
+See the [full documentation]({metadata.documentation_url}).
+"""
+
+
+def write_dist_readme(
+    dist_root: Path,
+    *,
+    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
+) -> None:
+    (dist_root / "README.md").write_text(
+        render_dist_readme_markdown(metadata=metadata),
+        encoding="utf-8",
+    )
+
+
 def write_dist_pyproject(
     dist_root: Path,
     *,
     dev_dependencies: list[str],
     validation_dependencies: list[str] | None = None,
+    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
 ) -> None:
     pyproject_path = dist_root / "pyproject.toml"
     pyproject_path.write_text(
         render_dist_pyproject_toml(
             dev_dependencies=dev_dependencies,
             validation_dependencies=validation_dependencies,
+            metadata=metadata,
         ),
         encoding="utf-8",
     )
@@ -302,7 +375,6 @@ Cell source:
         ],
         stream=False,
         reasoning_effort="high",
-        extra_body={"thinking": {"type": "enabled"}},
     )
     content = response.choices[0].message.content
     if content is None:

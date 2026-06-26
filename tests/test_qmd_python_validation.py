@@ -6,12 +6,16 @@ import pytest
 from openai import OpenAI
 
 from src.qmd_python_validation import (
+    DistProjectMetadata,
     aggregate_python_cells,
     extract_python_cells,
+    fix_python_cell_with_llm,
     merge_dev_dependencies,
     parse_missing_package,
     replace_python_cell,
     render_dist_pyproject_toml,
+    render_dist_readme_markdown,
+    write_dist_readme,
 )
 
 
@@ -32,6 +36,41 @@ More text.
 print(x + pd.Series([1]))
 ```
 """
+
+
+class _FakeMessage:
+    def __init__(self, content: str | None) -> None:
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content: str | None) -> None:
+        self.message = _FakeMessage(content)
+
+
+class _FakeResponse:
+    def __init__(self, content: str | None) -> None:
+        self.choices = [_FakeChoice(content)]
+
+
+class _FakeCompletions:
+    def __init__(self, content: str | None) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._content = content
+
+    def create(self, **kwargs: object) -> _FakeResponse:
+        self.calls.append(kwargs)
+        return _FakeResponse(self._content)
+
+
+class _FakeChat:
+    def __init__(self, content: str | None) -> None:
+        self.completions = _FakeCompletions(content)
+
+
+class _FakeClient:
+    def __init__(self, content: str | None) -> None:
+        self.chat = _FakeChat(content)
 
 
 def test_extract_python_cells_finds_all_fences() -> None:
@@ -95,6 +134,91 @@ def test_render_dist_pyproject_toml_includes_dev_dependencies() -> None:
     assert "[dependency-groups]" in text
     assert '"tabulate"' in text
     assert 'name = "tiny-dsa"' in text
+
+
+def test_render_dist_pyproject_toml_uses_project_metadata() -> None:
+    text = render_dist_pyproject_toml(
+        dev_dependencies=[],
+        metadata=DistProjectMetadata(
+            project_name="forecast-kit",
+            package_name="forecast_kit",
+            library_name="Forecast Kit",
+            description="A generated forecasting library.",
+            install_command="python -m pip install forecast-kit",
+            documentation_url="https://example.com/forecast-kit/",
+        ),
+    )
+
+    assert 'name = "forecast-kit"' in text
+    assert 'description = "A generated forecasting library."' in text
+    assert 'packages = ["forecast_kit"]' in text
+
+
+def test_render_dist_readme_markdown_uses_install_command_verbatim() -> None:
+    text = render_dist_readme_markdown(
+        metadata=DistProjectMetadata(
+            project_name="forecast-kit",
+            package_name="forecast_kit",
+            library_name="Forecast Kit",
+            description="A generated forecasting library.",
+            install_command="python -m pip install forecast-kit",
+            documentation_url="https://example.com/forecast-kit/",
+        )
+    )
+
+    assert text.startswith("# Forecast Kit\n")
+    assert "A generated forecasting library." in text
+    assert "python -m pip install forecast-kit" in text
+    assert "https://example.com/forecast-kit/" in text
+
+
+def test_resolved_install_command_formats_uv_git_source() -> None:
+    metadata = DistProjectMetadata(
+        project_name="lic-dsf",
+        package_name="lic_dsf",
+        library_name="LIC DSF",
+        description="A generated library.",
+        documentation_url="https://example.com/lic-dsf/",
+        repository_url="https://github.com/Teal-Insights/py-lic-dsf",
+    )
+    assert (
+        metadata.resolved_install_command()
+        == 'uv add "lic-dsf @ git+https://github.com/Teal-Insights/py-lic-dsf"'
+    )
+
+
+def test_write_dist_readme_writes_root_readme(tmp_path: Path) -> None:
+    metadata = DistProjectMetadata(
+        project_name="forecast-kit",
+        package_name="forecast_kit",
+        library_name="Forecast Kit",
+        description="A generated forecasting library.",
+        repository_url="https://github.com/example/forecast-kit",
+        documentation_url="https://example.com/forecast-kit/",
+    )
+
+    write_dist_readme(tmp_path, metadata=metadata)
+
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == (
+        render_dist_readme_markdown(metadata=metadata)
+    )
+
+
+def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> None:
+    fake = _FakeClient("print('fixed')\n")
+
+    fixed = fix_python_cell_with_llm(
+        client=cast(OpenAI, fake),
+        cell_source="print(unknown)\n",
+        error_message="NameError: name 'unknown' is not defined",
+        qmd_label="guide.qmd",
+        cell_number=1,
+    )
+
+    assert fixed == "print('fixed')\n"
+    assert len(fake.chat.completions.calls) == 1
+    assert fake.chat.completions.calls[0]["reasoning_effort"] == "high"
+    assert "extra_body" not in fake.chat.completions.calls[0]
 
 
 def test_default_run_uv_script_forces_utf8_stdio(

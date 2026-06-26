@@ -20,8 +20,10 @@ from src.dependency_graph_viz import series_cell_keys
 from src.export_validation_assets import export_validation_assets
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
+    DistProjectMetadata,
     VALIDATION_BASELINE_DEV_DEPS,
     render_dist_pyproject_toml,
+    write_dist_readme,
 )
 from src.subgraph_projection import build_tiny_dsa_refactor_projection
 from src.semantic_labeling import label_internal_graph_cells
@@ -31,6 +33,20 @@ workbook_path = repo_root / "data/tiny-dsa.xlsx"
 bindings_path = repo_root / "bindings"
 dist_root = repo_root / "dist"
 package_root = dist_root / "tiny_dsa"
+dist_project_metadata = DistProjectMetadata(
+    project_name="tiny-dsa",
+    package_name="tiny_dsa",
+    library_name="Tiny DSA",
+    description=(
+        "A Python implementation of the Tiny-DSA Excel workbook, a stylized "
+        "debt-sustainability tool for computing debt-to-GDP ratio over a "
+        "five-year horizon with one configurable shock.\n"
+        "Created by Teal Insights.\n"
+        "![Teal Insights logo](https://teal-insights.github.io/assets/logo.svg)"
+    ),
+    documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
+    repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
+)
 
 targets = ["output_baseline", "output_shocked", "output_delta"]
 series_bindings = load_series_bindings(bindings_path)
@@ -176,9 +192,11 @@ tests/results/local/
         render_dist_pyproject_toml(
             dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
             validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+            metadata=dist_project_metadata,
         ),
         encoding="utf-8",
     )
+    write_dist_readme(dist_root, metadata=dist_project_metadata)
 
     export_validation_assets(repo_root=repo_root, dist_root=dist_root)
 

@@ -92,14 +92,14 @@ def test_leaf_classification():
 
 @pytest.mark.skipped(reason="Opt-in test; pass --run-skipped to run")
 def test_llm_judges_that_graph_is_correct():
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        pytest.skip("DEEPSEEK_API_KEY is not set")
+    if not os.environ.get("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY is not set")
     openai = pytest.importorskip(
         "openai", reason="requires openai for LLM-based testing"
     )
 
     client = openai.OpenAI(
-        api_key=os.environ.get("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com"
+        api_key=os.environ.get("OPENAI_API_KEY"), base_url="https://api.openai.com/v1/"
     )
 
     targets = ["Outputs!B12:F12", "Outputs!B13:F13", "Outputs!B14:F14"]
@@ -129,7 +129,7 @@ Graph:
     )
 
     response = client.chat.completions.create(
-        model="deepseek-v4-pro",
+        model="gpt-5.5",
         messages=[
             {"role": "user", "content": prompt},
         ],

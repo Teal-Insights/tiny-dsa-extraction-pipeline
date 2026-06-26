@@ -20,6 +20,7 @@ from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.formula_clustering import FormulaCluster
+from src.llm_json import generate_validated_json
 from src.projection_columns import (
     ENGINE_COLUMNS,
     EngineColumn,
@@ -53,7 +54,7 @@ repo_root = Path(__file__).resolve().parents[1]
 BINDINGS_PATH = repo_root / "bindings"
 DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
 
-REFACTOR_MODEL = "deepseek-v4-pro"
+REFACTOR_MODEL = "gpt-5.5"
 REFACTOR_PROMPT_VERSION = 7
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
@@ -2177,48 +2178,43 @@ def llm_refactor_singleton(
     if cache_key in cache:
         content = cache[cache_key]
     else:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached refactor responses"
+                "OPENAI_API_KEY is required to generate uncached refactor responses"
             )
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
         payload = singleton_prompt_payload(ctx)
-        response = client.chat.completions.create(
-            model=REFACTOR_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You rename and refactor one Excel-generated singleton helper "
-                        "into a semantic function. Return only JSON matching the schema. "
-                        "Preserve semantics exactly; do not algebraically simplify. "
-                        "Write Google-style docstrings with Args and Returns sections."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": _prompt_for_singleton_refactor(payload, schema),
-                },
-            ],
-            stream=False,
-            reasoning_effort="high",
-            response_format={"type": "json_object"},
-            extra_body={"thinking": {"type": "enabled"}},
-        )
-        content = response.choices[0].message.content
-        if content is None:
-            raise RuntimeError("DeepSeek returned empty singleton refactor content")
-        parsed = SingletonRefactorResponse.model_validate_json(content)
-        parsed = _prepare_singleton_refactor_response(parsed, ctx)
         internals_source = internals_path.read_text(encoding="utf-8")
-        validate_singleton_refactor_response(
-            ctx,
-            parsed,
-            existing_names=_function_names(internals_source),
-            internals_source=internals_source,
+        existing_names = _function_names(internals_source)
+
+        def _prepare_and_validate_singleton(
+            parsed: SingletonRefactorResponse,
+        ) -> SingletonRefactorResponse:
+            prepared = _prepare_singleton_refactor_response(parsed, ctx)
+            validate_singleton_refactor_response(
+                ctx,
+                prepared,
+                existing_names=existing_names,
+                internals_source=internals_source,
+            )
+            return prepared
+
+        parsed, _ = generate_validated_json(
+            client=client,
+            model=REFACTOR_MODEL,
+            system_prompt=(
+                "You rename and refactor one Excel-generated singleton helper "
+                "into a semantic function. Return only JSON matching the schema. "
+                "Preserve semantics exactly; do not algebraically simplify. "
+                "Write Google-style docstrings with Args and Returns sections."
+            ),
+            user_prompt=_prompt_for_singleton_refactor(payload, schema),
+            response_model=SingletonRefactorResponse,
+            post_validate=_prepare_and_validate_singleton,
         )
-        cache[cache_key] = parsed.model_dump_json()
+        content = parsed.model_dump_json()
+        cache[cache_key] = content
         save_refactor_cache(cache)
 
     parsed = SingletonRefactorResponse.model_validate_json(content)
@@ -2245,48 +2241,43 @@ def llm_refactor_cluster(
     if cache_key in cache:
         content = cache[cache_key]
     else:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached refactor responses"
+                "OPENAI_API_KEY is required to generate uncached refactor responses"
             )
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
         payload = prompt_payload(ctx)
-        response = client.chat.completions.create(
-            model=REFACTOR_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You refactor parallel Excel-generated Python helpers into one "
-                        "parameterized function. Return only JSON matching the schema. "
-                        "Preserve semantics exactly; do not algebraically simplify. "
-                        "Write Google-style docstrings with Args and Returns sections."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": _prompt_for_refactor(payload, schema),
-                },
-            ],
-            stream=False,
-            reasoning_effort="high",
-            response_format={"type": "json_object"},
-            extra_body={"thinking": {"type": "enabled"}},
-        )
-        content = response.choices[0].message.content
-        if content is None:
-            raise RuntimeError("DeepSeek returned empty refactor content")
-        parsed = ClusterRefactorResponse.model_validate_json(content)
-        parsed = _prepare_cluster_refactor_response(parsed, ctx)
         internals_source = internals_path.read_text(encoding="utf-8")
-        validate_cluster_refactor_response(
-            ctx,
-            parsed,
-            existing_names=_function_names(internals_source),
-            internals_source=internals_source,
+        existing_names = _function_names(internals_source)
+
+        def _prepare_and_validate_cluster(
+            parsed: ClusterRefactorResponse,
+        ) -> ClusterRefactorResponse:
+            prepared = _prepare_cluster_refactor_response(parsed, ctx)
+            validate_cluster_refactor_response(
+                ctx,
+                prepared,
+                existing_names=existing_names,
+                internals_source=internals_source,
+            )
+            return prepared
+
+        parsed, _ = generate_validated_json(
+            client=client,
+            model=REFACTOR_MODEL,
+            system_prompt=(
+                "You refactor parallel Excel-generated Python helpers into one "
+                "parameterized function. Return only JSON matching the schema. "
+                "Preserve semantics exactly; do not algebraically simplify. "
+                "Write Google-style docstrings with Args and Returns sections."
+            ),
+            user_prompt=_prompt_for_refactor(payload, schema),
+            response_model=ClusterRefactorResponse,
+            post_validate=_prepare_and_validate_cluster,
         )
-        cache[cache_key] = parsed.model_dump_json()
+        content = parsed.model_dump_json()
+        cache[cache_key] = content
         save_refactor_cache(cache)
 
     parsed = ClusterRefactorResponse.model_validate_json(content)

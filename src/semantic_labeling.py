@@ -16,12 +16,14 @@ from fastpyxl.utils import get_column_letter
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-DEFAULT_SEMANTIC_LABEL_MODEL = "deepseek-v4-pro"
+from src.llm_json import generate_validated_json
+
+DEFAULT_SEMANTIC_LABEL_MODEL = "gpt-5.5"
 DEFAULT_SEMANTIC_LABEL_PROMPT_VERSION = 1
 DEFAULT_SEMANTIC_LABEL_CACHE_PATH = (
     Path(__file__).resolve().parents[1] / ".cache/semantic-labels.json"
 )
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+OPENAI_BASE_URL = "https://api.openai.com/v1/"
 
 SheetLabelProvider = Callable[
     [str, list[NodeKey], list[dict[str, Any]], Mapping[str, Any]],
@@ -259,7 +261,7 @@ def get_sheet_semantic_labels(
     prompt_version: int = DEFAULT_SEMANTIC_LABEL_PROMPT_VERSION,
     cache_path: Path = DEFAULT_SEMANTIC_LABEL_CACHE_PATH,
     api_key: str | None = None,
-    base_url: str = DEEPSEEK_BASE_URL,
+    base_url: str = OPENAI_BASE_URL,
 ) -> SheetSemanticLabels:
     schema = SheetSemanticLabels.model_json_schema()
     cache = load_json_cache(cache_path)
@@ -275,42 +277,28 @@ def get_sheet_semantic_labels(
     if cache_key in cache:
         content = cache[cache_key]
     else:
-        resolved_api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
+        resolved_api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not resolved_api_key:
             raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached semantic labels"
+                "OPENAI_API_KEY is required to generate uncached semantic labels"
             )
         client = OpenAI(api_key=resolved_api_key, base_url=base_url)
-        response = client.chat.completions.create(
+        _, content = generate_validated_json(
+            client=client,
             model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You label Excel workbook cells for dependency graph "
-                        "refactoring. Return only valid JSON matching the schema."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt_for_sheet_semantic_labels(
-                        sheet_name=sheet_name,
-                        candidate_addresses=candidate_addresses,
-                        sheet_cells=sheet_cells,
-                        concept_scheme=concept_scheme,
-                        response_schema=schema,
-                    ),
-                },
-            ],
-            stream=False,
-            reasoning_effort="high",
-            response_format={"type": "json_object"},
-            extra_body={"thinking": {"type": "enabled"}},
+            system_prompt=(
+                "You label Excel workbook cells for dependency graph "
+                "refactoring. Return only valid JSON matching the schema."
+            ),
+            user_prompt=prompt_for_sheet_semantic_labels(
+                sheet_name=sheet_name,
+                candidate_addresses=candidate_addresses,
+                sheet_cells=sheet_cells,
+                concept_scheme=concept_scheme,
+                response_schema=schema,
+            ),
+            response_model=SheetSemanticLabels,
         )
-        content = response.choices[0].message.content
-        if content is None:
-            raise RuntimeError("DeepSeek returned empty semantic label content")
-        SheetSemanticLabels.model_validate_json(content)
         cache[cache_key] = content
         save_json_cache(cache_path, cache)
     return SheetSemanticLabels.model_validate_json(content)

@@ -267,7 +267,7 @@ assert not unbound_input_leaves, (
 
 `excel-grapher` handles the deterministic parts of docstring construction: required and optional field sections, expected constant values, source binding metadata, and workbook-cached example records. But we must define a callback to return the prose fields that cannot be derived mechanically.
 
-This rendering cell uses the docstring cache when available and calls DeepSeek
+This rendering cell uses the docstring cache when available and calls OpenAI
 only for uncached generated series API functions.
 
 ```{python}
@@ -390,7 +390,7 @@ Response schema:
 
 load_dotenv(Path("../.env"))
 guide_text = Path("../data/tiny-dsa-guide.md").read_text(encoding="utf-8")
-DOCSTRING_MODEL = "deepseek-v4-pro"
+DOCSTRING_MODEL = "gpt-5.5"
 DOCSTRING_PROMPT_VERSION = 2
 DOCSTRING_CACHE_PATH = Path("../.cache/series-docstrings.json")
 
@@ -427,7 +427,7 @@ def save_docstring_cache(cache: dict[str, str]) -> None:
     )
 
 
-def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
+def openai_series_docstring(ctx) -> SeriesFunctionDoc:
     ResponseModel = build_doc_response_model(ctx)
     schema = ResponseModel.model_json_schema()
     cache = load_docstring_cache()
@@ -435,12 +435,12 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
     if cache_key in cache:
         content = cache[cache_key]
     else:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached docstrings"
+                "OPENAI_API_KEY is required to generate uncached docstrings"
             )
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
         response = client.chat.completions.create(
             model=DOCSTRING_MODEL,
             messages=[
@@ -463,7 +463,7 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
         )
         content = response.choices[0].message.content
         if content is None:
-            raise RuntimeError("DeepSeek returned empty docstring content")
+            raise RuntimeError("OpenAI returned empty docstring content")
         ResponseModel.model_validate_json(content)
         cache[cache_key] = content
         save_docstring_cache(cache)
@@ -488,7 +488,7 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
 callback_name = "tiny_dsa_series_docs"
 register_series_docstring_callback(
     callback_name,
-    deepseek_series_docstring,
+    openai_series_docstring,
     replace=True,
 )
 ```
@@ -675,10 +675,6 @@ from tiny_dsa.api import (
     compute_output_delta,
     compute_output_shocked,
 )
-
-
-def time_series_records(values: list[float]) -> list[dict[str, float | int]]:
-    return [{"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)]
 ```
 
 Here is one scenario: Litellia with weaker growth, tighter financing conditions, and a larger growth shock starting in year 2.
@@ -686,35 +682,17 @@ Here is one scenario: Litellia with weaker growth, tighter financing conditions,
 ```{python}
 ctx = make_context()
 
-# Scalar inputs
-set_country_name(
-    ctx,
-    [{"OBS_VALUE": "Litellia"}],
-)
-set_shock_year(
-    ctx,
-    [{"OBS_VALUE": 2}],
-)
-set_shock_type(
-    ctx,
-    [{"OBS_VALUE": 1}],  # growth shock
-)
+# Scalar inputs: single-cell setters accept a bare scalar
+set_country_name(ctx, "Litellia")
+set_shock_year(ctx, 2)
+set_shock_type(ctx, 1)  # growth shock
 
-# Baseline trajectories
-set_growth_baseline(
-    ctx,
-    time_series_records([2.5, 2.4, 2.3, 2.2, 2.1]),
-)
-set_interest_baseline(
-    ctx,
-    time_series_records([5.2, 5.1, 5.0, 4.9, 4.8]),
-)
-set_primary_balance_baseline(
-    ctx,
-    time_series_records([-1.5, -1.0, -0.5, 0.0, 0.5]),
-)
+# Baseline trajectories: series setters accept a 1-D sequence of measure values
+set_growth_baseline(ctx, [2.5, 2.4, 2.3, 2.2, 2.1])
+set_interest_baseline(ctx, [5.2, 5.1, 5.0, 4.9, 4.8])
+set_primary_balance_baseline(ctx, [-1.5, -1.0, -0.5, 0.0, 0.5])
 
-# Shock table values (growth, interest, primary balance)
+# Shock table values: key-labeled series read most naturally as records
 set_shock_magnitudes(
     ctx,
     [
@@ -783,7 +761,7 @@ plt.show()
 
 ## Canonical API usage
 
-User-guide runnable cells should follow this interaction model: import from `tiny_dsa.api`, create a context with `make_context()`, configure the scenario with `set_*` functions that take records, then read results with `compute_*`.
+User-guide runnable cells should follow this interaction model: import from `tiny_dsa.api`, create a context with `make_context()`, configure the scenario with `set_*` functions, then read results with `compute_*`. Single-cell setters accept a bare scalar; series setters accept a 1-D sequence of measure values, a tidy Polars DataFrame, or a list of records (use records when the series is keyed by a label such as `SHOCK_PARAMETER`).
 
 Each `compute_output_*` call returns a list of records with fields such as `TIME_PERIOD`, `OBS_VALUE`, `SCENARIO`, and `UNIT_MEASURE`. Tabulate results with Polars: sort by `TIME_PERIOD` and `select` the `OBS_VALUE` column (with a clear alias), as in the helper below.
 
@@ -805,10 +783,6 @@ from tiny_dsa.api import (
 )
 
 
-def time_series(values: list[float]) -> list[dict[str, float | int]]:
-    return [{"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)]
-
-
 def debt_to_gdp_frame(records: list[dict[str, object]]) -> pl.DataFrame:
     return (
         pl.DataFrame(records)
@@ -821,12 +795,12 @@ def debt_to_gdp_frame(records: list[dict[str, object]]) -> pl.DataFrame:
 
 
 ctx = make_context()
-set_country_name(ctx, [{"OBS_VALUE": "Litellia"}])
-set_growth_baseline(ctx, time_series([2.5, 2.4, 2.3, 2.2, 2.1]))
-set_interest_baseline(ctx, time_series([5.2, 5.1, 5.0, 4.9, 4.8]))
-set_primary_balance_baseline(ctx, time_series([-1.5, -1.0, -0.5, 0.0, 0.5]))
-set_shock_year(ctx, [{"OBS_VALUE": 2}])
-set_shock_type(ctx, [{"OBS_VALUE": 1}])
+set_country_name(ctx, "Litellia")
+set_growth_baseline(ctx, [2.5, 2.4, 2.3, 2.2, 2.1])
+set_interest_baseline(ctx, [5.2, 5.1, 5.0, 4.9, 4.8])
+set_primary_balance_baseline(ctx, [-1.5, -1.0, -0.5, 0.0, 0.5])
+set_shock_year(ctx, 2)
+set_shock_type(ctx, 1)
 set_shock_magnitudes(
     ctx,
     [
@@ -947,7 +921,7 @@ api_module_path = dist_root / "tiny_dsa" / "api.py"
 user_guide_root = dist_root / "user_guide"
 rewrite_cache_path = Path("../.cache/guide-rewrites.json")
 
-SECTION_REWRITE_MODEL = "deepseek-v4-pro"
+SECTION_REWRITE_MODEL = "gpt-5.5"
 SECTION_REWRITE_PROMPT_VERSION = 3
 CANONICAL_API_USAGE_HEADING = "Canonical API usage"
 NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
@@ -1163,7 +1137,7 @@ def rewrite_guide_section(
 
     if client is None:
         raise RuntimeError(
-            "DEEPSEEK_API_KEY is required to generate uncached guide rewrites"
+            "OPENAI_API_KEY is required to generate uncached guide rewrites"
         )
 
     prompt = build_section_prompt(
@@ -1206,9 +1180,9 @@ def rewrite_guide_section(
 We will rewrite the first section of the guide, `I. Introduction`, into the documentation website's landing page, which must be named `index.qmd`. The landing page should tell readers how to install the package and concisely explain its relationship to the illustrative workbook.
 
 ```{python}
-api_key = os.environ.get("DEEPSEEK_API_KEY")
+api_key = os.environ.get("OPENAI_API_KEY")
 section_client = (
-    OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
     if api_key
     else None
 )
@@ -1353,7 +1327,7 @@ We do not run `great-docs build` during extraction because it is difficult to co
 1. Extract every ` ```{python} ` block from `dist/user_guide/*.qmd` and concatenate them in document order (matching Quarto's shared-kernel semantics), prefixing each block with `# qmd: <filename> cell N`.
 2. Write the aggregate to a temporary `dist/_validate_user_guide_cells.py` and execute it with `uv run --project dist --with pandas --with polars --with matplotlib python _validate_user_guide_cells.py`.
 3. On `ModuleNotFoundError` or pandas-style `` `Import <package>` failed `` messages, parse the package name, add `--with <package>`, and retry (up to a fixed attempt limit).
-4. On `NameError`, optionally call the LLM to rewrite only the failing cell (requires `DEEPSEEK_API_KEY`, limited retries).
+4. On `NameError`, optionally call the LLM to rewrite only the failing cell (requires `OPENAI_API_KEY`, limited retries).
 5. Remove the temporary script and rewrite `dist/pyproject.toml`, merging any newly required packages into `[dependency-groups].dev` alongside `DOCUMENTATION_BASELINE_DEV_DEPS`.
 
 Before validating runnable cells, `src/documentation_pipeline.py` also writes a deterministic `03-excel-parity-validation.qmd` page from `dist/tests/results/reference/parity_report.txt`. This page is not LLM-generated: it parses the parity report's headline fields, links to the shipped validation bundle, and adds a landing-page pointer so users can find the correctness evidence on the GreatDocs site.
@@ -1486,7 +1460,7 @@ semantic_label_summary = label_internal_graph_cells(
     input_cells=input_cells,
     target_cells=output_cells,
     concept_scheme=series_bindings["concept_scheme"],
-    model=os.environ.get("SEMANTIC_LABEL_MODEL", "deepseek-v4-pro"),
+    model=os.environ.get("SEMANTIC_LABEL_MODEL", "gpt-5.5"),
     cache_path=Path("../.cache/semantic-labels.json"),
 )
 
