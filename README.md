@@ -16,14 +16,14 @@ First install the dependencies (see [Setup](#setup)):
 uv sync
 ```
 
-The pipeline can call the DeepSeek API for the steps that use an LLM (semantic cell labeling, docstring generation, `internals.py` refactoring, and user-guide rewrites). Cached results for these steps are committed to the repository (under `.cache/`), so a clean run reproduces the current output **without** an API key. You only need a key if you change inputs in a way that invalidates the cache; in that case, provide it via a `.env` file at the repository root:
+The pipeline can call the OpenAI API for the steps that use an LLM (semantic cell labeling, docstring generation, `internals.py` refactoring, and user-guide rewrites). Cached results for these steps are committed to the repository (under `.cache/`), so a clean run reproduces the current output **without** an API key. You only need a key if you change inputs in a way that invalidates the cache; in that case, provide it via a `.env` file at the repository root:
 
 ```bash
 # .env
-DEEPSEEK_API_KEY=sk-...
+OPENAI_API_KEY=sk-...
 ```
 
-If an uncached LLM step is reached without a key, the pipeline fails fast with a `DEEPSEEK_API_KEY is required ...` error.
+If an uncached LLM step is reached without a key, the pipeline fails fast with a `OPENAI_API_KEY is required ...` error.
 
 ### Run
 
@@ -41,7 +41,7 @@ This file renders to [extraction-pipeline.md](docs/extraction-pipeline.md), wher
 
 ## LLM-based Correctness Testing
 
-The `pytest` test suite includes an opt-in test that uses the DeepSeek API on high-thinking mode to judge the correctness of the extracted dependency graph. To run this test, pass the `--run-skipped` flag to `pytest`.
+The `pytest` test suite includes an opt-in test that uses the OpenAI API on high-thinking mode to judge the correctness of the extracted dependency graph. To run this test, pass the `--run-skipped` flag to `pytest`.
 
 ## Differential Testing
 

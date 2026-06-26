@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from src.documentation_pipeline import (
     CANONICAL_API_USAGE_HEADING,
     INTRODUCTION_FOCUS_INSTRUCTIONS,
@@ -11,6 +13,7 @@ from src.documentation_pipeline import (
     pipeline_doc_path,
     render_validation_page,
     sync_cached_rewrite_from_qmd,
+    validate_rewritten_markdown_fences,
     write_validation_page,
 )
 
@@ -65,6 +68,40 @@ def test_section_prompt_limits_runnable_dependencies() -> None:
 def test_canonical_api_usage_heading_matches_qmd() -> None:
     qmd_text = pipeline_doc_path.read_text(encoding="utf-8")
     assert f"## {CANONICAL_API_USAGE_HEADING}" in qmd_text
+
+
+def test_fence_validation_accepts_well_formed_quarto_cell() -> None:
+    markdown = (
+        "Intro paragraph.\n\n"
+        "```{python}\n"
+        "from tiny_dsa.api import make_context\n"
+        "ctx = make_context()\n"
+        "```\n\n"
+        "Closing paragraph."
+    )
+    validate_rewritten_markdown_fences(markdown)
+
+
+def test_fence_validation_rejects_bare_python_fence() -> None:
+    markdown = (
+        "No separate API call is required.\n\n"
+        "{python}\n"
+        'set_country_name(ctx, "Litellia")\n\n\n'
+        "The country profile table is small."
+    )
+    with pytest.raises(ValueError, match="bare cell fence"):
+        validate_rewritten_markdown_fences(markdown)
+
+
+def test_fence_validation_rejects_unbalanced_fence() -> None:
+    markdown = "Intro.\n\n```{python}\nctx = make_context()\n\nNo closing fence."
+    with pytest.raises(ValueError, match="[Uu]nbalanced"):
+        validate_rewritten_markdown_fences(markdown)
+
+
+def test_fence_validation_ignores_fence_token_inside_code_block() -> None:
+    markdown = 'Intro.\n\n```{python}\nliteral = "{python}"\n```\n'
+    validate_rewritten_markdown_fences(markdown)
 
 
 def test_introduction_prompt_mentions_install_source_and_provenance() -> None:

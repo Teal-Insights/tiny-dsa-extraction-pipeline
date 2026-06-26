@@ -14,10 +14,12 @@ from excel_grapher.exporter import (
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from src.llm_json import generate_validated_json
+
 repo_root = Path(__file__).resolve().parents[1]
 guide_path = repo_root / "data/tiny-dsa-guide.md"
 
-DOCSTRING_MODEL = "deepseek-v4-pro"
+DOCSTRING_MODEL = "gpt-5.5"
 DOCSTRING_PROMPT_VERSION = 3
 DOCSTRING_CACHE_PATH = repo_root / ".cache/series-docstrings.json"
 CALLBACK_NAME = "tiny_dsa_series_docs"
@@ -164,7 +166,7 @@ def save_docstring_cache(cache: dict[str, str]) -> None:
     )
 
 
-def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
+def openai_series_docstring(ctx) -> SeriesFunctionDoc:
     ResponseModel = build_doc_response_model(ctx)
     schema = ResponseModel.model_json_schema()
     cache = load_docstring_cache()
@@ -172,36 +174,22 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
     if cache_key in cache:
         content = cache[cache_key]
     else:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached docstrings"
+                "OPENAI_API_KEY is required to generate uncached docstrings"
             )
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-        response = client.chat.completions.create(
+        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
+        _, content = generate_validated_json(
+            client=client,
             model=DOCSTRING_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You write concise, production-quality Python docstring "
-                        "prose. Return only valid JSON matching the supplied schema."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt_for_docstring(guide_text, ctx, schema),
-                },
-            ],
-            stream=False,
-            reasoning_effort="high",
-            response_format={"type": "json_object"},
-            extra_body={"thinking": {"type": "enabled"}},
+            system_prompt=(
+                "You write concise, production-quality Python docstring "
+                "prose. Return only valid JSON matching the supplied schema."
+            ),
+            user_prompt=prompt_for_docstring(guide_text, ctx, schema),
+            response_model=ResponseModel,
         )
-        content = response.choices[0].message.content
-        if content is None:
-            raise RuntimeError("DeepSeek returned empty docstring content")
-        ResponseModel.model_validate_json(content)
         cache[cache_key] = content
         save_docstring_cache(cache)
 
@@ -227,6 +215,6 @@ def available_docstring_callback() -> str:
 
 register_series_docstring_callback(
     CALLBACK_NAME,
-    deepseek_series_docstring,
+    openai_series_docstring,
     replace=True,
 )

@@ -324,7 +324,7 @@ But we must define a callback to return the prose fields that cannot be
 derived mechanically.
 
 This rendering cell uses the docstring cache when available and calls
-DeepSeek only for uncached generated series API functions.
+OpenAI only for uncached generated series API functions.
 
 ``` python
 import hashlib
@@ -446,7 +446,7 @@ Response schema:
 
 load_dotenv(Path("../.env"))
 guide_text = Path("../data/tiny-dsa-guide.md").read_text(encoding="utf-8")
-DOCSTRING_MODEL = "deepseek-v4-pro"
+DOCSTRING_MODEL = "gpt-5.5"
 DOCSTRING_PROMPT_VERSION = 2
 DOCSTRING_CACHE_PATH = Path("../.cache/series-docstrings.json")
 
@@ -483,7 +483,7 @@ def save_docstring_cache(cache: dict[str, str]) -> None:
     )
 
 
-def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
+def openai_series_docstring(ctx) -> SeriesFunctionDoc:
     ResponseModel = build_doc_response_model(ctx)
     schema = ResponseModel.model_json_schema()
     cache = load_docstring_cache()
@@ -491,12 +491,12 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
     if cache_key in cache:
         content = cache[cache_key]
     else:
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "DEEPSEEK_API_KEY is required to generate uncached docstrings"
+                "OPENAI_API_KEY is required to generate uncached docstrings"
             )
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
         response = client.chat.completions.create(
             model=DOCSTRING_MODEL,
             messages=[
@@ -519,7 +519,7 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
         )
         content = response.choices[0].message.content
         if content is None:
-            raise RuntimeError("DeepSeek returned empty docstring content")
+            raise RuntimeError("OpenAI returned empty docstring content")
         ResponseModel.model_validate_json(content)
         cache[cache_key] = content
         save_docstring_cache(cache)
@@ -544,7 +544,7 @@ def deepseek_series_docstring(ctx) -> SeriesFunctionDoc:
 callback_name = "tiny_dsa_series_docs"
 register_series_docstring_callback(
     callback_name,
-    deepseek_series_docstring,
+    openai_series_docstring,
     replace=True,
 )
 ```
@@ -1313,7 +1313,7 @@ api_module_path = dist_root / "tiny_dsa" / "api.py"
 user_guide_root = dist_root / "user_guide"
 rewrite_cache_path = Path("../.cache/guide-rewrites.json")
 
-SECTION_REWRITE_MODEL = "deepseek-v4-pro"
+SECTION_REWRITE_MODEL = "gpt-5.5"
 SECTION_REWRITE_PROMPT_VERSION = 3
 CANONICAL_API_USAGE_HEADING = "Canonical API usage"
 NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
@@ -1529,7 +1529,7 @@ def rewrite_guide_section(
 
     if client is None:
         raise RuntimeError(
-            "DEEPSEEK_API_KEY is required to generate uncached guide rewrites"
+            "OPENAI_API_KEY is required to generate uncached guide rewrites"
         )
 
     prompt = build_section_prompt(
@@ -1576,9 +1576,9 @@ package and concisely explain its relationship to the illustrative
 workbook.
 
 ``` python
-api_key = os.environ.get("DEEPSEEK_API_KEY")
+api_key = os.environ.get("OPENAI_API_KEY")
 section_client = (
-    OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
     if api_key
     else None
 )
@@ -1744,7 +1744,7 @@ difficult to control which Python interpreter Great Docs uses. Instead,
     `` `Import <package>` failed `` messages, parse the package name,
     add `--with <package>`, and retry (up to a fixed attempt limit).
 4.  On `NameError`, optionally call the LLM to rewrite only the failing
-    cell (requires `DEEPSEEK_API_KEY`, limited retries).
+    cell (requires `OPENAI_API_KEY`, limited retries).
 5.  Remove the temporary script and rewrite `dist/pyproject.toml`,
     merging any newly required packages into `[dependency-groups].dev`
     alongside `DOCUMENTATION_BASELINE_DEV_DEPS`.
@@ -1906,7 +1906,7 @@ semantic_label_summary = label_internal_graph_cells(
     input_cells=input_cells,
     target_cells=output_cells,
     concept_scheme=series_bindings["concept_scheme"],
-    model=os.environ.get("SEMANTIC_LABEL_MODEL", "deepseek-v4-pro"),
+    model=os.environ.get("SEMANTIC_LABEL_MODEL", "gpt-5.5"),
     cache_path=Path("../.cache/semantic-labels.json"),
 )
 

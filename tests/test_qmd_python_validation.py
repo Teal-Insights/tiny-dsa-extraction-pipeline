@@ -8,6 +8,7 @@ from openai import OpenAI
 from src.qmd_python_validation import (
     aggregate_python_cells,
     extract_python_cells,
+    fix_python_cell_with_llm,
     merge_dev_dependencies,
     parse_missing_package,
     replace_python_cell,
@@ -32,6 +33,41 @@ More text.
 print(x + pd.Series([1]))
 ```
 """
+
+
+class _FakeMessage:
+    def __init__(self, content: str | None) -> None:
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content: str | None) -> None:
+        self.message = _FakeMessage(content)
+
+
+class _FakeResponse:
+    def __init__(self, content: str | None) -> None:
+        self.choices = [_FakeChoice(content)]
+
+
+class _FakeCompletions:
+    def __init__(self, content: str | None) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._content = content
+
+    def create(self, **kwargs: object) -> _FakeResponse:
+        self.calls.append(kwargs)
+        return _FakeResponse(self._content)
+
+
+class _FakeChat:
+    def __init__(self, content: str | None) -> None:
+        self.completions = _FakeCompletions(content)
+
+
+class _FakeClient:
+    def __init__(self, content: str | None) -> None:
+        self.chat = _FakeChat(content)
 
 
 def test_extract_python_cells_finds_all_fences() -> None:
@@ -95,6 +131,23 @@ def test_render_dist_pyproject_toml_includes_dev_dependencies() -> None:
     assert "[dependency-groups]" in text
     assert '"tabulate"' in text
     assert 'name = "tiny-dsa"' in text
+
+
+def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> None:
+    fake = _FakeClient("print('fixed')\n")
+
+    fixed = fix_python_cell_with_llm(
+        client=cast(OpenAI, fake),
+        cell_source="print(unknown)\n",
+        error_message="NameError: name 'unknown' is not defined",
+        qmd_label="guide.qmd",
+        cell_number=1,
+    )
+
+    assert fixed == "print('fixed')\n"
+    assert len(fake.chat.completions.calls) == 1
+    assert fake.chat.completions.calls[0]["reasoning_effort"] == "high"
+    assert "extra_body" not in fake.chat.completions.calls[0]
 
 
 def test_default_run_uv_script_forces_utf8_stdio(

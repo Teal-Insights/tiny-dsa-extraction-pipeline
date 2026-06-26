@@ -14,6 +14,7 @@ from pathlib import Path
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.llm_json import generate_validated_json
 from src.qmd_python_validation import validate_qmd_files
 
 repo_root = Path(__file__).resolve().parents[1]
@@ -26,8 +27,9 @@ rewrite_cache_path = repo_root / ".cache" / "guide-rewrites.json"
 great_docs_yml = dist_root / "great-docs.yml"
 docs_workflow_path = dist_root / ".github" / "workflows" / "deploy-docs.yml"
 
-SECTION_REWRITE_MODEL = "deepseek-v4-pro"
+SECTION_REWRITE_MODEL = "gpt-5.5"
 SECTION_REWRITE_PROMPT_VERSION = 4
+MAX_SECTION_REWRITE_ATTEMPTS = 3
 CANONICAL_API_USAGE_HEADING = "Canonical API usage"
 NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
 VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
@@ -479,6 +481,50 @@ def sync_validated_pages_to_rewrite_cache(
     )
 
 
+_BARE_CELL_FENCE = re.compile(r"^\{[A-Za-z][\w-]*\}$")
+
+
+def validate_rewritten_markdown_fences(markdown: str) -> None:
+    """Reject markdown whose code cells are not wrapped in triple-backtick fences.
+
+    Models occasionally emit a bare ``{python}`` line instead of an opening
+    ```` ```{python} ```` fence, which Quarto renders as plain text and which
+    silently skips runnable-cell validation. This checks that every cell fence is
+    backtick-delimited and that fences are balanced.
+
+    Args:
+        markdown: The rewritten section body to validate.
+
+    Raises:
+        ValueError: If a bare cell fence is found outside a fenced block, or if
+            the triple-backtick fences are unbalanced.
+    """
+    fence_count = 0
+    in_fence = False
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            fence_count += 1
+            in_fence = not in_fence
+            continue
+        if not in_fence and _BARE_CELL_FENCE.match(stripped):
+            raise ValueError(
+                f"Found a bare cell fence line {stripped!r} without enclosing "
+                "triple backticks; runnable cells must use Quarto fences such as "
+                "```{python} ... ```."
+            )
+    if fence_count % 2 != 0:
+        raise ValueError(
+            "Unbalanced code fences: found an odd number of ``` markers; every "
+            "opening ```{python} fence must have a matching closing ```."
+        )
+
+
+def _validate_section_rewrite(parsed: SectionRewriteResponse) -> SectionRewriteResponse:
+    validate_rewritten_markdown_fences(parsed.rewritten_markdown)
+    return parsed
+
+
 def rewrite_guide_section(
     *,
     client: OpenAI | None,
@@ -504,7 +550,7 @@ def rewrite_guide_section(
 
     if client is None:
         raise RuntimeError(
-            "DEEPSEEK_API_KEY is required to generate uncached guide rewrites"
+            "OPENAI_API_KEY is required to generate uncached guide rewrites"
         )
 
     prompt = build_section_prompt(
@@ -515,30 +561,21 @@ def rewrite_guide_section(
         api_signatures=api_signatures,
         response_schema=response_schema,
     )
-    response = client.chat.completions.create(
+    parsed, content = generate_validated_json(
+        client=client,
         model=SECTION_REWRITE_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a technical documentation writer for the tiny_dsa library. "
-                    "Runnable examples use tiny_dsa.api with make_context(), "
-                    "records-shaped setters, and compute_output_* functions, "
-                    "as shown in the reference example. "
-                    "Return only valid JSON matching the provided schema."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        stream=False,
-        reasoning_effort="high",
-        response_format={"type": "json_object"},
-        extra_body={"thinking": {"type": "enabled"}},
+        system_prompt=(
+            "You are a technical documentation writer for the tiny_dsa library. "
+            "Runnable examples use tiny_dsa.api with make_context(), "
+            "records-shaped setters, and compute_output_* functions, "
+            "as shown in the reference example. "
+            "Return only valid JSON matching the provided schema."
+        ),
+        user_prompt=prompt,
+        response_model=SectionRewriteResponse,
+        post_validate=_validate_section_rewrite,
+        max_attempts=MAX_SECTION_REWRITE_ATTEMPTS,
     )
-    content = response.choices[0].message.content
-    if content is None:
-        raise RuntimeError("LLM returned empty section rewrite response")
-    parsed = SectionRewriteResponse.model_validate_json(content)
     cache[cache_key] = content
     save_rewrite_cache(cache)
     return parsed
@@ -757,9 +794,9 @@ def run_documentation_pipeline() -> None:
 
     configure_great_docs_yml()
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
     section_client = (
-        OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
         if api_key
         else None
     )

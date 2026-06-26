@@ -68,7 +68,7 @@ _NAME_ERROR_PATTERN = re.compile(
     re.DOTALL,
 )
 
-_CELL_FIX_MODEL = "deepseek-v4-pro"
+_CELL_FIX_MODEL = "gpt-5.5"
 
 
 @dataclass(frozen=True)
@@ -302,7 +302,6 @@ Cell source:
         ],
         stream=False,
         reasoning_effort="high",
-        extra_body={"thinking": {"type": "enabled"}},
     )
     content = response.choices[0].message.content
     if content is None:
