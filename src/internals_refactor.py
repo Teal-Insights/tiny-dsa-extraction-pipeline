@@ -19,16 +19,16 @@ from excel_grapher.grapher.graph import DependencyGraph
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.formula_clustering import (
+from src.formula_clustering import FormulaCluster
+from src.projection_columns import (
     ENGINE_COLUMNS,
     EngineColumn,
-    FormulaCluster,
+    TIME_PERIOD_TO_ENGINE_COLUMN,
     engine_column_for_address,
 )
 from src.refactor_bindings import (
     BindingKeyValue,
     KeyConceptSpec,
-    TIME_PERIOD_TO_ENGINE_COLUMN,
     build_bound_address_keys,
     engine_column_from_member_keys,
     expected_member_keys_for_cluster,

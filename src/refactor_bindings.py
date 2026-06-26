@@ -11,17 +11,9 @@ import fastpyxl
 from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.types import Scalar
 
-from src.formula_clustering import logical_engine_column
+from src.projection_columns import logical_engine_column, TIME_PERIOD_TO_ENGINE_COLUMN
 
 BindingKeyValue = str | int | float | bool
-
-TIME_PERIOD_TO_ENGINE_COLUMN: dict[int, str] = {
-    1: "C",
-    2: "D",
-    3: "E",
-    4: "F",
-    5: "G",
-}
 
 
 @dataclass(frozen=True)

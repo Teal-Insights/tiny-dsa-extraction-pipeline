@@ -1,26 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import TypeAlias
 
 from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
 
+from src.projection_columns import parse_workbook_address
+
 ClusterableGraph: TypeAlias = DependencyGraph | ProjectionResult
-
-ENGINE_COLUMNS: tuple[str, ...] = ("C", "D", "E", "F", "G")
-ENGINE_COLUMN_SET = frozenset(ENGINE_COLUMNS)
-OUTPUTS_COLUMN_TO_ENGINE = {"B": "C", "C": "D", "D": "E", "E": "F", "F": "G"}
-
-EngineColumn = Literal["C", "D", "E", "F", "G"]
-
-_ENGINE_COLUMN_BY_LETTER: dict[str, EngineColumn] = {
-    "C": "C",
-    "D": "D",
-    "E": "E",
-    "F": "F",
-    "G": "G",
-}
 
 # Max normalized-formula Levenshtein ratio among parallel Tiny DSA projection
 # families (including year-one carry-in vs chain columns on row 6).
@@ -66,31 +54,6 @@ def levenshtein_ratio(left: str, right: str) -> float:
     if max_len == 0:
         return 0.0
     return levenshtein_distance(left, right) / max_len
-
-
-def parse_workbook_address(address: str) -> tuple[str, str, int]:
-    sheet, colrow = address.split("!", 1)
-    column = "".join(character for character in colrow if character.isalpha())
-    row = int("".join(character for character in colrow if character.isdigit()))
-    return sheet, column, row
-
-
-def logical_engine_column(address: str) -> str | None:
-    """Map a workbook address to its Engine-sheet projection column, if any."""
-    sheet, column, _row = parse_workbook_address(address)
-    if sheet == "Engine" and column in ENGINE_COLUMN_SET:
-        return column
-    if sheet == "Outputs":
-        return OUTPUTS_COLUMN_TO_ENGINE.get(column)
-    return None
-
-
-def engine_column_for_address(address: str) -> EngineColumn | None:
-    """Return the typed engine column for a clusterable address, if any."""
-    column = logical_engine_column(address)
-    if column is None:
-        return None
-    return _ENGINE_COLUMN_BY_LETTER.get(column)
 
 
 def _projected_graph(graph: ClusterableGraph) -> DependencyGraph:
