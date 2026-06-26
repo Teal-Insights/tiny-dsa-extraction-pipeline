@@ -472,7 +472,7 @@ def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
 
     assert ctx.cluster_id >= 0
     assert ctx.row == 10
-    assert ctx.canonical_template == "=IF(Engine!{COL}5>=Inputs!B21,1,0)"
+    assert ctx.canonical_template == "=IF(Engine!C5>=Inputs!B21,1,0)"
     assert ctx.first_year_column == "C"
     assert len(ctx.members) == 5
     assert {member.address for member in ctx.members} == {
