@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
@@ -23,10 +22,14 @@ _ENGINE_COLUMN_BY_LETTER: dict[str, EngineColumn] = {
     "G": "G",
 }
 
+# Max normalized-formula Levenshtein ratio among parallel Tiny DSA projection
+# families (including year-one carry-in vs chain columns on row 6).
+DEFAULT_SIMILARITY_THRESHOLD = 0.16
+
 
 @dataclass(frozen=True)
 class FormulaCluster:
-    """A group of workbook cells whose normalized formulas match after canonicalization."""
+    """A group of workbook cells whose normalized formulas cluster by similarity."""
 
     cluster_id: int
     members: tuple[str, ...]
@@ -90,53 +93,6 @@ def engine_column_for_address(address: str) -> EngineColumn | None:
     return _ENGINE_COLUMN_BY_LETTER.get(column)
 
 
-def previous_engine_column(column: str) -> str | None:
-    index = ENGINE_COLUMNS.index(column)
-    if index == 0:
-        return None
-    return ENGINE_COLUMNS[index - 1]
-
-
-def canonicalize_formula_for_clustering(formula: str, address: str) -> str:
-    """Normalize column-specific refs so parallel year columns share one template.
-
-    First-year carry-ins are unified as ``{PRIOR_DEBT}`` so year-one cells such as
-    ``Engine!C6`` cluster with chain cells such as ``Engine!D6``.
-    """
-    column = logical_engine_column(address)
-    if column is None:
-        return formula
-
-    _sheet, _column, row = parse_workbook_address(address)
-    canonical = formula
-    canonical = re.sub(
-        r"(?<![A-Za-z0-9_.$!':])Inputs!B6(?![A-Za-z0-9_.$:])",
-        "{PRIOR_DEBT}",
-        canonical,
-    )
-
-    previous_column = previous_engine_column(column)
-    if previous_column is not None:
-        canonical = re.sub(
-            rf"(?<![A-Za-z0-9_.$!':])Engine!{previous_column}{row}(?![A-Za-z0-9_.$:])",
-            "{PRIOR_DEBT}",
-            canonical,
-        )
-
-    for engine_column in ENGINE_COLUMNS:
-        canonical = re.sub(
-            rf"Inputs!{engine_column}(\d+)",
-            r"Inputs!{COL}\1",
-            canonical,
-        )
-        canonical = re.sub(
-            rf"Engine!{engine_column}(\d+)",
-            r"Engine!{COL}\1",
-            canonical,
-        )
-    return canonical
-
-
 def _projected_graph(graph: ClusterableGraph) -> DependencyGraph:
     if isinstance(graph, ProjectionResult):
         return graph.projected_graph
@@ -154,36 +110,35 @@ def _formula_nodes(graph: ClusterableGraph) -> dict[str, str]:
     return nodes
 
 
+def _cluster_row_key(address: str) -> tuple[str, int]:
+    sheet, _column, row = parse_workbook_address(address)
+    return sheet, row
+
+
 def _should_cluster(
     left_address: str,
-    left_template: str,
+    left_formula: str,
     right_address: str,
-    right_template: str,
+    right_formula: str,
     *,
     similarity_threshold: float,
     require_same_row: bool,
 ) -> bool:
     if require_same_row:
-        left_row = parse_workbook_address(left_address)[2]
-        right_row = parse_workbook_address(right_address)[2]
-        if left_row != right_row:
+        if _cluster_row_key(left_address) != _cluster_row_key(right_address):
             return False
-    return levenshtein_ratio(left_template, right_template) <= similarity_threshold
+    return levenshtein_ratio(left_formula, right_formula) <= similarity_threshold
 
 
 def cluster_graph_formulas(
     graph: ClusterableGraph,
     *,
-    similarity_threshold: float = 0.0,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     require_same_row: bool = True,
 ) -> tuple[FormulaCluster, ...]:
-    """Cluster non-leaf formula nodes by canonicalized normalized formula similarity."""
+    """Cluster non-leaf formula nodes by ``normalized_formula`` similarity."""
     formula_nodes = _formula_nodes(graph)
     addresses = sorted(formula_nodes)
-    templates = {
-        address: canonicalize_formula_for_clustering(formula_nodes[address], address)
-        for address in addresses
-    }
 
     parent = {address: address for address in addresses}
 
@@ -203,9 +158,9 @@ def cluster_graph_formulas(
         for right_address in addresses[left_index + 1 :]:
             if _should_cluster(
                 left_address,
-                templates[left_address],
+                formula_nodes[left_address],
                 right_address,
-                templates[right_address],
+                formula_nodes[right_address],
                 similarity_threshold=similarity_threshold,
                 require_same_row=require_same_row,
             ):
@@ -220,7 +175,7 @@ def cluster_graph_formulas(
         sorted(grouped.items(), key=lambda item: item[1])
     ):
         ordered_members = tuple(sorted(members))
-        template = templates[ordered_members[0]]
+        template = formula_nodes[ordered_members[0]]
         rows = {parse_workbook_address(address)[2] for address in ordered_members}
         row = next(iter(rows)) if len(rows) == 1 else None
         clusters.append(

@@ -1,6 +1,6 @@
 from src.extraction_pipeline import graph
 from src.formula_clustering import (
-    canonicalize_formula_for_clustering,
+    DEFAULT_SIMILARITY_THRESHOLD,
     cluster_graph_formulas,
     levenshtein_ratio,
 )
@@ -11,17 +11,26 @@ def test_levenshtein_ratio_identical_strings() -> None:
     assert levenshtein_ratio("abc", "abc") == 0.0
 
 
-def test_canonicalize_unifies_first_year_and_chain_columns() -> None:
+def test_parallel_projection_columns_are_within_default_threshold() -> None:
     projection = build_tiny_dsa_refactor_projection(graph)
 
+    c10 = projection.get_node("Engine!C10")
+    d10 = projection.get_node("Engine!D10")
     c6 = projection.get_node("Engine!C6")
     d6 = projection.get_node("Engine!D6")
+    assert c10 is not None and c10.normalized_formula is not None
+    assert d10 is not None and d10.normalized_formula is not None
     assert c6 is not None and c6.normalized_formula is not None
     assert d6 is not None and d6.normalized_formula is not None
 
-    assert canonicalize_formula_for_clustering(
-        c6.normalized_formula, "Engine!C6"
-    ) == canonicalize_formula_for_clustering(d6.normalized_formula, "Engine!D6")
+    assert (
+        levenshtein_ratio(c10.normalized_formula, d10.normalized_formula)
+        <= DEFAULT_SIMILARITY_THRESHOLD
+    )
+    assert (
+        levenshtein_ratio(c6.normalized_formula, d6.normalized_formula)
+        <= DEFAULT_SIMILARITY_THRESHOLD
+    )
 
 
 def test_cluster_graph_formulas_finds_parallel_families_on_tiny_dsa() -> None:
@@ -42,11 +51,11 @@ def test_cluster_graph_formulas_finds_parallel_families_on_tiny_dsa() -> None:
         "Engine!F10",
         "Engine!G10",
     )
-    assert shock_cluster.canonical_template == "=IF(Engine!{COL}5>=Inputs!B21,1,0)"
+    assert shock_cluster.canonical_template == "=IF(Engine!C5>=Inputs!B21,1,0)"
 
     debt_cluster = next(cluster for cluster in clusters if cluster.row == 20)
     assert "Engine!C20" in debt_cluster.members
-    assert "{PRIOR_DEBT}" in debt_cluster.canonical_template
+    assert "Inputs!B6" in debt_cluster.canonical_template
 
     singleton_addresses = {
         member
