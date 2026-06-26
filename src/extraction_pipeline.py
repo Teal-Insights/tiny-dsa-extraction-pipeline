@@ -16,6 +16,7 @@ from excel_grapher.series_bindings import (
 )
 
 from src.docstring_callback import available_docstring_callback
+from src.dependency_graph_viz import series_cell_keys
 from src.export_validation_assets import export_validation_assets
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
@@ -23,6 +24,7 @@ from src.qmd_python_validation import (
     render_dist_pyproject_toml,
 )
 from src.subgraph_projection import build_tiny_dsa_refactor_projection
+from src.semantic_labeling import label_internal_graph_cells
 
 repo_root = Path(__file__).resolve().parents[1]
 workbook_path = repo_root / "data/tiny-dsa.xlsx"
@@ -115,6 +117,14 @@ if not binding_validation_report["ok"]:
 input_series = derive_input_series(graph, series_bindings, workbook=workbook_path)
 output_series = derive_output_series(graph, series_bindings, workbook=workbook_path)
 
+label_internal_graph_cells(
+    graph=graph,
+    workbook_path=workbook_path,
+    input_cells=series_cell_keys(input_series),
+    target_cells=series_cell_keys(output_series),
+    concept_scheme=series_bindings["concept_scheme"],
+)
+
 
 # ------------------------------------------------------------
 # Export the graph to Python code
@@ -180,6 +190,7 @@ tests/results/local/
         refactor_projection,
         formula_clusters,
         internals_path=package_root / "internals.py",
+        source_graph=graph,
     )
 
 

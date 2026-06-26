@@ -5,6 +5,7 @@ from src.internals_refactor import REFACTOR_ROW_ORDER
 from src.refactor_order import (
     assert_valid_cluster_refactor_order,
     compute_multi_member_cluster_refactor_order,
+    compute_singleton_cluster_refactor_order,
 )
 
 
@@ -36,3 +37,19 @@ def test_compute_multi_member_cluster_refactor_order_includes_all_eligible(
     )
 
     assert len(ordered) == len(eligible)
+
+
+def test_compute_singleton_cluster_refactor_order_for_tiny_dsa(
+    tiny_dsa_refactor_projection,
+) -> None:
+    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
+    ordered = compute_singleton_cluster_refactor_order(
+        tiny_dsa_refactor_projection,
+        clusters,
+    )
+
+    assert len(ordered) == 2
+    assert {cluster.members[0] for cluster in ordered} == {
+        "Inputs!B6",
+        "Engine!B9",
+    }

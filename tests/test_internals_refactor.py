@@ -4,18 +4,17 @@ import ast
 from dataclasses import replace
 from typing import Any, cast
 
+from src.extraction_pipeline import graph
 from src.internals_refactor import (
     ClusterRefactorResponse,
     HelperParameter,
     MemberKeys,
-    PROJECTION_ALIASES_MARKER,
     SemanticDependency,
     apply_phase_c,
     apply_refactor_plan,
     apply_singleton_refactor_plan,
     build_cluster_refactor_context,
     build_singleton_refactor_context,
-    deterministic_helper_name,
     prompt_payload,
     refactor_cache_key,
     resolve_semantic_dependencies,
@@ -24,7 +23,6 @@ from src.internals_refactor import (
     validate_refactored_internals,
     validate_semantic_local_names,
     validate_singleton_refactor_response,
-    wrapper_source,
     _align_singleton_response_docstring,
     _normalize_google_docstring,
     _prepare_cluster_refactor_response,
@@ -173,11 +171,12 @@ def test_build_singleton_refactor_context_inputs_b6(
         tiny_dsa_refactor_projection,
         cluster,
         codegen_internals_path,
+        source_graph=graph,
     )
     assert ctx is not None
     assert ctx.address == "Inputs!B6"
     assert ctx.function_name == "cell_inputs_b6"
-    assert ctx.symbol_name == "initial_debt_to_gdp"
+    assert isinstance(ctx.naming_hints, dict)
     assert "def cell_inputs_b6" in ctx.python_source
 
 
@@ -204,6 +203,7 @@ def test_apply_singleton_rename_rewrites_xl_eval_call_sites(
         ctx,
         response,
         existing_names=_function_names(codegen_internals_source),
+        internals_source=codegen_internals_source,
     )
     updated, rewrite_count = apply_singleton_refactor_plan(
         codegen_internals_source,
@@ -237,6 +237,7 @@ def test_golden_singleton_refactor_responses_validate(
             tiny_dsa_refactor_projection,
             singleton_clusters[address],
             codegen_internals_path,
+            source_graph=graph,
         )
         assert ctx is not None
         response = GOLDEN_SINGLETON_REFACTOR_RESPONSES[address]
@@ -244,6 +245,7 @@ def test_golden_singleton_refactor_responses_validate(
             ctx,
             response,
             existing_names=existing_names,
+            internals_source=codegen_internals_source,
         )
         existing_names = existing_names | {response.symbol_name}
 
@@ -268,6 +270,7 @@ def test_golden_cluster_refactor_responses_validate(
             tiny_dsa_refactor_projection,
             cluster,
             codegen_internals_path,
+            source_graph=graph,
         )
         assert ctx is not None
         response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[cluster.row]
@@ -275,6 +278,7 @@ def test_golden_cluster_refactor_responses_validate(
             ctx,
             response,
             existing_names=existing_names,
+            internals_source=singleton_refactored_internals_source,
         )
         existing_names = existing_names | {response.helper_name}
 
@@ -308,6 +312,7 @@ def test_validate_cluster_refactor_response_rejects_docstring_mismatch(
             shock_cluster_context,
             mismatched,
             existing_names=_function_names(codegen_internals_source),
+            internals_source=codegen_internals_source,
         )
     except ValueError as error:
         assert "must match" in str(error)
@@ -340,17 +345,16 @@ def test_prepare_cluster_refactor_response_aligns_docstring(
         shock_cluster_context,
         prepared,
         existing_names=_function_names(codegen_internals_source),
+        internals_source=codegen_internals_source,
     )
 
 
-def test_prompt_payload_includes_domain_glossary(shock_cluster_context) -> None:
+def test_prompt_payload_includes_naming_hints(shock_cluster_context) -> None:
     payload = prompt_payload(shock_cluster_context)
-    glossary = cast(list[dict[str, str]], payload["domain_glossary"])
-    symbols = {entry["symbol"] for entry in glossary}
+    naming_hints = cast(dict[str, object], payload["naming_hints"])
     constraints = cast(dict[str, Any], payload["constraints"])
-    assert "shock_magnitude_resolved" in symbols
-    assert "shock_active" in symbols
-    assert "primary_balance_shocked" in symbols
+    assert naming_hints or shock_cluster_context.naming_hints
+    assert "helper_name" not in constraints
     assert constraints["docstring_style"] == "google"
     assert constraints["require_semantic_locals"] is True
 
@@ -409,6 +413,7 @@ def test_build_cluster_context_row_16_resolves_shock_active(
             tiny_dsa_refactor_projection,
             singleton_by_address[address],
             internals_path,
+            source_graph=graph,
         )
         assert singleton_ctx is not None
         updated, _ = apply_singleton_refactor_plan(
@@ -422,13 +427,13 @@ def test_build_cluster_context_row_16_resolves_shock_active(
         tiny_dsa_refactor_projection,
         by_row[10],
         internals_path,
+        source_graph=graph,
     )
     assert cluster_ctx_10 is not None
     updated = apply_refactor_plan(
         internals_path.read_text(encoding="utf-8"),
         GOLDEN_CLUSTER_REFACTOR_RESPONSES[10],
         cluster_ctx_10,
-        phase_b=False,
     )
     internals_path.write_text(updated, encoding="utf-8")
 
@@ -436,6 +441,7 @@ def test_build_cluster_context_row_16_resolves_shock_active(
         tiny_dsa_refactor_projection,
         by_row[16],
         internals_path,
+        source_graph=graph,
     )
     assert cluster_ctx_16 is not None
     resolved_helpers = {dep.helper_name for dep in cluster_ctx_16.semantic_dependencies}
@@ -445,6 +451,20 @@ def test_build_cluster_context_row_16_resolves_shock_active(
     payload = prompt_payload(cluster_ctx_16)
     semantic_payload = cast(list[dict[str, Any]], payload["semantic_dependencies"])
     assert any(entry["helper_name"] == "shock_active" for entry in semantic_payload)
+
+
+def test_cluster_refactor_context_includes_semantic_naming_hints(
+    shock_cluster_context,
+) -> None:
+    payload = prompt_payload(shock_cluster_context)
+    members = cast(list[dict[str, object]], payload["members"])
+    assert any(
+        member.get("row_labels")
+        or member.get("table_labels")
+        or member.get("column_labels")
+        for member in members
+    )
+    assert "naming_hints" in payload
 
 
 def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
@@ -486,15 +506,7 @@ def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
         assert any(site.callee_address == "Engine!C10" for site in xl_eval_sites)
 
 
-def test_wrapper_source() -> None:
-    assert wrapper_source("shock_active", "C") == 'return shock_active(ctx, "C")'
-
-
-def test_deterministic_helper_name_row_10(shock_cluster_context) -> None:
-    assert deterministic_helper_name(shock_cluster_context) == "shock_active"
-
-
-def test_validate_cluster_refactor_response_row_10(
+def test_validate_cluster_refactor_response_accepts_safe_helper_name(
     shock_cluster_context,
     codegen_internals_source,
 ) -> None:
@@ -503,7 +515,17 @@ def test_validate_cluster_refactor_response_row_10(
         shock_cluster_context,
         response,
         existing_names=_function_names(codegen_internals_source),
+        internals_source=codegen_internals_source,
     )
+
+
+def test_prepare_cluster_refactor_response_preserves_helper_name(
+    shock_cluster_context,
+) -> None:
+    response = _shock_active_response(shock_cluster_context)
+    renamed = response.model_copy(update={"helper_name": "projection_shock_active"})
+    prepared = _prepare_cluster_refactor_response(renamed, shock_cluster_context)
+    assert prepared.helper_name == "projection_shock_active"
 
 
 def test_apply_cluster_collapse_row_10(
@@ -515,6 +537,7 @@ def test_apply_cluster_collapse_row_10(
         shock_cluster_context,
         response,
         existing_names=_function_names(singleton_refactored_internals_source),
+        internals_source=singleton_refactored_internals_source,
     )
 
     result = apply_refactor_plan(
@@ -534,22 +557,22 @@ def test_apply_cluster_collapse_row_10(
 
 
 def test_full_cluster_collapse_pipeline_rewrites_semantic_helpers(
-    phase_bc_internals_source,
+    phase_c_internals_source,
 ) -> None:
-    validate_refactored_internals(phase_bc_internals_source)
+    validate_refactored_internals(phase_c_internals_source)
 
-    debt_to_gdp = _extract_function(phase_bc_internals_source, "debt_to_gdp")
+    debt_to_gdp = _extract_function(phase_c_internals_source, "debt_to_gdp")
     assert "xl_eval(ctx, 'Engine!C10', cell_engine_c10)" not in debt_to_gdp
     assert "shock_active(ctx, time_period=time_period)" in debt_to_gdp
     assert "primary_balance_shocked(ctx, time_period=time_period)" in debt_to_gdp
 
     primary_balance = _extract_function(
-        phase_bc_internals_source, "primary_balance_shocked"
+        phase_c_internals_source, "primary_balance_shocked"
     )
     assert "ten_func_map" not in primary_balance
     assert "shock_active(ctx, time_period=time_period)" in primary_balance
 
-    output_delta = _extract_function(phase_bc_internals_source, "output_delta")
+    output_delta = _extract_function(phase_c_internals_source, "output_delta")
     assert "fn20" not in output_delta
     assert "debt_to_gdp(ctx, time_period=time_period)" in output_delta
     assert "baseline_debt(ctx, time_period=time_period)" in output_delta
@@ -567,7 +590,6 @@ def test_apply_phase_c_prunes_projection_alias_wrappers(
     assert dispatch["Outputs!B12"] == ("baseline_debt", {"time_period": 1})
     assert dispatch["Outputs!B13"] == ("debt_to_gdp", {"time_period": 1})
     assert dispatch["Outputs!B14"] == ("output_delta", {"time_period": 1})
-    assert PROJECTION_ALIASES_MARKER not in updated
 
     second_pass, second_pruned = apply_phase_c(updated)
     assert second_pass == updated
@@ -575,9 +597,9 @@ def test_apply_phase_c_prunes_projection_alias_wrappers(
 
 
 def test_apply_phase_c_resolver_dispatches_pruned_addresses(
-    phase_bc_internals_source,
+    phase_c_internals_source,
 ) -> None:
-    dispatch = _extract_address_dispatch(phase_bc_internals_source)
+    dispatch = _extract_address_dispatch(phase_c_internals_source)
     assert "Engine!C16" not in dispatch
     assert dispatch["Outputs!B12"] == ("baseline_debt", {"time_period": 1})
     assert dispatch["Outputs!B13"] == ("debt_to_gdp", {"time_period": 1})
@@ -728,7 +750,7 @@ def _extract_function(source: str, function_name: str) -> str:
 
 def _shock_active_response(ctx) -> ClusterRefactorResponse:
     return ClusterRefactorResponse(
-        helper_name=deterministic_helper_name(ctx),
+        helper_name="shock_active",
         helper_docstring=SHOCK_ACTIVE_DOCSTRING,
         uses_first_year_branch=False,
         parameters=(
