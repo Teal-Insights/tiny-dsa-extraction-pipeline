@@ -236,7 +236,7 @@ def render_dist_readme_markdown(
 
 {metadata.description}
 
-{attribution_block}## Installation
+## Installation
 
 ```bash
 {metadata.resolved_install_command()}
@@ -245,6 +245,8 @@ def render_dist_readme_markdown(
 ## Documentation
 
 See the [full documentation]({metadata.documentation_url}).
+
+{attribution_block}
 """
 
 

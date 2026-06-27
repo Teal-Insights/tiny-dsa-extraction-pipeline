@@ -43,8 +43,7 @@ dist_project_metadata = DistProjectMetadata(
         "five-year horizon with one configurable shock."
     ),
     attribution=(
-        "Created by Teal Insights.\n\n"
-        "![Teal Insights logo](https://teal-insights.github.io/assets/logo.svg)"
+        "Created by Teal Insights.\n\n![Teal Insights logo](README_files/logo.svg)"
     ),
     documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
     repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
