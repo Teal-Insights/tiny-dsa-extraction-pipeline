@@ -90,7 +90,7 @@ DEFAULT_DIST_PROJECT_METADATA = DistProjectMetadata(
     ),
     attribution=(
         "Created by Teal Insights.\n\n"
-        "![Teal Insights logo](https://teal-insights.github.io/assets/logo.svg)"
+        "![Teal Insights logo](https://teal-insights.github.io/assets/logo.png)"
     ),
     documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
     repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
@@ -231,7 +231,7 @@ def render_dist_readme_markdown(
     *,
     metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
 ) -> str:
-    attribution_block = f"{metadata.attribution}\n\n" if metadata.attribution else ""
+    attribution_block = f"{metadata.attribution}" if metadata.attribution else ""
     return f"""# {metadata.library_name}
 
 {metadata.description}
@@ -246,8 +246,7 @@ def render_dist_readme_markdown(
 
 See the [full documentation]({metadata.documentation_url}).
 
-{attribution_block}
-"""
+{attribution_block}"""
 
 
 def write_dist_readme(

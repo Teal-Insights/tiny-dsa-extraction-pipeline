@@ -171,7 +171,7 @@ def test_render_dist_readme_markdown_renders_attribution_block() -> None:
         library_name="Forecast Kit",
         description="A generated forecasting library.",
         attribution=(
-            "Created by Example Org.\n\n![Example logo](https://example.com/logo.svg)"
+            "Created by Example Org.\n\n![Example logo](https://example.com/logo.png)"
         ),
         install_command="python -m pip install forecast-kit",
         documentation_url="https://example.com/forecast-kit/",
@@ -181,7 +181,7 @@ def test_render_dist_readme_markdown_renders_attribution_block() -> None:
 
     assert "A generated forecasting library." in text
     assert "Created by Example Org." in text
-    assert "![Example logo](https://example.com/logo.svg)" in text
+    assert "![Example logo](https://example.com/logo.png)" in text
 
 
 def test_render_dist_readme_markdown_omits_attribution_when_absent() -> None:

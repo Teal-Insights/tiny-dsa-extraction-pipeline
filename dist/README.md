@@ -11,3 +11,7 @@ uv add "tiny-dsa @ git+https://github.com/Teal-Insights/py-tiny-dsa"
 ## Documentation
 
 See the [full documentation](https://teal-insights.github.io/py-tiny-dsa/).
+
+Created by Teal Insights.
+
+![Teal Insights logo](README_files/logo.png)
