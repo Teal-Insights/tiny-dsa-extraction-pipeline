@@ -39,9 +39,11 @@ dist_project_metadata = DistProjectMetadata(
     library_name="Tiny DSA",
     description=(
         "A Python implementation of the Tiny-DSA Excel workbook, a stylized "
-        "debt-sustainability tool for computing debt-to-GDP ratio over a "
-        "five-year horizon with one configurable shock.\n"
-        "Created by Teal Insights.\n"
+        "debt-sustainability tool for computing the debt-to-GDP ratio over a "
+        "five-year horizon with one configurable shock."
+    ),
+    attribution=(
+        "Created by Teal Insights.\n\n"
         "![Teal Insights logo](https://teal-insights.github.io/assets/logo.svg)"
     ),
     documentation_url="https://teal-insights.github.io/py-tiny-dsa/",

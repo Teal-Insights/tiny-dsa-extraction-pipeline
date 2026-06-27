@@ -45,7 +45,15 @@ The `pytest` test suite includes an opt-in test that uses the OpenAI API on high
 
 ## Differential Testing
 
-A differential test sweep assesses whether recomputing the output cells of the extracted formula graph with `FormulaEvaluator.evaluate()` for a range of different inputs gives the same results as driving the original workbook with xlwings and Microsoft Excel. For instructions on running the differential test sweep, see the [differential testing README](tests/differential/README.md). The test sweep passes cleanly with the current pipeline. Test results may be viewed in the [differential/differential_report.txt](data/differential/differential_report.txt) file.
+A differential test sweep assesses whether recomputing the output cells of the extracted formula graph with `FormulaEvaluator.evaluate()` for a range of different inputs gives the same results as driving the original workbook with xlwings and Microsoft Excel. To run the sweep, use:
+
+```bash
+uv run python tests/differential/differential_test_exported_library.py
+```
+
+For further instructions on running the differential test sweep, see the [differential testing README](tests/differential/README.md).
+
+The test sweep passes cleanly with the current pipeline. Test results may be viewed in the [differential/differential_report.txt](data/differential/differential_report.txt) file.
 
 The `pytest` test suite also runs a small sample of differential tests with randomized inputs.
 

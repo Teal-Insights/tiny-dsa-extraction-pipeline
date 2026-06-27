@@ -6,6 +6,7 @@ import pytest
 from openai import OpenAI
 
 from src.qmd_python_validation import (
+    DEFAULT_DIST_PROJECT_METADATA,
     DistProjectMetadata,
     aggregate_python_cells,
     extract_python_cells,
@@ -152,6 +153,50 @@ def test_render_dist_pyproject_toml_uses_project_metadata() -> None:
     assert 'name = "forecast-kit"' in text
     assert 'description = "A generated forecasting library."' in text
     assert 'packages = ["forecast_kit"]' in text
+
+
+def test_default_metadata_description_is_single_line() -> None:
+    assert "\n" not in DEFAULT_DIST_PROJECT_METADATA.description
+
+
+def test_render_dist_pyproject_toml_description_has_no_embedded_newline() -> None:
+    text = render_dist_pyproject_toml(dev_dependencies=[])
+    assert "\\n" not in text
+
+
+def test_render_dist_readme_markdown_renders_attribution_block() -> None:
+    metadata = DistProjectMetadata(
+        project_name="forecast-kit",
+        package_name="forecast_kit",
+        library_name="Forecast Kit",
+        description="A generated forecasting library.",
+        attribution=(
+            "Created by Example Org.\n\n![Example logo](https://example.com/logo.svg)"
+        ),
+        install_command="python -m pip install forecast-kit",
+        documentation_url="https://example.com/forecast-kit/",
+    )
+
+    text = render_dist_readme_markdown(metadata=metadata)
+
+    assert "A generated forecasting library." in text
+    assert "Created by Example Org." in text
+    assert "![Example logo](https://example.com/logo.svg)" in text
+
+
+def test_render_dist_readme_markdown_omits_attribution_when_absent() -> None:
+    metadata = DistProjectMetadata(
+        project_name="forecast-kit",
+        package_name="forecast_kit",
+        library_name="Forecast Kit",
+        description="A generated forecasting library.",
+        install_command="python -m pip install forecast-kit",
+        documentation_url="https://example.com/forecast-kit/",
+    )
+
+    text = render_dist_readme_markdown(metadata=metadata)
+
+    assert text.count("\n\n\n") == 0
 
 
 def test_render_dist_readme_markdown_uses_install_command_verbatim() -> None:

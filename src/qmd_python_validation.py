@@ -60,10 +60,16 @@ class DistProjectMetadata:
     project_name: str
     package_name: str
     library_name: str
+    # Single-line summary only: this populates [project].description, which
+    # downstream tools (e.g. great-docs) embed verbatim into YAML frontmatter.
+    # Embedded newlines or markdown produce invalid YAML and break the docs build.
     description: str
     documentation_url: str
     repository_url: str | None = None
     install_command: str | None = None
+    # Optional markdown rendered in the generated README below the description
+    # (e.g. attribution and logo) that must not leak into [project].description.
+    attribution: str | None = None
 
     def resolved_install_command(self) -> str:
         if self.install_command is not None:
@@ -79,9 +85,11 @@ DEFAULT_DIST_PROJECT_METADATA = DistProjectMetadata(
     library_name="Tiny DSA",
     description=(
         "A Python implementation of the Tiny-DSA Excel workbook, a stylized "
-        "debt-sustainability tool for computing debt-to-GDP ratio over a "
-        "five-year horizon with one configurable shock.\n"
-        "Created by Teal Insights.\n"
+        "debt-sustainability tool for computing the debt-to-GDP ratio over a "
+        "five-year horizon with one configurable shock."
+    ),
+    attribution=(
+        "Created by Teal Insights.\n\n"
         "![Teal Insights logo](https://teal-insights.github.io/assets/logo.svg)"
     ),
     documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
@@ -223,11 +231,12 @@ def render_dist_readme_markdown(
     *,
     metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
 ) -> str:
+    attribution_block = f"{metadata.attribution}\n\n" if metadata.attribution else ""
     return f"""# {metadata.library_name}
 
 {metadata.description}
 
-## Installation
+{attribution_block}## Installation
 
 ```bash
 {metadata.resolved_install_command()}
