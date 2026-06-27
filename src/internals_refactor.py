@@ -531,6 +531,11 @@ def scan_call_sites(
     return tuple(sorted(sites, key=lambda site: (site.line, site.callee_address)))
 
 
+def _normalize_internals_bytes(internals_bytes: bytes) -> bytes:
+    """Normalize line endings so cache keys are platform-independent."""
+    return internals_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def refactor_cache_key(
     ctx: ClusterRefactorContext,
     internals_bytes: bytes,
@@ -554,7 +559,9 @@ def refactor_cache_key(
             }
             for member in ctx.members
         ],
-        "internals_sha256": hashlib.sha256(internals_bytes).hexdigest(),
+        "internals_sha256": hashlib.sha256(
+            _normalize_internals_bytes(internals_bytes)
+        ).hexdigest(),
         "response_schema_sha256": hashlib.sha256(
             stable_json(response_schema).encode()
         ).hexdigest(),
@@ -1081,7 +1088,9 @@ def singleton_refactor_cache_key(
         "canonical_template": ctx.canonical_template,
         "formula_sha256": hashlib.sha256(ctx.normalized_formula.encode()).hexdigest(),
         "source_sha256": hashlib.sha256(ctx.python_source.encode()).hexdigest(),
-        "internals_sha256": hashlib.sha256(internals_bytes).hexdigest(),
+        "internals_sha256": hashlib.sha256(
+            _normalize_internals_bytes(internals_bytes)
+        ).hexdigest(),
         "response_schema_sha256": hashlib.sha256(
             stable_json(response_schema).encode()
         ).hexdigest(),
@@ -2040,7 +2049,7 @@ def refactor_internals_singleton(
     updated, rewrite_count = apply_singleton_refactor_plan(source, response, ctx)
     validate_refactored_internals(updated)
     if not dry_run:
-        internals_path.write_text(updated, encoding="utf-8")
+        internals_path.write_text(updated, encoding="utf-8", newline="\n")
     return SingletonRefactorApplyResult(
         source=updated,
         symbol_name=response.symbol_name,
@@ -2098,7 +2107,7 @@ def refactor_internals_cluster(
     updated = apply_refactor_plan(source, response, ctx)
     validate_refactored_internals(updated)
     if not dry_run:
-        internals_path.write_text(updated, encoding="utf-8")
+        internals_path.write_text(updated, encoding="utf-8", newline="\n")
     return ClusterRefactorApplyResult(
         source=updated,
         helper_name=response.helper_name,
@@ -2148,7 +2157,7 @@ def refactor_internals_all_clusters(
         source = internals_path.read_text(encoding="utf-8")
         updated, phase_c_pruned = apply_phase_c(source)
         validate_refactored_internals(updated)
-        internals_path.write_text(updated, encoding="utf-8")
+        internals_path.write_text(updated, encoding="utf-8", newline="\n")
         if results:
             last = results[-1]
             results[-1] = ClusterRefactorApplyResult(

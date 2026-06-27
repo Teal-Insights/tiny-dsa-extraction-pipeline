@@ -80,7 +80,7 @@ def codegen_package_root(tmp_path_factory, tiny_dsa_refactor_projection) -> Path
     for filename, code in modules.items():
         output_path = package_root / filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(code, encoding="utf-8")
+        output_path.write_text(code, encoding="utf-8", newline="\n")
     return root
 
 
@@ -116,7 +116,7 @@ def singleton_refactored_internals_source(
         response = GOLDEN_SINGLETON_REFACTOR_RESPONSES[address]
         updated, _rewrite_count = apply_singleton_refactor_plan(updated, response, ctx)
     validate_refactored_internals(updated)
-    codegen_internals_path.write_text(updated, encoding="utf-8")
+    codegen_internals_path.write_text(updated, encoding="utf-8", newline="\n")
     return updated
 
 
@@ -191,6 +191,7 @@ def refactored_package_root(
     (root / "tiny_dsa" / "internals.py").write_text(
         phase_c_internals_source,
         encoding="utf-8",
+        newline="\n",
     )
     return root
 
@@ -211,7 +212,7 @@ def shock_cluster_context(
     tiny_dsa_refactor_projection, codegen_internals_source, tmp_path
 ):
     internals_path = tmp_path / "internals.py"
-    internals_path.write_text(codegen_internals_source, encoding="utf-8")
+    internals_path.write_text(codegen_internals_source, encoding="utf-8", newline="\n")
     cluster = next(
         cluster
         for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)

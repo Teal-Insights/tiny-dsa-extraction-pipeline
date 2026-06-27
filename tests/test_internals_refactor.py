@@ -17,6 +17,7 @@ from src.internals_refactor import (
     build_singleton_refactor_context,
     prompt_payload,
     refactor_cache_key,
+    singleton_refactor_cache_key,
     resolve_semantic_dependencies,
     validate_cluster_refactor_response,
     validate_google_style_docstring,
@@ -690,6 +691,46 @@ def test_refactor_cache_key_changes_when_member_source_changes(
     )
     mutated_ctx = replace(shock_cluster_context, members=mutated_members)
     assert refactor_cache_key(mutated_ctx, internals_bytes, schema) != baseline
+
+
+def test_refactor_cache_key_ignores_internals_line_endings(
+    shock_cluster_context,
+) -> None:
+    schema = ClusterRefactorResponse.model_json_schema()
+    lf_bytes = b"x = 1\nif True:\n    y = 2\n"
+    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+    assert refactor_cache_key(
+        shock_cluster_context, lf_bytes, schema
+    ) == refactor_cache_key(shock_cluster_context, crlf_bytes, schema)
+
+
+def test_singleton_refactor_cache_key_ignores_internals_line_endings(
+    tiny_dsa_refactor_projection,
+    codegen_internals_source,
+    tmp_path,
+) -> None:
+    from src.formula_clustering import cluster_graph_formulas
+
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(codegen_internals_source, encoding="utf-8", newline="\n")
+    cluster = next(
+        cluster
+        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
+        if cluster.members == ("Inputs!B6",)
+    )
+    ctx = build_singleton_refactor_context(
+        tiny_dsa_refactor_projection,
+        cluster,
+        internals_path,
+        source_graph=graph,
+    )
+    assert ctx is not None
+    schema: dict[str, object] = {"type": "object"}
+    lf_bytes = b"x = 1\nif True:\n    y = 2\n"
+    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+    assert singleton_refactor_cache_key(
+        ctx, lf_bytes, schema
+    ) == singleton_refactor_cache_key(ctx, crlf_bytes, schema)
 
 
 def _extract_address_dispatch(

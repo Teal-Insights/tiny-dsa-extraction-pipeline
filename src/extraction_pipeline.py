@@ -171,7 +171,7 @@ def export_generated_package() -> None:
     for filepath, code in modules.items():
         output_path = package_root / filepath
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(code, encoding="utf-8")
+        output_path.write_text(code, encoding="utf-8", newline="\n")
 
     for stale_module in GENERATED_MODULE_NAMES:
         stale_path = dist_root / stale_module
