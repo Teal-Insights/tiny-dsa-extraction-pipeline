@@ -19,253 +19,196 @@ from .runtime import (
 
 # --- Formula cell functions ---
 
-def debt_to_gdp_percent_shock_delta(ctx, time_period):
+def debt_to_gdp_pct_shock_delta(ctx, time_period):
     """Return the shocked debt-to-GDP percentage less the baseline debt-to-GDP percentage.
 
     Args:
         ctx: Workbook evaluation context.
-        time_period: Projection time period corresponding to the workbook output column.
+        time_period: Projection time period, where 1 corresponds to Engine column C and 5 corresponds to Engine column G.
 
     Returns:
-        Difference between shocked and baseline debt-to-GDP percentages.
+        Difference between shocked and baseline debt-to-GDP percentages for the time period.
 
     Note:
         Covers Outputs!B14:F14. Excel: =Engine!C20-Engine!C6 through =Engine!G20-Engine!G6.
 """
-    shocked_debt_to_gdp_percentage = shocked_debt_to_gdp_percent(ctx, time_period=time_period)
-    baseline_debt_to_gdp_percentage = baseline_debt_to_gdp_percent(ctx, time_period=time_period)
+    shocked_debt_to_gdp_percentage = shocked_debt_to_gdp_pct(ctx, time_period=time_period)
+    baseline_debt_to_gdp_percentage = baseline_debt_to_gdp_pct(ctx, time_period=time_period)
     return xl_sub(shocked_debt_to_gdp_percentage, baseline_debt_to_gdp_percentage)
 
-def baseline_debt_to_gdp_percent(ctx, time_period):
-    """Return baseline debt-to-GDP percent for the requested projection period.
+def baseline_debt_to_gdp_pct(ctx, time_period):
+    """Return the baseline debt-to-GDP percentage for a projection period.
 
     Args:
         ctx: Workbook evaluation context.
-        time_period: Projection period number, 1 through 5, corresponding to Engine columns C through G.
+        time_period: Projection period (1 through 5).
 
     Returns:
-        Baseline debt-to-GDP percentage for the requested projection period.
+        Baseline debt-to-GDP percentage for the requested projection period, or XlError.VALUE for an unsupported period.
 
     Note:
-        Covers Engine!C6:G6. Excel: Engine!C6: =Inputs!B6*(1+Inputs!C17/100)/(1+Inputs!C16/100)-Inputs!C18; Engine!D6: =C6*(1+Inputs!D17/100)/(1+Inputs!D16/100)-Inputs!D18; Engine!E6: =D6*(1+Inputs!E17/100)/(1+Inputs!E16/100)-Inputs!E18; Engine!F6: =E6*(1+Inputs!F17/100)/(1+Inputs!F16/100)-Inputs!F18; Engine!G6: =F6*(1+Inputs!G17/100)/(1+Inputs!G16/100)-Inputs!G18.
+        Covers Engine!C6:G6. Excel: Engine!C6: =Inputs!B6*(1+Inputs!C17/100)/(1+Inputs!C16/100)-Inputs!C18; Engine!D6: =Engine!C6*(1+Inputs!D17/100)/(1+Inputs!D16/100)-Inputs!D18; Engine!E6: =Engine!D6*(1+Inputs!E17/100)/(1+Inputs!E16/100)-Inputs!E18; Engine!F6: =Engine!E6*(1+Inputs!F17/100)/(1+Inputs!F16/100)-Inputs!F18; Engine!G6: =Engine!F6*(1+Inputs!G17/100)/(1+Inputs!G16/100)-Inputs!G18.
 """
-    input_columns_by_time_period = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}
-    inputs_projection_column = input_columns_by_time_period[time_period]
+    period_input_addresses = {1: ('Inputs!C16', 'Inputs!C17', 'Inputs!C18'), 2: ('Inputs!D16', 'Inputs!D17', 'Inputs!D18'), 3: ('Inputs!E16', 'Inputs!E17', 'Inputs!E18'), 4: ('Inputs!F16', 'Inputs!F17', 'Inputs!F18'), 5: ('Inputs!G16', 'Inputs!G17', 'Inputs!G18')}.get(time_period)
+    if period_input_addresses is None:
+        return XlError.VALUE
+    growth_rate_pct_address, interest_rate_pct_address, primary_balance_pct_address = period_input_addresses
     if time_period == 1:
-        prior_debt_to_gdp_percent = selected_country_initial_debt_to_gdp(ctx)
+        prior_debt_to_gdp_pct = initial_debt_to_gdp(ctx)
     else:
-        previous_time_period = time_period - 1
-        prior_debt_to_gdp_percent = baseline_debt_to_gdp_percent(ctx, time_period=previous_time_period)
-    debt_accumulation_rate_percent = xl_cell(ctx, f'Inputs!{inputs_projection_column}17')
-    shocked_debt_to_gdp_denominator_percent = shocked_debt_to_gdp_percent(ctx, time_period=time_period)
-    primary_balance_percent = xl_cell(ctx, f'Inputs!{inputs_projection_column}18')
-    return xl_sub(xl_div(xl_mul(prior_debt_to_gdp_percent, xl_add(1.0, xl_div(debt_accumulation_rate_percent, 100.0))), xl_add(1.0, xl_div(shocked_debt_to_gdp_denominator_percent, 100.0))), primary_balance_percent)
+        prior_debt_to_gdp_pct = baseline_debt_to_gdp_pct(ctx, time_period=time_period - 1)
+    growth_rate_pct = xl_cell(ctx, growth_rate_pct_address)
+    interest_rate_pct = xl_cell(ctx, interest_rate_pct_address)
+    primary_balance_pct = xl_cell(ctx, primary_balance_pct_address)
+    return xl_sub(xl_div(xl_mul(prior_debt_to_gdp_pct, xl_add(1.0, xl_div(interest_rate_pct, 100.0))), xl_add(1.0, xl_div(growth_rate_pct, 100.0))), primary_balance_pct)
 
-def shocked_debt_to_gdp_percent(ctx, time_period):
-    """Return the shocked-path debt-to-GDP percentage for a projection year.
+def shocked_debt_to_gdp_pct(ctx, time_period):
+    """Return shocked-path debt-to-GDP for a projection period.
 
     Args:
         ctx: Workbook evaluation context.
-        time_period: Projection year number, where 1 maps to Engine column C and 5 maps to Engine column G.
+        time_period: Projection period number, 1 through 5.
 
     Returns:
-        Shocked-path debt-to-GDP percentage for the requested projection year.
+        Shocked-path debt-to-GDP percentage for the requested projection period, or XlError.VALUE when time_period is outside the covered range.
 
     Note:
-        Covers Engine!C20:G20. Excel: time_period 1 uses =Inputs!B6*(1+(Inputs!C17+CHOOSE(Inputs!B22,0,Engine!B9,0)*Engine!C10)/100)/(1+(Inputs!C16+CHOOSE(Inputs!B22,Engine!B9,0,0)*Engine!C10)/100)-Engine!C16; time_periods 2-5 use =Engine!{prior_col}20*(1+(Inputs!{col}17+CHOOSE(Inputs!B22,0,Engine!B9,0)*Engine!{col}10)/100)/(1+(Inputs!{col}16+CHOOSE(Inputs!B22,Engine!B9,0,0)*Engine!{col}10)/100)-Engine!{col}16.
+        Covers Engine!C20:G20. Excel: Engine!C20 = Inputs!B6*(1+(Inputs!C17+CHOOSE(Inputs!B22,0,Engine!B9,0)*Engine!C10)/100)/(1+(Inputs!C16+CHOOSE(Inputs!B22,Engine!B9,0,0)*Engine!C10)/100)-Engine!C16; Engine!D20:G20 = Engine!{prior_col}20*(1+(Inputs!{col}17+CHOOSE(Inputs!B22,0,Engine!B9,0)*Engine!{col}10)/100)/(1+(Inputs!{col}16+CHOOSE(Inputs!B22,Engine!B9,0,0)*Engine!{col}10)/100)-Engine!{col}16.
 """
-    if time_period == 1:
-        projection_column = 'C'
-    elif time_period == 2:
-        projection_column = 'D'
-    elif time_period == 3:
-        projection_column = 'E'
-    elif time_period == 4:
-        projection_column = 'F'
-    elif time_period == 5:
-        projection_column = 'G'
-    else:
+    period_rate_addresses = {1: {'interest_rate': 'Inputs!C17', 'growth_rate': 'Inputs!C16'}, 2: {'interest_rate': 'Inputs!D17', 'growth_rate': 'Inputs!D16'}, 3: {'interest_rate': 'Inputs!E17', 'growth_rate': 'Inputs!E16'}, 4: {'interest_rate': 'Inputs!F17', 'growth_rate': 'Inputs!F16'}, 5: {'interest_rate': 'Inputs!G17', 'growth_rate': 'Inputs!G16'}}.get(time_period)
+    if period_rate_addresses is None:
         return XlError.VALUE
     if time_period == 1:
-        prior_debt_to_gdp_percent = selected_country_initial_debt_to_gdp(ctx)
+        prior_debt_to_gdp = initial_debt_to_gdp(ctx)
     else:
-        previous_time_period = time_period - 1
-        prior_debt_to_gdp_percent = shocked_debt_to_gdp_percent(ctx, time_period=previous_time_period)
-    interest_rate_percent = xl_cell(ctx, f'Inputs!{projection_column}17')
-    shock_parameter_choice_for_interest = xl_cell(ctx, 'Inputs!B22')
-    if isinstance(shock_parameter_choice_for_interest, XlError):
-        interest_rate_shock_magnitude_pp = shock_parameter_choice_for_interest
-    else:
-        interest_shock_parameter_index = to_int(shock_parameter_choice_for_interest)
-        if isinstance(interest_shock_parameter_index, XlError):
-            interest_rate_shock_magnitude_pp = interest_shock_parameter_index
-        elif interest_shock_parameter_index < 1 or interest_shock_parameter_index > 3:
-            interest_rate_shock_magnitude_pp = XlError.VALUE
-        elif interest_shock_parameter_index == 1:
-            interest_rate_shock_magnitude_pp = 0.0
-        elif interest_shock_parameter_index == 2:
-            interest_rate_shock_magnitude_pp = selected_shock_magnitude_pp(ctx)
-        elif interest_shock_parameter_index == 3:
-            interest_rate_shock_magnitude_pp = 0.0
-        else:
-            interest_rate_shock_magnitude_pp = XlError.VALUE
-    active_interest_rate_shock = shock_active(ctx, time_period=time_period)
-    shocked_interest_rate_factor = xl_add(1.0, xl_div(xl_add(interest_rate_percent, xl_mul(interest_rate_shock_magnitude_pp, active_interest_rate_shock)), 100.0))
-    debt_after_interest_effect = xl_mul(prior_debt_to_gdp_percent, shocked_interest_rate_factor)
-    growth_rate_percent = xl_cell(ctx, f'Inputs!{projection_column}16')
-    shock_parameter_choice_for_growth = xl_cell(ctx, 'Inputs!B22')
-    if isinstance(shock_parameter_choice_for_growth, XlError):
-        growth_rate_shock_magnitude_pp = shock_parameter_choice_for_growth
-    else:
-        growth_shock_parameter_index = to_int(shock_parameter_choice_for_growth)
-        if isinstance(growth_shock_parameter_index, XlError):
-            growth_rate_shock_magnitude_pp = growth_shock_parameter_index
-        elif growth_shock_parameter_index < 1 or growth_shock_parameter_index > 3:
-            growth_rate_shock_magnitude_pp = XlError.VALUE
-        elif growth_shock_parameter_index == 1:
-            growth_rate_shock_magnitude_pp = selected_shock_magnitude_pp(ctx)
-        elif growth_shock_parameter_index == 2:
-            growth_rate_shock_magnitude_pp = 0.0
-        elif growth_shock_parameter_index == 3:
-            growth_rate_shock_magnitude_pp = 0.0
-        else:
-            growth_rate_shock_magnitude_pp = XlError.VALUE
-    active_growth_rate_shock = shock_active(ctx, time_period=time_period)
-    shocked_growth_rate_factor = xl_add(1.0, xl_div(xl_add(growth_rate_percent, xl_mul(growth_rate_shock_magnitude_pp, active_growth_rate_shock)), 100.0))
-    debt_before_primary_balance = xl_div(debt_after_interest_effect, shocked_growth_rate_factor)
-    primary_balance_percent_gdp = shocked_primary_balance_percent_gdp(ctx, time_period=time_period)
-    return xl_sub(debt_before_primary_balance, primary_balance_percent_gdp)
+        prior_debt_to_gdp = shocked_debt_to_gdp_pct(ctx, time_period=time_period - 1)
+    baseline_interest_rate_pct = xl_cell(ctx, period_rate_addresses['interest_rate'])
+    interest_shock_parameter_raw = xl_cell(ctx, 'Inputs!B22')
+    interest_shock_parameter_index = interest_shock_parameter_raw if isinstance(interest_shock_parameter_raw, XlError) else to_int(interest_shock_parameter_raw)
+    interest_shock_selection = interest_shock_parameter_index if isinstance(interest_shock_parameter_index, XlError) else XlError.VALUE if interest_shock_parameter_index < 1 or interest_shock_parameter_index > 3 else {1: 'no_shock', 2: 'selected_shock', 3: 'no_shock'}.get(interest_shock_parameter_index, XlError.VALUE)
+    interest_rate_shock_magnitude_pp = interest_shock_selection if isinstance(interest_shock_selection, XlError) else selected_shock_magnitude_pp(ctx) if interest_shock_selection == 'selected_shock' else 0.0 if interest_shock_selection == 'no_shock' else XlError.VALUE
+    interest_rate_factor = xl_add(1.0, xl_div(xl_add(baseline_interest_rate_pct, xl_mul(interest_rate_shock_magnitude_pp, shock_active(ctx, time_period=time_period))), 100.0))
+    debt_after_interest_factor = xl_mul(prior_debt_to_gdp, interest_rate_factor)
+    baseline_growth_rate_pct = xl_cell(ctx, period_rate_addresses['growth_rate'])
+    growth_shock_parameter_raw = xl_cell(ctx, 'Inputs!B22')
+    growth_shock_parameter_index = growth_shock_parameter_raw if isinstance(growth_shock_parameter_raw, XlError) else to_int(growth_shock_parameter_raw)
+    growth_shock_selection = growth_shock_parameter_index if isinstance(growth_shock_parameter_index, XlError) else XlError.VALUE if growth_shock_parameter_index < 1 or growth_shock_parameter_index > 3 else {1: 'selected_shock', 2: 'no_shock', 3: 'no_shock'}.get(growth_shock_parameter_index, XlError.VALUE)
+    growth_rate_shock_magnitude_pp = growth_shock_selection if isinstance(growth_shock_selection, XlError) else selected_shock_magnitude_pp(ctx) if growth_shock_selection == 'selected_shock' else 0.0 if growth_shock_selection == 'no_shock' else XlError.VALUE
+    growth_rate_factor = xl_add(1.0, xl_div(xl_add(baseline_growth_rate_pct, xl_mul(growth_rate_shock_magnitude_pp, shock_active(ctx, time_period=time_period))), 100.0))
+    debt_to_gdp_before_primary_balance = xl_div(debt_after_interest_factor, growth_rate_factor)
+    primary_balance_shocked_pct = primary_balance_shocked_pct_gdp(ctx, time_period=time_period)
+    return xl_sub(debt_to_gdp_before_primary_balance, primary_balance_shocked_pct)
 
-def shocked_primary_balance_percent_gdp(ctx, time_period):
-    """Return the shocked primary balance as a percent of GDP for a projection period.
+def primary_balance_shocked_pct_gdp(ctx, time_period):
+    """Return the shocked primary balance percentage of GDP for a projection time period.
 
-    Args:
-        ctx: Workbook evaluation context.
-        time_period: Projection time period from 1 through 5.
+Args:
+    ctx: Workbook evaluation context.
+    time_period: Projection time period (1 through 5).
 
-    Returns:
-        Excel-compatible shocked primary balance value for the requested projection period.
+Returns:
+    The result of adding the baseline primary balance to the CHOOSE-selected shock magnitude multiplied by the shock-active indicator.
 
-    Note:
-        Covers Engine!C16, Engine!D16, Engine!E16, Engine!F16, and Engine!G16. Excel: =Inputs!{col}18+CHOOSE(Inputs!$B$22,0,0,Engine!$B$9)*Engine!{col}10.
+Note:
+    Covers Engine!C16:G16. Excel: =Inputs!{col}18+CHOOSE(Inputs!B22,0,0,Engine!B9)*Engine!{col}10.
 """
-    workbook_column_by_time_period = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}
-    workbook_column = workbook_column_by_time_period[time_period]
-    unshocked_primary_balance = xl_cell(ctx, f'Inputs!{workbook_column}18')
-    shock_selector = xl_cell(ctx, 'Inputs!B22')
-    if isinstance(shock_selector, XlError):
-        selected_primary_balance_shock = shock_selector
+    primary_balance_input_address = {1: 'Inputs!C18', 2: 'Inputs!D18', 3: 'Inputs!E18', 4: 'Inputs!F18', 5: 'Inputs!G18'}.get(time_period)
+    if primary_balance_input_address is None:
+        return XlError.VALUE
+    baseline_primary_balance_pct_gdp = xl_cell(ctx, primary_balance_input_address)
+    shock_selection_raw = xl_cell(ctx, 'Inputs!B22')
+    if isinstance(shock_selection_raw, XlError):
+        selected_primary_balance_shock_pp = shock_selection_raw
     else:
-        shock_selector_index = to_int(shock_selector)
-        if isinstance(shock_selector_index, XlError):
-            selected_primary_balance_shock = shock_selector_index
-        elif shock_selector_index < 1 or shock_selector_index > 3:
-            selected_primary_balance_shock = XlError.VALUE
-        elif shock_selector_index == 1:
-            selected_primary_balance_shock = 0.0
-        elif shock_selector_index == 2:
-            selected_primary_balance_shock = 0.0
-        elif shock_selector_index == 3:
-            selected_primary_balance_shock = selected_shock_magnitude_pp(ctx)
+        shock_selection_index = to_int(shock_selection_raw)
+        if isinstance(shock_selection_index, XlError):
+            selected_primary_balance_shock_pp = shock_selection_index
         else:
-            selected_primary_balance_shock = XlError.VALUE
+            selected_primary_balance_shock_pp = XlError.VALUE if shock_selection_index < 1 or shock_selection_index > 3 else 0.0 if shock_selection_index == 1 else 0.0 if shock_selection_index == 2 else selected_shock_magnitude_pp(ctx) if shock_selection_index == 3 else XlError.VALUE
     active_shock_indicator = shock_active(ctx, time_period=time_period)
-    return xl_add(unshocked_primary_balance, xl_mul(selected_primary_balance_shock, active_shock_indicator))
+    return xl_add(baseline_primary_balance_pct_gdp, xl_mul(selected_primary_balance_shock_pp, active_shock_indicator))
 
 def shock_active(ctx, time_period):
-    """Return 1.0 when the shock is active for the projection time period.
+    """Return 1.0 when the shock is active for the given time period.
 
     Args:
         ctx: Workbook evaluation context.
-        time_period: Projection time period, where 1 through 5 map to Engine!C through Engine!G.
+        time_period: Projection time period, 1 through 5.
 
     Returns:
-        1.0 if the projection year is greater than or equal to the shock year, else 0.0.
-        Returns an Excel error if the comparison cannot be evaluated.
+        1.0 if the projection year is at or after the shock year, 0.0 if it is not, or an XlError if the time period is unsupported or Excel comparison/coercion returns an error.
 
     Note:
-        Covers Engine!C10:G10. Excel: =IF(Engine!{period_column}5>=Inputs!B21,1,0).
+        Covers Engine!C10:G10. Excel: =IF(Engine!{column}5>=Inputs!B21,1,0).
 """
-    if time_period == 1:
-        projection_year = xl_cell(ctx, 'Engine!C5')
-    elif time_period == 2:
-        projection_year = xl_cell(ctx, 'Engine!D5')
-    elif time_period == 3:
-        projection_year = xl_cell(ctx, 'Engine!E5')
-    elif time_period == 4:
-        projection_year = xl_cell(ctx, 'Engine!F5')
-    elif time_period == 5:
-        projection_year = xl_cell(ctx, 'Engine!G5')
-    else:
+    projection_year_address_by_time_period = {1: 'Engine!C5', 2: 'Engine!D5', 3: 'Engine!E5', 4: 'Engine!F5', 5: 'Engine!G5'}
+    projection_year_address = projection_year_address_by_time_period.get(time_period)
+    if projection_year_address is None:
         return XlError.VALUE
+    projection_year = xl_cell(ctx, projection_year_address)
     shock_year = xl_cell(ctx, 'Inputs!B21')
-    shock_started_comparison = xl_ge(projection_year, shock_year)
-    shock_is_active = to_bool(shock_started_comparison)
-    if isinstance(shock_is_active, XlError):
-        return shock_is_active
-    if shock_is_active:
-        return 1.0
-    else:
-        return 0.0
+    shock_activation_comparison = xl_ge(projection_year, shock_year)
+    shock_activation_condition = to_bool(shock_activation_comparison)
+    return shock_activation_condition if isinstance(shock_activation_condition, XlError) else 1.0 if shock_activation_condition else 0.0
 
-def selected_country_initial_debt_to_gdp(ctx):
+def initial_debt_to_gdp(ctx):
     """Look up the initial debt-to-GDP ratio for the selected country.
-
-    Args:
-        ctx: Workbook evaluation context.
-
-    Returns:
-        Initial debt-to-GDP ratio from the country selector table.
-
-    Note:
-        Covers Inputs!B6. Excel: =INDEX(Inputs!A10:Inputs!C12,MATCH(Inputs!B5,Inputs!A10:Inputs!A12,0),2).
-"""
-    selected_country_name = xl_cell(ctx, 'Inputs!B5')
-    country_selector_names = np.array(np.array([[xl_cell(ctx, 'Inputs!A10')], [xl_cell(ctx, 'Inputs!A11')], [xl_cell(ctx, 'Inputs!A12')]], dtype=object), dtype=object)
-    selected_country_table_row = xl_match(selected_country_name, country_selector_names, 0.0)
-    initial_debt_to_gdp_reference = xl_index_ref(('Inputs', 10, 1, 12, 3), selected_country_table_row, 2.0)
-    return xl_offset(ctx, initial_debt_to_gdp_reference, 0.0, 0.0)
-
-def selected_shock_magnitude_pp(ctx):
-    """Look up the shock magnitude in percentage points for the selected shock type.
 
 Args:
     ctx: Workbook evaluation context.
 
 Returns:
-    Shock magnitude in percentage points selected from the shock activation inputs.
+    Initial debt-to-GDP ratio from the country selector table.
 
 Note:
-    Covers Engine!B9. Excel: =OFFSET(Inputs!B26,0,Inputs!B22-1).
+    Covers Inputs!B6. Excel: =INDEX(Inputs!A10:Inputs!C12,MATCH(Inputs!B5,Inputs!A10:Inputs!A12,0),2).
 """
-    selected_shock_type = xl_cell(ctx, 'Inputs!B22')
-    selected_shock_column_offset = xl_sub(selected_shock_type, 1.0)
-    return xl_offset(ctx, ('Inputs', 26, 2), 0.0, selected_shock_column_offset, None, None)
+    selected_country = xl_cell(ctx, 'Inputs!B5')
+    country_selector_labels = np.array(np.array([[xl_cell(ctx, 'Inputs!A10')], [xl_cell(ctx, 'Inputs!A11')], [xl_cell(ctx, 'Inputs!A12')]], dtype=object), dtype=object)
+    selected_country_row_index = xl_match(selected_country, country_selector_labels, 0.0)
+    initial_debt_to_gdp_reference = xl_index_ref(('Inputs', 10, 1, 12, 3), selected_country_row_index, 2.0)
+    return xl_offset(ctx, initial_debt_to_gdp_reference, 0.0, 0.0)
+
+def selected_shock_magnitude_pp(ctx):
+    """Look up the shock magnitude in percentage points for the selected shock type.
+
+    Args:
+        ctx: Workbook evaluation context.
+
+    Returns:
+        Shock magnitude in percentage points from the shock activation inputs.
+
+    Note:
+        Covers Engine!B9. Excel: =OFFSET(Inputs!B26,0,Inputs!B22-1).
+"""
+    shock_type_selection = xl_cell(ctx, 'Inputs!B22')
+    shock_magnitude_column_offset = xl_sub(shock_type_selection, 1.0)
+    return xl_offset(ctx, ('Inputs', 26, 2), 0.0, shock_magnitude_column_offset, None, None)
 
 # --- Projection public address aliases ---
 
 # --- Formula resolver ---
 _RESOLVED_FORMULAS = {}
 _ADDRESS_DISPATCH = {
-    'Outputs!B12': ('baseline_debt_to_gdp_percent', {'time_period': 1}),
-    'Outputs!B13': ('shocked_debt_to_gdp_percent', {'time_period': 1}),
-    'Outputs!B14': ('debt_to_gdp_percent_shock_delta', {'time_period': 1}),
-    'Outputs!C12': ('baseline_debt_to_gdp_percent', {'time_period': 2}),
-    'Outputs!C13': ('shocked_debt_to_gdp_percent', {'time_period': 2}),
-    'Outputs!C14': ('debt_to_gdp_percent_shock_delta', {'time_period': 2}),
-    'Outputs!D12': ('baseline_debt_to_gdp_percent', {'time_period': 3}),
-    'Outputs!D13': ('shocked_debt_to_gdp_percent', {'time_period': 3}),
-    'Outputs!D14': ('debt_to_gdp_percent_shock_delta', {'time_period': 3}),
-    'Outputs!E12': ('baseline_debt_to_gdp_percent', {'time_period': 4}),
-    'Outputs!E13': ('shocked_debt_to_gdp_percent', {'time_period': 4}),
-    'Outputs!E14': ('debt_to_gdp_percent_shock_delta', {'time_period': 4}),
-    'Outputs!F12': ('baseline_debt_to_gdp_percent', {'time_period': 5}),
-    'Outputs!F13': ('shocked_debt_to_gdp_percent', {'time_period': 5}),
-    'Outputs!F14': ('debt_to_gdp_percent_shock_delta', {'time_period': 5}),
+    'Outputs!B12': ('baseline_debt_to_gdp_pct', {'time_period': 1}),
+    'Outputs!B13': ('shocked_debt_to_gdp_pct', {'time_period': 1}),
+    'Outputs!B14': ('debt_to_gdp_pct_shock_delta', {'time_period': 1}),
+    'Outputs!C12': ('baseline_debt_to_gdp_pct', {'time_period': 2}),
+    'Outputs!C13': ('shocked_debt_to_gdp_pct', {'time_period': 2}),
+    'Outputs!C14': ('debt_to_gdp_pct_shock_delta', {'time_period': 2}),
+    'Outputs!D12': ('baseline_debt_to_gdp_pct', {'time_period': 3}),
+    'Outputs!D13': ('shocked_debt_to_gdp_pct', {'time_period': 3}),
+    'Outputs!D14': ('debt_to_gdp_pct_shock_delta', {'time_period': 3}),
+    'Outputs!E12': ('baseline_debt_to_gdp_pct', {'time_period': 4}),
+    'Outputs!E13': ('shocked_debt_to_gdp_pct', {'time_period': 4}),
+    'Outputs!E14': ('debt_to_gdp_pct_shock_delta', {'time_period': 4}),
+    'Outputs!F12': ('baseline_debt_to_gdp_pct', {'time_period': 5}),
+    'Outputs!F13': ('shocked_debt_to_gdp_pct', {'time_period': 5}),
+    'Outputs!F14': ('debt_to_gdp_pct_shock_delta', {'time_period': 5}),
 }
 _SYMBOL_DISPATCH = {
     'Engine!B9': 'selected_shock_magnitude_pp',
-    'Inputs!B6': 'selected_country_initial_debt_to_gdp',
+    'Inputs!B6': 'initial_debt_to_gdp',
 }
 
 def _address_to_func_name(address):

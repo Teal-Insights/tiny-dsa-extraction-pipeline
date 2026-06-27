@@ -8,7 +8,7 @@ import os
 import re
 import textwrap
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
 from openai import OpenAI
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.formula_clustering import FormulaCluster
 from src.llm_json import generate_validated_json
@@ -55,7 +55,7 @@ BINDINGS_PATH = repo_root / "bindings"
 DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
 
 REFACTOR_MODEL = "gpt-5.5"
-REFACTOR_PROMPT_VERSION = 7
+REFACTOR_PROMPT_VERSION = 8
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
 RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
@@ -1273,7 +1273,7 @@ def apply_singleton_refactor_plan(
 def apply_refactor_plan(
     source: str,
     response: ClusterRefactorResponse,
-    ctx: ClusterRefactorContext,
+    ctx: ClusterRefactorContext | None = None,
 ) -> str:
     updated, _rewrite_count = apply_cluster_collapse(source, response, ctx)
     return updated
@@ -1303,8 +1303,9 @@ def collapse_bindings_for_response(
 def apply_cluster_collapse(
     source: str,
     response: ClusterRefactorResponse,
-    ctx: ClusterRefactorContext,
+    ctx: ClusterRefactorContext | None = None,
 ) -> tuple[str, int]:
+    _ = ctx
     updated = insert_helper_source(source, response.helper_source)
     bindings = collapse_bindings_for_response(response)
     updated, rewrite_count = substitute_collapse_bindings(updated, bindings)
@@ -1528,9 +1529,29 @@ def _column_index(column: str) -> int:
     return value
 
 
+def _covered_addresses_text(docstring: str) -> str:
+    """Return only the ``Covers ...`` clause of a helper docstring's Note.
+
+    The ``Excel:`` formula transcription is excluded so that addresses appearing
+    inside a formula (which the helper reads, but does not compute) are never
+    mistaken for cells the helper covers.
+    """
+    normalized = docstring.replace("$", "")
+    covers_index = normalized.find("Covers")
+    if covers_index == -1:
+        return ""
+    covered = normalized[covers_index + len("Covers") :]
+    excel_index = covered.find("Excel:")
+    if excel_index != -1:
+        covered = covered[:excel_index]
+    return covered
+
+
 def _address_in_docstring_range(docstring: str, address: str) -> bool:
-    normalized_docstring = docstring.replace("$", "")
-    if address.replace("$", "") in normalized_docstring:
+    covered = _covered_addresses_text(docstring)
+    if not covered:
+        return False
+    if address.replace("$", "") in covered:
         return True
     match = _ENGINE_ADDRESS_PATTERN.match(address)
     if match is None:
@@ -1542,7 +1563,7 @@ def _address_in_docstring_range(docstring: str, address: str) -> bool:
     range_pattern = re.compile(
         rf"{re.escape(sheet)}(?P<start>[A-Z]+){row}:(?P<end>[A-Z]+){row}"
     )
-    for range_match in range_pattern.finditer(normalized_docstring):
+    for range_match in range_pattern.finditer(covered):
         start_index = _column_index(range_match.group("start"))
         end_index = _column_index(range_match.group("end"))
         if start_index <= column_index <= end_index:
@@ -2035,11 +2056,18 @@ def refactor_internals_singleton(
     internals_path: Path,
     response: SingletonRefactorResponse | None = None,
     dry_run: bool = False,
+    pristine_source: str | None = None,
+    input_vectors: Sequence[Mapping[str, object]] | None = None,
 ) -> SingletonRefactorApplyResult:
     source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(source)
     if response is None:
-        response = llm_refactor_singleton(ctx, internals_path=internals_path)
+        response = llm_refactor_singleton(
+            ctx,
+            internals_path=internals_path,
+            pristine_source=pristine_source,
+            input_vectors=input_vectors,
+        )
     validate_singleton_refactor_response(
         ctx,
         response,
@@ -2067,6 +2095,8 @@ def refactor_internals_all_singletons(
     internals_path: Path,
     dry_run: bool = False,
     source_graph: DependencyGraph | None = None,
+    pristine_source: str | None = None,
+    input_vectors: Sequence[Mapping[str, object]] | None = None,
 ) -> tuple[SingletonRefactorApplyResult, ...]:
     results: list[SingletonRefactorApplyResult] = []
     for cluster in compute_singleton_cluster_refactor_order(projection, clusters):
@@ -2082,6 +2112,8 @@ def refactor_internals_all_singletons(
             ctx,
             internals_path=internals_path,
             dry_run=dry_run,
+            pristine_source=pristine_source,
+            input_vectors=input_vectors,
         )
         results.append(result)
     return tuple(results)
@@ -2093,11 +2125,18 @@ def refactor_internals_cluster(
     internals_path: Path,
     response: ClusterRefactorResponse | None = None,
     dry_run: bool = False,
+    pristine_source: str | None = None,
+    input_vectors: Sequence[Mapping[str, object]] | None = None,
 ) -> ClusterRefactorApplyResult:
     source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(source)
     if response is None:
-        response = llm_refactor_cluster(ctx, internals_path=internals_path)
+        response = llm_refactor_cluster(
+            ctx,
+            internals_path=internals_path,
+            pristine_source=pristine_source,
+            input_vectors=input_vectors,
+        )
     validate_cluster_refactor_response(
         ctx,
         response,
@@ -2124,14 +2163,30 @@ def refactor_internals_all_clusters(
     internals_path: Path,
     dry_run: bool = False,
     source_graph: DependencyGraph | None = None,
+    parity_gate: bool = True,
 ) -> tuple[ClusterRefactorApplyResult, ...]:
-    """Refactor singletons, then every multi-member cluster in dependency order."""
+    """Refactor singletons, then every multi-member cluster in dependency order.
+
+    When ``parity_gate`` is enabled, each refactored helper is checked against the
+    pristine pre-refactor cell semantics across several input vectors before its
+    transaction is committed; a divergence rolls back and re-prompts the model.
+    """
+    pristine_source: str | None = None
+    input_vectors: Sequence[Mapping[str, object]] | None = None
+    if parity_gate:
+        from src.refactor_parity_gate import build_default_input_vectors
+
+        pristine_source = internals_path.read_text(encoding="utf-8")
+        input_vectors = build_default_input_vectors()
+
     refactor_internals_all_singletons(
         projection,
         clusters,
         internals_path=internals_path,
         dry_run=dry_run,
         source_graph=source_graph,
+        pristine_source=pristine_source,
+        input_vectors=input_vectors,
     )
     ordered_clusters = compute_multi_member_cluster_refactor_order(projection, clusters)
     results: list[ClusterRefactorApplyResult] = []
@@ -2149,6 +2204,8 @@ def refactor_internals_all_clusters(
             ctx,
             internals_path=internals_path,
             dry_run=dry_run,
+            pristine_source=pristine_source,
+            input_vectors=input_vectors,
         )
         results.append(result)
         responses.append(result.response)
@@ -2179,62 +2236,72 @@ def llm_refactor_singleton(
     ctx: SingletonRefactorContext,
     *,
     internals_path: Path,
+    pristine_source: str | None = None,
+    input_vectors: Sequence[Mapping[str, object]] | None = None,
 ) -> SingletonRefactorResponse:
     schema = SingletonRefactorResponse.model_json_schema()
     internals_bytes = internals_path.read_bytes()
+    internals_source = internals_path.read_text(encoding="utf-8")
+    existing_names = _function_names(internals_source)
     cache = load_refactor_cache()
     cache_key = singleton_refactor_cache_key(ctx, internals_bytes, schema)
-    if cache_key in cache:
-        content = cache[cache_key]
-    else:
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY is required to generate uncached refactor responses"
-            )
-        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
-        payload = singleton_prompt_payload(ctx)
-        internals_source = internals_path.read_text(encoding="utf-8")
-        existing_names = _function_names(internals_source)
 
-        def _prepare_and_validate_singleton(
-            parsed: SingletonRefactorResponse,
-        ) -> SingletonRefactorResponse:
-            prepared = _prepare_singleton_refactor_response(parsed, ctx)
-            validate_singleton_refactor_response(
-                ctx,
-                prepared,
-                existing_names=existing_names,
-                internals_source=internals_source,
-            )
-            return prepared
-
-        parsed, _ = generate_validated_json(
-            client=client,
-            model=REFACTOR_MODEL,
-            system_prompt=(
-                "You rename and refactor one Excel-generated singleton helper "
-                "into a semantic function. Return only JSON matching the schema. "
-                "Preserve semantics exactly; do not algebraically simplify. "
-                "Write Google-style docstrings with Args and Returns sections."
-            ),
-            user_prompt=_prompt_for_singleton_refactor(payload, schema),
-            response_model=SingletonRefactorResponse,
-            post_validate=_prepare_and_validate_singleton,
+    def _prepare_and_validate_singleton(
+        parsed: SingletonRefactorResponse,
+    ) -> SingletonRefactorResponse:
+        prepared = _prepare_singleton_refactor_response(parsed, ctx)
+        validate_singleton_refactor_response(
+            ctx,
+            prepared,
+            existing_names=existing_names,
+            internals_source=internals_source,
         )
-        content = parsed.model_dump_json()
-        cache[cache_key] = content
-        save_refactor_cache(cache)
+        if pristine_source is not None and input_vectors is not None:
+            from src.refactor_parity_gate import check_singleton_parity
 
-    parsed = SingletonRefactorResponse.model_validate_json(content)
-    parsed = _prepare_singleton_refactor_response(parsed, ctx)
-    internals_source = internals_path.read_text(encoding="utf-8")
-    validate_singleton_refactor_response(
-        ctx,
-        parsed,
-        existing_names=_function_names(internals_source),
-        internals_source=internals_source,
+            check_singleton_parity(
+                pristine_source=pristine_source,
+                current_source=internals_source,
+                response=prepared,
+                ctx=ctx,
+                input_vectors=input_vectors,
+            )
+        return prepared
+
+    cached_content = cache.get(cache_key)
+    if cached_content is not None:
+        try:
+            return _prepare_and_validate_singleton(
+                SingletonRefactorResponse.model_validate_json(cached_content)
+            )
+        except (ValueError, ValidationError):
+            if not os.environ.get("OPENAI_API_KEY"):
+                raise
+            del cache[cache_key]
+            save_refactor_cache(cache)
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required to generate uncached refactor responses"
+        )
+    client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
+    payload = singleton_prompt_payload(ctx)
+    parsed, _ = generate_validated_json(
+        client=client,
+        model=REFACTOR_MODEL,
+        system_prompt=(
+            "You rename and refactor one Excel-generated singleton helper "
+            "into a semantic function. Return only JSON matching the schema. "
+            "Preserve semantics exactly; do not algebraically simplify. "
+            "Write Google-style docstrings with Args and Returns sections."
+        ),
+        user_prompt=_prompt_for_singleton_refactor(payload, schema),
+        response_model=SingletonRefactorResponse,
+        post_validate=_prepare_and_validate_singleton,
     )
+    cache[cache_key] = parsed.model_dump_json()
+    save_refactor_cache(cache)
     return parsed
 
 
@@ -2242,62 +2309,74 @@ def llm_refactor_cluster(
     ctx: ClusterRefactorContext,
     *,
     internals_path: Path,
+    pristine_source: str | None = None,
+    input_vectors: Sequence[Mapping[str, object]] | None = None,
 ) -> ClusterRefactorResponse:
     schema = ClusterRefactorResponse.model_json_schema()
     internals_bytes = internals_path.read_bytes()
+    internals_source = internals_path.read_text(encoding="utf-8")
+    existing_names = _function_names(internals_source)
     cache = load_refactor_cache()
     cache_key = refactor_cache_key(ctx, internals_bytes, schema)
-    if cache_key in cache:
-        content = cache[cache_key]
-    else:
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY is required to generate uncached refactor responses"
-            )
-        client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
-        payload = prompt_payload(ctx)
-        internals_source = internals_path.read_text(encoding="utf-8")
-        existing_names = _function_names(internals_source)
 
-        def _prepare_and_validate_cluster(
-            parsed: ClusterRefactorResponse,
-        ) -> ClusterRefactorResponse:
-            prepared = _prepare_cluster_refactor_response(parsed, ctx)
-            validate_cluster_refactor_response(
-                ctx,
-                prepared,
-                existing_names=existing_names,
-                internals_source=internals_source,
-            )
-            return prepared
-
-        parsed, _ = generate_validated_json(
-            client=client,
-            model=REFACTOR_MODEL,
-            system_prompt=(
-                "You refactor parallel Excel-generated Python helpers into one "
-                "parameterized function. Return only JSON matching the schema. "
-                "Preserve semantics exactly; do not algebraically simplify. "
-                "Write Google-style docstrings with Args and Returns sections."
-            ),
-            user_prompt=_prompt_for_refactor(payload, schema),
-            response_model=ClusterRefactorResponse,
-            post_validate=_prepare_and_validate_cluster,
+    def _prepare_and_validate_cluster(
+        parsed: ClusterRefactorResponse,
+    ) -> ClusterRefactorResponse:
+        prepared = _prepare_cluster_refactor_response(parsed, ctx)
+        validate_cluster_refactor_response(
+            ctx,
+            prepared,
+            existing_names=existing_names,
+            internals_source=internals_source,
         )
-        content = parsed.model_dump_json()
-        cache[cache_key] = content
-        save_refactor_cache(cache)
+        if pristine_source is not None and input_vectors is not None:
+            from src.refactor_parity_gate import check_cluster_parity
 
-    parsed = ClusterRefactorResponse.model_validate_json(content)
-    parsed = _prepare_cluster_refactor_response(parsed, ctx)
-    internals_source = internals_path.read_text(encoding="utf-8")
-    validate_cluster_refactor_response(
-        ctx,
-        parsed,
-        existing_names=_function_names(internals_source),
-        internals_source=internals_source,
+            check_cluster_parity(
+                pristine_source=pristine_source,
+                current_source=internals_source,
+                response=prepared,
+                ctx=ctx,
+                input_vectors=input_vectors,
+            )
+        return prepared
+
+    cached_content = cache.get(cache_key)
+    if cached_content is not None:
+        try:
+            return _prepare_and_validate_cluster(
+                ClusterRefactorResponse.model_validate_json(cached_content)
+            )
+        except (ValueError, ValidationError):
+            # A cached response that no longer satisfies the gate is stale or
+            # broken: drop it and regenerate (which re-prompts on failure).
+            if not os.environ.get("OPENAI_API_KEY"):
+                raise
+            del cache[cache_key]
+            save_refactor_cache(cache)
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is required to generate uncached refactor responses"
+        )
+    client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
+    payload = prompt_payload(ctx)
+    parsed, _ = generate_validated_json(
+        client=client,
+        model=REFACTOR_MODEL,
+        system_prompt=(
+            "You refactor parallel Excel-generated Python helpers into one "
+            "parameterized function. Return only JSON matching the schema. "
+            "Preserve semantics exactly; do not algebraically simplify. "
+            "Write Google-style docstrings with Args and Returns sections."
+        ),
+        user_prompt=_prompt_for_refactor(payload, schema),
+        response_model=ClusterRefactorResponse,
+        post_validate=_prepare_and_validate_cluster,
     )
+    cache[cache_key] = parsed.model_dump_json()
+    save_refactor_cache(cache)
     return parsed
 
 
@@ -2316,7 +2395,6 @@ Rules:
 - Rename local temporaries to domain-meaningful snake_case informed by naming_hints.
 - Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
 - Do not reference cell_* helpers; call semantic helpers already present in internals.py.
-- Prefer readable if/else over walrus/ternary chains when refactoring for clarity.
 - Emit one complete symbol_source function with signature (ctx).
 - symbol_source must include a Google-style docstring with Args and Returns sections.
 - symbol_docstring must match the docstring embedded in symbol_source exactly.
@@ -2336,6 +2414,12 @@ Returns:
 Note:
     Covers Inputs!B6. Excel: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2).
 \"\"\"
+
+Example case-switch shape (use a lookup table, not an if/elif ladder):
+year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
+if year_address is None:
+    return XlError.VALUE
+year = xl_cell(ctx, year_address)
 
 Singleton context:
 {payload_json}
@@ -2368,7 +2452,6 @@ Rules:
 - Do not reference cell_* helpers anywhere in the body.
 - For every entry in semantic_dependencies, replace reads with call_form using pass-through
   parameter names, e.g. shock_active(ctx, time_period=time_period).
-- Prefer readable if/else over walrus/ternary chains when refactoring for clarity.
 - Emit one complete helper_source function.
 - helper_source must include a Google-style docstring with Args and Returns sections.
 - helper_docstring must match the docstring embedded in helper_source exactly.
@@ -2389,6 +2472,12 @@ Returns:
 Note:
     Covers Engine!C10:G10. Excel: =IF(Engine!{{col}}5>=Inputs!$B$21,1,0).
 \"\"\"
+
+Example case-switch shape (use a lookup table, not an if/elif ladder):
+year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
+if year_address is None:
+    return XlError.VALUE
+year = xl_cell(ctx, year_address)
 
 Cluster context:
 {payload_json}

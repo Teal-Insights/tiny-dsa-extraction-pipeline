@@ -24,6 +24,7 @@ from src.internals_refactor import (
     validate_refactored_internals,
     validate_semantic_local_names,
     validate_singleton_refactor_response,
+    _address_in_docstring_range,
     _align_singleton_response_docstring,
     _normalize_google_docstring,
     _prepare_cluster_refactor_response,
@@ -387,6 +388,23 @@ def test_resolve_semantic_dependencies_reports_unresolved_cell_helpers() -> None
     semantic, unresolved = resolve_semantic_dependencies(source, ["Engine!C10"])
     assert semantic == ()
     assert unresolved == ("cell_engine_c10",)
+
+
+def test_address_in_docstring_range_ignores_excel_formula_addresses() -> None:
+    docstring = (
+        "Return the shocked-path debt-to-GDP percentage for a projection year.\n\n"
+        "Note:\n"
+        "    Covers Engine!C20:G20. Excel: =Inputs!B6*(1+Inputs!C17/100)"
+        "/(1+Inputs!C16/100)-Engine!C16.\n"
+    )
+    # Addresses the helper actually computes (the Covers range) are matched.
+    assert _address_in_docstring_range(docstring, "Engine!C20")
+    assert _address_in_docstring_range(docstring, "Engine!E20")
+    # Addresses that appear only inside the Excel formula transcription must not
+    # be mistaken for cells the helper computes.
+    assert not _address_in_docstring_range(docstring, "Inputs!C16")
+    assert not _address_in_docstring_range(docstring, "Engine!C16")
+    assert not _address_in_docstring_range(docstring, "Inputs!C17")
 
 
 def test_build_cluster_context_row_16_resolves_shock_active(
