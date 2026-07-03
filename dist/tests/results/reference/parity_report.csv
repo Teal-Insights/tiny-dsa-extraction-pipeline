@@ -419,21 +419,21 @@ single_axis:growth_shock_magnitude=+1.0,Outputs!C14,output_delta[year=2],-0.5893
 single_axis:growth_shock_magnitude=+1.0,Outputs!D14,output_delta[year=3],-1.18351335086777,-1.18351335086777,0.0,0.0,True
 single_axis:growth_shock_magnitude=+1.0,Outputs!E14,output_delta[year=4],-1.7777286405147805,-1.7777286405147805,0.0,0.0,True
 single_axis:growth_shock_magnitude=+1.0,Outputs!F14,output_delta[year=5],-2.367190952881657,-2.367190952881657,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!B12,output_baseline[year=1],63.400000000000006,63.400000000000006,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!C12,output_baseline[year=2],64.20628019323672,64.20628019323672,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!D12,output_baseline[year=3],64.51645545987073,64.51645545987073,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!E12,output_baseline[year=4],64.3281291577445,64.3281291577445,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!F12,output_baseline[year=5],63.63889306671912,63.63889306671912,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!B13,output_shocked[year=1],63.400000000000006,63.400000000000006,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!C13,output_shocked[year=2],64.20628019323672,64.20628019323672,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!D13,output_shocked[year=3],64.51645545987073,64.51645545987073,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!E13,output_shocked[year=4],64.3281291577445,64.3281291577445,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!F13,output_shocked[year=5],63.63889306671912,63.63889306671912,0.0,0.0,True
-single_axis:growth[year=1]=+0.0,Outputs!B14,output_delta[year=1],0.0,0.0,0.0,inf,True
-single_axis:growth[year=1]=+0.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf,True
-single_axis:growth[year=1]=+0.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
-single_axis:growth[year=1]=+0.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
-single_axis:growth[year=1]=+0.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
+single_axis:growth[year=1]=+0.0,Outputs!B12,output_baseline[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!C12,output_baseline[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!D12,output_baseline[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!E12,output_baseline[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!F12,output_baseline[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!B13,output_shocked[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!C13,output_shocked[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!D13,output_shocked[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!E13,output_shocked[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!F13,output_shocked[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!B14,output_delta[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!C14,output_delta[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!D14,output_delta[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!E14,output_delta[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=1]=+0.0,Outputs!F14,output_delta[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
 single_axis:growth[year=1]=+1.5,Outputs!B12,output_baseline[year=1],62.47783251231528,62.47783251231528,0.0,0.0,True
 single_axis:growth[year=1]=+1.5,Outputs!C12,output_baseline[year=2],63.27965779015256,63.27965779015256,0.0,0.0,True
 single_axis:growth[year=1]=+1.5,Outputs!D12,output_baseline[year=3],63.585356620056686,63.585356620056686,0.0,0.0,True
@@ -494,21 +494,21 @@ single_axis:growth[year=1]=+7.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf
 single_axis:growth[year=1]=+7.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
 single_axis:growth[year=1]=+7.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
 single_axis:growth[year=1]=+7.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
-single_axis:growth[year=3]=+0.0,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!D12,output_baseline[year=3],64.5693789820066,64.5693789820066,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!E12,output_baseline[year=4],64.38130834906943,64.38130834906943,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!F12,output_baseline[year=5],63.692329162349964,63.692329162349964,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!B13,output_shocked[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!C13,output_shocked[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!D13,output_shocked[year=3],64.5693789820066,64.5693789820066,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!E13,output_shocked[year=4],64.38130834906943,64.38130834906943,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!F13,output_shocked[year=5],63.692329162349964,63.692329162349964,0.0,0.0,True
-single_axis:growth[year=3]=+0.0,Outputs!B14,output_delta[year=1],0.0,0.0,0.0,inf,True
-single_axis:growth[year=3]=+0.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf,True
-single_axis:growth[year=3]=+0.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
-single_axis:growth[year=3]=+0.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
-single_axis:growth[year=3]=+0.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
+single_axis:growth[year=3]=+0.0,Outputs!B12,output_baseline[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!C12,output_baseline[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!D12,output_baseline[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!E12,output_baseline[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!F12,output_baseline[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!B13,output_shocked[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!C13,output_shocked[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!D13,output_shocked[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!E13,output_shocked[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!F13,output_shocked[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!B14,output_delta[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!C14,output_delta[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!D14,output_delta[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!E14,output_delta[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=3]=+0.0,Outputs!F14,output_delta[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
 single_axis:growth[year=3]=+1.5,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
 single_axis:growth[year=3]=+1.5,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
 single_axis:growth[year=3]=+1.5,Outputs!D12,output_baseline[year=3],63.615151706410444,63.615151706410444,0.0,0.0,True
@@ -569,21 +569,21 @@ single_axis:growth[year=3]=+7.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf
 single_axis:growth[year=3]=+7.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
 single_axis:growth[year=3]=+7.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
 single_axis:growth[year=3]=+7.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
-single_axis:growth[year=5]=+0.0,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!D12,output_baseline[year=3],62.38587341256677,62.38587341256677,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!E12,output_baseline[year=4],62.18725444354536,62.18725444354536,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!F12,output_baseline[year=5],63.674744621287175,63.674744621287175,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!B13,output_shocked[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!C13,output_shocked[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!D13,output_shocked[year=3],62.38587341256677,62.38587341256677,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!E13,output_shocked[year=4],62.18725444354536,62.18725444354536,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!F13,output_shocked[year=5],63.674744621287175,63.674744621287175,0.0,0.0,True
-single_axis:growth[year=5]=+0.0,Outputs!B14,output_delta[year=1],0.0,0.0,0.0,inf,True
-single_axis:growth[year=5]=+0.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf,True
-single_axis:growth[year=5]=+0.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
-single_axis:growth[year=5]=+0.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
-single_axis:growth[year=5]=+0.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
+single_axis:growth[year=5]=+0.0,Outputs!B12,output_baseline[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!C12,output_baseline[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!D12,output_baseline[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!E12,output_baseline[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!F12,output_baseline[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!B13,output_shocked[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!C13,output_shocked[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!D13,output_shocked[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!E13,output_shocked[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!F13,output_shocked[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!B14,output_delta[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!C14,output_delta[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!D14,output_delta[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!E14,output_delta[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:growth[year=5]=+0.0,Outputs!F14,output_delta[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
 single_axis:growth[year=5]=+1.5,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
 single_axis:growth[year=5]=+1.5,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
 single_axis:growth[year=5]=+1.5,Outputs!D12,output_baseline[year=3],62.38587341256677,62.38587341256677,0.0,0.0,True
@@ -644,21 +644,21 @@ single_axis:growth[year=5]=+7.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf
 single_axis:growth[year=5]=+7.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
 single_axis:growth[year=5]=+7.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
 single_axis:growth[year=5]=+7.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
-single_axis:interest[year=1]=+0.0,Outputs!B12,output_baseline[year=1],58.971014492753625,58.971014492753625,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!C12,output_baseline[year=2],59.75589862073795,59.75589862073795,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!D12,output_baseline[year=3],60.04457445948548,60.04457445948548,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!E12,output_baseline[year=4],59.83464486750233,59.83464486750233,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!F12,output_baseline[year=5],59.1237011229009,59.1237011229009,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!B13,output_shocked[year=1],58.971014492753625,58.971014492753625,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!C13,output_shocked[year=2],59.75589862073795,59.75589862073795,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!D13,output_shocked[year=3],60.04457445948548,60.04457445948548,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!E13,output_shocked[year=4],59.83464486750233,59.83464486750233,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!F13,output_shocked[year=5],59.1237011229009,59.1237011229009,0.0,0.0,True
-single_axis:interest[year=1]=+0.0,Outputs!B14,output_delta[year=1],0.0,0.0,0.0,inf,True
-single_axis:interest[year=1]=+0.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf,True
-single_axis:interest[year=1]=+0.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
-single_axis:interest[year=1]=+0.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
-single_axis:interest[year=1]=+0.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
+single_axis:interest[year=1]=+0.0,Outputs!B12,output_baseline[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!C12,output_baseline[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!D12,output_baseline[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!E12,output_baseline[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!F12,output_baseline[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!B13,output_shocked[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!C13,output_shocked[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!D13,output_shocked[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!E13,output_shocked[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!F13,output_shocked[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!B14,output_delta[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!C14,output_delta[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!D14,output_delta[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!E14,output_delta[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=1]=+0.0,Outputs!F14,output_delta[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
 single_axis:interest[year=1]=+2.0,Outputs!B12,output_baseline[year=1],60.1304347826087,60.1304347826087,0.0,0.0,True
 single_axis:interest[year=1]=+2.0,Outputs!C12,output_baseline[year=2],60.920919974795225,60.920919974795225,0.0,0.0,True
 single_axis:interest[year=1]=+2.0,Outputs!D12,output_baseline[year=3],61.21522393602613,61.21522393602613,0.0,0.0,True
@@ -719,21 +719,21 @@ single_axis:interest[year=1]=+8.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,i
 single_axis:interest[year=1]=+8.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
 single_axis:interest[year=1]=+8.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
 single_axis:interest[year=1]=+8.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
-single_axis:interest[year=3]=+0.0,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!D12,output_baseline[year=3],59.98641674285266,59.98641674285266,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!E12,output_baseline[year=4],59.77620619571669,59.77620619571669,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!F12,output_baseline[year=5],59.064980138691176,59.064980138691176,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!B13,output_shocked[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!C13,output_shocked[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!D13,output_shocked[year=3],59.98641674285266,59.98641674285266,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!E13,output_shocked[year=4],59.77620619571669,59.77620619571669,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!F13,output_shocked[year=5],59.064980138691176,59.064980138691176,0.0,0.0,True
-single_axis:interest[year=3]=+0.0,Outputs!B14,output_delta[year=1],0.0,0.0,0.0,inf,True
-single_axis:interest[year=3]=+0.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf,True
-single_axis:interest[year=3]=+0.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
-single_axis:interest[year=3]=+0.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
-single_axis:interest[year=3]=+0.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
+single_axis:interest[year=3]=+0.0,Outputs!B12,output_baseline[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!C12,output_baseline[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!D12,output_baseline[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!E12,output_baseline[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!F12,output_baseline[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!B13,output_shocked[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!C13,output_shocked[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!D13,output_shocked[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!E13,output_shocked[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!F13,output_shocked[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!B14,output_delta[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!C14,output_delta[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!D14,output_delta[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!E14,output_delta[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=3]=+0.0,Outputs!F14,output_delta[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
 single_axis:interest[year=3]=+2.0,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
 single_axis:interest[year=3]=+2.0,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
 single_axis:interest[year=3]=+2.0,Outputs!D12,output_baseline[year=3],61.18614507770971,61.18614507770971,0.0,0.0,True
@@ -794,21 +794,21 @@ single_axis:interest[year=3]=+8.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,i
 single_axis:interest[year=3]=+8.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
 single_axis:interest[year=3]=+8.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
 single_axis:interest[year=3]=+8.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
-single_axis:interest[year=5]=+0.0,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!D12,output_baseline[year=3],62.38587341256677,62.38587341256677,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!E12,output_baseline[year=4],62.18725444354536,62.18725444354536,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!F12,output_baseline[year=5],59.084303810188764,59.084303810188764,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!B13,output_shocked[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!C13,output_shocked[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!D13,output_shocked[year=3],62.38587341256677,62.38587341256677,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!E13,output_shocked[year=4],62.18725444354536,62.18725444354536,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!F13,output_shocked[year=5],59.084303810188764,59.084303810188764,0.0,0.0,True
-single_axis:interest[year=5]=+0.0,Outputs!B14,output_delta[year=1],0.0,0.0,0.0,inf,True
-single_axis:interest[year=5]=+0.0,Outputs!C14,output_delta[year=2],0.0,0.0,0.0,inf,True
-single_axis:interest[year=5]=+0.0,Outputs!D14,output_delta[year=3],0.0,0.0,0.0,inf,True
-single_axis:interest[year=5]=+0.0,Outputs!E14,output_delta[year=4],0.0,0.0,0.0,inf,True
-single_axis:interest[year=5]=+0.0,Outputs!F14,output_delta[year=5],0.0,0.0,0.0,inf,True
+single_axis:interest[year=5]=+0.0,Outputs!B12,output_baseline[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!C12,output_baseline[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!D12,output_baseline[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!E12,output_baseline[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!F12,output_baseline[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!B13,output_shocked[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!C13,output_shocked[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!D13,output_shocked[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!E13,output_shocked[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!F13,output_shocked[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!B14,output_delta[year=1],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!C14,output_delta[year=2],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!D14,output_delta[year=3],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!E14,output_delta[year=4],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
+single_axis:interest[year=5]=+0.0,Outputs!F14,output_delta[year=5],<exception: XlErrorException: #DIV/0!>,<exception: XlErrorException: #DIV/0!>,,,False
 single_axis:interest[year=5]=+2.0,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True
 single_axis:interest[year=5]=+2.0,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True
 single_axis:interest[year=5]=+2.0,Outputs!D12,output_baseline[year=3],62.38587341256677,62.38587341256677,0.0,0.0,True
