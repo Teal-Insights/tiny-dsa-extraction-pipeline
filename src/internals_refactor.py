@@ -4,6 +4,7 @@ import ast
 import builtins
 import hashlib
 import json
+import logging
 import os
 import re
 import textwrap
@@ -16,11 +17,11 @@ from typing import Literal
 from dotenv import load_dotenv
 from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
-from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.formula_clustering import FormulaCluster
 from src.llm_json import generate_validated_json
+from src.llm_providers import build_client, model_from_env, provider_for_model
 from src.projection_columns import (
     ENGINE_COLUMNS,
     EngineColumn,
@@ -51,12 +52,25 @@ from src.semantic_naming import (
     validate_semantic_identifier,
 )
 
+logger = logging.getLogger(__name__)
+
 repo_root = Path(__file__).resolve().parents[1]
 BINDINGS_PATH = repo_root / "bindings"
 DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
 
-REFACTOR_MODEL = "gpt-5.5"
-REFACTOR_PROMPT_VERSION = 10
+REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
+REFACTOR_PROMPT_VERSION = 12
+
+
+def refactor_model() -> str:
+    return model_from_env(REFACTOR_MODEL_ENV)
+
+
+def _refactor_provider_key_present() -> bool:
+    provider = provider_for_model(refactor_model())
+    return bool(os.environ.get(provider.api_key_env))
+
+
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
 RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
@@ -528,7 +542,7 @@ def refactor_cache_key(
     response_schema: dict[str, object],
 ) -> str:
     payload = {
-        "model": REFACTOR_MODEL,
+        "model": refactor_model(),
         "prompt_version": REFACTOR_PROMPT_VERSION,
         "cluster_id": ctx.cluster_id,
         "canonical_template": ctx.canonical_template,
@@ -905,6 +919,48 @@ def validate_no_cell_function_references(function_def: ast.FunctionDef) -> None:
         )
 
 
+def _references_xl_error(node: ast.expr) -> bool:
+    return any(
+        isinstance(sub, ast.Name) and sub.id == "XlError" for sub in ast.walk(node)
+    )
+
+
+def validate_no_sentinel_error_handling(function_def: ast.FunctionDef) -> None:
+    """Reject sentinel-style Excel error handling in refactored helpers.
+
+    Runtime accessors raise `XlErrorException` and never return an `XlError`
+    sentinel, so helpers must not test values against `XlError` nor return one.
+    Errors are signalled with `xl_raise(...)`; comparisons and coercions use the
+    raising `xl_*` wrappers.
+    """
+    for node in ast.walk(function_def):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "isinstance"
+            and len(node.args) == 2
+            and _references_xl_error(node.args[1])
+        ):
+            raise ValueError(
+                "helper must not test values against XlError; runtime accessors "
+                "raise XlErrorException, so drop isinstance(x, XlError) checks"
+            )
+        if isinstance(node, ast.Return) and node.value is not None:
+            value = node.value
+            returns_sentinel = (
+                isinstance(value, ast.Name) and value.id == "XlError"
+            ) or (
+                isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == "XlError"
+            )
+            if returns_sentinel:
+                raise ValueError(
+                    "helper must not return an XlError sentinel; signal errors with "
+                    "xl_raise(XlError.CODE) instead of return XlError.CODE"
+                )
+
+
 def validate_cluster_refactor_response(
     ctx: ClusterRefactorContext,
     response: ClusterRefactorResponse,
@@ -1024,6 +1080,7 @@ def validate_cluster_refactor_response(
 
     validate_semantic_local_names(helper_def)
     validate_no_cell_function_references(helper_def)
+    validate_no_sentinel_error_handling(helper_def)
 
     arg_names = [arg.arg for arg in helper_def.args.args]
     expected_args = ["ctx", *[parameter.name for parameter in response.parameters]]
@@ -1068,7 +1125,7 @@ def singleton_refactor_cache_key(
 ) -> str:
     payload = {
         "kind": "singleton",
-        "model": REFACTOR_MODEL,
+        "model": refactor_model(),
         "prompt_version": REFACTOR_PROMPT_VERSION,
         "address": ctx.address,
         "canonical_template": ctx.canonical_template,
@@ -1159,6 +1216,7 @@ def validate_singleton_refactor_response(
 
     validate_semantic_local_names(symbol_def)
     validate_no_cell_function_references(symbol_def)
+    validate_no_sentinel_error_handling(symbol_def)
 
     arg_names = [arg.arg for arg in symbol_def.args.args]
     if arg_names != ["ctx"]:
@@ -2084,8 +2142,10 @@ def refactor_internals_all_singletons(
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
 ) -> tuple[SingletonRefactorApplyResult, ...]:
+    ordered = compute_singleton_cluster_refactor_order(projection, clusters)
+    logger.info("Refactoring singletons: %d candidate clusters", len(ordered))
     results: list[SingletonRefactorApplyResult] = []
-    for cluster in compute_singleton_cluster_refactor_order(projection, clusters):
+    for cluster in ordered:
         ctx = build_singleton_refactor_context(
             projection,
             cluster,
@@ -2094,6 +2154,12 @@ def refactor_internals_all_singletons(
         )
         if ctx is None:
             continue
+        logger.info(
+            "Singleton refactor %d: %s (%s)",
+            len(results) + 1,
+            ctx.function_name,
+            ctx.address,
+        )
         result = refactor_internals_singleton(
             ctx,
             internals_path=internals_path,
@@ -2102,6 +2168,7 @@ def refactor_internals_all_singletons(
             input_vectors=input_vectors,
         )
         results.append(result)
+    logger.info("Refactored %d singletons", len(results))
     return tuple(results)
 
 
@@ -2175,9 +2242,10 @@ def refactor_internals_all_clusters(
         input_vectors=input_vectors,
     )
     ordered_clusters = compute_multi_member_cluster_refactor_order(projection, clusters)
+    logger.info("Refactoring clusters: %d in dependency order", len(ordered_clusters))
     results: list[ClusterRefactorApplyResult] = []
     responses: list[ClusterRefactorResponse] = []
-    for cluster in ordered_clusters:
+    for index, cluster in enumerate(ordered_clusters, start=1):
         ctx = build_cluster_refactor_context(
             projection,
             cluster,
@@ -2186,6 +2254,13 @@ def refactor_internals_all_clusters(
         )
         if ctx is None:
             continue
+        logger.info(
+            "Cluster refactor %d/%d: id=%s, %d members",
+            index,
+            len(ordered_clusters),
+            cluster.cluster_id,
+            len(ctx.members),
+        )
         result = refactor_internals_cluster(
             ctx,
             internals_path=internals_path,
@@ -2197,6 +2272,7 @@ def refactor_internals_all_clusters(
         responses.append(result.response)
 
     if not dry_run and responses:
+        logger.info("Applying phase C: pruning unreferenced thin wrappers")
         source = internals_path.read_text(encoding="utf-8")
         updated, phase_c_pruned = apply_phase_c(source)
         validate_refactored_internals(updated)
@@ -2257,25 +2333,31 @@ def llm_refactor_singleton(
     cached_content = cache.get(cache_key)
     if cached_content is not None:
         try:
-            return _prepare_and_validate_singleton(
+            result = _prepare_and_validate_singleton(
                 SingletonRefactorResponse.model_validate_json(cached_content)
             )
-        except (ValueError, ValidationError):
-            if not os.environ.get("OPENAI_API_KEY"):
+            logger.info("Cache hit for singleton %s", ctx.function_name)
+            return result
+        except (ValueError, ValidationError) as error:
+            if not _refactor_provider_key_present():
                 raise
+            logger.info(
+                "Stale cache for singleton %s, regenerating: %s",
+                ctx.function_name,
+                error,
+            )
             del cache[cache_key]
             save_refactor_cache(cache)
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is required to generate uncached refactor responses"
-        )
-    client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
+    model = refactor_model()
+    logger.info("Calling %s for singleton %s (cache miss)", model, ctx.function_name)
+    client, provider = build_client(model)
     payload = singleton_prompt_payload(ctx)
     parsed, _ = generate_validated_json(
         client=client,
-        model=REFACTOR_MODEL,
+        model=model,
+        provider=provider,
+        structured=False,
         system_prompt=(
             "You rename and refactor one Excel-generated singleton helper "
             "into a semantic function. Return only JSON matching the schema. "
@@ -2330,27 +2412,33 @@ def llm_refactor_cluster(
     cached_content = cache.get(cache_key)
     if cached_content is not None:
         try:
-            return _prepare_and_validate_cluster(
+            result = _prepare_and_validate_cluster(
                 ClusterRefactorResponse.model_validate_json(cached_content)
             )
-        except (ValueError, ValidationError):
+            logger.info("Cache hit for cluster %s", ctx.cluster_id)
+            return result
+        except (ValueError, ValidationError) as error:
             # A cached response that no longer satisfies the gate is stale or
             # broken: drop it and regenerate (which re-prompts on failure).
-            if not os.environ.get("OPENAI_API_KEY"):
+            if not _refactor_provider_key_present():
                 raise
+            logger.info(
+                "Stale cache for cluster %s, regenerating: %s",
+                ctx.cluster_id,
+                error,
+            )
             del cache[cache_key]
             save_refactor_cache(cache)
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is required to generate uncached refactor responses"
-        )
-    client = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
+    model = refactor_model()
+    logger.info("Calling %s for cluster %s (cache miss)", model, ctx.cluster_id)
+    client, provider = build_client(model)
     payload = prompt_payload(ctx)
     parsed, _ = generate_validated_json(
         client=client,
-        model=REFACTOR_MODEL,
+        model=model,
+        provider=provider,
+        structured=False,
         system_prompt=(
             "You refactor parallel Excel-generated Python helpers into one "
             "parameterized function. Return only JSON matching the schema. "
@@ -2369,12 +2457,25 @@ def llm_refactor_cluster(
 _RUNTIME_API_PROMPT_RULES = """\
 Runtime API rules:
 - Use only symbols listed in constraints.allowed_runtime_symbols.
-- Coerce numeric scalars with xl_number; compare with xl_compare(op, left, right).
-- Materialize worksheet ranges with xl_range(ctx, address) for MATCH/INDEX-style lookups.
+- Coerce scalars with the raising wrappers: xl_number for floats, xl_int for integer
+  indices, xl_bool for truth values; compare with xl_compare(op, left, right).
+- Reference model for INDEX/OFFSET: xl_index_ref((sheet, start_row, start_col, end_row,
+  end_col), row_num, col_num) returns a *reference* (coordinate metadata), not a value; read the
+  value it points to with xl_offset(ctx, <reference>, 0.0, 0.0). Its first argument is a
+  coordinate tuple, never an xl_range(...) result, and its result must be dereferenced.
+- Use xl_range(ctx, address) only to materialize an array for xl_match's lookup_array; never
+  pass an xl_range(...) result to xl_index_ref.
 - Do not import numpy or use np, and do not call removed helpers such as xl_add, xl_mul,
   xl_div, xl_sub, or xl_ge.
-- Follow the member python_source for XlError propagation (isinstance checks, to_bool, to_int,
-  xl_raise) rather than inventing a different error-handling style.\
+- Runtime accessors raise XlErrorException on Excel errors; they never hand back an XlError
+  sentinel. Do not wrap their results in isinstance(x, XlError) checks, do not coerce with the
+  bare to_int/to_bool/to_number helpers, and do not re-raise with xl_raise what the runtime
+  already raises.
+- To signal an Excel error yourself, call xl_raise(XlError.CODE); never return an XlError
+  sentinel (write xl_raise(XlError.VALUE), not return XlError.VALUE).
+- The provided python_source may still use the older sentinel style (isinstance guards,
+  to_int/to_bool, return XlError.VALUE); translate it to the raise-based convention above while
+  preserving semantics exactly.\
 """
 
 _RUNTIME_API_EXAMPLE_BODY = """\
@@ -2382,18 +2483,22 @@ Example helper body shape:
 column_by_time_period = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}
 column = column_by_time_period.get(time_period)
 if column is None:
-    return XlError.VALUE
+    xl_raise(XlError.VALUE)
 projection_year = xl_cell(ctx, f'Engine!{{column}}5')
 shock_year = xl_cell(ctx, 'Inputs!B21')
-shock_activation = xl_compare('>=', projection_year, shock_year)
-is_active = to_bool(shock_activation)
-if isinstance(is_active, XlError):
-    return is_active
+is_active = xl_compare('>=', projection_year, shock_year)
 baseline_growth_rate = xl_cell(ctx, f'Inputs!{{column}}16')
 shock_adjustment = xl_number(selected_shock_magnitude_pp(ctx)) * xl_number(
     1.0 if is_active else 0.0
 )
-return xl_number(baseline_growth_rate) + shock_adjustment\
+return xl_number(baseline_growth_rate) + shock_adjustment
+
+Example INDEX/MATCH shape (build a reference, then dereference it to a value):
+country_table = ('Inputs', 10, 1, 12, 3)
+selected_country = xl_cell(ctx, 'Inputs!B5')
+matched_row = xl_match(selected_country, xl_range(ctx, 'Inputs!A10:Inputs!A12'), 0.0)
+initial_ratio_ref = xl_index_ref(country_table, matched_row, 2.0)
+return xl_offset(ctx, initial_ratio_ref, 0.0, 0.0)\
 """
 
 
@@ -2406,6 +2511,10 @@ def _prompt_for_singleton_refactor(
 Rename and refactor one Excel-generated singleton helper into a semantic function.
 
 Rules:
+- Preserve the runtime-call expressions in python_source verbatim: keep the same xl_* calls,
+  with the same arguments and nesting (including any xl_index_ref/xl_offset reference-then-deref
+  pattern). Change only the function name, add the docstring, and rename local variables. Do not
+  re-derive INDEX/MATCH/OFFSET logic or substitute one runtime helper for another.
 - Keep signature (ctx) exactly; do not add a col parameter.
 - Do not rename dependency functions.
 - Choose symbol_name as a clear snake_case semantic identifier informed by naming_hints.
@@ -2437,7 +2546,7 @@ Note:
 Example case-switch shape (use a lookup table, not an if/elif ladder):
 year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
 if year_address is None:
-    return XlError.VALUE
+    xl_raise(XlError.VALUE)
 year = xl_cell(ctx, year_address)
 
 {_RUNTIME_API_EXAMPLE_BODY}
@@ -2459,6 +2568,10 @@ def _prompt_for_refactor(
 Refactor one parallel formula cluster into a single parameterized helper.
 
 Rules:
+- Preserve the runtime-call structure from each member's python_source: reuse the same xl_*
+  calls (including any xl_index_ref/xl_offset reference-then-deref pattern) with the same
+  arguments, generalizing only the varying column/address through the parameters. Do not
+  re-derive INDEX/MATCH/OFFSET logic or substitute one runtime helper for another.
 - Declare parameters[] using binding key concepts from key_vocabulary; do not use column letters.
 - For each cluster member, emit member_keys[] with literal key values from expected_keys.
 - Series-constant binding keys (scope: series) are not parameters; bake them into the helper.
@@ -2499,7 +2612,7 @@ Note:
 Example case-switch shape (use a lookup table, not an if/elif ladder):
 year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
 if year_address is None:
-    return XlError.VALUE
+    xl_raise(XlError.VALUE)
 year = xl_cell(ctx, year_address)
 
 {_RUNTIME_API_EXAMPLE_BODY}

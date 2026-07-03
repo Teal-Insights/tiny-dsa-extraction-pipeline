@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -16,7 +15,7 @@ from fastpyxl.utils import get_column_letter
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.llm_json import generate_validated_json
-from src.llm_providers import build_client
+from src.llm_providers import build_client, model_from_env
 
 SEMANTIC_LABEL_MODEL_ENV = "SEMANTIC_LABEL_MODEL"
 DEFAULT_SEMANTIC_LABEL_PROMPT_VERSION = 1
@@ -31,21 +30,8 @@ SheetLabelProvider = Callable[
 
 
 def resolve_semantic_label_model(model: str | None) -> str:
-    """Return the caller's model, else the ``SEMANTIC_LABEL_MODEL`` env value.
-
-    Model switching is configured via the environment (loaded from ``.env``),
-    so an explicit ``None`` with no configured variable is a hard error rather
-    than a silent fallback to some default provider.
-    """
-    if model is not None:
-        return model
-    env_model = os.environ.get(SEMANTIC_LABEL_MODEL_ENV)
-    if not env_model:
-        raise RuntimeError(
-            f"{SEMANTIC_LABEL_MODEL_ENV} must be set (e.g. in .env) or a model "
-            "passed explicitly to select the semantic labeling provider"
-        )
-    return env_model
+    """Return the caller's model, else the ``SEMANTIC_LABEL_MODEL`` env value."""
+    return model_from_env(SEMANTIC_LABEL_MODEL_ENV, model)
 
 
 class SemanticLabel(BaseModel):

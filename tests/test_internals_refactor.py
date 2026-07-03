@@ -109,6 +109,70 @@ def debt_to_gdp(ctx, col):
         raise AssertionError("expected ValueError")
 
 
+def test_validate_no_sentinel_error_handling_rejects_isinstance_check() -> None:
+    from src.internals_refactor import validate_no_sentinel_error_handling
+
+    source = """
+def example(ctx, time_period):
+    shock = to_int(xl_cell(ctx, "Inputs!B22"))
+    if isinstance(shock, XlError):
+        return xl_raise(shock)
+    return xl_number(shock)
+"""
+    function_def = ast.parse(source).body[0]
+    assert isinstance(function_def, ast.FunctionDef)
+    try:
+        validate_no_sentinel_error_handling(function_def)
+    except ValueError as error:
+        assert "isinstance" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_validate_no_sentinel_error_handling_rejects_return_sentinel() -> None:
+    from src.internals_refactor import validate_no_sentinel_error_handling
+
+    source = """
+def example(ctx, time_period):
+    column = {1: 'C'}.get(time_period)
+    if column is None:
+        return XlError.VALUE
+    return xl_cell(ctx, f'Engine!{column}5')
+"""
+    function_def = ast.parse(source).body[0]
+    assert isinstance(function_def, ast.FunctionDef)
+    try:
+        validate_no_sentinel_error_handling(function_def)
+    except ValueError as error:
+        assert "sentinel" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_validate_no_sentinel_error_handling_accepts_raise_based_helper() -> None:
+    from src.internals_refactor import validate_no_sentinel_error_handling
+
+    source = """
+def example(ctx, time_period):
+    column = {1: 'C'}.get(time_period)
+    if column is None:
+        xl_raise(XlError.VALUE)
+    is_active = xl_compare('>=', xl_cell(ctx, f'Engine!{column}5'), 1)
+    return xl_number(1.0 if is_active else 0.0)
+"""
+    function_def = ast.parse(source).body[0]
+    assert isinstance(function_def, ast.FunctionDef)
+    validate_no_sentinel_error_handling(function_def)
+
+
+def test_allowed_runtime_symbols_excludes_sentinel_coercers() -> None:
+    from src.runtime_symbols import allowed_runtime_symbols
+
+    allowed = set(allowed_runtime_symbols())
+    assert allowed.isdisjoint({"to_number", "to_int", "to_bool", "compare_scalars"})
+    assert {"xl_number", "xl_compare"} <= allowed
+
+
 def test_validate_semantic_local_names_rejects_excel_shaped_names() -> None:
     source = """
 def example(ctx, col):

@@ -267,7 +267,7 @@ assert not unbound_input_leaves, (
 
 `excel-grapher` handles the deterministic parts of docstring construction: required and optional field sections, expected constant values, source binding metadata, and workbook-cached example records. But we must define a callback to return the prose fields that cannot be derived mechanically.
 
-This rendering cell uses the docstring cache when available and calls OpenAI
+This rendering cell uses the docstring cache when available and calls a large language model API
 only for uncached generated series API functions.
 
 ```{python}

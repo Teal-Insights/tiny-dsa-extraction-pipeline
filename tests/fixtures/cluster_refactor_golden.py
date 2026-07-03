@@ -91,29 +91,20 @@ def shock_active(ctx, time_period: int):
 {_quoted_docstring(SHOCK_ACTIVE_DOCSTRING)}    column = {_COLUMN_BY_TIME_PERIOD!r}[time_period]
     projection_year = xl_cell(ctx, f'Engine!{{column}}5')
     shock_year = xl_cell(ctx, 'Inputs!B21')
-    year_at_or_after_shock = xl_compare('>=', projection_year, shock_year)
-    is_active = to_bool(year_at_or_after_shock)
-    if isinstance(is_active, XlError):
-        return is_active
+    is_active = xl_compare('>=', projection_year, shock_year)
     return 1.0 if is_active else 0.0\
 """
 
 PRIMARY_BALANCE_SHOCKED_HELPER = f"""\
 def primary_balance_shocked(ctx, time_period: int):
 {_quoted_docstring(PRIMARY_BALANCE_SHOCKED_DOCSTRING)}    column = {_COLUMN_BY_TIME_PERIOD!r}[time_period]
-    shock_type = xl_cell(ctx, 'Inputs!B22')
-    if isinstance(shock_type, XlError):
-        shock_multiplier = shock_type
+    shock_type_index = xl_int(xl_cell(ctx, 'Inputs!B22'))
+    if shock_type_index < 1 or shock_type_index > 3:
+        xl_raise(XlError.VALUE)
+    if shock_type_index in (1, 2):
+        shock_multiplier = 0.0
     else:
-        shock_type_index = to_int(shock_type)
-        if isinstance(shock_type_index, XlError):
-            shock_multiplier = shock_type_index
-        elif shock_type_index < 1 or shock_type_index > 3:
-            shock_multiplier = XlError.VALUE
-        elif shock_type_index == 1 or shock_type_index == 2:
-            shock_multiplier = 0.0
-        else:
-            shock_multiplier = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
+        shock_multiplier = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
     baseline_primary_balance = xl_cell(ctx, f'Inputs!{{column}}18')
     shock_adjustment = xl_number(shock_multiplier) * xl_number(
         shock_active(ctx, time_period=time_period)
@@ -144,29 +135,19 @@ def debt_to_gdp(ctx, time_period: int):
     else:
         prior_debt = debt_to_gdp(ctx, time_period=time_period - 1)
     column = {_COLUMN_BY_TIME_PERIOD!r}[time_period]
-    shock_type = xl_cell(ctx, 'Inputs!B22')
-    if isinstance(shock_type, XlError):
-        growth_shock_factor = shock_type
-        interest_shock_factor = shock_type
+    shock_type_index = xl_int(xl_cell(ctx, 'Inputs!B22'))
+    if shock_type_index < 1 or shock_type_index > 3:
+        xl_raise(XlError.VALUE)
+    shock_magnitude = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
+    if shock_type_index == 1:
+        growth_shock_factor = 0.0
+        interest_shock_factor = shock_magnitude
+    elif shock_type_index == 2:
+        growth_shock_factor = shock_magnitude
+        interest_shock_factor = 0.0
     else:
-        shock_type_index = to_int(shock_type)
-        if isinstance(shock_type_index, XlError):
-            growth_shock_factor = shock_type_index
-            interest_shock_factor = shock_type_index
-        elif shock_type_index < 1 or shock_type_index > 3:
-            growth_shock_factor = XlError.VALUE
-            interest_shock_factor = XlError.VALUE
-        else:
-            shock_magnitude = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
-            if shock_type_index == 1:
-                growth_shock_factor = 0.0
-                interest_shock_factor = shock_magnitude
-            elif shock_type_index == 2:
-                growth_shock_factor = shock_magnitude
-                interest_shock_factor = 0.0
-            else:
-                growth_shock_factor = 0.0
-                interest_shock_factor = 0.0
+        growth_shock_factor = 0.0
+        interest_shock_factor = 0.0
     growth_rate = xl_cell(ctx, f'Inputs!{{column}}17')
     interest_rate = xl_cell(ctx, f'Inputs!{{column}}16')
     shock_activation = shock_active(ctx, time_period=time_period)

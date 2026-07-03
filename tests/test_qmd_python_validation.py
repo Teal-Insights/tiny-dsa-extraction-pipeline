@@ -260,6 +260,7 @@ def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> No
 
     fixed = fix_python_cell_with_llm(
         client=cast(OpenAI, fake),
+        model="gpt-5.5",
         cell_source="print(unknown)\n",
         error_message="NameError: name 'unknown' is not defined",
         qmd_label="guide.qmd",
@@ -269,7 +270,7 @@ def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> No
     assert fixed == "print('fixed')\n"
     assert len(fake.chat.completions.calls) == 1
     assert fake.chat.completions.calls[0]["reasoning_effort"] == "high"
-    assert "extra_body" not in fake.chat.completions.calls[0]
+    assert fake.chat.completions.calls[0]["extra_body"] is None
 
 
 def test_default_run_uv_script_forces_utf8_stdio(
@@ -430,6 +431,7 @@ print(table_1)
         qmd_paths=[qmd_path],
         run_uv_script=fake_run_uv_script,
         client=cast(OpenAI, object()),
+        model="gpt-5.5",
         write_pyproject=False,
     )
 

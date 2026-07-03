@@ -12,6 +12,15 @@ from types import ModuleType
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RUNTIME_PATH = _REPO_ROOT / "dist" / "tiny_dsa" / "runtime.py"
 
+# Sentinel-returning helpers retained for internal runtime use (coercion
+# primitives and skip-semantics scans) but withheld from the generated-code
+# allowlist. Generated formula code must use the raising ``xl_*`` wrappers
+# (``xl_number``/``xl_int``/``xl_bool``/``xl_compare``) so Excel errors surface
+# as exceptions rather than ``XlError`` sentinels.
+_SENTINEL_RETURNING_EXCLUDED_SYMBOLS: frozenset[str] = frozenset(
+    {"to_number", "to_int", "to_bool", "compare_scalars"}
+)
+
 
 def _load_runtime_module(path: Path) -> ModuleType:
     spec = importlib_util.spec_from_file_location("_tiny_dsa_runtime_symbols", path)
@@ -35,6 +44,7 @@ def discover_allowed_runtime_symbols(
             names.append(node.name)
         elif isinstance(node, ast.ClassDef) and node.name == "XlError":
             names.append(node.name)
+    names = [name for name in names if name not in _SENTINEL_RETURNING_EXCLUDED_SYMBOLS]
     module = _load_runtime_module(runtime_path)
     for name in names:
         getattr(module, name)

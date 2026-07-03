@@ -9,16 +9,19 @@ with the validation error fed back as a follow-up turn.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TypeVar
 
-from openai import Omit, OpenAI, omit
+from openai import Omit, OpenAI, OpenAIError, omit
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared import ReasoningEffort
 from openai.types.shared_params import ResponseFormatJSONObject
 from pydantic import BaseModel, ValidationError
 
 from src.llm_providers import ProviderConfig
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ATTEMPTS = 3
 
@@ -28,7 +31,7 @@ LEGACY_OPENAI_PROVIDER = ProviderConfig(
     name="openai",
     api_key_env="OPENAI_API_KEY",
     base_url="https://api.openai.com/v1/",
-    use_structured_outputs=False,
+    supports_structured_outputs=False,
     supports_reasoning_effort=True,
 )
 """Default for callers that have not adopted provider-based model switching.
@@ -45,20 +48,21 @@ def _request_json(
     messages: list[ChatCompletionMessageParam],
     response_model: type[T],
     reasoning_effort: ReasoningEffort,
+    use_structured_outputs: bool,
 ) -> tuple[T | None, str]:
     """Perform one provider-appropriate JSON call.
 
-    Returns the parsed model (only when the provider validates structurally on
-    its side, i.e. structured outputs) and the raw JSON content string. The
-    caller is responsible for parsing when the parsed model is ``None`` and for
-    any semantic post-validation.
+    Returns the parsed model (only for the structured-outputs path, where the
+    provider validates the schema server-side) and the raw JSON content string.
+    The caller is responsible for parsing when the parsed model is ``None`` and
+    for any semantic post-validation.
     """
     effort: ReasoningEffort | Omit = (
         reasoning_effort if provider.supports_reasoning_effort else omit
     )
     extra_body = provider.extra_body
 
-    if provider.use_structured_outputs:
+    if use_structured_outputs:
         parsed_response = client.chat.completions.parse(
             model=model,
             messages=messages,
@@ -99,18 +103,21 @@ def generate_validated_json(
     post_validate: Callable[[T], T] | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     reasoning_effort: ReasoningEffort = "high",
+    structured: bool = True,
 ) -> tuple[T, str]:
     """Call the LLM for JSON, validate it, and retry on validation failure.
 
-    The model is asked for a JSON object using the strategy dictated by
-    ``provider``: structured outputs for providers that validate the schema
-    server-side (GPT), or JSON-object mode with the schema supplied in the
-    prompt otherwise (GLM, DeepSeek). The response is parsed into
-    ``response_model`` and optionally passed through ``post_validate`` for
-    semantic checks or normalization. ``post_validate`` may transform the parsed
-    model and may raise ``ValueError`` (or ``pydantic.ValidationError``) to
-    reject a response. Any such failure is fed back to the model as a correction
-    turn and the call is retried up to ``max_attempts`` times.
+    The JSON call shape is chosen from the provider's capability and the
+    caller's intent: structured outputs are used only when the provider
+    supports them (GPT) and ``structured`` is left ``True``. Otherwise the model
+    is asked for a JSON object with the schema supplied in the prompt (GLM,
+    DeepSeek, or any response model whose schema is not compatible with strict
+    structured outputs). The response is parsed into ``response_model`` and
+    optionally passed through ``post_validate`` for semantic checks or
+    normalization. ``post_validate`` may transform the parsed model and may
+    raise ``ValueError`` (or ``pydantic.ValidationError``) to reject a response.
+    Any such failure is fed back to the model as a correction turn and the call
+    is retried up to ``max_attempts`` times.
 
     Args:
         client: OpenAI-compatible client, e.g. from ``build_client``.
@@ -125,6 +132,10 @@ def generate_validated_json(
             possibly-transformed model and may raise to trigger a retry.
         max_attempts: Maximum number of model calls before giving up.
         reasoning_effort: Reasoning effort passed to providers that support it.
+        structured: Opt out of structured outputs by passing ``False``; required
+            when ``response_model`` has a schema that strict structured outputs
+            reject (e.g. open-ended ``dict`` fields). Ignored for providers that
+            do not support structured outputs.
 
     Returns:
         A tuple of the validated model and the raw JSON content string from the
@@ -136,20 +147,42 @@ def generate_validated_json(
             produces a valid response within ``max_attempts``.
     """
     resolved_provider = provider if provider is not None else LEGACY_OPENAI_PROVIDER
+    use_structured_outputs = (
+        structured and resolved_provider.supports_structured_outputs
+    )
     messages: list[ChatCompletionMessageParam] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
     last_error: Exception | None = None
-    for _attempt in range(max_attempts):
-        parsed_or_none, content = _request_json(
-            client=client,
-            model=model,
-            provider=resolved_provider,
-            messages=messages,
-            response_model=response_model,
-            reasoning_effort=reasoning_effort,
+    for attempt in range(max_attempts):
+        logger.debug(
+            "requesting %s from %s (attempt %d/%d)",
+            response_model.__name__,
+            model,
+            attempt + 1,
+            max_attempts,
         )
+        try:
+            parsed_or_none, content = _request_json(
+                client=client,
+                model=model,
+                provider=resolved_provider,
+                messages=messages,
+                response_model=response_model,
+                reasoning_effort=reasoning_effort,
+                use_structured_outputs=use_structured_outputs,
+            )
+        except OpenAIError as error:
+            logger.error(
+                "%s request to %s failed (attempt %d/%d): %s",
+                response_model.__name__,
+                model,
+                attempt + 1,
+                max_attempts,
+                error,
+            )
+            raise
         try:
             parsed = (
                 parsed_or_none
@@ -160,6 +193,13 @@ def generate_validated_json(
                 parsed = post_validate(parsed)
         except (ValidationError, ValueError) as error:
             last_error = error
+            logger.warning(
+                "%s failed validation (attempt %d/%d), re-prompting: %s",
+                response_model.__name__,
+                attempt + 1,
+                max_attempts,
+                error,
+            )
             messages.append({"role": "assistant", "content": content})
             messages.append(
                 {
@@ -175,6 +215,12 @@ def generate_validated_json(
                 }
             )
             continue
+        logger.debug(
+            "%s validated on attempt %d/%d",
+            response_model.__name__,
+            attempt + 1,
+            max_attempts,
+        )
         return parsed, content
     raise RuntimeError(
         f"LLM failed to return a valid {response_model.__name__} response after "

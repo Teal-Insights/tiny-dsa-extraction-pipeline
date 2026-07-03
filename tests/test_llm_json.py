@@ -11,7 +11,7 @@ JSON_OBJECT_PROVIDER = ProviderConfig(
     name="fake",
     api_key_env="FAKE_API_KEY",
     base_url="https://example.invalid/",
-    use_structured_outputs=False,
+    supports_structured_outputs=False,
     supports_reasoning_effort=True,
 )
 
@@ -19,7 +19,7 @@ STRUCTURED_PROVIDER = ProviderConfig(
     name="fake-structured",
     api_key_env="FAKE_API_KEY",
     base_url="https://example.invalid/",
-    use_structured_outputs=True,
+    supports_structured_outputs=True,
     supports_reasoning_effort=True,
 )
 
@@ -275,3 +275,24 @@ def test_structured_provider_retries_on_post_validate_failure() -> None:
 
     assert parsed.title == "ok"
     assert len(fake.chat.completions.calls) == 2
+
+
+def test_structured_opt_out_uses_json_object_on_structured_provider() -> None:
+    valid = '{"title": "T", "body": "B"}'
+    client, fake = _make([valid])
+
+    parsed, content = generate_validated_json(
+        client=client,
+        model="m",
+        provider=STRUCTURED_PROVIDER,
+        system_prompt="sys",
+        user_prompt="usr",
+        response_model=_Sample,
+        structured=False,
+    )
+
+    assert parsed == _Sample(title="T", body="B")
+    assert content == valid
+    calls = fake.chat.completions.calls
+    assert len(calls) == 1
+    assert calls[0]["response_format"] == {"type": "json_object"}

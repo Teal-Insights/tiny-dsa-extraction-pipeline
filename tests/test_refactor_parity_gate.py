@@ -146,6 +146,13 @@ BROKEN_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
     return xl_number(xl_cell(ctx, 'Inputs!C1'))
 '''
 
+# Crashing: calls a runtime symbol with the wrong arity, raising TypeError at
+# evaluation time (mirrors a mistranscribed xl_index_ref call).
+CRASHING_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    return xl_number()
+'''
+
 
 def _cluster_response(helper_source: str) -> ClusterRefactorResponse:
     return ClusterRefactorResponse(
@@ -217,6 +224,19 @@ def test_cluster_gate_rejects_semantics_breaking_refactor() -> None:
     assert "20.0" in message
 
 
+def test_cluster_gate_converts_runtime_error_to_parity_error() -> None:
+    with pytest.raises(ParityError) as excinfo:
+        check_cluster_parity(
+            pristine_source=PRISTINE_CLUSTER,
+            current_source=PRISTINE_CLUSTER,
+            response=_cluster_response(CRASHING_CLUSTER_SOURCE),
+            input_vectors=CLUSTER_INPUTS,
+        )
+    message = str(excinfo.value)
+    assert "combined_input_passthrough" in message
+    assert "TypeError" in message
+
+
 SINGLETON_DOCSTRING = (
     "Return the initial value.\n\n"
     "Args:\n    ctx: Workbook evaluation context.\n\n"
@@ -231,6 +251,13 @@ CORRECT_SINGLETON_SOURCE = f'''def initial_value(ctx):
 BROKEN_SINGLETON_SOURCE = f'''def initial_value(ctx):
     """{SINGLETON_DOCSTRING}"""
     return xl_number(xl_cell(ctx, 'Inputs!B2')) * 3.0
+'''
+
+# Crashing: calls a runtime symbol with the wrong arity, raising TypeError at
+# evaluation time rather than diverging on value.
+CRASHING_SINGLETON_SOURCE = f'''def initial_value(ctx):
+    """{SINGLETON_DOCSTRING}"""
+    return xl_number()
 '''
 
 
@@ -280,6 +307,20 @@ def test_singleton_gate_rejects_semantics_breaking_refactor() -> None:
             input_vectors=SINGLETON_INPUTS,
         )
     assert "Inputs!B6" in str(excinfo.value)
+
+
+def test_singleton_gate_converts_runtime_error_to_parity_error() -> None:
+    with pytest.raises(ParityError) as excinfo:
+        check_singleton_parity(
+            pristine_source=PRISTINE_SINGLETON,
+            current_source=PRISTINE_SINGLETON,
+            response=_singleton_response(CRASHING_SINGLETON_SOURCE),
+            ctx=_singleton_context(),
+            input_vectors=SINGLETON_INPUTS,
+        )
+    message = str(excinfo.value)
+    assert "initial_value(ctx)" in message
+    assert "TypeError" in message
 
 
 def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:

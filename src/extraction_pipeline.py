@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Annotated, Iterable, Literal, Mapping, get_args, get_origin
 
@@ -17,6 +18,7 @@ from excel_grapher.series_bindings import (
 
 from src.docstring_callback import available_docstring_callback
 from src.dependency_graph_viz import series_cell_keys
+from src.logging_config import configure_logging
 from src.export_validation_assets import export_validation_assets
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
@@ -27,6 +29,8 @@ from src.qmd_python_validation import (
 )
 from src.subgraph_projection import build_tiny_dsa_refactor_projection
 from src.semantic_labeling import label_internal_graph_cells
+
+logger = logging.getLogger(__name__)
 
 repo_root = Path(__file__).resolve().parents[1]
 workbook_path = repo_root / "data/tiny-dsa.xlsx"
@@ -154,6 +158,7 @@ refactor_projection = build_tiny_dsa_refactor_projection(graph)
 
 def export_generated_package() -> None:
     """Write the generated tiny-dsa package under dist/."""
+    logger.info("Stage: generating package modules")
     with CodeGenerator(refactor_projection) as generator:
         modules = generator.generate_modules(
             targets,
@@ -205,19 +210,25 @@ tests/results/local/
     from src.internals_refactor import refactor_internals_all_clusters
 
     formula_clusters = cluster_graph_formulas(refactor_projection)
+    logger.info("Stage: refactoring internals (%d clusters)", len(formula_clusters))
     refactor_internals_all_clusters(
         refactor_projection,
         formula_clusters,
         internals_path=package_root / "internals.py",
         source_graph=graph,
     )
+    logger.info("Stage: internals refactor complete")
 
 
 def main() -> None:
+    configure_logging()
+    logger.info("Stage: exporting generated package")
     export_generated_package()
     from src.documentation_pipeline import run_documentation_pipeline
 
+    logger.info("Stage: running documentation pipeline")
     run_documentation_pipeline()
+    logger.info("Pipeline complete")
 
 
 if __name__ == "__main__":

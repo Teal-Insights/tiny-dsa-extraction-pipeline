@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import random
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import util as importlib_util
@@ -121,6 +122,59 @@ def make_eval_context(namespace: dict[str, Any], inputs: InputVector) -> Any:
     )
 
 
+def _evaluate_candidate(thunk: Callable[[], Any], *, call: str) -> Any:
+    """Evaluate a candidate helper call, normalizing outcomes for comparison.
+
+    A raised :class:`XlErrorException` is a legitimate Excel-error result and is
+    returned as its ``XlError`` code so it can be compared against the oracle.
+    Any other exception is a defect in the generated code; it is re-raised as a
+    :class:`ParityError` so the LLM retry loop re-prompts the model with the
+    failure instead of the exception aborting the whole pipeline.
+    """
+    runtime = _runtime()
+    try:
+        return thunk()
+    except runtime.XlErrorException as error:
+        return error.code
+    except Exception as error:
+        raise ParityError(
+            f"{call} raised {type(error).__name__} during evaluation: {error}. "
+            "The refactored helper must execute without error and reproduce the "
+            "original cell value; fix the body so the call succeeds while "
+            "preserving the semantics of the per-member Excel formulas."
+        ) from error
+
+
+def _evaluate_golden(thunk: Callable[[], Any]) -> Any:
+    """Evaluate the pristine oracle, returning an ``XlError`` code for Excel errors.
+
+    The oracle is trusted, so non-Excel exceptions are left to propagate: they
+    indicate a defect in the pipeline itself rather than in a candidate helper.
+    """
+    runtime = _runtime()
+    try:
+        return thunk()
+    except runtime.XlErrorException as error:
+        return error.code
+
+
+def _load_candidate(source: str, symbol_name: str) -> tuple[dict[str, Any], Any]:
+    """Execute a candidate ``internals.py`` and fetch its refactored symbol.
+
+    A failure to compile, exec, or locate the symbol is treated as a candidate
+    defect and surfaced as a retryable :class:`ParityError`.
+    """
+    try:
+        namespace = exec_internals_module(source)
+        return namespace, namespace[symbol_name]
+    except Exception as error:
+        raise ParityError(
+            f"refactored symbol {symbol_name} could not be loaded: "
+            f"{type(error).__name__}: {error}. Emit a helper whose module "
+            "parses, imports, and exposes the named function cleanly."
+        ) from error
+
+
 def _values_close(expected: object, actual: object, atol: float) -> bool:
     runtime = _runtime()
     if isinstance(expected, runtime.XlError) or isinstance(actual, runtime.XlError):
@@ -193,22 +247,31 @@ def check_cluster_parity(
     runtime = _runtime()
     candidate_source = apply_refactor_plan(current_source, response, ctx)
     golden_ns = exec_internals_module(pristine_source)
-    candidate_ns = exec_internals_module(candidate_source)
-    helper = candidate_ns[response.helper_name]
+    candidate_ns, helper = _load_candidate(candidate_source, response.helper_name)
 
     mismatches: list[_Mismatch] = []
     for index, inputs in enumerate(input_vectors):
         for entry in response.member_keys:
             literals = _parameter_literals(response.parameters, entry.keys)
             golden_ctx = make_eval_context(golden_ns, inputs)
-            expected = runtime.xl_cell(golden_ctx, entry.address)
+            expected = _evaluate_golden(
+                lambda eval_ctx=golden_ctx, address=entry.address: runtime.xl_cell(
+                    eval_ctx, address
+                )
+            )
             candidate_ctx = make_eval_context(candidate_ns, inputs)
-            actual = helper(candidate_ctx, **literals)
+            call = _format_call(response.helper_name, literals)
+            actual = _evaluate_candidate(
+                lambda fn=helper, eval_ctx=candidate_ctx, kwargs=literals: fn(
+                    eval_ctx, **kwargs
+                ),
+                call=call,
+            )
             if not _values_close(expected, actual, atol):
                 mismatches.append(
                     _Mismatch(
                         address=entry.address,
-                        call=_format_call(response.helper_name, literals),
+                        call=call,
                         expected=expected,
                         actual=actual,
                         vector_index=index,
@@ -249,20 +312,26 @@ def check_singleton_parity(
     runtime = _runtime()
     candidate_source, _ = apply_singleton_refactor_plan(current_source, response, ctx)
     golden_ns = exec_internals_module(pristine_source)
-    candidate_ns = exec_internals_module(candidate_source)
-    symbol = candidate_ns[response.symbol_name]
+    candidate_ns, symbol = _load_candidate(candidate_source, response.symbol_name)
+    call = f"{response.symbol_name}(ctx)"
 
     mismatches: list[_Mismatch] = []
+    address = ctx.address
     for index, inputs in enumerate(input_vectors):
         golden_ctx = make_eval_context(golden_ns, inputs)
-        expected = runtime.xl_cell(golden_ctx, ctx.address)
+        expected = _evaluate_golden(
+            lambda eval_ctx=golden_ctx: runtime.xl_cell(eval_ctx, address)
+        )
         candidate_ctx = make_eval_context(candidate_ns, inputs)
-        actual = symbol(candidate_ctx)
+        actual = _evaluate_candidate(
+            lambda fn=symbol, eval_ctx=candidate_ctx: fn(eval_ctx),
+            call=call,
+        )
         if not _values_close(expected, actual, atol):
             mismatches.append(
                 _Mismatch(
                     address=ctx.address,
-                    call=f"{response.symbol_name}(ctx)",
+                    call=call,
                     expected=expected,
                     actual=actual,
                     vector_index=index,

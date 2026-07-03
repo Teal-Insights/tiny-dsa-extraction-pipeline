@@ -11,7 +11,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from openai import OpenAI
+from openai import Omit, OpenAI, omit
+from openai.types.shared import ReasoningEffort
+
+from src.llm_providers import provider_for_model
 
 DOCUMENTATION_BASELINE_DEV_DEPS: tuple[str, ...] = (
     "quarto>=0.1.0",
@@ -110,8 +113,6 @@ _NAME_ERROR_PATTERN = re.compile(
     r"NameError: (?P<message>.+)",
     re.DOTALL,
 )
-
-_CELL_FIX_MODEL = "gpt-5.5"
 
 
 @dataclass(frozen=True)
@@ -345,13 +346,18 @@ def validate_runnable_cell_imports(source: str) -> None:
 def fix_python_cell_with_llm(
     *,
     client: OpenAI,
+    model: str,
     cell_source: str,
     error_message: str,
     qmd_label: str,
     cell_number: int,
 ) -> str:
+    provider = provider_for_model(model)
+    effort: ReasoningEffort | Omit = (
+        "high" if provider.supports_reasoning_effort else omit
+    )
     response = client.chat.completions.create(
-        model=_CELL_FIX_MODEL,
+        model=model,
         messages=[
             {
                 "role": "system",
@@ -383,7 +389,8 @@ Cell source:
             },
         ],
         stream=False,
-        reasoning_effort="high",
+        reasoning_effort=effort,
+        extra_body=provider.extra_body,
     )
     content = response.choices[0].message.content
     if content is None:
@@ -437,6 +444,7 @@ def _apply_runtime_cell_fix(
     error_text: str,
     ordered_paths: list[Path],
     client: OpenAI,
+    model: str,
 ) -> None:
     cell_number = _cell_number_from_script(script_text, error_text)
     if cell_number is None:
@@ -457,6 +465,7 @@ def _apply_runtime_cell_fix(
     cell = extract_python_cells(qmd_text)[cell_number - 1]
     fixed_source = fix_python_cell_with_llm(
         client=client,
+        model=model,
         cell_source=cell.source,
         error_message=error_text.strip(),
         qmd_label=qmd_label,
@@ -480,6 +489,7 @@ def validate_qmd_files(
     qmd_paths: Iterable[Path],
     run_uv_script: Callable[..., ScriptRunResult] | None = None,
     client: OpenAI | None = None,
+    model: str | None = None,
     write_pyproject: bool = True,
 ) -> list[str]:
     """Execute aggregated runnable cells and record extra dev dependencies."""
@@ -520,6 +530,11 @@ def validate_qmd_files(
                 else None
             )
             if cell_number is not None and qmd_label is not None and client is not None:
+                if model is None:
+                    raise RuntimeError(
+                        "model is required to apply LLM cell fixes when a client "
+                        "is provided"
+                    )
                 fix_key = (qmd_label, cell_number)
                 fix_attempts_for_cell = llm_fix_attempts_by_cell.get(fix_key, 0)
                 if (
@@ -535,6 +550,7 @@ def validate_qmd_files(
                     error_text=error_text,
                     ordered_paths=ordered_paths,
                     client=client,
+                    model=model,
                 )
                 llm_fix_attempts_total += 1
                 llm_fix_attempts_by_cell[fix_key] = fix_attempts_for_cell + 1

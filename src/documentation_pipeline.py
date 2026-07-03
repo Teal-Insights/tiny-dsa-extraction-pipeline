@@ -15,6 +15,11 @@ from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.llm_json import generate_validated_json
+from src.llm_providers import (
+    build_client_if_configured,
+    model_from_env,
+    provider_for_model,
+)
 from src.qmd_python_validation import validate_qmd_files
 
 repo_root = Path(__file__).resolve().parents[1]
@@ -27,7 +32,7 @@ rewrite_cache_path = repo_root / ".cache" / "guide-rewrites.json"
 great_docs_yml = dist_root / "great-docs.yml"
 docs_workflow_path = dist_root / ".github" / "workflows" / "deploy-docs.yml"
 
-SECTION_REWRITE_MODEL = "gpt-5.5"
+SECTION_REWRITE_MODEL_ENV = "SECTION_REWRITE_MODEL"
 SECTION_REWRITE_PROMPT_VERSION = 4
 MAX_SECTION_REWRITE_ATTEMPTS = 3
 CANONICAL_API_USAGE_HEADING = "Canonical API usage"
@@ -371,6 +376,10 @@ Response schema:
 """.strip()
 
 
+def section_rewrite_model() -> str:
+    return model_from_env(SECTION_REWRITE_MODEL_ENV)
+
+
 def rewrite_cache_key(
     *,
     section_id: str,
@@ -381,7 +390,7 @@ def rewrite_cache_key(
     response_schema: dict,
 ) -> str:
     payload = {
-        "model": SECTION_REWRITE_MODEL,
+        "model": section_rewrite_model(),
         "prompt_version": SECTION_REWRITE_PROMPT_VERSION,
         "section_id": section_id,
         "source_section_markdown": source_section_markdown,
@@ -561,9 +570,11 @@ def rewrite_guide_section(
         api_signatures=api_signatures,
         response_schema=response_schema,
     )
+    model = section_rewrite_model()
     parsed, content = generate_validated_json(
         client=client,
-        model=SECTION_REWRITE_MODEL,
+        model=model,
+        provider=provider_for_model(model),
         system_prompt=(
             "You are a technical documentation writer for the tiny_dsa library. "
             "Runnable examples use tiny_dsa.api with make_context(), "
@@ -794,12 +805,8 @@ def run_documentation_pipeline() -> None:
 
     configure_great_docs_yml()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    section_client = (
-        OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
-        if api_key
-        else None
-    )
+    model = section_rewrite_model()
+    section_client, _ = build_client_if_configured(model)
     guide_text = guide_path.read_text(encoding="utf-8")
     write_introduction_page(section_client, guide_text)
     write_rewritten_guide_pages(section_client)
@@ -808,6 +815,7 @@ def run_documentation_pipeline() -> None:
         dist_root=dist_root,
         qmd_paths=sorted(user_guide_root.glob("*.qmd")),
         client=section_client,
+        model=model,
     )
     pipeline_doc_text = pipeline_doc_path.read_text(encoding="utf-8")
     sync_validated_pages_to_rewrite_cache(
