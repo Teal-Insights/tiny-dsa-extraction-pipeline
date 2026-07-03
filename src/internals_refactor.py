@@ -59,7 +59,7 @@ BINDINGS_PATH = repo_root / "bindings"
 DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 12
+REFACTOR_PROMPT_VERSION = 14
 
 
 def refactor_model() -> str:
@@ -919,6 +919,15 @@ def validate_no_cell_function_references(function_def: ast.FunctionDef) -> None:
         )
 
 
+def validate_no_nested_helper_functions(function_def: ast.FunctionDef) -> None:
+    for node in ast.walk(function_def):
+        if isinstance(node, ast.FunctionDef) and node is not function_def:
+            raise ValueError(
+                f"helper must not define nested functions such as {node.name!r}; "
+                "use inline expressions and allowed runtime symbols only"
+            )
+
+
 def _references_xl_error(node: ast.expr) -> bool:
     return any(
         isinstance(sub, ast.Name) and sub.id == "XlError" for sub in ast.walk(node)
@@ -1080,6 +1089,7 @@ def validate_cluster_refactor_response(
 
     validate_semantic_local_names(helper_def)
     validate_no_cell_function_references(helper_def)
+    validate_no_nested_helper_functions(helper_def)
     validate_no_sentinel_error_handling(helper_def)
 
     arg_names = [arg.arg for arg in helper_def.args.args]
@@ -1216,6 +1226,7 @@ def validate_singleton_refactor_response(
 
     validate_semantic_local_names(symbol_def)
     validate_no_cell_function_references(symbol_def)
+    validate_no_nested_helper_functions(symbol_def)
     validate_no_sentinel_error_handling(symbol_def)
 
     arg_names = [arg.arg for arg in symbol_def.args.args]
@@ -2467,15 +2478,11 @@ Runtime API rules:
   pass an xl_range(...) result to xl_index_ref.
 - Do not import numpy or use np, and do not call removed helpers such as xl_add, xl_mul,
   xl_div, xl_sub, or xl_ge.
-- Runtime accessors raise XlErrorException on Excel errors; they never hand back an XlError
-  sentinel. Do not wrap their results in isinstance(x, XlError) checks, do not coerce with the
-  bare to_int/to_bool/to_number helpers, and do not re-raise with xl_raise what the runtime
-  already raises.
-- To signal an Excel error yourself, call xl_raise(XlError.CODE); never return an XlError
-  sentinel (write xl_raise(XlError.VALUE), not return XlError.VALUE).
-- The provided python_source may still use the older sentinel style (isinstance guards,
-  to_int/to_bool, return XlError.VALUE); translate it to the raise-based convention above while
-  preserving semantics exactly.\
+- Codegen may guard division only before dynamic denominators (the divisor subexpression
+  in each member's python_source, not literal constants such as 100.0). When collapsing
+  nested codegen, keep those same dynamic denominators guarded inline; do not add new
+  xl_raise checks, do not guard literal divisors, and do not define nested def helpers.
+- To signal an Excel error yourself, call xl_raise(XlError.CODE).\
 """
 
 _RUNTIME_API_EXAMPLE_BODY = """\
@@ -2579,7 +2586,9 @@ Rules:
 - Choose helper_name as a clear snake_case semantic identifier informed by naming_hints.
 - Use time_period == 1 branch for first-year {{PRIOR_DEBT}} logic when needed.
 - Map time_period to workbook columns internally when reading xl_cell addresses.
-- Keep xl_eval only for leaf inputs read with xl_cell; never for refactored cells.
+- When python_source reads a prior projection year via xl_eval on a cell_* in this
+  cluster, call the helper recursively as helper(ctx, time_period=time_period - 1),
+  passing every parameter through; xl_eval with a lambda is also acceptable.
 - Do not rename dependency functions.
 - Rename local temporaries to domain-meaningful snake_case informed by naming_hints.
 - Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.

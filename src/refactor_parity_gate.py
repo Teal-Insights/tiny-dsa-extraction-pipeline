@@ -213,9 +213,11 @@ def _format_message(
         lines.append(f"  ... and {len(mismatches) - _MAX_REPORTED_MISMATCHES} more")
     lines.append(
         f"The refactored helper must reproduce each member cell's original computed "
-        f"value exactly (atol={atol:g}) across all inputs. Re-derive the body from the "
-        f"per-member Excel formulas in the Note section; do not substitute a different "
-        f"helper or change which input rows are read."
+        f"value exactly (atol={atol:g}) across all inputs. Fix the mismatch while "
+        f"preserving the xl_* call structure from python_source: same cell reads, same "
+        f"dynamic division denominators that codegen guards, and the semantic_dependencies "
+        f"call_forms. For prior-year recursion, call helper(ctx, time_period=time_period "
+        f"- 1) with every parameter passed through; do not define nested def helpers."
     )
     return "\n".join(lines)
 

@@ -109,6 +109,25 @@ def debt_to_gdp(ctx, col):
         raise AssertionError("expected ValueError")
 
 
+def test_validate_no_nested_helper_functions_rejects_nested_def() -> None:
+    from src.internals_refactor import validate_no_nested_helper_functions
+
+    source = """
+def example(ctx, time_period):
+    def safe_divide(left, right):
+        return left / right if right != 0 else xl_raise(XlError.DIV)
+    return safe_divide(xl_number(1.0), xl_number(2.0))
+"""
+    function_def = ast.parse(source).body[0]
+    assert isinstance(function_def, ast.FunctionDef)
+    try:
+        validate_no_nested_helper_functions(function_def)
+    except ValueError as error:
+        assert "safe_divide" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_validate_no_sentinel_error_handling_rejects_isinstance_check() -> None:
     from src.internals_refactor import validate_no_sentinel_error_handling
 
