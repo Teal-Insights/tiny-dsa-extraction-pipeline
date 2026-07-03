@@ -2160,16 +2160,24 @@ operation either handling a parameter-switching operation or
 representing a single cell’s formula body:
 
 ``` python
-def debt-to-gdp(year: float) -> float:
-    """
-    "Engine!C10:G10", "Engine!C14:G14", "Engine!C15:G15", "Engine!C16:G16", "Engine!C20:G20"
-    """
-    output_cell = ("Engine!C20", "Engine!D20", "Engine!E20", "Engine!F20", "Engine!G20")[int(year)-1]
-    prior_debt_input = ("Engine!B20", "Engine!C20", "Engine!D20", "Engine!E20", "Engine!F20", "Engine!G20")[int(year)]
-    # (1 if year >= shock_year, else 0)
-    shock_active = (_t2 if isinstance((_t2 := to_bool((_t1 := xl_ge(year, xl_cell(ctx, 'Inputs!B21'))))), XlError) else ((1.0) if _t2 else (0.0)))
-    # %
-    real_gdp_growth_shocked = xl_add(xl_cell(ctx, 'Inputs!C16'), xl_mul((_t1 if isinstance((_t1 := xl_cell(ctx, 'Inputs!B22')), XlError) else (_t2 if isinstance((_t2 := to_int(_t1)), XlError) else XlError.VALUE if _t2 < 1 or _t2 > 3 else ((xl_eval(ctx, 'Engine!B9', cell_engine_b9)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (XlError.VALUE)))))))), shock_active))
+def debt_to_gdp(ctx, time_period: int):
+    """Covers Engine!C20:G20 and related shocked-path inputs."""
+    column_by_time_period = {1: "C", 2: "D", 3: "E", 4: "F", 5: "G"}
+    column = column_by_time_period.get(time_period)
+    if column is None:
+        return XlError.VALUE
+    projection_year = xl_cell(ctx, f"Engine!{column}5")
+    shock_year = xl_cell(ctx, "Inputs!B21")
+    shock_activation = xl_compare(">=", projection_year, shock_year)
+    is_active = to_bool(shock_activation)
+    if isinstance(is_active, XlError):
+        return is_active
+    shock_active_flag = 1.0 if is_active else 0.0
+    growth_rate = xl_cell(ctx, f"Inputs!{column}16")
+    selected_shock = selected_shock_magnitude_pp(ctx)
+    real_gdp_growth_shocked = xl_number(growth_rate) + (
+        xl_number(selected_shock) * xl_number(shock_active_flag)
+    )
     # and so on...
 ```
 

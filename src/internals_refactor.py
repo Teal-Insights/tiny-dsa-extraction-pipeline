@@ -41,6 +41,7 @@ from src.refactor_order import (
     compute_multi_member_cluster_refactor_order,
     compute_singleton_cluster_refactor_order,
 )
+from src.runtime_symbols import allowed_runtime_symbols
 from src.semantic_naming import (
     SemanticLabelHints,
     cluster_naming_hints,
@@ -55,7 +56,7 @@ BINDINGS_PATH = repo_root / "bindings"
 DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
 
 REFACTOR_MODEL = "gpt-5.5"
-REFACTOR_PROMPT_VERSION = 8
+REFACTOR_PROMPT_VERSION = 10
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
 RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
@@ -65,22 +66,7 @@ AddressDispatch = dict[str, tuple[str, dict[str, BindingKeyValue]]]
 REFACTOR_ROW_ORDER: tuple[int, ...] = (10, 16, 6, 20, 14)
 """Legacy Tiny DSA apply order; prefer ``compute_multi_member_cluster_refactor_order``."""
 
-ALLOWED_RUNTIME_SYMBOLS: tuple[str, ...] = (
-    "XlError",
-    "np",
-    "to_bool",
-    "to_int",
-    "xl_add",
-    "xl_cell",
-    "xl_div",
-    "xl_eval",
-    "xl_ge",
-    "xl_index_ref",
-    "xl_match",
-    "xl_mul",
-    "xl_offset",
-    "xl_sub",
-)
+ALLOWED_RUNTIME_SYMBOLS: tuple[str, ...] = allowed_runtime_symbols()
 
 
 @dataclass(frozen=True)
@@ -2380,6 +2366,37 @@ def llm_refactor_cluster(
     return parsed
 
 
+_RUNTIME_API_PROMPT_RULES = """\
+Runtime API rules:
+- Use only symbols listed in constraints.allowed_runtime_symbols.
+- Coerce numeric scalars with xl_number; compare with xl_compare(op, left, right).
+- Materialize worksheet ranges with xl_range(ctx, address) for MATCH/INDEX-style lookups.
+- Do not import numpy or use np, and do not call removed helpers such as xl_add, xl_mul,
+  xl_div, xl_sub, or xl_ge.
+- Follow the member python_source for XlError propagation (isinstance checks, to_bool, to_int,
+  xl_raise) rather than inventing a different error-handling style.\
+"""
+
+_RUNTIME_API_EXAMPLE_BODY = """\
+Example helper body shape:
+column_by_time_period = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}
+column = column_by_time_period.get(time_period)
+if column is None:
+    return XlError.VALUE
+projection_year = xl_cell(ctx, f'Engine!{{column}}5')
+shock_year = xl_cell(ctx, 'Inputs!B21')
+shock_activation = xl_compare('>=', projection_year, shock_year)
+is_active = to_bool(shock_activation)
+if isinstance(is_active, XlError):
+    return is_active
+baseline_growth_rate = xl_cell(ctx, f'Inputs!{{column}}16')
+shock_adjustment = xl_number(selected_shock_magnitude_pp(ctx)) * xl_number(
+    1.0 if is_active else 0.0
+)
+return xl_number(baseline_growth_rate) + shock_adjustment\
+"""
+
+
 def _prompt_for_singleton_refactor(
     payload: dict[str, object], response_schema: dict[str, object]
 ) -> str:
@@ -2401,6 +2418,8 @@ Rules:
 - Include a Note section listing the workbook address and Excel formula.
 - Return only JSON matching the response schema.
 
+{_RUNTIME_API_PROMPT_RULES}
+
 Example docstring shape:
 \"\"\"
 Look up the initial debt-to-GDP ratio for the selected country.
@@ -2420,6 +2439,8 @@ year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1
 if year_address is None:
     return XlError.VALUE
 year = xl_cell(ctx, year_address)
+
+{_RUNTIME_API_EXAMPLE_BODY}
 
 Singleton context:
 {payload_json}
@@ -2458,13 +2479,15 @@ Rules:
 - Include a Note section listing covered workbook addresses and the Excel formula.
 - Return only JSON matching the response schema.
 
+{_RUNTIME_API_PROMPT_RULES}
+
 Example docstring shape:
 \"\"\"
-Return 1.0 when the shock is active for the given projection column.
+Return 1.0 when the shock is active for the given projection year.
 
 Args:
     ctx: Workbook evaluation context.
-    col: Engine column letter (C through G).
+    time_period: Projection year index (1 through 5).
 
 Returns:
     1.0 if the projection year is at or after the shock year, else 0.0.
@@ -2478,6 +2501,8 @@ year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1
 if year_address is None:
     return XlError.VALUE
 year = xl_cell(ctx, year_address)
+
+{_RUNTIME_API_EXAMPLE_BODY}
 
 Cluster context:
 {payload_json}

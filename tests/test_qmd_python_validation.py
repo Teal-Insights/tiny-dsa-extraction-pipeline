@@ -128,6 +128,12 @@ def test_merge_dev_dependencies_deduplicates_and_preserves_order() -> None:
     ]
 
 
+def test_render_dist_pyproject_toml_omits_numpy_runtime_dependency() -> None:
+    text = render_dist_pyproject_toml(dev_dependencies=[])
+    assert '"fastpyxl"' in text
+    assert '"numpy"' not in text
+
+
 def test_render_dist_pyproject_toml_includes_dev_dependencies() -> None:
     text = render_dist_pyproject_toml(
         dev_dependencies=["quarto>=0.1.0", "great-docs>=0.12.0", "tabulate"],

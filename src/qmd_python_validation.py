@@ -210,7 +210,6 @@ description = {_toml_string(metadata.description)}
 requires-python = ">=3.13"
 dependencies = [
     "fastpyxl",
-    "numpy",
 ]
 
 [tool.setuptools]

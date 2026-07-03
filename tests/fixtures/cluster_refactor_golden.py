@@ -91,7 +91,7 @@ def shock_active(ctx, time_period: int):
 {_quoted_docstring(SHOCK_ACTIVE_DOCSTRING)}    column = {_COLUMN_BY_TIME_PERIOD!r}[time_period]
     projection_year = xl_cell(ctx, f'Engine!{{column}}5')
     shock_year = xl_cell(ctx, 'Inputs!B21')
-    year_at_or_after_shock = xl_ge(projection_year, shock_year)
+    year_at_or_after_shock = xl_compare('>=', projection_year, shock_year)
     is_active = to_bool(year_at_or_after_shock)
     if isinstance(is_active, XlError):
         return is_active
@@ -115,8 +115,10 @@ def primary_balance_shocked(ctx, time_period: int):
         else:
             shock_multiplier = xl_eval(ctx, 'Engine!B9', shock_magnitude_resolved)
     baseline_primary_balance = xl_cell(ctx, f'Inputs!{{column}}18')
-    shock_adjustment = xl_mul(shock_multiplier, shock_active(ctx, time_period=time_period))
-    return xl_add(baseline_primary_balance, shock_adjustment)\
+    shock_adjustment = xl_number(shock_multiplier) * xl_number(
+        shock_active(ctx, time_period=time_period)
+    )
+    return xl_number(baseline_primary_balance) + shock_adjustment\
 """
 
 BASELINE_DEBT_HELPER = f"""\
@@ -129,10 +131,10 @@ def baseline_debt(ctx, time_period: int):
     growth_rate = xl_cell(ctx, f'Inputs!{{column}}17')
     interest_rate = xl_cell(ctx, f'Inputs!{{column}}16')
     primary_balance = xl_cell(ctx, f'Inputs!{{column}}18')
-    growth_term = xl_add(1.0, xl_div(growth_rate, 100.0))
-    interest_term = xl_add(1.0, xl_div(interest_rate, 100.0))
-    scaled_debt = xl_mul(prior_debt, xl_div(growth_term, interest_term))
-    return xl_sub(scaled_debt, primary_balance)\
+    growth_term = xl_number(1.0) + (xl_number(growth_rate) / xl_number(100.0))
+    interest_term = xl_number(1.0) + (xl_number(interest_rate) / xl_number(100.0))
+    scaled_debt = xl_number(prior_debt) * (growth_term / interest_term)
+    return scaled_debt - xl_number(primary_balance)\
 """
 
 DEBT_TO_GDP_HELPER = f"""\
@@ -169,19 +171,22 @@ def debt_to_gdp(ctx, time_period: int):
     interest_rate = xl_cell(ctx, f'Inputs!{{column}}16')
     shock_activation = shock_active(ctx, time_period=time_period)
     shocked_primary_balance = primary_balance_shocked(ctx, time_period=time_period)
-    growth_numerator = xl_add(growth_rate, xl_mul(growth_shock_factor, shock_activation))
-    growth_term = xl_add(1.0, xl_div(growth_numerator, 100.0))
-    interest_denominator = xl_add(interest_rate, xl_mul(interest_shock_factor, shock_activation))
-    interest_term = xl_add(1.0, xl_div(interest_denominator, 100.0))
-    debt_ratio = xl_mul(prior_debt, xl_div(growth_term, interest_term))
-    return xl_sub(debt_ratio, shocked_primary_balance)\
+    growth_numerator = xl_number(growth_rate) + (
+        xl_number(growth_shock_factor) * xl_number(shock_activation)
+    )
+    growth_term = xl_number(1.0) + (growth_numerator / xl_number(100.0))
+    interest_denominator = xl_number(interest_rate) + (
+        xl_number(interest_shock_factor) * xl_number(shock_activation)
+    )
+    interest_term = xl_number(1.0) + (interest_denominator / xl_number(100.0))
+    debt_ratio = xl_number(prior_debt) * (growth_term / interest_term)
+    return debt_ratio - xl_number(shocked_primary_balance)\
 """
 
 OUTPUT_DELTA_HELPER = f"""\
 def output_delta(ctx, time_period: int):
-{_quoted_docstring(OUTPUT_DELTA_DOCSTRING)}    return xl_sub(
-        debt_to_gdp(ctx, time_period=time_period),
-        baseline_debt(ctx, time_period=time_period),
+{_quoted_docstring(OUTPUT_DELTA_DOCSTRING)}    return xl_number(debt_to_gdp(ctx, time_period=time_period)) - xl_number(
+        baseline_debt(ctx, time_period=time_period)
     )\
 """
 

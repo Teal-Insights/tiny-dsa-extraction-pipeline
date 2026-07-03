@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from .data import CONSTANTS, DEFAULT_INPUTS
 from .internals import _resolve_formula
-from ._api_helpers import Record, Records, Scalar, SeriesInput, _apply_series_records, _coerce_records, coerce_setter_input
-from .runtime import EvalContext, coerce_inputs_dict, xl_cell, xl_range
+from ._api_helpers import EmptyMeasure, Record, Records, Scalar, SeriesInput, _apply_series_records, _coerce_records, coerce_setter_input
+from .runtime import EvalContext, coerce_inputs_dict, xl_cell, xl_range_rows
 import warnings
 
 
@@ -77,6 +77,7 @@ def set_country_initial_debt(
     records: SeriesInput,
     *,
     strict: bool = True,
+    empty_measure: EmptyMeasure = "write",
 ) -> None:
     """Set initial debt-to-GDP values in the country profile lookup table.
 
@@ -85,6 +86,7 @@ def set_country_initial_debt(
 
     Args:
         records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
                 - COUNTRY: Country row in the profile table whose initial debt value is being set.
                 - OBS_VALUE: Initial general-government debt-to-GDP ratio for the country profile.
@@ -117,6 +119,8 @@ def set_country_initial_debt(
             measure_field='OBS_VALUE',
             key_order=_KEY_ORDER_COUNTRY_INITIAL_DEBT,
             strict=strict,
+            empty_measure=empty_measure,
+            requires_address=False,
             key_dtypes={'COUNTRY': 'string'},
         ),
         key_fields=('COUNTRY',),
@@ -144,6 +148,7 @@ def set_growth_baseline(
     records: SeriesInput,
     *,
     strict: bool = True,
+    empty_measure: EmptyMeasure = "write",
 ) -> None:
     """Set the baseline real GDP growth assumptions for the five-year projection horizon.
 
@@ -152,6 +157,7 @@ def set_growth_baseline(
 
     Args:
         records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
                 - TIME_PERIOD: Projection year identifying which year of the baseline growth path the observation belongs to.
                 - OBS_VALUE: Real GDP growth rate used in the baseline scenario for the specified projection year.
@@ -184,6 +190,8 @@ def set_growth_baseline(
             measure_field='OBS_VALUE',
             key_order=_KEY_ORDER_GROWTH_BASELINE,
             strict=strict,
+            empty_measure=empty_measure,
+            requires_address=False,
             key_dtypes={'TIME_PERIOD': 'int'},
         ),
         key_fields=('TIME_PERIOD',),
@@ -211,6 +219,7 @@ def set_interest_baseline(
     records: SeriesInput,
     *,
     strict: bool = True,
+    empty_measure: EmptyMeasure = "write",
 ) -> None:
     """Set the baseline real interest-rate path used in the debt-dynamics projection.
 
@@ -219,6 +228,7 @@ def set_interest_baseline(
 
     Args:
         records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
                 - TIME_PERIOD: Projection year identifying which baseline-horizon observation the record updates.
                 - OBS_VALUE: Effective real interest rate paid on outstanding general-government debt during the projection year.
@@ -251,6 +261,8 @@ def set_interest_baseline(
             measure_field='OBS_VALUE',
             key_order=_KEY_ORDER_INTEREST_BASELINE,
             strict=strict,
+            empty_measure=empty_measure,
+            requires_address=False,
             key_dtypes={'TIME_PERIOD': 'int'},
         ),
         key_fields=('TIME_PERIOD',),
@@ -278,6 +290,7 @@ def set_primary_balance_baseline(
     records: SeriesInput,
     *,
     strict: bool = True,
+    empty_measure: EmptyMeasure = "write",
 ) -> None:
     """Set the baseline primary-balance path.
 
@@ -286,6 +299,7 @@ def set_primary_balance_baseline(
 
     Args:
         records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
                 - TIME_PERIOD: Projection year identifying the observation within the baseline path.
                 - OBS_VALUE: Primary fiscal balance for the projection year, with positive values denoting a surplus.
@@ -318,6 +332,8 @@ def set_primary_balance_baseline(
             measure_field='OBS_VALUE',
             key_order=_KEY_ORDER_PRIMARY_BALANCE_BASELINE,
             strict=strict,
+            empty_measure=empty_measure,
+            requires_address=False,
             key_dtypes={'TIME_PERIOD': 'int'},
         ),
         key_fields=('TIME_PERIOD',),
@@ -435,6 +451,7 @@ def set_shock_magnitudes(
     records: SeriesInput,
     *,
     strict: bool = True,
+    empty_measure: EmptyMeasure = "write",
 ) -> None:
     """Set shock magnitudes for the configurable shock table.
 
@@ -443,6 +460,7 @@ def set_shock_magnitudes(
 
     Args:
         records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
                 - SHOCK_PARAMETER: Shock-table parameter label identifying which affected parameter the magnitude belongs to.
                 - OBS_VALUE: Numeric magnitude of the step change associated with the shock parameter.
@@ -475,6 +493,8 @@ def set_shock_magnitudes(
             measure_field='OBS_VALUE',
             key_order=_KEY_ORDER_SHOCK_MAGNITUDES,
             strict=strict,
+            empty_measure=empty_measure,
+            requires_address=False,
             key_dtypes={'SHOCK_PARAMETER': 'string'},
         ),
         key_fields=('SHOCK_PARAMETER',),
@@ -651,9 +671,9 @@ def list_computes() -> list[str]:
 
 
 TARGETS = {
-    'Outputs!B12:Outputs!F12': xl_range,
-    'Outputs!B13:Outputs!F13': xl_range,
-    'Outputs!B14:Outputs!F14': xl_range,
+    'Outputs!B12:Outputs!F12': xl_range_rows,
+    'Outputs!B13:Outputs!F13': xl_range_rows,
+    'Outputs!B14:Outputs!F14': xl_range_rows,
 }
 
 

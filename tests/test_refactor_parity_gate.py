@@ -25,6 +25,7 @@ from src.refactor_parity_gate import (
     ParityError,
     check_cluster_parity,
     check_singleton_parity,
+    exec_internals_module,
     sample_input_vectors,
 )
 
@@ -32,19 +33,13 @@ RUNTIME_IMPORT = """from __future__ import annotations
 
 from .runtime import (
     XlError,
-    np,
     to_bool,
     to_int,
-    xl_add,
     xl_cell,
-    xl_div,
+    xl_compare,
     xl_eval,
-    xl_ge,
-    xl_index_ref,
-    xl_match,
-    xl_mul,
+    xl_number,
     xl_offset,
-    xl_sub,
 )
 """
 
@@ -96,11 +91,11 @@ PRISTINE_CLUSTER = (
 
 def cell_engine_c6(ctx):
     """Covers Engine!C6."""
-    return xl_add(xl_cell(ctx, 'Inputs!C1'), 0.0)
+    return xl_number(xl_cell(ctx, 'Inputs!C1'))
 
 def cell_engine_d6(ctx):
     """Covers Engine!D6."""
-    return xl_add(xl_cell(ctx, 'Inputs!D1'), 0.0)
+    return xl_number(xl_cell(ctx, 'Inputs!D1'))
 
 '''
     + RESOLVER_SECTION
@@ -113,7 +108,7 @@ PRISTINE_SINGLETON = (
 
 def cell_inputs_b6(ctx):
     """Covers Inputs!B6."""
-    return xl_mul(xl_cell(ctx, 'Inputs!B2'), 2.0)
+    return xl_number(xl_cell(ctx, 'Inputs!B2')) * 2.0
 
 '''
     + RESOLVER_SECTION
@@ -142,13 +137,13 @@ CORRECT_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
     """{CLUSTER_DOCSTRING}"""
     columns = {{1: 'C', 2: 'D'}}
     column = columns[time_period]
-    return xl_add(xl_cell(ctx, f'Inputs!{{column}}1'), 0.0)
+    return xl_number(xl_cell(ctx, f'Inputs!{{column}}1'))
 '''
 
 # Broken: ignores time_period and always reads the year-1 column.
 BROKEN_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
     """{CLUSTER_DOCSTRING}"""
-    return xl_add(xl_cell(ctx, 'Inputs!C1'), 0.0)
+    return xl_number(xl_cell(ctx, 'Inputs!C1'))
 '''
 
 
@@ -167,6 +162,35 @@ CLUSTER_INPUTS = [
     {"Inputs!C1": 10.0, "Inputs!D1": 20.0},
     {"Inputs!C1": 5.0, "Inputs!D1": 99.0},
 ]
+
+
+def test_allowed_runtime_symbols_exist_on_exported_runtime() -> None:
+    from pathlib import Path
+
+    from src.runtime_symbols import discover_allowed_runtime_symbols
+
+    repo_root = Path(__file__).resolve().parents[1]
+    runtime_path = repo_root / "dist" / "tiny_dsa" / "runtime.py"
+    symbols = discover_allowed_runtime_symbols(runtime_path)
+    assert "XlError" in symbols
+    assert "xl_number" in symbols
+    assert "np" not in symbols
+    assert "xl_add" not in symbols
+
+
+def test_exec_exported_internals_source() -> None:
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    internals_path = repo_root / "dist" / "tiny_dsa" / "internals.py"
+    namespace = exec_internals_module(internals_path.read_text(encoding="utf-8"))
+    assert callable(namespace["_resolve_formula"])
+    public_helpers = [
+        name
+        for name, value in namespace.items()
+        if callable(value) and not name.startswith("_")
+    ]
+    assert public_helpers
 
 
 def test_cluster_gate_passes_for_semantics_preserving_refactor() -> None:
@@ -201,12 +225,12 @@ SINGLETON_DOCSTRING = (
 
 CORRECT_SINGLETON_SOURCE = f'''def initial_value(ctx):
     """{SINGLETON_DOCSTRING}"""
-    return xl_mul(xl_cell(ctx, 'Inputs!B2'), 2.0)
+    return xl_number(xl_cell(ctx, 'Inputs!B2')) * 2.0
 '''
 
 BROKEN_SINGLETON_SOURCE = f'''def initial_value(ctx):
     """{SINGLETON_DOCSTRING}"""
-    return xl_mul(xl_cell(ctx, 'Inputs!B2'), 3.0)
+    return xl_number(xl_cell(ctx, 'Inputs!B2')) * 3.0
 '''
 
 

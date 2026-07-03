@@ -7,10 +7,9 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
-from typing import TypeAlias, cast
+from typing import Any, NoReturn, TypeAlias, cast
 
 import fastpyxl.utils.cell
-import numpy as np
 
 class CircularReferenceWarning(RuntimeWarning):
     """Warning emitted when a circular reference is encountered (default Excel mode)."""
@@ -75,6 +74,26 @@ class EvalContext(EvalContextBase):
         if changed:
             self.invalidate(changed)
 
+@dataclass(frozen=True, slots=True)
+class ExcelRange:
+    """Rectangular worksheet reference geometry for exported code.
+
+    Unlike the evaluator's `ExcelRange`, this variant carries geometry only;
+    exported code resolves cell values through the lazy `Range` type instead
+    of eager array materialization.
+    """
+
+    sheet: str
+    start_row: int
+    start_col: int
+    end_row: int
+    end_col: int
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """The reference shape as `(rows, columns)`."""
+        return (self.end_row - self.start_row + 1, self.end_col - self.start_col + 1)
+
 NormalizedAddress: TypeAlias = str
 
 class XlError(StrEnum):
@@ -94,6 +113,24 @@ class XlError(StrEnum):
                 return err
         return None
 
+Scalar: TypeAlias = float | int | str | bool | XlError | None
+
+class XlErrorException(Exception):
+    """Exception form of an Excel error code.
+
+    The exported runtime raises Excel errors as exceptions; the evaluator keeps
+    `XlError` sentinel values and never raises this type.
+    """
+
+    code: XlError
+
+    def __init__(self, code: XlError) -> None:
+        """Initialize the exception with an Excel error code."""
+        if not isinstance(code, XlError):
+            raise TypeError(f"Expected XlError, got {type(code).__name__}")
+        self.code = code
+        super().__init__(code.value)
+
 _EXCEL_EPOCH = datetime(1899, 12, 30)
 
 def _escape_sheet_for_formula(sheet: str) -> str:
@@ -106,40 +143,15 @@ def _format_general_number(value: float | int) -> str:
         return str(int(f))
     return str(f)
 
-def _quote_sheet_if_needed(sheet: str) -> str:
-    if " " in sheet or "-" in sheet or "'" in sheet:
-        return f"'{sheet}'"
-    return sheet
+def _raise_error(code: XlError) -> XlErrorException:
+    """Build the exception for an Excel error code (callers raise the result)."""
+    return XlErrorException(code)
 
-def _format_address(sheet: str, row: int, col: int) -> str:
-    sheet_name = _quote_sheet_if_needed(sheet)
-    col_letter = fastpyxl.utils.cell.get_column_letter(col)
-    return f"{sheet_name}!{col_letter}{row}"
-
-def broadcast_pair(
-    left: CellValue,
-    right: CellValue,
-) -> tuple[np.ndarray, np.ndarray] | XlError:
-    """Broadcast scalar/array operands to matching object ndarrays."""
-    if isinstance(left, XlError):
-        return left
-    if isinstance(right, XlError):
-        return right
-    if isinstance(left, np.ndarray) and isinstance(right, np.ndarray):
-        if left.shape != right.shape:
-            return XlError.VALUE
-        return left, right
-    if isinstance(left, np.ndarray):
-        return left, np.full(left.shape, right, dtype=object)
-    if isinstance(right, np.ndarray):
-        return np.full(right.shape, left, dtype=object), right
-    raise TypeError("expected at least one ndarray operand")
-
-def _broadcast_pair(
-    left: CellValue,
-    right: CellValue,
-) -> tuple[np.ndarray, np.ndarray] | XlError:
-    return broadcast_pair(left, right)
+def _raise_if_error_value(value: CellValue) -> CellValue:
+    """Surface Excel error values as raised exceptions at the cell boundary."""
+    if isinstance(value, XlError):
+        raise XlErrorException(value)
+    return value
 
 def datetime_to_excel_serial(value: datetime) -> float:
     """Convert a naive datetime to an Excel day serial (1900 date system)."""
@@ -175,34 +187,247 @@ def quote_sheet_if_needed(sheet: str) -> str:
         return sheet
     return "'" + _escape_sheet_for_formula(sheet) + "'"
 
-def format_key(sheet: str, cell: str) -> NormalizedAddress:
-    """Format a sheet and A1 cell coordinate into a canonical address string."""
-    return f"{quote_sheet_if_needed(sheet)}!{cell}"
+def format_cell_key(sheet: str, column: str, row: int) -> NormalizedAddress:
+    """Format a (sheet, column_letters, row) triple into a canonical address."""
+    return f"{quote_sheet_if_needed(sheet)}!{column}{row}"
 
 @dataclass(frozen=True, slots=True)
-class ExcelRange:
+class Range:
+    """Rectangular lazy range for exported Python formula code.
+
+    Coordinates passed to `cell`, `row`, `column`, and `view` are 1-based and
+    relative to this range, matching Excel function arguments.
+    """
+
     sheet: str
     start_row: int
     start_col: int
     end_row: int
     end_col: int
+    # Resolvers may come from evaluation contexts with their own value
+    # vocabulary; values are validated/coerced at consumption time.
+    _resolver: Callable[[str], Any] = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Validate the rectangular bounds."""
+        if self.start_row < 1 or self.start_col < 1:
+            raise ValueError("Range coordinates must be positive")
+        if self.end_row < self.start_row or self.end_col < self.start_col:
+            raise ValueError("Range end must be greater than or equal to start")
 
     @property
     def shape(self) -> tuple[int, int]:
+        """The range shape as `(rows, columns)`."""
         return (self.end_row - self.start_row + 1, self.end_col - self.start_col + 1)
 
     def cell_addresses(self) -> Iterator[str]:
-        for r in range(self.start_row, self.end_row + 1):
-            for c in range(self.start_col, self.end_col + 1):
-                col = fastpyxl.utils.cell.get_column_letter(c)
-                yield format_key(self.sheet, f"{col}{r}")
+        """Yield row-major addresses without evaluating cells."""
+        for row in range(self.start_row, self.end_row + 1):
+            for col in range(self.start_col, self.end_col + 1):
+                yield self._address(row, col)
 
-    def resolve(self, evaluate_fn: Callable[[str], CellValue]) -> np.ndarray:
-        values: list[CellValue] = [evaluate_fn(addr) for addr in self.cell_addresses()]
-        rows, cols = self.shape
-        return np.array(values, dtype=object).reshape((rows, cols))
+    def cell(self, row: int, col: int) -> CellValue:
+        """Return a single relative cell value without evaluating siblings.
 
-CellValue: TypeAlias = float | int | str | bool | XlError | ExcelRange | np.ndarray | None
+        Args:
+            row: 1-based row within the range.
+            col: 1-based column within the range.
+
+        Raises:
+            IndexError: If `row` or `col` is outside the range.
+            XlErrorException: If the resolved cell is an Excel error.
+        """
+        self._validate_relative_cell(row, col)
+        value = self._resolver(self._address(self.start_row + row - 1, self.start_col + col - 1))
+        return self._raise_if_error(value)
+
+    def row(self, row: int) -> Range:
+        """Return a lazy view for one relative row."""
+        nrows, _ = self.shape
+        if row < 1 or row > nrows:
+            raise IndexError("Range row is out of bounds")
+        absolute_row = self.start_row + row - 1
+        return Range(
+            self.sheet,
+            absolute_row,
+            self.start_col,
+            absolute_row,
+            self.end_col,
+            self._resolver,
+        )
+
+    def column(self, col: int) -> Range:
+        """Return a lazy view for one relative column."""
+        _, ncols = self.shape
+        if col < 1 or col > ncols:
+            raise IndexError("Range column is out of bounds")
+        absolute_col = self.start_col + col - 1
+        return Range(
+            self.sheet,
+            self.start_row,
+            absolute_col,
+            self.end_row,
+            absolute_col,
+            self._resolver,
+        )
+
+    def view(
+        self,
+        row_start: int = 1,
+        row_end: int | None = None,
+        col_start: int = 1,
+        col_end: int | None = None,
+    ) -> Range:
+        """Return a lazy rectangular subrange view using relative coordinates."""
+        nrows, ncols = self.shape
+        row_end = nrows if row_end is None else row_end
+        col_end = ncols if col_end is None else col_end
+        self._validate_relative_cell(row_start, col_start)
+        self._validate_relative_cell(row_end, col_end)
+        if row_end < row_start or col_end < col_start:
+            raise ValueError("Range view end must be greater than or equal to start")
+        return Range(
+            self.sheet,
+            self.start_row + row_start - 1,
+            self.start_col + col_start - 1,
+            self.start_row + row_end - 1,
+            self.start_col + col_end - 1,
+            self._resolver,
+        )
+
+    def value_at(self, row: int, col: int) -> CellValue:
+        """Return a single relative cell value with errors as sentinels.
+
+        Unlike `cell`, Excel errors surface as `XlError` sentinel values (raised
+        `XlErrorException`s from the resolver are caught and converted). Range
+        consumers that implement Excel skip semantics (lookup scans, criteria
+        matching) use this accessor; `cell`/iteration raise instead.
+        """
+        self._validate_relative_cell(row, col)
+        address = self._address(self.start_row + row - 1, self.start_col + col - 1)
+        try:
+            return self._resolver(address)
+        except XlErrorException as exc:
+            return exc.code
+
+    def iter_raw(self) -> Iterator[CellValue]:
+        """Yield raw values (error sentinels included) in row-major order."""
+        nrows, ncols = self.shape
+        for row in range(1, nrows + 1):
+            for col in range(1, ncols + 1):
+                yield self.value_at(row, col)
+
+    def rows_raw(self) -> list[list[CellValue]]:
+        """Materialize the range as nested row lists of raw values."""
+        nrows, ncols = self.shape
+        return [[self.value_at(r, c) for c in range(1, ncols + 1)] for r in range(1, nrows + 1)]
+
+    def iter_values(self) -> Iterator[CellValue]:
+        """Yield values in deterministic row-major order."""
+        nrows, ncols = self.shape
+        for row in range(1, nrows + 1):
+            for col in range(1, ncols + 1):
+                yield self.cell(row, col)
+
+    def __iter__(self) -> Iterator[CellValue]:
+        """Yield values in deterministic row-major order."""
+        return self.iter_values()
+
+    def _address(self, row: int, col: int) -> str:
+        col_letter = fastpyxl.utils.cell.get_column_letter(col)
+        return format_cell_key(self.sheet, col_letter, row)
+
+    def _validate_relative_cell(self, row: int, col: int) -> None:
+        nrows, ncols = self.shape
+        if row < 1 or row > nrows or col < 1 or col > ncols:
+            raise IndexError("Range cell is out of bounds")
+
+    @staticmethod
+    def _raise_if_error(value: CellValue) -> CellValue:
+        if isinstance(value, XlError):
+            raise XlErrorException(value)
+        return value
+
+CellValue: TypeAlias = Scalar | ExcelRange | Range | list["CellValue"]
+
+class Grid:
+    """Positional raw-value access over a lazy `Range` or nested-list array."""
+
+    __slots__ = ("nrows", "ncols", "_range", "_rows")
+
+    def __init__(
+        self,
+        nrows: int,
+        ncols: int,
+        rng: Range | None,
+        rows: list[list[CellValue]] | None,
+    ) -> None:
+        self.nrows = nrows
+        self.ncols = ncols
+        self._range = rng
+        self._rows = rows
+
+    @staticmethod
+    def wrap(value: object) -> Grid | None:
+        """Wrap a range/array value; return `None` for scalar values."""
+        if isinstance(value, Range):
+            nrows, ncols = value.shape
+            return Grid(nrows, ncols, value, None)
+        if isinstance(value, (list, tuple)):
+            rows = [
+                list(row) if isinstance(row, (list, tuple)) else [row]
+                for row in cast("list[CellValue]", value)
+            ]
+            if not rows:
+                rows = [[None]]
+            return Grid(len(rows), len(rows[0]), None, cast("list[list[CellValue]]", rows))
+        return None
+
+    def at(self, row0: int, col0: int) -> Scalar:
+        """Return the raw value at a 0-based position (error sentinels included)."""
+        if self._range is not None:
+            return cast(Scalar, self._range.value_at(row0 + 1, col0 + 1))
+        assert self._rows is not None
+        return cast(Scalar, self._rows[row0][col0])
+
+    def at_flat(self, index0: int) -> Scalar:
+        """Return the raw value at a 0-based row-major flat index."""
+        row0, col0 = divmod(index0, self.ncols)
+        return self.at(row0, col0)
+
+    @property
+    def size(self) -> int:
+        """Total cell count."""
+        return self.nrows * self.ncols
+
+    def iter_raw(self) -> Iterator[Scalar]:
+        """Yield raw values (error sentinels included) in row-major order."""
+        for row0 in range(self.nrows):
+            for col0 in range(self.ncols):
+                yield self.at(row0, col0)
+
+    def row_slice(self, row0: int) -> Range | list[list[CellValue]]:
+        """Return one row as a lazy view (`Range` input) or nested list."""
+        if self._range is not None:
+            return self._range.row(row0 + 1)
+        assert self._rows is not None
+        return [list(self._rows[row0])]
+
+    def col_slice(self, col0: int) -> Range | list[list[CellValue]]:
+        """Return one column as a lazy view (`Range` input) or nested list."""
+        if self._range is not None:
+            return self._range.column(col0 + 1)
+        assert self._rows is not None
+        return [[row[col0]] for row in self._rows]
+
+def _format_address(sheet: str, row: int, col: int) -> str:
+    return format_cell_key(sheet, fastpyxl.utils.cell.get_column_letter(col), row)
+
+def as_scalar(value: CellValue) -> Scalar:
+    """Collapse range/array values to `#VALUE!` for scalar coercion contexts."""
+    if isinstance(value, (Range, ExcelRange, list, tuple)):
+        return XlError.VALUE
+    return value
 
 def coerce_inputs_dict(values: Mapping[str, object]) -> dict[str, CellValue]:
     """Widen inferred default-input dicts to `dict[str, CellValue]` for `EvalContext`."""
@@ -307,6 +532,8 @@ def to_number(value: CellValue) -> float | XlError:
     return XlError.VALUE
 
 def _compare_values(a: CellValue, b: CellValue) -> int:
+    a = as_scalar(a)
+    b = as_scalar(b)
     an = to_number(a)
     bn = to_number(b)
     if not isinstance(an, XlError) and not isinstance(bn, XlError):
@@ -317,7 +544,23 @@ def _compare_values(a: CellValue, b: CellValue) -> int:
         return -1 if af < bf else 1 if af > bf else 0
     return 0
 
+def _number_arg(value: CellValue) -> float:
+    """Coerce a scalar function argument, raising on Excel coercion errors."""
+    number = to_number(as_scalar(value))
+    if isinstance(number, XlError):
+        raise XlErrorException(number)
+    return number
+
+def _number_or_raise(value: CellValue) -> float:
+    """Coerce a scalar argument to a number, raising on Excel coercion errors."""
+    number = to_number(as_scalar(value))
+    if isinstance(number, XlError):
+        raise XlErrorException(number)
+    return number
+
 def _values_match(a: CellValue, b: CellValue) -> bool:
+    a = as_scalar(a)
+    b = as_scalar(b)
     if isinstance(a, str) and isinstance(b, str):
         return excel_casefold(a) == excel_casefold(b)
     an = to_number(a)
@@ -404,42 +647,6 @@ def index_excel_range(
         return XlError.REF
     return abs_cell(row - 1, col - 1)
 
-def reference_arithmetic_array(
-    op: str,
-    arr_left: np.ndarray,
-    arr_right: np.ndarray,
-) -> np.ndarray | XlError:
-    """Element-wise arithmetic over broadcast object ndarrays (C-order, fail-fast)."""
-    result = np.empty(arr_left.shape, dtype=object)
-    for indices in np.ndindex(arr_left.shape):
-        ln = to_number(arr_left[indices])
-        rn = to_number(arr_right[indices])
-        if isinstance(ln, XlError):
-            return ln
-        if isinstance(rn, XlError):
-            return rn
-        if op == "+":
-            result[indices] = ln + rn
-        elif op == "-":
-            result[indices] = ln - rn
-        elif op == "*":
-            result[indices] = ln * rn
-        elif op == "/":
-            if rn == 0:
-                return XlError.DIV
-            result[indices] = ln / rn
-        elif op == "^":
-            try:
-                value = ln**rn
-            except (ValueError, OverflowError):
-                return XlError.NUM
-            if isinstance(value, complex):
-                return XlError.NUM
-            result[indices] = value
-        else:
-            raise ValueError(f"Unknown arithmetic operator: {op}")
-    return result
-
 def to_int(value: CellValue) -> int | XlError:
     """Coerce a CellValue to an integer using Excel-style numeric coercion.
 
@@ -511,104 +718,6 @@ def compare_scalars(op: str, left: CellValue, right: CellValue) -> bool | XlErro
 
     return _cmp_float(float(ln), float(rn))
 
-def _compare_scalars(op: str, left: CellValue, right: CellValue) -> bool | XlError:
-    return compare_scalars(op, left, right)
-
-def reference_compare_array(
-    op: str,
-    arr_left: np.ndarray,
-    arr_right: np.ndarray,
-) -> np.ndarray | XlError:
-    """Element-wise comparison over broadcast object ndarrays (C-order, fail-fast)."""
-    result = np.empty(arr_left.shape, dtype=object)
-    for indices in np.ndindex(arr_left.shape):
-        cell = compare_scalars(op, arr_left[indices], arr_right[indices])
-        if isinstance(cell, XlError):
-            return cell
-        result[indices] = cell
-    return result
-
-def try_fastpath_arithmetic_array(
-    op: str,
-    arr_left: np.ndarray,
-    arr_right: np.ndarray,
-) -> np.ndarray | XlError | None:
-    return None
-
-def _xl_arithmetic(
-    op: str,
-    left: CellValue,
-    right: CellValue,
-) -> CellValue:
-    if isinstance(left, XlError):
-        return left
-    if isinstance(right, XlError):
-        return right
-
-    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
-        pair = _broadcast_pair(left, right)
-        if isinstance(pair, XlError):
-            return pair
-        arr_left, arr_right = pair
-        fast = try_fastpath_arithmetic_array(op, arr_left, arr_right)
-        if fast is not None:
-            return fast
-        return reference_arithmetic_array(op, arr_left, arr_right)
-
-    ln = to_number(left)
-    rn = to_number(right)
-    if isinstance(ln, XlError):
-        return ln
-    if isinstance(rn, XlError):
-        return rn
-    if op == "+":
-        return ln + rn
-    if op == "-":
-        return ln - rn
-    if op == "*":
-        return ln * rn
-    if op == "/":
-        if rn == 0:
-            return XlError.DIV
-        return ln / rn
-    if op == "^":
-        try:
-            value = ln**rn
-        except (ValueError, OverflowError):
-            return XlError.NUM
-        if isinstance(value, complex):
-            return XlError.NUM
-        return value
-    raise ValueError(f"Unknown arithmetic operator: {op}")
-
-def try_fastpath_compare_array(
-    op: str,
-    arr_left: np.ndarray,
-    arr_right: np.ndarray,
-) -> np.ndarray | XlError | None:
-    return None
-
-def _xl_compare(op: str, left: CellValue, right: CellValue) -> CellValue:
-    if isinstance(left, XlError):
-        return left
-    if isinstance(right, XlError):
-        return right
-
-    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
-        pair = _broadcast_pair(left, right)
-        if isinstance(pair, XlError):
-            return pair
-        arr_left, arr_right = pair
-        fast = try_fastpath_compare_array(op, arr_left, arr_right)
-        if fast is not None:
-            return fast
-        return reference_compare_array(op, arr_left, arr_right)
-
-    return _compare_scalars(op, left, right)
-
-def xl_add(left: CellValue, right: CellValue) -> CellValue:
-    return _xl_arithmetic("+", left, right)
-
 def xl_circular_reference() -> CellValue:
     """Excel default behavior for circular references (non-iterative calculation)."""
     warnings.warn(
@@ -625,12 +734,16 @@ def _evaluate_address(
     *,
     preserve_structural_blank: bool = False,
 ) -> CellValue:
-    """Shared evaluation path for ``xl_cell`` and ``xl_eval``."""
+    """Shared evaluation path for ``xl_cell`` and ``xl_eval``.
+
+    Excel error values raise `XlErrorException`; the raising cell's error code
+    is cached so re-reads raise without re-evaluating.
+    """
     if ctx.stack:
         ctx._record_dependency(ctx.stack[-1], address)
 
     if address in ctx.cache:
-        return ctx.cache[address]
+        return _raise_if_error_value(ctx.cache[address])
 
     if address in ctx.computing:
         if ctx.iterative_enabled:
@@ -640,20 +753,24 @@ def _evaluate_address(
     if address in ctx.inputs:
         v = ctx.inputs[address]
         ctx.cache[address] = v
-        return v
+        return _raise_if_error_value(v)
 
     fn = obtain_fn()
 
     ctx.computing.add(address)
     ctx.stack.append(address)
     try:
-        v = fn(ctx)
+        try:
+            v = fn(ctx)
+        except XlErrorException as exc:
+            ctx.cache[address] = exc.code
+            raise
         if v is None and not (
             preserve_structural_blank and getattr(fn, "__structural_blank__", False)
         ):
             v = 0
         ctx.cache[address] = v
-        return v
+        return _raise_if_error_value(v)
     finally:
         ctx.computing.discard(address)
         if ctx.stack and ctx.stack[-1] == address:
@@ -677,8 +794,18 @@ def xl_cell(ctx: EvalContext, address: str) -> CellValue:
 
     return _evaluate_address(ctx, address, obtain_fn, preserve_structural_blank=True)
 
-def xl_div(left: CellValue, right: CellValue) -> CellValue:
-    return _xl_arithmetic("/", left, right)
+def _ctx_range(ctx: EvalContext, sheet: str, r1: int, c1: int, r2: int, c2: int) -> Range:
+    def resolve(address: str) -> Any:
+        return xl_cell(ctx, address)
+
+    return Range(sheet, r1, c1, r2, c2, resolve)
+
+def xl_compare(op: str, left: CellValue, right: CellValue) -> bool:
+    """Compare two scalar operands with Excel ordering rules."""
+    result = compare_scalars(op, as_scalar(left), as_scalar(right))
+    if isinstance(result, XlError):
+        raise _raise_error(result)
+    return result
 
 def xl_eval(
     ctx: EvalContext,
@@ -687,9 +814,6 @@ def xl_eval(
 ) -> CellValue:
     """Evaluate a known formula implementation under the given context."""
     return _evaluate_address(ctx, address, lambda: fn, preserve_structural_blank=False)
-
-def xl_ge(left: CellValue, right: CellValue) -> CellValue:
-    return _xl_compare(">=", left, right)
 
 def xl_index_ref(
     ref: ExcelRange | tuple[str, int, int] | tuple[str, int, int, int, int],
@@ -715,46 +839,52 @@ def xl_index_ref(
         return (out.sheet, out.start_row, out.start_col)
     return (out.sheet, out.start_row, out.start_col, out.end_row, out.end_col)
 
-def xl_match(
-    lookup_value: CellValue, lookup_array: CellValue, match_type: CellValue = 1
-) -> int | XlError:
-    mt = to_number(match_type)
-    if isinstance(mt, XlError):
-        return mt
+def xl_match(lookup_value: CellValue, lookup_array: CellValue, match_type: CellValue = 1) -> int:
+    mt = _number_arg(match_type)
     match_type_int = int(mt)
     if isinstance(lookup_array, XlError):
-        return lookup_array
-    if isinstance(lookup_array, np.ndarray):
-        flat = np.ravel(lookup_array)
-    elif isinstance(lookup_array, (list, tuple)):
-        flat = np.ravel(np.array(lookup_array, dtype=object))
-    else:
-        flat = np.array([lookup_array], dtype=object)
+        raise XlErrorException(lookup_array)
+    grid = Grid.wrap(lookup_array)
+    if grid is None:
+        grid_wrapped = Grid.wrap([[lookup_array]])
+        assert grid_wrapped is not None
+        grid = grid_wrapped
     if match_type_int == 0:
-        for i, val in enumerate(flat):
-            if _values_match(lookup_value, val):
+        for i in range(grid.size):
+            if _values_match(lookup_value, grid.at_flat(i)):
                 return i + 1
-        return XlError.NA
+        raise XlErrorException(XlError.NA)
     if match_type_int == 1:
         last_match = None
-        for i, val in enumerate(flat):
-            if _compare_values(val, lookup_value) <= 0:
+        for i in range(grid.size):
+            if _compare_values(grid.at_flat(i), lookup_value) <= 0:
                 last_match = i + 1
             else:
                 break
-        return XlError.NA if last_match is None else last_match
+        if last_match is None:
+            raise XlErrorException(XlError.NA)
+        return last_match
     if match_type_int == -1:
         last_match = None
-        for i, val in enumerate(flat):
-            if _compare_values(val, lookup_value) >= 0:
+        for i in range(grid.size):
+            if _compare_values(grid.at_flat(i), lookup_value) >= 0:
                 last_match = i + 1
             else:
                 break
-        return XlError.NA if last_match is None else last_match
-    return XlError.VALUE
+        if last_match is None:
+            raise XlErrorException(XlError.NA)
+        return last_match
+    raise XlErrorException(XlError.VALUE)
 
-def xl_mul(left: CellValue, right: CellValue) -> CellValue:
-    return _xl_arithmetic("*", left, right)
+def xl_number(value: CellValue) -> float:
+    """Coerce a scalar cell value to a number, raising on Excel errors."""
+    scalar = as_scalar(value)
+    if isinstance(scalar, XlError):
+        raise _raise_error(scalar)
+    number = to_number(scalar)
+    if isinstance(number, XlError):
+        raise _raise_error(number)
+    return number
 
 def xl_offset(
     ctx: EvalContext,
@@ -764,15 +894,11 @@ def xl_offset(
     height: CellValue | None = None,
     width: CellValue | None = None,
 ) -> CellValue:
-    rr = to_number(rows)
-    if isinstance(rr, XlError):
-        return rr
-    cc = to_number(cols)
-    if isinstance(cc, XlError):
-        return cc
+    rr = _number_or_raise(rows)
+    cc = _number_or_raise(cols)
 
     if isinstance(ref_info, XlError):
-        return ref_info
+        raise XlErrorException(ref_info)
 
     match ref_info:
         case (sheet, base_row, base_col):
@@ -780,53 +906,37 @@ def xl_offset(
         case (sheet, base_row, base_col, base_end_row, base_end_col):
             pass
         case _:
-            return XlError.VALUE
+            raise XlErrorException(XlError.VALUE)
 
     base_h = int(base_end_row - base_row + 1)
     base_w = int(base_end_col - base_col + 1)
 
-    if height is None:
-        h = base_h
-    else:
-        hh = to_number(height)
-        if isinstance(hh, XlError):
-            return hh
-        h = int(hh)
-
-    if width is None:
-        w = base_w
-    else:
-        ww = to_number(width)
-        if isinstance(ww, XlError):
-            return ww
-        w = int(ww)
+    h = base_h if height is None else int(_number_or_raise(height))
+    w = base_w if width is None else int(_number_or_raise(width))
 
     target_row = int(base_row + int(rr))
     target_col = int(base_col + int(cc))
 
     if target_row < 1 or target_col < 1:
-        return XlError.REF
+        raise XlErrorException(XlError.REF)
     if h <= 0 or w <= 0:
-        return XlError.VALUE
+        raise XlErrorException(XlError.VALUE)
 
     if h == 1 and w == 1:
         addr = _format_address(sheet, target_row, target_col)
-        return xl_cell(ctx, addr)
+        return cast("CellValue", xl_cell(ctx, addr))
 
-    result: list[list[CellValue]] = []
-    for r in range(target_row, target_row + h):
-        row_values: list[CellValue] = []
-        for c in range(target_col, target_col + w):
-            addr = _format_address(sheet, r, c)
-            row_values.append(xl_cell(ctx, addr))
-        result.append(row_values)
-    return np.array(result, dtype=object)
+    return _ctx_range(ctx, sheet, target_row, target_col, target_row + h - 1, target_col + w - 1)
+
+def xl_raise(code: XlError) -> NoReturn:
+    """Raise an Excel error code from an expression position."""
+    raise XlErrorException(code)
 
 def xl_range(ctx: EvalContext, address: str) -> CellValue:
-    """Evaluate a sheet-qualified range and return a 2D numpy array of values."""
+    """Evaluate a sheet-qualified range address into a lazy `Range` value."""
     parsed = _parse_range_address(address)
     if isinstance(parsed, XlError):
-        return parsed
+        raise XlErrorException(parsed)
     sheet, start_cell, end_cell = parsed
     try:
         start_col, start_row = fastpyxl.utils.cell.coordinate_from_string(start_cell)
@@ -834,15 +944,22 @@ def xl_range(ctx: EvalContext, address: str) -> CellValue:
         start_col_idx = fastpyxl.utils.cell.column_index_from_string(start_col)
         end_col_idx = fastpyxl.utils.cell.column_index_from_string(end_col)
     except ValueError:
-        return XlError.VALUE
+        raise XlErrorException(XlError.VALUE) from None
 
     if start_row > end_row:
         start_row, end_row = end_row, start_row
     if start_col_idx > end_col_idx:
         start_col_idx, end_col_idx = end_col_idx, start_col_idx
 
-    rng = ExcelRange(sheet, start_row, start_col_idx, end_row, end_col_idx)
-    return rng.resolve(lambda addr: xl_cell(ctx, addr))
+    return _ctx_range(ctx, sheet, start_row, start_col_idx, end_row, end_col_idx)
 
-def xl_sub(left: CellValue, right: CellValue) -> CellValue:
-    return _xl_arithmetic("-", left, right)
+def xl_range_rows(ctx: EvalContext, address: str) -> CellValue:
+    """Evaluate a sheet-qualified range eagerly into nested row lists.
+
+    Public boundary handler for range targets: results returned from
+    `compute_all` are materialized values, not lazy range views.
+    """
+    rng = xl_range(ctx, address)
+    if isinstance(rng, Range):
+        return rng.rows_raw()
+    return rng

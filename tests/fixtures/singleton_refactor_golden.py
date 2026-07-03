@@ -38,17 +38,9 @@ def _quoted_docstring(text: str) -> str:
 INITIAL_DEBT_TO_GDP_SOURCE = f"""\
 def initial_debt_to_gdp(ctx):
 {_quoted_docstring(INITIAL_DEBT_TO_GDP_DOCSTRING)}    country_name = xl_cell(ctx, 'Inputs!B5')
-    country_codes = np.array(
-        [
-            [xl_cell(ctx, 'Inputs!A10')],
-            [xl_cell(ctx, 'Inputs!A11')],
-            [xl_cell(ctx, 'Inputs!A12')],
-        ],
-        dtype=object,
-    )
     match_index = xl_match(
         country_name,
-        np.array(country_codes, dtype=object),
+        xl_range(ctx, 'Inputs!A10:Inputs!A12'),
         0.0,
     )
     profile_table = ('Inputs', 10, 1, 12, 3)
@@ -63,7 +55,7 @@ def initial_debt_to_gdp(ctx):
 SHOCK_MAGNITUDE_RESOLVED_SOURCE = f"""\
 def shock_magnitude_resolved(ctx):
 {_quoted_docstring(SHOCK_MAGNITUDE_RESOLVED_DOCSTRING)}    shock_type = xl_cell(ctx, 'Inputs!B22')
-    type_offset = xl_sub(shock_type, 1.0)
+    type_offset = xl_number(shock_type) - xl_number(1.0)
     return xl_offset(ctx, ('Inputs', 26, 2), 0.0, type_offset, None, None)\
 """
 

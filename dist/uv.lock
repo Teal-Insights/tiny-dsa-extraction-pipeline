@@ -1976,7 +1976,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastpyxl" },
-    { name = "numpy" },
 ]
 
 [package.dev-dependencies]
@@ -1993,10 +1992,7 @@ validation = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "fastpyxl" },
-    { name = "numpy" },
-]
+requires-dist = [{ name = "fastpyxl" }]
 
 [package.metadata.requires-dev]
 dev = [
