@@ -153,6 +153,32 @@ def _raise_if_error_value(value: CellValue) -> CellValue:
         raise XlErrorException(value)
     return value
 
+def _range_from_ref_info(
+    ref: ExcelRange | tuple[str, int, int] | tuple[str, int, int, int, int],
+) -> ExcelRange:
+    """Normalize generated reference metadata into an `ExcelRange`."""
+    if isinstance(ref, ExcelRange):
+        return ref
+    match ref:
+        case (sheet, base_row, base_col):
+            return ExcelRange(
+                sheet=sheet,
+                start_row=base_row,
+                start_col=base_col,
+                end_row=base_row,
+                end_col=base_col,
+            )
+        case (sheet, base_row, base_col, base_end_row, base_end_col):
+            return ExcelRange(
+                sheet=sheet,
+                start_row=base_row,
+                start_col=base_col,
+                end_row=base_end_row,
+                end_col=base_end_col,
+            )
+        case _:
+            raise XlErrorException(XlError.VALUE)
+
 def datetime_to_excel_serial(value: datetime) -> float:
     """Convert a naive datetime to an Excel day serial (1900 date system)."""
     naive = value.replace(tzinfo=None) if value.tzinfo is not None else value
@@ -718,6 +744,16 @@ def compare_scalars(op: str, left: CellValue, right: CellValue) -> bool | XlErro
 
     return _cmp_float(float(ln), float(rn))
 
+def xl_bool(value: CellValue) -> bool:
+    """Coerce a scalar cell value to a boolean, raising on Excel errors."""
+    scalar = as_scalar(value)
+    if isinstance(scalar, XlError):
+        raise _raise_error(scalar)
+    boolean = to_bool(scalar)
+    if isinstance(boolean, XlError):
+        raise _raise_error(boolean)
+    return boolean
+
 def xl_circular_reference() -> CellValue:
     """Excel default behavior for circular references (non-iterative calculation)."""
     warnings.warn(
@@ -819,25 +855,28 @@ def xl_index_ref(
     ref: ExcelRange | tuple[str, int, int] | tuple[str, int, int, int, int],
     row_num: CellValue | None,
     col_num: CellValue | None,
-) -> ExcelRange | tuple[str, int, int] | tuple[str, int, int, int, int] | XlError:
-    """INDEX semantics that return a reference suitable for OFFSET."""
-    if isinstance(ref, ExcelRange):
-        base = ref
-    else:
-        match ref:
-            case (sheet, r1, c1):
-                base = ExcelRange(sheet=sheet, start_row=r1, start_col=c1, end_row=r1, end_col=c1)
-            case (sheet, r1, c1, r2, c2):
-                base = ExcelRange(sheet=sheet, start_row=r1, start_col=c1, end_row=r2, end_col=c2)
-            case _:
-                return XlError.VALUE
-
-    out = index_excel_range(base, row_num, col_num)
+) -> tuple[str, int, int] | tuple[str, int, int, int, int]:
+    """Return INDEX reference metadata, raising on Excel reference errors."""
+    out = index_excel_range(
+        cast("Any", _range_from_ref_info(ref)),
+        cast("Any", row_num),
+        cast("Any", col_num),
+    )
     if isinstance(out, XlError):
-        return out
+        raise XlErrorException(out)
     if out.start_row == out.end_row and out.start_col == out.end_col:
         return (out.sheet, out.start_row, out.start_col)
     return (out.sheet, out.start_row, out.start_col, out.end_row, out.end_col)
+
+def xl_int(value: CellValue) -> int:
+    """Coerce a scalar cell value to an integer, raising on Excel errors."""
+    scalar = as_scalar(value)
+    if isinstance(scalar, XlError):
+        raise _raise_error(scalar)
+    integer = to_int(scalar)
+    if isinstance(integer, XlError):
+        raise _raise_error(integer)
+    return integer
 
 def xl_match(lookup_value: CellValue, lookup_array: CellValue, match_type: CellValue = 1) -> int:
     mt = _number_arg(match_type)

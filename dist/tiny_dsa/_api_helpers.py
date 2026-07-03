@@ -2,25 +2,26 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeGuard, cast
 
 from .runtime import coerce_inputs_dict
 
-Layout = Literal["scalar", "series", "matrix"]
-EmptyMeasure = Literal["skip", "write", "error"]
-SetterInput = object
-Scalar = str | int | float | bool | datetime | None
-Record = dict[str, object]
-Records = list[Record]
-SeriesInput = Records | Record | Sequence[Scalar]
+Layout: TypeAlias = Literal["scalar", "series", "matrix"]
+EmptyMeasure: TypeAlias = Literal["skip", "write", "error"]
+SetterInput: TypeAlias = object
+Scalar: TypeAlias = str | int | float | bool | datetime | None
+Record: TypeAlias = dict[str, object]
+Records: TypeAlias = list[Record]
 
 if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
 
-    SeriesInput = Records | Record | Sequence[Scalar] | pd.DataFrame | pl.DataFrame
+    DataFrameInput: TypeAlias = pd.DataFrame | pl.DataFrame
 else:
-    SeriesInput = Records | Record | Sequence[Scalar] | object
+    DataFrameInput: TypeAlias = object
+
+SeriesInput: TypeAlias = Records | Record | Sequence[Scalar] | DataFrameInput
 
 """Coerce workbook and manifest values into series-binding scalars."""
 
