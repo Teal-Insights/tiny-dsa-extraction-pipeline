@@ -27,5 +27,14 @@ jobs:
       - name: Install Graphviz
         run: sudo apt-get update && sudo apt-get install -y graphviz
 
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run ty check
+
       - name: Run tests
         run: uv run pytest

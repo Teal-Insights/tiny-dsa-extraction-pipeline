@@ -263,7 +263,7 @@ def check_cluster_parity(
     mismatches: list[_Mismatch] = []
     for index, inputs in enumerate(input_vectors):
         for entry in response.member_keys:
-            literals = _parameter_literals(response.parameters, entry.keys)
+            literals = _parameter_literals(response.parameters, entry.keys_dict())
             golden_ctx = make_eval_context(golden_ns, inputs)
             expected = _evaluate_golden(
                 lambda eval_ctx=golden_ctx, address=entry.address: runtime.xl_cell(

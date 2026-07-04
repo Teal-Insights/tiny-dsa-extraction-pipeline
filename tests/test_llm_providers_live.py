@@ -1,13 +1,13 @@
 """Live smoke tests for per-provider model switching.
 
-These make real, billed API calls, so they are skipped unless
-``LIVE_LLM_TESTS`` is set in the environment. Each provider is exercised end to
+These make real, billed API calls, so they are marked ``@pytest.mark.skipped``
+and only run when ``--run-skipped`` is passed. Each provider is exercised end to
 end through :func:`generate_validated_json`, which selects the structured or
 JSON-object call shape from the provider config.
 
 Run with, for example:
 
-    LIVE_LLM_TESTS=1 uv run pytest tests/test_llm_providers_live.py -q
+    uv run pytest tests/test_llm_providers_live.py --run-skipped -q
 """
 
 from __future__ import annotations
@@ -25,8 +25,6 @@ from src.llm_providers import build_client, provider_for_model
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-LIVE = os.environ.get("LIVE_LLM_TESTS")
-
 MODELS = ["gpt-5.5", "glm-5.2", "deepseek-v4-pro"]
 
 
@@ -37,7 +35,7 @@ class Capital(BaseModel):
     capital: str = Field(description="The capital city of that country.")
 
 
-@pytest.mark.skipif(not LIVE, reason="set LIVE_LLM_TESTS=1 to run billed API calls")
+@pytest.mark.skipped(reason="Opt-in test; pass --run-skipped to run")
 @pytest.mark.parametrize("model", MODELS)
 def test_provider_returns_valid_structured_json(model: str) -> None:
     config = provider_for_model(model)

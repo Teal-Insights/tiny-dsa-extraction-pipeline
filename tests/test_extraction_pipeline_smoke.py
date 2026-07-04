@@ -1,34 +1,22 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from excel_grapher.series_bindings import (
     derive_input_series,
     derive_output_series,
     validate_series_bindings,
 )
 
-from src.extraction_pipeline import build_pipeline_graph
-from src.semantic_labeling import SemanticLabelingSummary
+from tests.conftest import SyntheticConfiguredPipeline
 
 
 def test_build_pipeline_graph_on_synthetic_workbook(
-    synthetic_pipeline_config_fixture,
+    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
 ) -> None:
-    config = synthetic_pipeline_config_fixture
-    stub_summary = SemanticLabelingSummary(
-        labeled_cell_count=0,
-        sheet_count=0,
-        candidate_cells_by_sheet={},
-    )
-
-    with patch(
-        "src.extraction_pipeline.label_internal_graph_cells",
-        return_value=stub_summary,
-    ):
-        graph, series_bindings, input_series, output_series = build_pipeline_graph(
-            config
-        )
+    config = synthetic_configured_pipeline.config
+    graph = synthetic_configured_pipeline.graph
+    series_bindings = synthetic_configured_pipeline.series_bindings
+    input_series = synthetic_configured_pipeline.input_series
+    output_series = synthetic_configured_pipeline.output_series
 
     assert series_bindings["schema_version"] == "1.5.0"
     validation = validate_series_bindings(

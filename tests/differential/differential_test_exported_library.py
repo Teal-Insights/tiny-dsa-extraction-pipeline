@@ -6,11 +6,11 @@ section at the bottom of this module.
 
 Run from the extraction repo after export::
 
-    uv run python tests/differential/differential_test_exported_library.py
+    uv run python -m tests.differential.differential_test_exported_library
 
 From the exported ``dist/`` project (Windows + Excel)::
 
-    uv run --project dist --group validation python tests/differential_test_exported_library.py --layout exported
+    uv run --project dist --group validation python -m tests.differential.differential_test_exported_library --layout exported
 """
 
 from __future__ import annotations
@@ -27,10 +27,18 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator, Literal, cast
 
+from excel_grapher import XlError
+
+from .differential_excel import (
+    coerce_excel_error,
+    matched_error_values,
+    read_cell_value,
+)
+from .differential_types import ATOL, Scenario
+
 logger = logging.getLogger(__name__)
 
 LayoutName = Literal["repo", "exported"]
-ATOL = 1e-6
 
 
 @dataclass(frozen=True)
@@ -44,27 +52,7 @@ class DifferentialConfig:
     report_dir: Path
     library_name: str
     atol: float = ATOL
-
-
-@dataclass(frozen=True)
-class Inputs:
-    """One full Tiny-DSA input configuration; matches the workbook named ranges."""
-
-    country_name: str
-    growth_baseline: tuple[float, ...]
-    interest_baseline: tuple[float, ...]
-    primary_balance_baseline: tuple[float, ...]
-    shock_year: int
-    shock_type: int
-    shock_table: tuple[float, float, float]
-
-
-@dataclass(frozen=True)
-class Scenario:
-    """One identified input configuration plus a stable scenario id."""
-
-    id: str
-    inputs: Inputs
+    warn_on_error_values: bool = False
 
 
 @dataclass(frozen=True)
@@ -77,6 +65,8 @@ class Comparison:
     abs_diff: float | None
     rel_diff: float | None
     passed: bool
+    matched_error: bool = False
+    flagged_matched_error: bool = False
 
 
 CSV_COLUMNS: tuple[str, ...] = (
@@ -88,6 +78,8 @@ CSV_COLUMNS: tuple[str, ...] = (
     "abs_diff",
     "rel_diff",
     "passed",
+    "matched_error",
+    "flagged_matched_error",
 )
 
 
@@ -124,41 +116,53 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Directory for parity_report.{csv,txt} output.",
     )
+    parser.add_argument(
+        "--warn-on-error-values",
+        action="store_true",
+        help=(
+            "List passing comparisons where both sides are the same Excel error "
+            "code, for scenario-setup review."
+        ),
+    )
     return parser.parse_args(argv)
 
 
-def _repo_root_from_script(script_path: Path, layout: LayoutName) -> Path:
-    if layout == "exported":
-        return script_path.parent.parent
-    return script_path.parents[2]
+def _project_root_from_module(module_path: Path) -> Path:
+    """Return repo or dist root from ``tests/differential/<module>.py``."""
+    return module_path.resolve().parents[2]
+
+
+def _tests_root_from_module(module_path: Path) -> Path:
+    return module_path.resolve().parents[1]
 
 
 def resolve_config(
     *,
-    script_path: Path,
+    module_path: Path,
     layout: LayoutName,
     workbook_path: Path | None = None,
     package_name: str | None = None,
     import_root: Path | None = None,
     report_dir: Path | None = None,
+    warn_on_error_values: bool = False,
 ) -> DifferentialConfig:
     """Resolve paths from ``workbook_config.py`` and the selected layout."""
-    script_path = script_path.resolve()
-    repo_root = _repo_root_from_script(script_path, layout)
+    module_path = module_path.resolve()
+    project_root = _project_root_from_module(module_path)
 
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
     from src.pipeline_config import load_pipeline_config
 
-    pipeline = load_pipeline_config(repo_root=repo_root)
+    pipeline = load_pipeline_config(repo_root=project_root)
     package_dir = pipeline.package_root
     package_slug = pipeline.dist_metadata.package_name
     library_name = pipeline.dist_metadata.library_name
 
     if layout == "exported":
-        tests_root = script_path.parent
-        dist_root = script_path.parent.parent
+        tests_root = _tests_root_from_module(module_path)
+        dist_root = project_root
         defaults = DifferentialConfig(
             workbook_path=tests_root / "fixtures" / pipeline.workbook_path.name,
             package_dir=dist_root / package_slug,
@@ -172,8 +176,8 @@ def resolve_config(
             workbook_path=pipeline.workbook_path,
             package_dir=package_dir,
             package_name=f"dist.{package_slug}.api",
-            import_root=repo_root,
-            report_dir=repo_root / pipeline.differential_report_dir_rel,
+            import_root=project_root,
+            report_dir=project_root / pipeline.differential_report_dir_rel,
             library_name=library_name,
         )
 
@@ -185,17 +189,19 @@ def resolve_config(
         report_dir=(report_dir or defaults.report_dir).resolve(),
         library_name=library_name,
         atol=ATOL,
+        warn_on_error_values=warn_on_error_values,
     )
 
 
-def config_from_args(script_path: Path, args: argparse.Namespace) -> DifferentialConfig:
+def config_from_args(module_path: Path, args: argparse.Namespace) -> DifferentialConfig:
     return resolve_config(
-        script_path=script_path,
+        module_path=module_path,
         layout=args.layout,
         workbook_path=args.workbook_path,
         package_name=args.package_name,
         import_root=args.import_root,
         report_dir=args.report_dir,
+        warn_on_error_values=args.warn_on_error_values,
     )
 
 
@@ -207,7 +213,31 @@ def compare_cell(
     mvp: Any,
     *,
     atol: float,
+    expects_error_values: bool = False,
 ) -> Comparison:
+    raw_excel = excel
+    raw_mvp = mvp
+    excel = coerce_excel_error(excel)
+    mvp = coerce_excel_error(mvp)
+
+    if isinstance(excel, XlError) or isinstance(mvp, XlError):
+        passed = (
+            isinstance(excel, XlError) and isinstance(mvp, XlError) and excel == mvp
+        )
+        matched_error = passed
+        return Comparison(
+            scenario_id,
+            cell_address,
+            cell_label,
+            excel,
+            mvp,
+            None,
+            None,
+            passed,
+            matched_error=matched_error,
+            flagged_matched_error=matched_error and not expects_error_values,
+        )
+
     if excel is None and mvp is None:
         return Comparison(
             scenario_id, cell_address, cell_label, None, None, 0.0, 0.0, True
@@ -220,8 +250,19 @@ def compare_cell(
         excel_f = float(excel)  # type: ignore[arg-type]
         mvp_f = float(mvp)  # type: ignore[arg-type]
     except (TypeError, ValueError):
+        passed = excel == mvp
+        matched_error = matched_error_values(raw_excel, raw_mvp) and passed
         return Comparison(
-            scenario_id, cell_address, cell_label, excel, mvp, None, None, excel == mvp
+            scenario_id,
+            cell_address,
+            cell_label,
+            excel,
+            mvp,
+            None,
+            None,
+            passed,
+            matched_error=matched_error,
+            flagged_matched_error=matched_error and not expects_error_values,
         )
     if not (math.isfinite(excel_f) and math.isfinite(mvp_f)):
         passed = excel_f == mvp_f or (math.isnan(excel_f) and math.isnan(mvp_f))
@@ -230,6 +271,7 @@ def compare_cell(
         )
     abs_diff = abs(excel_f - mvp_f)
     rel_diff = abs_diff / abs(excel_f) if excel_f != 0 else math.inf
+    passed = abs_diff <= atol
     return Comparison(
         scenario_id,
         cell_address,
@@ -238,7 +280,7 @@ def compare_cell(
         mvp_f,
         abs_diff,
         rel_diff,
-        abs_diff <= atol,
+        passed,
     )
 
 
@@ -258,6 +300,7 @@ def compare_scenario(
             excel_outputs.get(cell_address),
             mvp_outputs.get(cell_address),
             atol=atol,
+            expects_error_values=scenario.expects_error_values,
         )
         for cell_label, cell_address in cell_labels
     ]
@@ -300,6 +343,8 @@ def write_csv_report(comparisons: list[Comparison], path: Path) -> None:
                     comparison.abs_diff,
                     comparison.rel_diff,
                     comparison.passed,
+                    comparison.matched_error,
+                    comparison.flagged_matched_error,
                 ]
             )
 
@@ -344,6 +389,24 @@ def write_txt_summary(
             handle.write(f"  mvp:       {first.mvp_value!r}\n")
             handle.write(f"  abs_diff:  {first.abs_diff!r}\n")
             handle.write(f"  rel_diff:  {first.rel_diff!r}\n")
+        if config.warn_on_error_values:
+            flagged = [
+                comparison
+                for comparison in comparisons
+                if comparison.flagged_matched_error
+            ]
+            if flagged:
+                handle.write(
+                    "\nMatched error values (passed, but review scenario setup; "
+                    "set Scenario.expects_error_values=True when intentional):\n"
+                )
+                for comparison in flagged:
+                    handle.write(f"  {comparison.scenario_id} :: ")
+                    handle.write(
+                        f"{comparison.cell_address} ({comparison.cell_label})\n"
+                    )
+                    handle.write(f"    excel: {comparison.excel_value!r}\n")
+                    handle.write(f"    mvp:   {comparison.mvp_value!r}\n")
 
 
 def load_exported_library(import_root: Path, package_name: str) -> ModuleType:
@@ -372,8 +435,7 @@ def run_excel_oracle(
             workbook.app.calculate()
 
             def read(address: str) -> Any:
-                sheet, cell = address.split("!", 1)
-                return workbook.sheets[sheet].range(cell).value
+                return read_cell_value(workbook.sheets, address)
 
             return {address: read(address) for address in output_addresses}
         finally:
@@ -559,7 +621,14 @@ def run_differential_test(config: DifferentialConfig) -> int:
     )
 
     failed = sum(1 for comparison in comparisons if not comparison.passed)
+    flagged = sum(1 for comparison in comparisons if comparison.flagged_matched_error)
     logger.info("Done. Failures: %d / %d", failed, len(comparisons))
+    if config.warn_on_error_values and flagged:
+        logger.warning(
+            "Matched error values in %d comparison(s); see report section in %s",
+            flagged,
+            config.report_dir / "parity_report.txt",
+        )
     return 0 if failed == 0 else 1
 
 
@@ -586,6 +655,20 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------
 # Workbook-specific hooks — Tiny DSA scenario sweep and cell mappings.
 # --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Inputs:
+    """One full Tiny-DSA input configuration; matches the workbook named ranges."""
+
+    country_name: str
+    growth_baseline: tuple[float, ...]
+    interest_baseline: tuple[float, ...]
+    primary_balance_baseline: tuple[float, ...]
+    shock_year: int
+    shock_type: int
+    shock_table: tuple[float, float, float]
+
 
 COUNTRIES: tuple[str, ...] = ("Borvelia", "Litellia", "Aurelium")
 SHOCK_TYPES: tuple[int, ...] = (1, 2, 3)

@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Mapping, Sequence
+from unittest.mock import patch
 
 import fastpyxl
 from excel_grapher.core.cell_types import RealBetween
 from excel_grapher.exporter import ProjectionResult
-from excel_grapher.grapher import (
-    DependencyGraph,
-    DynamicRefConfig,
-    create_dependency_graph,
-)
+from excel_grapher.grapher import DependencyGraph
 from excel_grapher.series_bindings import WorkbookSeriesBindings, load_series_bindings
 
-from src.pipeline_config import DistProjectMetadata, PipelineConfig
+from src.extraction_pipeline import build_pipeline_graph
 from src.graph_dependency_audit import GraphAuditCase
+from src.pipeline_config import DistProjectMetadata, PipelineConfig
+from src.semantic_labeling import SemanticLabelingSummary
 from src.subgraph_projection import build_refactor_projection
 from src.workbook_addresses import ProjectionColumnLayout
 
@@ -52,6 +52,35 @@ GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = (
     ),
 )
 
+STUB_SEMANTIC_LABELING_SUMMARY = SemanticLabelingSummary(
+    labeled_cell_count=0,
+    sheet_count=0,
+    candidate_cells_by_sheet={},
+)
+
+
+@contextmanager
+def stub_semantic_labeling():
+    """Patch semantic labeling during synthetic pipeline graph builds."""
+    with patch(
+        "src.extraction_pipeline.label_internal_graph_cells",
+        return_value=STUB_SEMANTIC_LABELING_SUMMARY,
+    ):
+        yield
+
+
+def build_synthetic_pipeline_graph(
+    config: PipelineConfig,
+) -> tuple[
+    DependencyGraph,
+    WorkbookSeriesBindings,
+    Sequence[Mapping[str, Any]],
+    Sequence[Mapping[str, Any]],
+]:
+    """Build the dependency graph through the same path as production export."""
+    with stub_semantic_labeling():
+        return build_pipeline_graph(config)
+
 
 def write_synthetic_workbook(path: Path) -> Path:
     """Write a minimal multi-sheet workbook with parallel formula families."""
@@ -73,18 +102,6 @@ def write_synthetic_workbook(path: Path) -> Path:
 
     workbook.save(path)
     return path
-
-
-def build_synthetic_graph(workbook_path: Path) -> DependencyGraph:
-    if not workbook_path.is_file():
-        write_synthetic_workbook(workbook_path)
-    return create_dependency_graph(
-        workbook_path,
-        list(TARGETS),
-        load_values=True,
-        dynamic_refs=DynamicRefConfig.from_constraints(CONSTRAINTS, {}),
-        capture_dependency_provenance=True,
-    )
 
 
 def build_synthetic_projection(
@@ -139,5 +156,6 @@ def synthetic_pipeline_config(
         ),
         differential_workbook_rel=Path("data/workbook.xlsx"),
         differential_report_dir_rel=Path("data/differential/exported_library"),
+        differential_graph_report_dir_rel=Path("data/differential/graph"),
         graph_output_dir=root / "artifacts" / "dependency-graph",
     )

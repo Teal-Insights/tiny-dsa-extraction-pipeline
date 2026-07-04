@@ -1,4 +1,9 @@
-"""Centralized logging configuration for pipeline entry points."""
+"""Centralized logging configuration for pipeline entry points.
+
+Called from :func:`src.extraction_pipeline.main`,
+:func:`src.extraction_pipeline.export_generated_package`, and
+:func:`src.documentation_pipeline.run_documentation_pipeline`.
+"""
 
 from __future__ import annotations
 

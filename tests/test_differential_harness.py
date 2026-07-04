@@ -2,30 +2,16 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
+import importlib
 from pathlib import Path
 
 import pytest
 
-HARNESS_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "tests"
-    / "differential"
-    / "differential_test_exported_library.py"
-)
-
 
 def _load_harness_module():
-    spec = importlib.util.spec_from_file_location(
-        "differential_test_exported_library",
-        HARNESS_PATH,
+    return importlib.import_module(
+        "tests.differential.differential_test_exported_library"
     )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_compare_cell_passes_within_atol() -> None:
@@ -52,6 +38,71 @@ def test_compare_cell_fails_outside_atol() -> None:
         atol=1e-6,
     )
     assert comparison.passed is False
+
+
+def test_compare_cell_matches_excel_error_string_to_xlerror() -> None:
+    harness = _load_harness_module()
+    from excel_grapher import XlError
+
+    comparison = harness.compare_cell(
+        "scenario:a",
+        "Outputs!B1",
+        "result[year=1]",
+        "#VALUE!",
+        XlError.VALUE,
+        atol=1e-6,
+    )
+    assert comparison.passed is True
+
+
+def test_compare_cell_rejects_different_error_classes() -> None:
+    harness = _load_harness_module()
+    from excel_grapher import XlError
+
+    comparison = harness.compare_cell(
+        "scenario:a",
+        "Outputs!B1",
+        "result[year=1]",
+        "#DIV/0!",
+        XlError.NA,
+        atol=1e-6,
+    )
+    assert comparison.passed is False
+    assert comparison.matched_error is False
+
+
+def test_compare_cell_flags_matched_errors_for_review() -> None:
+    harness = _load_harness_module()
+    from excel_grapher import XlError
+
+    comparison = harness.compare_cell(
+        "scenario:a",
+        "Outputs!B1",
+        "result[year=1]",
+        "#N/A",
+        XlError.NA,
+        atol=1e-6,
+    )
+    assert comparison.passed is True
+    assert comparison.matched_error is True
+    assert comparison.flagged_matched_error is True
+
+
+def test_compare_cell_suppresses_flag_when_scenario_expects_errors() -> None:
+    harness = _load_harness_module()
+    from excel_grapher import XlError
+
+    comparison = harness.compare_cell(
+        "scenario:a",
+        "Outputs!B1",
+        "result[year=1]",
+        "#N/A",
+        XlError.NA,
+        atol=1e-6,
+        expects_error_values=True,
+    )
+    assert comparison.matched_error is True
+    assert comparison.flagged_matched_error is False
 
 
 def test_run_differential_test_requires_scenarios(tmp_path: Path, monkeypatch) -> None:

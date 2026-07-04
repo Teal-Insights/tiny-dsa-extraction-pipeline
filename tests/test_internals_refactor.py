@@ -13,6 +13,7 @@ from src.internals_refactor import (
     ClusterRefactorResponse,
     HelperParameter,
     MemberContext,
+    MemberKeyEntry,
     MemberKeys,
     apply_cluster_collapse,
     apply_phase_c,
@@ -142,10 +143,14 @@ CLUSTER_PARAMETERS = (
 
 CLUSTER_MEMBER_KEYS = (
     MemberKeys(
-        address="Engine!C6", function_name="cell_engine_c6", keys={"TIME_PERIOD": 1}
+        address="Engine!C6",
+        function_name="cell_engine_c6",
+        keys=(MemberKeyEntry(concept="TIME_PERIOD", value=1),),
     ),
     MemberKeys(
-        address="Engine!D6", function_name="cell_engine_d6", keys={"TIME_PERIOD": 2}
+        address="Engine!D6",
+        function_name="cell_engine_d6",
+        keys=(MemberKeyEntry(concept="TIME_PERIOD", value=2),),
     ),
 )
 
@@ -184,7 +189,7 @@ def test_refactor_cache_key_includes_prompt_version(
     try:
         import src.internals_refactor as module
 
-        setattr(module, "REFACTOR_PROMPT_VERSION", 99)
+        module.REFACTOR_PROMPT_VERSION = 99  # ty: ignore[invalid-assignment]
         key_v99 = refactor_cache_key(CLUSTER_CONTEXT, internals_bytes, schema)
     finally:
         import src.internals_refactor as module

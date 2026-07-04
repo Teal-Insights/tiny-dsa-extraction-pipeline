@@ -46,7 +46,7 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 | **Graph is inspectable** | DAG from outputs to inputs; manual review confirms expected sheets, no spurious nodes, no missing shock/engine paths. |
 | **Provenance captured** | `capture_dependency_provenance=True` so later compression/refactor projections are safe and auditable. |
 | **Series derive cleanly** | `derive_input_series` / `derive_output_series` resolve every binding to concrete cell addresses. |
-| **Dependency chains pass AI-powered spot-checking** | Optional: declare `GRAPH_AUDIT_CASES` in `workbook_config.py` and run `pytest tests/test_extraction_graph_accuracy.py --run-skipped` with a configured LLM provider. Per-parent audits spot-check direct dependency sets; they do not exhaust every conditional path. |
+| **Dependency chains pass AI-powered spot-checking** | Optional: declare `GRAPH_AUDIT_CASES` in `workbook_config.py`, set `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`; name prefix selects OpenAI, Z.AI, or DeepSeek), and run `pytest tests/test_extraction_graph_accuracy.py --run-skipped` with the matching provider API key. Per-parent audits spot-check direct dependency sets; they do not exhaust every conditional path. |
 
 #### 3. Export
 

@@ -16,7 +16,7 @@ The dependency-graph directory is listed in `.gitignore` because graph payloads 
 | Stage | Command | Output |
 |---|---|---|
 | Audit | `uv run python -m src.workbook_audit --output artifacts/workbook-audit.md` | `workbook-audit.md` |
-| Extract | `uv run python -m src.extraction_pipeline --extract-graph` | `dependency-graph/index.html`, `dependency-graph.json`, `extraction-summary.json` |
+| Extract | `uv run python -m src.extraction_pipeline --extract-graph` | `dependency-graph/index.html`, `dependency-graph.json`, `dependencies.dot`, `graph-topology.json`, `extraction-summary.json` |
 
 Serve the graph explorer locally (do not commit generated files):
 

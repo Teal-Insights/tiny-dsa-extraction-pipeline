@@ -20,6 +20,7 @@ from excel_grapher.core.cell_types import Between, RealBetween
 from src.internals_refactor import (
     ClusterRefactorResponse,
     HelperParameter,
+    MemberKeyEntry,
     MemberKeys,
     SingletonRefactorContext,
     SingletonRefactorResponse,
@@ -140,10 +141,14 @@ CLUSTER_PARAMETERS = (
 )
 CLUSTER_MEMBER_KEYS = (
     MemberKeys(
-        address="Engine!C6", function_name="cell_engine_c6", keys={"TIME_PERIOD": 1}
+        address="Engine!C6",
+        function_name="cell_engine_c6",
+        keys=(MemberKeyEntry(concept="TIME_PERIOD", value=1),),
     ),
     MemberKeys(
-        address="Engine!D6", function_name="cell_engine_d6", keys={"TIME_PERIOD": 2}
+        address="Engine!D6",
+        function_name="cell_engine_d6",
+        keys=(MemberKeyEntry(concept="TIME_PERIOD", value=2),),
     ),
 )
 

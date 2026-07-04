@@ -17,24 +17,7 @@ from io import StringIO
 from pathlib import Path
 from typing import IO
 
-
-def _env_flag(name: str) -> bool:
-    value = os.environ.get(name, "")
-    return value not in ("", "0", "false", "False", "no", "No")
-
-
-def _env_float(name: str) -> float | None:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return None
-    return float(raw)
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
-    return int(raw)
+from src.env_utils import env_flag, env_float
 
 
 def dump_thread_stacks(
@@ -202,7 +185,7 @@ def profile_if_enabled(
 ) -> Iterator[cProfile.Profile | None]:
     """Optionally wrap work in cProfile and write binary + text summaries."""
     if enabled is None:
-        enabled = _env_flag("PIPELINE_PROFILE")
+        enabled = env_flag("PIPELINE_PROFILE")
     if not enabled:
         yield None
         return
@@ -237,7 +220,7 @@ def monitor_pipeline_stage(
     interval = (
         stall_interval_seconds
         if stall_interval_seconds is not None
-        else _env_float("PIPELINE_STALL_SECONDS")
+        else env_float("PIPELINE_STALL_SECONDS")
     )
     watchdog: StallWatchdog | None = None
     with timer.stage(stage):

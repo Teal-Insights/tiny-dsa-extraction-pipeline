@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.internals_refactor import (
     ClusterRefactorResponse,
     HelperParameter,
+    MemberKeyEntry,
     MemberKeys,
 )
 from src.refactor_bindings import BindingKeyValue
@@ -184,7 +185,10 @@ def _member_keys(
         MemberKeys(
             address=address,
             function_name=function_name,
-            keys=keys,
+            keys=tuple(
+                MemberKeyEntry(concept=concept, value=value)
+                for concept, value in keys.items()
+            ),
         )
         for address, function_name, keys in addresses
     )

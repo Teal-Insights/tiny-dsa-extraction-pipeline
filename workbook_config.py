@@ -86,7 +86,11 @@ PROJECTION_LAYOUT = ProjectionColumnLayout(
 
 DIFFERENTIAL_WORKBOOK_REL = Path("data/tiny-dsa.xlsx")
 DIFFERENTIAL_REPORT_DIR_REL = Path("data/differential/exported_library")
+DIFFERENTIAL_GRAPH_REPORT_DIR_REL = Path("data/differential/graph")
 
+# Optional per-parent formula cells for LLM direct-dependency graph audits
+# (``pytest tests/test_extraction_graph_accuracy.py --run-skipped``). Provider
+# and model come from ``LLM_GRAPH_AUDIT_MODEL`` (see ``.env.example``).
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = ()
 
 AUDIT_TITLE = "Tiny DSA Workbook Audit"

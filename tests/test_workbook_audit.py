@@ -60,6 +60,7 @@ def test_workbook_audit_writes_expected_generic_sections(
     assert "# Workbook Audit" in text
     assert "## Executive summary" in text
     assert "## Automation and external dependencies" in text
+    assert "Query tables" not in text
     assert "### Formulas by sheet" in text
     assert "### Dynamic-reference functions" in text
     assert "## Named ranges" in text

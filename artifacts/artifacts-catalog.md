@@ -8,9 +8,32 @@ Written by the extract-only stage (`uv run python -m src.extraction_pipeline --e
 
 | File | Description |
 |---|---|
-| `index.html` | Interactive Cytoscape explorer (Graphviz preset layout) |
-| `dependency-graph.json` | Cytoscape preset payload for the explorer |
+| `index.html` | Interactive Cytoscape explorer; Graphviz preset layout when enabled, otherwise structure-only client layout |
+| `dependency-graph.json` | Cytoscape payload consumed by `index.html` |
+| `dependencies.dot` | Graphviz DOT source for the dependency graph (always written) |
+| `graph-topology.json` | Node/edge counts, per-sheet breakdown, and layout-mode metadata |
 | `extraction-summary.json` | Machine-readable extraction metrics and output paths |
+
+### Layout modes
+
+Graphviz preset layout runs when `GRAPHVIZ_LAYOUT` allows it and node/edge counts are below limits (defaults: 10,000 nodes, 50,000 edges). Otherwise the explorer falls back to structure-only mode and uses client-side layout; `dependencies.dot` and `graph-topology.json` are still written for offline review.
+
+| `graph-topology.json` field | Description |
+|---|---|
+| `layout_mode` | `graphviz_preset` or `structure_only` |
+| `graphviz_layout_enabled` | Whether Graphviz layout ran for this extract |
+| `dot_byte_size` | Size of `dependencies.dot` in bytes |
+| `node_count`, `edge_count`, `sheets` | Topology metrics (see below) |
+
+Environment overrides: `GRAPHVIZ_LAYOUT` (`auto`, `always`, `never`), `GRAPHVIZ_NODE_LIMIT`, `GRAPHVIZ_EDGE_LIMIT`.
+
+### `graph-topology.json` topology fields
+
+| Field | Type | Description |
+|---|---|---|
+| `node_count` | integer | Cells in the dependency graph |
+| `edge_count` | integer | Directed dependency edges |
+| `sheets` | object | Per-worksheet `node_count` and `edge_count` |
 
 ### `extraction-summary.json` schema (version `1.0.0`)
 
@@ -21,9 +44,11 @@ Written by the extract-only stage (`uv run python -m src.extraction_pipeline --e
 | `edge_count` | integer | Directed dependency edges |
 | `leaf_count` | integer | Graph leaves (inputs/constants) |
 | `provenance_edge_count` | integer | Edges with dependency provenance metadata |
-| `elapsed_seconds` | number | Wall-clock seconds for the extract stage |
+| `elapsed_seconds` | number | Wall-clock seconds for graph build plus artifact write (covers all `stage_timings` stages) |
 | `stage_timings` | object | Per-stage seconds keyed by stage name |
-| `output_paths` | object | Repo-relative paths for `output_dir`, `index_html`, `dependency_graph_json`, and `extraction_summary_json` |
+| `output_paths` | object | Repo-relative paths for every file listed above |
+
+`output_paths` keys: `output_dir`, `index_html`, `dependency_graph_json`, `dependencies_dot`, `graph_topology_json`, `extraction_summary_json`.
 
 Serve locally:
 

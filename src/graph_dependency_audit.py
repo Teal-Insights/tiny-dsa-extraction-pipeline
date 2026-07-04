@@ -1,9 +1,17 @@
-"""Direct-dependency LLM audits for extracted workbook graphs."""
+"""Direct-dependency LLM audits for extracted workbook graphs.
+
+Model selection uses ``LLM_GRAPH_AUDIT_MODEL`` (default ``gpt-5.5`` when unset).
+The model name prefix routes through the same OpenAI-compatible providers as
+other pipeline stages: ``gpt-*`` (OpenAI), ``glm-*`` (Z.AI), and
+``deepseek-*`` (DeepSeek). One model—and therefore one provider—handles every
+audit case in a run.
+"""
 
 from __future__ import annotations
 
-import os
+import asyncio
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -11,11 +19,17 @@ from excel_grapher.core.address_keys import normalize_key
 from excel_grapher.grapher.dependency_provenance import DependencyCause
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import NodeKey
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.llm_json import generate_validated_json
-from src.llm_providers import ProviderConfig, build_client, model_from_env
+from src.env_utils import env_int
+from src.llm_json import generate_validated_json, generate_validated_json_async
+from src.llm_providers import (
+    ProviderConfig,
+    build_async_client,
+    build_client,
+    model_from_env,
+)
 
 LLM_GRAPH_AUDIT_MODEL_ENV = "LLM_GRAPH_AUDIT_MODEL"
 LLM_GRAPH_AUDIT_CASES_ENV = "LLM_GRAPH_AUDIT_CASES"
@@ -104,15 +118,11 @@ class ParentAuditEvidence:
 
 
 def resolve_graph_audit_model(model: str | None = None) -> str:
-    """Return the caller's model, else the ``LLM_GRAPH_AUDIT_MODEL`` env value."""
+    """Return the caller's model, else ``LLM_GRAPH_AUDIT_MODEL``, else ``gpt-5.5``.
+
+    The resolved name selects the provider via :func:`src.llm_providers.provider_for_model`.
+    """
     return model_from_env(LLM_GRAPH_AUDIT_MODEL_ENV, model)
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
-    return int(raw)
 
 
 def _sheet_name(address: str) -> str:
@@ -207,12 +217,12 @@ def select_audit_cases(
     count = (
         case_count
         if case_count is not None
-        else _env_int(LLM_GRAPH_AUDIT_CASES_ENV, DEFAULT_CASE_COUNT)
+        else env_int(LLM_GRAPH_AUDIT_CASES_ENV, DEFAULT_CASE_COUNT)
     )
     rng_seed = (
         seed
         if seed is not None
-        else _env_int(LLM_GRAPH_AUDIT_SEED_ENV, DEFAULT_CASE_SEED)
+        else env_int(LLM_GRAPH_AUDIT_SEED_ENV, DEFAULT_CASE_SEED)
     )
     if count <= 0:
         raise ValueError("case_count must be positive")
@@ -368,6 +378,78 @@ def request_audit_verdict_from_llm(
     return verdict
 
 
+async def request_audit_verdict_from_llm_async(
+    *,
+    client: AsyncOpenAI,
+    provider: ProviderConfig,
+    user_prompt: str,
+    model: str,
+) -> GraphDependencyAuditVerdict:
+    verdict, _content = await generate_validated_json_async(
+        client=client,
+        model=model,
+        provider=provider,
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        response_model=GraphDependencyAuditVerdict,
+    )
+    return verdict
+
+
+async def audit_parent_dependencies_with_llm_async(
+    *,
+    client: AsyncOpenAI,
+    provider: ProviderConfig,
+    graph: DependencyGraph,
+    case: GraphAuditCase,
+    model: str,
+    max_children: int | None = None,
+    max_formula_length: int | None = None,
+) -> tuple[GraphDependencyAuditVerdict, ParentAuditEvidence]:
+    evidence = collect_parent_audit_evidence(
+        graph,
+        case,
+        max_children=max_children,
+        max_formula_length=max_formula_length,
+    )
+    verdict = await request_audit_verdict_from_llm_async(
+        client=client,
+        provider=provider,
+        user_prompt=build_parent_audit_prompt(evidence),
+        model=model,
+    )
+    return verdict, evidence
+
+
+async def audit_parent_dependencies_batch_with_llm(
+    *,
+    client: AsyncOpenAI,
+    provider: ProviderConfig,
+    graph: DependencyGraph,
+    cases: Sequence[GraphAuditCase],
+    model: str,
+    max_children: int | None = None,
+    max_formula_length: int | None = None,
+) -> list[tuple[GraphDependencyAuditVerdict, ParentAuditEvidence]]:
+    """Run independent parent dependency audits concurrently."""
+    return list(
+        await asyncio.gather(
+            *(
+                audit_parent_dependencies_with_llm_async(
+                    client=client,
+                    provider=provider,
+                    graph=graph,
+                    case=case,
+                    model=model,
+                    max_children=max_children,
+                    max_formula_length=max_formula_length,
+                )
+                for case in cases
+            )
+        )
+    )
+
+
 def audit_parent_dependencies_with_llm(
     *,
     client: OpenAI,
@@ -401,6 +483,17 @@ def build_graph_audit_client(
     """Build a provider client for graph dependency audits."""
     resolved_model = resolve_graph_audit_model(model)
     client, provider = build_client(resolved_model, api_key=api_key)
+    return client, provider, resolved_model
+
+
+def build_graph_audit_async_client(
+    model: str | None = None,
+    *,
+    api_key: str | None = None,
+) -> tuple[AsyncOpenAI, ProviderConfig, str]:
+    """Build an async provider client for graph dependency audits."""
+    resolved_model = resolve_graph_audit_model(model)
+    client, provider = build_async_client(resolved_model, api_key=api_key)
     return client, provider, resolved_model
 
 

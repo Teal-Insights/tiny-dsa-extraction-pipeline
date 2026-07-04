@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections import defaultdict
@@ -12,16 +13,25 @@ import fastpyxl
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import NodeKey
 from fastpyxl.utils import get_column_letter
+from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.llm_json import generate_validated_json
-from src.llm_providers import build_client, model_from_env
+from src.llm_json import generate_validated_json, generate_validated_json_async
+from src.llm_providers import (
+    ProviderConfig,
+    build_async_client,
+    build_async_client_if_configured,
+    build_client,
+    model_from_env,
+    provider_for_model,
+)
 
 SEMANTIC_LABEL_MODEL_ENV = "SEMANTIC_LABEL_MODEL"
 DEFAULT_SEMANTIC_LABEL_PROMPT_VERSION = 1
 DEFAULT_SEMANTIC_LABEL_CACHE_PATH = (
     Path(__file__).resolve().parents[1] / ".cache/semantic-labels.json"
 )
+_semantic_label_cache_lock = asyncio.Lock()
 SheetLabelProvider = Callable[
     [str, list[NodeKey], list[dict[str, Any]], Mapping[str, Any]],
     "SheetSemanticLabels",
@@ -302,6 +312,119 @@ def get_sheet_semantic_labels(
     return SheetSemanticLabels.model_validate_json(content)
 
 
+async def get_sheet_semantic_labels_async(
+    *,
+    sheet_name: str,
+    candidate_addresses: list[NodeKey],
+    sheet_cells: list[dict[str, Any]],
+    concept_scheme: Mapping[str, Any],
+    model: str | None = None,
+    prompt_version: int = DEFAULT_SEMANTIC_LABEL_PROMPT_VERSION,
+    cache_path: Path = DEFAULT_SEMANTIC_LABEL_CACHE_PATH,
+    api_key: str | None = None,
+    client: AsyncOpenAI | None = None,
+    provider: ProviderConfig | None = None,
+) -> SheetSemanticLabels:
+    """Async counterpart to :func:`get_sheet_semantic_labels`."""
+    model = resolve_semantic_label_model(model)
+    schema = SheetSemanticLabels.model_json_schema()
+    cache_key = semantic_label_cache_key(
+        sheet_name=sheet_name,
+        candidate_addresses=candidate_addresses,
+        sheet_cells=sheet_cells,
+        concept_scheme=concept_scheme,
+        response_schema=schema,
+        model=model,
+        prompt_version=prompt_version,
+    )
+    cache = load_json_cache(cache_path)
+    if cache_key in cache:
+        content = cache[cache_key]
+    else:
+        async with _semantic_label_cache_lock:
+            cache = load_json_cache(cache_path)
+            if cache_key in cache:
+                content = cache[cache_key]
+            else:
+                resolved_client = client
+                resolved_provider = provider
+                if resolved_client is None:
+                    resolved_client, resolved_provider = build_async_client(
+                        model, api_key=api_key
+                    )
+                elif resolved_provider is None:
+                    resolved_provider = provider_for_model(model)
+                _, content = await generate_validated_json_async(
+                    client=resolved_client,
+                    model=model,
+                    provider=resolved_provider,
+                    system_prompt=(
+                        "You label Excel workbook cells for dependency graph "
+                        "refactoring. Return only valid JSON matching the schema."
+                    ),
+                    user_prompt=prompt_for_sheet_semantic_labels(
+                        sheet_name=sheet_name,
+                        candidate_addresses=candidate_addresses,
+                        sheet_cells=sheet_cells,
+                        concept_scheme=concept_scheme,
+                        response_schema=schema,
+                    ),
+                    response_model=SheetSemanticLabels,
+                )
+                cache = load_json_cache(cache_path)
+                cache[cache_key] = content
+                save_json_cache(cache_path, cache)
+    return SheetSemanticLabels.model_validate_json(content)
+
+
+async def _label_sheets_concurrently(
+    *,
+    candidate_cells_by_sheet: dict[str, list[NodeKey]],
+    formula_workbook: Any,
+    value_workbook: Any,
+    graph_cells: set[NodeKey],
+    concept_scheme: Mapping[str, Any],
+    model: str,
+    prompt_version: int,
+    cache_path: Path,
+    api_key: str | None,
+) -> list[tuple[str, SheetSemanticLabels, set[NodeKey]]]:
+    client, provider = build_async_client_if_configured(model, api_key=api_key)
+    tasks: list[asyncio.Task[tuple[str, SheetSemanticLabels, set[NodeKey]]]] = []
+    for sheet_name, candidate_addresses in sorted(candidate_cells_by_sheet.items()):
+        sheet_candidate_set = set(candidate_addresses)
+        sheet_cells = sheet_cells_for_prompt(
+            formula_workbook,
+            value_workbook,
+            sheet_name=sheet_name,
+            candidate_addresses=sheet_candidate_set,
+            graph_addresses=graph_cells,
+        )
+
+        async def fetch_one(
+            sheet_name: str = sheet_name,
+            candidate_addresses: list[NodeKey] = candidate_addresses,
+            sheet_candidate_set: set[NodeKey] = sheet_candidate_set,
+            sheet_cells: list[dict[str, Any]] = sheet_cells,
+        ) -> tuple[str, SheetSemanticLabels, set[NodeKey]]:
+            sheet_labels = await get_sheet_semantic_labels_async(
+                sheet_name=sheet_name,
+                candidate_addresses=candidate_addresses,
+                sheet_cells=sheet_cells,
+                concept_scheme=concept_scheme,
+                model=model,
+                prompt_version=prompt_version,
+                cache_path=cache_path,
+                api_key=api_key,
+                client=client,
+                provider=provider,
+            )
+            return sheet_name, sheet_labels, sheet_candidate_set
+
+        tasks.append(asyncio.create_task(fetch_one()))
+    return list(await asyncio.gather(*tasks))
+
+
 def set_cell_semantic_metadata(
     graph: DependencyGraph,
     cell_labels: CellSemanticLabels,
@@ -328,7 +451,6 @@ def label_internal_graph_cells(
     cache_path: Path = DEFAULT_SEMANTIC_LABEL_CACHE_PATH,
     api_key: str | None = None,
 ) -> SemanticLabelingSummary:
-    resolved_model = resolve_semantic_label_model(model) if provider is None else None
     formula_workbook = fastpyxl.load_workbook(workbook_path, data_only=False)
     value_workbook = fastpyxl.load_workbook(workbook_path, data_only=True)
     graph_cells = set(graph.keys(order="workbook"))
@@ -339,40 +461,52 @@ def label_internal_graph_cells(
     )
     valid_concepts = valid_concepts_from_scheme(concept_scheme)
 
-    for sheet_name, candidate_addresses in sorted(candidate_cells_by_sheet.items()):
-        sheet_candidate_set = set(candidate_addresses)
-        sheet_cells = sheet_cells_for_prompt(
-            formula_workbook,
-            value_workbook,
-            sheet_name=sheet_name,
-            candidate_addresses=sheet_candidate_set,
-            graph_addresses=graph_cells,
-        )
-        if provider is None:
-            sheet_labels = get_sheet_semantic_labels(
-                sheet_name=sheet_name,
-                candidate_addresses=candidate_addresses,
-                sheet_cells=sheet_cells,
+    if provider is None:
+        resolved_model = resolve_semantic_label_model(model)
+        sheet_results = asyncio.run(
+            _label_sheets_concurrently(
+                candidate_cells_by_sheet=candidate_cells_by_sheet,
+                formula_workbook=formula_workbook,
+                value_workbook=value_workbook,
+                graph_cells=graph_cells,
                 concept_scheme=concept_scheme,
                 model=resolved_model,
                 prompt_version=prompt_version,
                 cache_path=cache_path,
                 api_key=api_key,
             )
-        else:
+        )
+        for sheet_name, sheet_labels, sheet_candidate_set in sheet_results:
+            validate_sheet_semantic_labels(
+                sheet_labels,
+                candidate_addresses=sheet_candidate_set,
+                valid_concepts=valid_concepts,
+            )
+            for cell_labels in sheet_labels.cells:
+                set_cell_semantic_metadata(graph, cell_labels)
+    else:
+        for sheet_name, candidate_addresses in sorted(candidate_cells_by_sheet.items()):
+            sheet_candidate_set = set(candidate_addresses)
+            sheet_cells = sheet_cells_for_prompt(
+                formula_workbook,
+                value_workbook,
+                sheet_name=sheet_name,
+                candidate_addresses=sheet_candidate_set,
+                graph_addresses=graph_cells,
+            )
             sheet_labels = provider(
                 sheet_name,
                 candidate_addresses,
                 sheet_cells,
                 concept_scheme,
             )
-        validate_sheet_semantic_labels(
-            sheet_labels,
-            candidate_addresses=sheet_candidate_set,
-            valid_concepts=valid_concepts,
-        )
-        for cell_labels in sheet_labels.cells:
-            set_cell_semantic_metadata(graph, cell_labels)
+            validate_sheet_semantic_labels(
+                sheet_labels,
+                candidate_addresses=sheet_candidate_set,
+                valid_concepts=valid_concepts,
+            )
+            for cell_labels in sheet_labels.cells:
+                set_cell_semantic_metadata(graph, cell_labels)
 
     return SemanticLabelingSummary(
         labeled_cell_count=sum(

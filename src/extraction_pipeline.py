@@ -31,6 +31,7 @@ from src.dependency_graph_viz import (
 )
 from src.docstring_callback import configure_docstring_callback
 from src.export_validation_assets import export_validation_assets
+from src.logging_config import configure_logging
 from src.pipeline_config import (
     PipelineConfig,
     load_pipeline_config,
@@ -123,6 +124,7 @@ def write_dependency_graph_artifacts(
     graph = extraction.graph
     leaf_classification = graph.leaf_classification or {}
     output_dir = config.graph_output_dir
+    artifact_started = time.perf_counter()
     write_dependency_graph_site(
         graph,
         output_dir,
@@ -132,6 +134,9 @@ def write_dependency_graph_artifacts(
         output_keys=series_cell_keys(extraction.output_series),
         constant_keys=constant_keys_from_leaf_classification(leaf_classification),
         timer=extraction.timer,
+    )
+    elapsed_seconds = extraction.elapsed_seconds + (
+        time.perf_counter() - artifact_started
     )
 
     output_paths = {
@@ -156,7 +161,7 @@ def write_dependency_graph_artifacts(
         "edge_count": _graph_edge_count(graph),
         "leaf_count": len(graph.leaf_keys()),
         "provenance_edge_count": count_provenance_edges(graph),
-        "elapsed_seconds": round(extraction.elapsed_seconds, 3),
+        "elapsed_seconds": round(elapsed_seconds, 3),
         "stage_timings": extraction.timer.as_dict(),
         "output_paths": output_paths,
     }
@@ -291,6 +296,7 @@ def build_pipeline_graph(
 
 def export_generated_package(config: PipelineConfig) -> None:
     """Write the generated package under dist/."""
+    configure_logging()
     timer = StageTimer()
     stall_log_path = resolve_stall_log_path(config.graph_output_dir)
     with profile_if_enabled(config.graph_output_dir):
@@ -368,6 +374,7 @@ tests/results/local/
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run the extraction pipeline.")
     parser.add_argument(
         "--extract-graph",
@@ -389,7 +396,4 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    from src.logging_config import configure_logging
-
-    configure_logging()
     main()

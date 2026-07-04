@@ -49,6 +49,7 @@ class PipelineConfig:
     section_rewrite_illustrative_example_focus_path: Path
     differential_workbook_rel: Path
     differential_report_dir_rel: Path
+    differential_graph_report_dir_rel: Path
     graph_output_dir: Path
 
     @property
@@ -118,6 +119,13 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
             "data/differential/exported_library",
         )
     )
+    differential_graph_report_dir_rel = Path(
+        getattr(
+            user_config,
+            "DIFFERENTIAL_GRAPH_REPORT_DIR_REL",
+            "data/differential/graph",
+        )
+    )
     graph_output_dir = root / "artifacts" / "dependency-graph"
 
     if not isinstance(dist_metadata, DistProjectMetadata):
@@ -145,6 +153,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         ),
         differential_workbook_rel=differential_workbook_rel,
         differential_report_dir_rel=differential_report_dir_rel,
+        differential_graph_report_dir_rel=differential_graph_report_dir_rel,
         graph_output_dir=graph_output_dir,
     )
 

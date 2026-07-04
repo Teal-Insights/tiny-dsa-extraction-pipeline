@@ -53,7 +53,7 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 14
+REFACTOR_PROMPT_VERSION = 15
 
 
 def refactor_model() -> str:
@@ -139,17 +139,29 @@ class HelperParameter(BaseModel):
     dtype: str = Field(description="Expected Python dtype for the parameter.")
 
 
+class MemberKeyEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    concept: str = Field(description="Binding key concept name, e.g. TIME_PERIOD.")
+    value: str | int | float | bool = Field(
+        description="Literal binding key value for this concept."
+    )
+
+
 class MemberKeys(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     address: str = Field(description="Workbook address this entry covers.")
     function_name: str = Field(description="Existing cell_* function being replaced.")
-    keys: dict[str, BindingKeyValue] = Field(
+    keys: tuple[MemberKeyEntry, ...] = Field(
         description=(
-            "Literal binding key values for this address; keys must match "
-            "helper parameters and exclude series-constant concepts."
+            "Literal binding key values for this address; one entry per concept, "
+            "excluding series-constant concepts."
         )
     )
+
+    def keys_dict(self) -> dict[str, BindingKeyValue]:
+        return {entry.concept: entry.value for entry in self.keys}
 
 
 class ClusterRefactorResponse(BaseModel):
@@ -859,11 +871,15 @@ def _normalize_member_key_concepts(
     }
     normalized_entries: list[MemberKeys] = []
     for entry in response.member_keys:
-        normalized_keys: dict[str, BindingKeyValue] = {}
-        for key, value in entry.keys.items():
-            concept = concept_by_name.get(key, key)
-            normalized_keys[concept] = value
-        normalized_entries.append(entry.model_copy(update={"keys": normalized_keys}))
+        normalized_entries_list: list[MemberKeyEntry] = []
+        for key_entry in entry.keys:
+            concept = concept_by_name.get(key_entry.concept, key_entry.concept)
+            normalized_entries_list.append(
+                MemberKeyEntry(concept=concept, value=key_entry.value)
+            )
+        normalized_entries.append(
+            entry.model_copy(update={"keys": tuple(normalized_entries_list)})
+        )
     return response.model_copy(update={"member_keys": tuple(normalized_entries)})
 
 
@@ -1092,13 +1108,14 @@ def validate_cluster_refactor_response(
                 f"member_keys for {entry.address} has function_name "
                 f"{entry.function_name!r}, expected {member.function_name!r}"
             )
-        extra_concepts = set(entry.keys) - parameter_concepts
+        entry_keys = entry.keys_dict()
+        extra_concepts = set(entry_keys) - parameter_concepts
         if extra_concepts:
             raise ValueError(
                 f"member_keys for {entry.address} must not include "
                 f"series-constant concepts: {sorted(extra_concepts)}"
             )
-        missing_concepts = parameter_concepts - set(entry.keys)
+        missing_concepts = parameter_concepts - set(entry_keys)
         if missing_concepts:
             raise ValueError(
                 f"member_keys for {entry.address} missing parameter concepts: "
@@ -1106,14 +1123,14 @@ def validate_cluster_refactor_response(
             )
         expected_keys = ctx.expected_member_keys[entry.address]
         for concept, expected_value in expected_keys.items():
-            actual_value = entry.keys.get(concept)
+            actual_value = entry_keys.get(concept)
             if actual_value != expected_value:
                 raise ValueError(
                     f"member_keys for {entry.address} has {concept}={actual_value!r}, "
                     f"expected {expected_value!r}"
                 )
         engine_column = engine_column_from_member_keys(
-            entry.keys,
+            entry_keys,
             address=entry.address,
             layout=_resolved_projection_layout(),
         )
@@ -1417,7 +1434,7 @@ def collapse_bindings_for_response(
             literal_call=render_literal_helper_call(
                 response.helper_name,
                 parameter_pairs,
-                entry.keys,
+                entry.keys_dict(),
             ),
         )
         for entry in response.member_keys
@@ -1465,7 +1482,7 @@ def _dispatch_entries_for_collapse(
             continue
         dispatch[entry.address] = (
             response.helper_name,
-            _parameter_literals(response.parameters, entry.keys),
+            _parameter_literals(response.parameters, entry.keys_dict()),
         )
     return dispatch
 
@@ -2433,7 +2450,6 @@ def llm_refactor_singleton(
         client=client,
         model=model,
         provider=provider,
-        structured=False,
         system_prompt=(
             "You rename and refactor one Excel-generated singleton helper "
             "into a semantic function. Return only JSON matching the schema. "
@@ -2526,7 +2542,6 @@ def llm_refactor_cluster(
         client=client,
         model=model,
         provider=provider,
-        structured=False,
         system_prompt=(
             "You refactor parallel Excel-generated Python helpers into one "
             "parameterized function. Return only JSON matching the schema. "
@@ -2550,13 +2565,11 @@ def _prompt_for_singleton_refactor(
 ) -> str:
     payload_json = json.dumps(payload, indent=2, default=str)
     schema_json = json.dumps(response_schema, indent=2)
-    constraints_obj = payload.get("constraints", {})
-    if not isinstance(constraints_obj, dict):
-        constraints_obj = {}
-    allowed_symbols_raw = constraints_obj.get("allowed_runtime_symbols", [])
-    allowed_symbols = (
-        list(allowed_symbols_raw) if isinstance(allowed_symbols_raw, list) else []
-    )
+    constraints = payload.get("constraints", {})
+    if not isinstance(constraints, dict):
+        constraints = {}
+    raw_allowed = constraints.get("allowed_runtime_symbols", [])
+    allowed_symbols = list(raw_allowed) if isinstance(raw_allowed, list) else []
     allowed_symbols_json = json.dumps(allowed_symbols, indent=2)
     return f"""
 Rename and refactor one Excel-generated singleton helper into a semantic function.
@@ -2609,13 +2622,11 @@ def _prompt_for_refactor(
 ) -> str:
     payload_json = json.dumps(payload, indent=2, default=str)
     schema_json = json.dumps(response_schema, indent=2)
-    constraints_obj = payload.get("constraints", {})
-    if not isinstance(constraints_obj, dict):
-        constraints_obj = {}
-    allowed_symbols_raw = constraints_obj.get("allowed_runtime_symbols", [])
-    allowed_symbols = (
-        list(allowed_symbols_raw) if isinstance(allowed_symbols_raw, list) else []
-    )
+    constraints = payload.get("constraints", {})
+    if not isinstance(constraints, dict):
+        constraints = {}
+    raw_allowed = constraints.get("allowed_runtime_symbols", [])
+    allowed_symbols = list(raw_allowed) if isinstance(raw_allowed, list) else []
     allowed_symbols_json = json.dumps(allowed_symbols, indent=2)
     return f"""
 Refactor one parallel formula cluster into a single parameterized helper.
@@ -2623,8 +2634,8 @@ Refactor one parallel formula cluster into a single parameterized helper.
 Rules:
 - Declare parameters[] using binding key concepts from key_vocabulary; do not use column letters.
 - Use suggested_param_name from key_vocabulary as each parameter's Python name.
-- For each cluster member, emit member_keys[] with literal key values from expected_keys.
-- member_keys[].keys must use binding concept names (e.g. TIME_PERIOD), not parameter names.
+- For each cluster member, emit member_keys[] with keys[] entries copied from expected_keys.
+- member_keys[].keys[].concept must use binding concept names (e.g. TIME_PERIOD), not parameter names.
 - Series-constant binding keys (scope: series) are not parameters; bake them into the helper.
 - Emit helper_source with signature (ctx, <parameters>) using the suggested parameter names.
 - Set uses_first_year_branch true when the helper branches on first-year {{PRIOR_DEBT}} logic.

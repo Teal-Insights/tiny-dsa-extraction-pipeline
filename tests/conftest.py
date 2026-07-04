@@ -20,9 +20,10 @@ from src.extraction_pipeline import (
 from src.pipeline_config import PipelineConfig, load_pipeline_config
 from src.semantic_labeling import SemanticLabelingSummary
 from tests.fixtures.synthetic_pipeline import (
-    build_synthetic_graph,
+    build_synthetic_pipeline_graph,
     build_synthetic_projection,
     load_synthetic_series_bindings,
+    stub_semantic_labeling,
     synthetic_pipeline_config,
     write_synthetic_workbook,
 )
@@ -68,21 +69,6 @@ def synthetic_workbook_path(tmp_path_factory: pytest.TempPathFactory):
     path = tmp_path_factory.mktemp("synthetic_workbook") / "workbook.xlsx"
     write_synthetic_workbook(path)
     return path
-
-
-@pytest.fixture(scope="session")
-def synthetic_graph(synthetic_workbook_path):
-    return build_synthetic_graph(synthetic_workbook_path)
-
-
-@pytest.fixture(scope="session")
-def synthetic_projection(synthetic_graph):
-    return build_synthetic_projection(synthetic_graph)
-
-
-@pytest.fixture(scope="session")
-def synthetic_series_bindings():
-    return load_synthetic_series_bindings()
 
 
 @pytest.fixture(scope="session")
@@ -141,18 +127,9 @@ def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
 def synthetic_configured_pipeline(
     synthetic_pipeline_config_fixture: PipelineConfig,
 ) -> SyntheticConfiguredPipeline:
-    stub_summary = SemanticLabelingSummary(
-        labeled_cell_count=0,
-        sheet_count=0,
-        candidate_cells_by_sheet={},
+    graph, series_bindings, input_series, output_series = (
+        build_synthetic_pipeline_graph(synthetic_pipeline_config_fixture)
     )
-    with patch(
-        "src.extraction_pipeline.label_internal_graph_cells",
-        return_value=stub_summary,
-    ):
-        graph, series_bindings, input_series, output_series = build_pipeline_graph(
-            synthetic_pipeline_config_fixture
-        )
     leaf_classification = classify_leaves_from_constraints(
         synthetic_pipeline_config_fixture.constraints,
         graph.leaf_keys(),
@@ -174,6 +151,21 @@ def synthetic_configured_pipeline(
     )
 
 
+@pytest.fixture(scope="session")
+def synthetic_graph(synthetic_configured_pipeline: SyntheticConfiguredPipeline):
+    return synthetic_configured_pipeline.graph
+
+
+@pytest.fixture(scope="session")
+def synthetic_projection(synthetic_graph):
+    return build_synthetic_projection(synthetic_graph)
+
+
+@pytest.fixture(scope="session")
+def synthetic_series_bindings():
+    return load_synthetic_series_bindings()
+
+
 @dataclass(frozen=True)
 class SyntheticGraphExtractionArtifacts:
     config: PipelineConfig
@@ -191,15 +183,7 @@ def synthetic_graph_extraction_artifacts(
         synthetic_pipeline_config_fixture,
         graph_output_dir=output_dir,
     )
-    stub_summary = SemanticLabelingSummary(
-        labeled_cell_count=0,
-        sheet_count=0,
-        candidate_cells_by_sheet={},
-    )
-    with patch(
-        "src.extraction_pipeline.label_internal_graph_cells",
-        return_value=stub_summary,
-    ):
+    with stub_semantic_labeling():
         extraction = extract_dependency_graph_result(config)
         summary = write_dependency_graph_artifacts(extraction, config)
     return SyntheticGraphExtractionArtifacts(

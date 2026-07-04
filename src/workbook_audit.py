@@ -70,7 +70,6 @@ class AutomationAudit:
     dialog_sheets: tuple[str, ...]
     workbook_connections: tuple[str, ...]
     external_links: tuple[ExternalLinkRecord, ...]
-    query_tables: int
     form_controls: tuple[str, ...]
     calc_chain_present: bool
 
@@ -208,7 +207,6 @@ def _sheet_records(
         dialog_sheets=tuple(dialog_sheets),
         workbook_connections=tuple(connections),
         external_links=tuple(automation_links),
-        query_tables=0,
         form_controls=tuple(form_controls),
         calc_chain_present=calc_chain_present,
     )
@@ -656,11 +654,6 @@ def render_audit_markdown(report: WorkbookAuditReport) -> str:
                         "Workbook connections",
                         "yes" if report.automation.workbook_connections else "no",
                         ", ".join(report.automation.workbook_connections) or "—",
-                    ),
-                    (
-                        "Query tables",
-                        "yes" if report.automation.query_tables else "no",
-                        "—",
                     ),
                     (
                         "Form controls / ActiveX",

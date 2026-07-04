@@ -232,6 +232,24 @@ class FakeParseClient:
         self.chat = _FakeParseChat(contents)
 
 
+def test_inferred_openai_provider_uses_structured_parse() -> None:
+    valid = '{"title": "T", "body": "B"}'
+    fake = FakeParseClient([valid])
+
+    parsed, content = generate_validated_json(
+        client=cast(OpenAI, fake),
+        model="gpt-5.5",
+        system_prompt="sys",
+        user_prompt="usr",
+        response_model=_Sample,
+    )
+
+    assert parsed == _Sample(title="T", body="B")
+    assert content == valid
+    assert len(fake.chat.completions.calls) == 1
+    assert fake.chat.completions.calls[0]["response_format"] is _Sample
+
+
 def test_structured_provider_uses_parse_and_returns_parsed_model() -> None:
     valid = '{"title": "T", "body": "B"}'
     fake = FakeParseClient([valid])

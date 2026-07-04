@@ -1,16 +1,17 @@
 from dotenv import load_dotenv
+import asyncio
 import pytest
 
 import workbook_config
 from src.extraction_pipeline import build_pipeline_graph
 from src.graph_dependency_audit import (
-    audit_parent_dependencies_with_llm,
+    audit_parent_dependencies_batch_with_llm,
     format_audit_failure,
     resolve_graph_audit_model,
     select_audit_cases,
     validate_audit_cases,
 )
-from src.llm_providers import build_client_if_configured
+from src.llm_providers import build_async_client_if_configured
 from src.pipeline_config import load_pipeline_config, validate_pipeline_config
 
 load_dotenv()
@@ -42,7 +43,7 @@ def test_llm_judges_that_graph_is_correct() -> None:
     except RuntimeError as exc:
         pytest.skip(str(exc))
 
-    client, provider = build_client_if_configured(model)
+    client, provider = build_async_client_if_configured(model)
     if client is None:
         pytest.skip(f"{provider.api_key_env} is not set")
 
@@ -52,15 +53,18 @@ def test_llm_judges_that_graph_is_correct() -> None:
     validate_audit_cases(graph, audit_cases)
     selected_cases = select_audit_cases(graph, audit_cases)
 
-    failures: list[str] = []
-    for case in selected_cases:
-        verdict, evidence = audit_parent_dependencies_with_llm(
+    results = asyncio.run(
+        audit_parent_dependencies_batch_with_llm(
             client=client,
             provider=provider,
             graph=graph,
-            case=case,
+            cases=selected_cases,
             model=model,
         )
+    )
+
+    failures: list[str] = []
+    for case, (verdict, evidence) in zip(selected_cases, results, strict=True):
         if verdict.verdict != "correct":
             failures.append(format_audit_failure(case, verdict, evidence))
 

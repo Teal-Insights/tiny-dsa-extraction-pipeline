@@ -9,35 +9,24 @@ with the validation error fed back as a follow-up turn.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import TypeVar
 
-from openai import Omit, OpenAI, OpenAIError, omit
+from openai import AsyncOpenAI, Omit, OpenAI, OpenAIError, omit
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared import ReasoningEffort
 from openai.types.shared_params import ResponseFormatJSONObject
 from pydantic import BaseModel, ValidationError
 
-from src.llm_providers import ProviderConfig
+from src.llm_providers import ProviderConfig, get_llm_semaphore, provider_for_model
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_ATTEMPTS = 3
 
 T = TypeVar("T", bound=BaseModel)
-
-LEGACY_OPENAI_PROVIDER = ProviderConfig(
-    name="openai",
-    api_key_env="OPENAI_API_KEY",
-    base_url="https://api.openai.com/v1/",
-    supports_structured_outputs=False,
-    supports_reasoning_effort=True,
-)
-"""Default for callers that have not adopted provider-based model switching.
-
-Preserves the historical OpenAI JSON-object call shape so workflows that pass a
-client without a ``provider`` keep behaving exactly as before."""
 
 
 def _request_json(
@@ -92,6 +81,52 @@ def _request_json(
     return None, content
 
 
+async def _request_json_async(
+    *,
+    client: AsyncOpenAI,
+    model: str,
+    provider: ProviderConfig,
+    messages: list[ChatCompletionMessageParam],
+    response_model: type[T],
+    reasoning_effort: ReasoningEffort,
+    use_structured_outputs: bool,
+) -> tuple[T | None, str]:
+    """Perform one async provider-appropriate JSON call."""
+    effort: ReasoningEffort | Omit = (
+        reasoning_effort if provider.supports_reasoning_effort else omit
+    )
+    extra_body = provider.extra_body
+
+    if use_structured_outputs:
+        parsed_response = await client.chat.completions.parse(
+            model=model,
+            messages=messages,
+            response_format=response_model,
+            reasoning_effort=effort,
+            extra_body=extra_body,
+        )
+        message = parsed_response.choices[0].message
+        if message.refusal:
+            raise RuntimeError(f"LLM refused to respond: {message.refusal}")
+        if message.content is None:
+            raise RuntimeError("LLM returned empty response content")
+        return message.parsed, message.content
+
+    response_format: ResponseFormatJSONObject = {"type": "json_object"}
+    response = await client.chat.completions.create(
+        model=model,
+        messages=messages,
+        stream=False,
+        response_format=response_format,
+        reasoning_effort=effort,
+        extra_body=extra_body,
+    )
+    content = response.choices[0].message.content
+    if content is None:
+        raise RuntimeError("LLM returned empty response content")
+    return None, content
+
+
 def generate_validated_json(
     *,
     client: OpenAI,
@@ -123,8 +158,8 @@ def generate_validated_json(
         client: OpenAI-compatible client, e.g. from ``build_client``.
         model: Model name to call.
         provider: Provider metadata that selects the JSON call shape; pair it
-            with ``client`` via ``build_client``. Defaults to
-            ``LEGACY_OPENAI_PROVIDER`` (OpenAI JSON-object mode) when omitted.
+            with ``client`` via ``build_client``. When omitted, inferred from
+            ``model`` via :func:`src.llm_providers.provider_for_model`.
         system_prompt: System role content.
         user_prompt: User role content (the task prompt).
         response_model: Pydantic model the JSON response must satisfy.
@@ -146,7 +181,7 @@ def generate_validated_json(
         RuntimeError: If the model returns empty content, or if no attempt
             produces a valid response within ``max_attempts``.
     """
-    resolved_provider = provider if provider is not None else LEGACY_OPENAI_PROVIDER
+    resolved_provider = provider if provider is not None else provider_for_model(model)
     use_structured_outputs = (
         structured and resolved_provider.supports_structured_outputs
     )
@@ -217,6 +252,110 @@ def generate_validated_json(
             continue
         logger.debug(
             "%s validated on attempt %d/%d",
+            response_model.__name__,
+            attempt + 1,
+            max_attempts,
+        )
+        return parsed, content
+    raise RuntimeError(
+        f"LLM failed to return a valid {response_model.__name__} response after "
+        f"{max_attempts} attempts"
+    ) from last_error
+
+
+async def generate_validated_json_async(
+    *,
+    client: AsyncOpenAI,
+    model: str,
+    provider: ProviderConfig | None = None,
+    system_prompt: str,
+    user_prompt: str,
+    response_model: type[T],
+    post_validate: Callable[[T], T] | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    reasoning_effort: ReasoningEffort = "high",
+    structured: bool = True,
+    semaphore: asyncio.Semaphore | None = None,
+) -> tuple[T, str]:
+    """Async counterpart to :func:`generate_validated_json`.
+
+    When ``semaphore`` is omitted, the process-wide limit from
+    :func:`src.llm_providers.get_llm_semaphore` is applied around each model
+    request. Pass an explicit semaphore to share a custom limit across tasks.
+    """
+    resolved_provider = provider if provider is not None else provider_for_model(model)
+    use_structured_outputs = (
+        structured and resolved_provider.supports_structured_outputs
+    )
+    messages: list[ChatCompletionMessageParam] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    limiter = semaphore if semaphore is not None else get_llm_semaphore()
+    last_error: Exception | None = None
+    for attempt in range(max_attempts):
+        logger.debug(
+            "requesting %s from %s (attempt %d/%d, async)",
+            response_model.__name__,
+            model,
+            attempt + 1,
+            max_attempts,
+        )
+        try:
+            async with limiter:
+                parsed_or_none, content = await _request_json_async(
+                    client=client,
+                    model=model,
+                    provider=resolved_provider,
+                    messages=messages,
+                    response_model=response_model,
+                    reasoning_effort=reasoning_effort,
+                    use_structured_outputs=use_structured_outputs,
+                )
+        except OpenAIError as error:
+            logger.error(
+                "%s request to %s failed (attempt %d/%d, async): %s",
+                response_model.__name__,
+                model,
+                attempt + 1,
+                max_attempts,
+                error,
+            )
+            raise
+        try:
+            parsed = (
+                parsed_or_none
+                if parsed_or_none is not None
+                else response_model.model_validate_json(content)
+            )
+            if post_validate is not None:
+                parsed = post_validate(parsed)
+        except (ValidationError, ValueError) as error:
+            last_error = error
+            logger.warning(
+                "%s failed validation (attempt %d/%d, async), re-prompting: %s",
+                response_model.__name__,
+                attempt + 1,
+                max_attempts,
+                error,
+            )
+            messages.append({"role": "assistant", "content": content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response failed validation with these "
+                        f"errors:\n{error}\n\n"
+                        "Return corrected JSON matching the response schema "
+                        "exactly. Use the exact field names from the schema, "
+                        "include every required field, and satisfy all stated "
+                        "constraints."
+                    ),
+                }
+            )
+            continue
+        logger.debug(
+            "%s validated on attempt %d/%d (async)",
             response_model.__name__,
             attempt + 1,
             max_attempts,

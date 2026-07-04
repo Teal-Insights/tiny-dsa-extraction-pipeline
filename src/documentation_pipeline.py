@@ -20,6 +20,7 @@ from src.llm_providers import (
     model_from_env,
     provider_for_model,
 )
+from src.logging_config import configure_logging
 from src.pipeline_config import PipelineConfig, discover_public_api_symbols
 from src.qmd_python_validation import PublicApiPolicy, validate_qmd_files
 
@@ -223,12 +224,12 @@ reruns require Windows with Microsoft Excel installed.
 
 - Reference parity report: `tests/results/reference/parity_report.txt`
 - Validation bundle README: `tests/README.md`
-- Differential test harness: `tests/differential_test_exported_library.py`
+- Differential test harness: `tests/differential/differential_test_exported_library.py`
 
 To re-run the validation from the exported project:
 
 ```pwsh
-uv run --project . --group validation python tests/differential_test_exported_library.py --layout exported
+uv run --project . --group validation python -m tests.differential.differential_test_exported_library --layout exported
 ```
 """
 
@@ -808,6 +809,7 @@ jobs:
 
 
 def run_documentation_pipeline(config: PipelineConfig) -> None:
+    configure_logging()
     great_docs_yml = _great_docs_yml(config)
     if not great_docs_yml.exists():
         run_cmd(

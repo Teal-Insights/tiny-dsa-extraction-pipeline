@@ -12,6 +12,7 @@ from src.graph_dependency_audit import (
     GraphAuditCase,
     GraphDependencyAuditVerdict,
     SYSTEM_PROMPT,
+    audit_parent_dependencies_batch_with_llm,
     audit_parent_dependencies_with_llm,
     build_graph_audit_client,
     build_parent_audit_prompt,
@@ -224,6 +225,53 @@ def test_audit_parent_dependencies_with_llm_uses_validated_json(
     assert call["provider"] is provider
     assert call["response_model"] is GraphDependencyAuditVerdict
     assert "Baseline!D11" in call["user_prompt"]
+
+
+def test_audit_parent_dependencies_batch_with_llm_runs_all_cases() -> None:
+    import asyncio
+    from typing import cast
+
+    from openai import AsyncOpenAI
+
+    graph = _sample_graph()
+    cases = (
+        GraphAuditCase("Baseline!D11", "baseline_engine", "focus"),
+        GraphAuditCase("Output Baseline!C5", "output_baseline", "focus"),
+    )
+    verdict = GraphDependencyAuditVerdict(
+        verdict="correct",
+        missing_dependencies=[],
+        spurious_dependencies=[],
+        reasoning="ok",
+        confidence="high",
+    )
+
+    class FakeClient:
+        pass
+
+    fake_client = cast(AsyncOpenAI, FakeClient())
+    provider = provider_for_model("gpt-5.5")
+
+    with patch(
+        "src.graph_dependency_audit.generate_validated_json_async",
+        return_value=(verdict, verdict.model_dump_json()),
+    ) as generate:
+        results = asyncio.run(
+            audit_parent_dependencies_batch_with_llm(
+                client=fake_client,
+                provider=provider,
+                graph=graph,
+                cases=cases,
+                model="gpt-5.5",
+            )
+        )
+
+    assert len(results) == 2
+    assert {evidence.parent_key for _, evidence in results} == {
+        "'Output Baseline'!C5",
+        "Baseline!D11",
+    }
+    assert generate.await_count == 2
 
 
 def test_synthetic_catalog_parents_exist_in_extracted_graph(

@@ -8,7 +8,7 @@ _PROBE_MODULE_NAMES = (
     "_runtime_symbols_probe",
     "_exported_runtime_for_parity",
     "_exported_data_for_parity",
-    "differential_test_exported_library",
+    "tests.differential.differential_test_exported_library",
 )
 
 

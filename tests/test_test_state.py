@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import types
 
 import pytest
 
@@ -13,7 +14,7 @@ from tests.fixtures.test_state import reset_pipeline_test_state
 
 def test_reset_pipeline_test_state_clears_active_config_and_probe_modules() -> None:
     activate_pipeline_config(load_pipeline_config())
-    sys.modules["_runtime_symbols_probe"] = sys
+    sys.modules["_runtime_symbols_probe"] = types.ModuleType("_runtime_symbols_probe")
 
     reset_pipeline_test_state()
 

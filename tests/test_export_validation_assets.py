@@ -47,7 +47,23 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
         ),
         differential_workbook_rel=Path("data/workbook.xlsx"),
         differential_report_dir_rel=Path("data/differential/exported_library"),
+        differential_graph_report_dir_rel=Path("data/differential/graph"),
         graph_output_dir=repo_root / "artifacts" / "dependency-graph",
+    )
+
+
+def _write_differential_package(repo_root: Path) -> None:
+    tests_root = repo_root / "tests"
+    differential_root = tests_root / "differential"
+    differential_root.mkdir(parents=True)
+    (tests_root / "__init__.py").write_text("", encoding="utf-8")
+    (differential_root / "__init__.py").write_text("", encoding="utf-8")
+    (differential_root / "differential_types.py").write_text(
+        "# types\n", encoding="utf-8"
+    )
+    (differential_root / "differential_test_exported_library.py").write_text(
+        "# harness\n",
+        encoding="utf-8",
     )
 
 
@@ -79,15 +95,11 @@ def test_export_validation_assets_copies_harness_workbook_and_reference_reports(
     repo_root = tmp_path / "repo"
     dist_root = repo_root / "dist"
     workbook_src = repo_root / "data" / "workbook.xlsx"
-    harness_src = (
-        repo_root / "tests" / "differential" / "differential_test_exported_library.py"
-    )
     report_src = repo_root / "data" / "differential" / "exported_library"
 
     workbook_src.parent.mkdir(parents=True)
     workbook_src.write_bytes(b"workbook")
-    harness_src.parent.mkdir(parents=True)
-    harness_src.write_text("# harness\n", encoding="utf-8")
+    _write_differential_package(repo_root)
     report_src.mkdir(parents=True)
     (report_src / "parity_report.csv").write_text("scenario_id\n", encoding="utf-8")
     (report_src / "parity_report.txt").write_text("PASS\n", encoding="utf-8")
@@ -98,9 +110,15 @@ def test_export_validation_assets_copies_harness_workbook_and_reference_reports(
     export_validation_assets(config=_sample_config(repo_root))
 
     tests_root = dist_root / "tests"
-    assert (tests_root / "differential_test_exported_library.py").read_text(
+    differential_root = tests_root / "differential"
+    assert (tests_root / "__init__.py").exists()
+    assert (differential_root / "__init__.py").exists()
+    assert (differential_root / "differential_test_exported_library.py").read_text(
         encoding="utf-8"
     ) == "# harness\n"
+    assert (differential_root / "differential_types.py").read_text(
+        encoding="utf-8"
+    ) == "# types\n"
     assert (tests_root / "fixtures" / "workbook.xlsx").read_bytes() == b"workbook"
     assert (tests_root / "results" / "reference" / "parity_report.csv").exists()
     assert (tests_root / "results" / "reference" / "parity_report.txt").exists()
@@ -113,14 +131,10 @@ def test_export_validation_assets_raises_when_reference_reports_missing(
     repo_root = tmp_path / "repo"
     dist_root = repo_root / "dist"
     workbook_src = repo_root / "data" / "workbook.xlsx"
-    harness_src = (
-        repo_root / "tests" / "differential" / "differential_test_exported_library.py"
-    )
 
     workbook_src.parent.mkdir(parents=True)
     workbook_src.write_bytes(b"workbook")
-    harness_src.parent.mkdir(parents=True)
-    harness_src.write_text("# harness\n", encoding="utf-8")
+    _write_differential_package(repo_root)
     dist_root.mkdir()
 
     with pytest.raises(FileNotFoundError, match="parity_report"):
