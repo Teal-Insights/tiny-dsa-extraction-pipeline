@@ -8,21 +8,29 @@ triggering an LLM re-prompt) when the values diverge.
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
 from typing import Annotated, Literal
 
 import pytest
 from excel_grapher.core.cell_types import Between, RealBetween
 
 from src.internals_refactor import (
-    ALLOWED_RUNTIME_SYMBOLS,
     ClusterRefactorResponse,
     HelperParameter,
     MemberKeys,
     SingletonRefactorContext,
     SingletonRefactorResponse,
 )
+from src.pipeline_config import load_pipeline_config
+from src.pipeline_context import activate_pipeline_config
 from src.refactor_parity_gate import (
     ParityError,
+    _evaluate_candidate,
+    _evaluate_golden,
+    _load_candidate,
     check_cluster_parity,
     check_singleton_parity,
     exec_internals_module,
@@ -91,11 +99,11 @@ PRISTINE_CLUSTER = (
 
 def cell_engine_c6(ctx):
     """Covers Engine!C6."""
-    return xl_number(xl_cell(ctx, 'Inputs!C1'))
+    return xl_cell(ctx, 'Inputs!C1')
 
 def cell_engine_d6(ctx):
     """Covers Engine!D6."""
-    return xl_number(xl_cell(ctx, 'Inputs!D1'))
+    return xl_cell(ctx, 'Inputs!D1')
 
 '''
     + RESOLVER_SECTION
@@ -108,7 +116,20 @@ PRISTINE_SINGLETON = (
 
 def cell_inputs_b6(ctx):
     """Covers Inputs!B6."""
-    return xl_number(xl_cell(ctx, 'Inputs!B2')) * 2.0
+    return xl_mul(xl_cell(ctx, 'Inputs!B2'), 2.0)
+
+'''
+    + RESOLVER_SECTION
+)
+
+PRISTINE_XLERROR_SINGLETON = (
+    RUNTIME_IMPORT
+    + '''
+# --- Formula cell functions ---
+
+def cell_inputs_b6(ctx):
+    """Covers Inputs!B6."""
+    return XlError.VALUE
 
 '''
     + RESOLVER_SECTION
@@ -137,21 +158,22 @@ CORRECT_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
     """{CLUSTER_DOCSTRING}"""
     columns = {{1: 'C', 2: 'D'}}
     column = columns[time_period]
-    return xl_number(xl_cell(ctx, f'Inputs!{{column}}1'))
+    return xl_cell(ctx, f'Inputs!{{column}}1')
 '''
 
-# Broken: ignores time_period and always reads the year-1 column.
 BROKEN_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
     """{CLUSTER_DOCSTRING}"""
-    return xl_number(xl_cell(ctx, 'Inputs!C1'))
+    return xl_cell(ctx, 'Inputs!C1')
 '''
 
-# Crashing: calls a runtime symbol with the wrong arity, raising TypeError at
-# evaluation time (mirrors a mistranscribed xl_index_ref call).
 CRASHING_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
     """{CLUSTER_DOCSTRING}"""
-    return xl_number()
+    return xl_add()
 '''
+
+MISSING_SYMBOL_CLUSTER_SOURCE = """def other_helper_name(ctx, time_period):
+    return xl_cell(ctx, 'Inputs!C1')
+"""
 
 
 def _cluster_response(helper_source: str) -> ClusterRefactorResponse:
@@ -171,33 +193,45 @@ CLUSTER_INPUTS = [
 ]
 
 
-def test_allowed_runtime_symbols_exist_on_exported_runtime() -> None:
-    from pathlib import Path
+@pytest.fixture(scope="module")
+def parity_gate_dist_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("parity_gate_dist")
+    package_root = root / "tiny_dsa"
+    package_root.mkdir(parents=True)
+    fixture_runtime = (
+        Path(__file__).resolve().parent / "fixtures" / "parity_gate_runtime.py"
+    )
+    shutil.copy(fixture_runtime, package_root / "runtime.py")
+    (package_root / "data.py").write_text(
+        "DEFAULT_INPUTS = {}\nCONSTANTS = {}\n",
+        encoding="utf-8",
+    )
+    return root
 
-    from src.runtime_symbols import discover_allowed_runtime_symbols
 
-    repo_root = Path(__file__).resolve().parents[1]
-    runtime_path = repo_root / "dist" / "tiny_dsa" / "runtime.py"
-    symbols = discover_allowed_runtime_symbols(runtime_path)
-    assert "XlError" in symbols
-    assert "xl_number" in symbols
-    assert "np" not in symbols
-    assert "xl_add" not in symbols
+@pytest.fixture(autouse=True)
+def _parity_gate_active_config(parity_gate_dist_root: Path) -> Iterator[None]:
+    config = replace(load_pipeline_config(), dist_root=parity_gate_dist_root)
+    activate_pipeline_config(config)
+    from tests.fixtures.test_state import clear_runtime_caches
+
+    clear_runtime_caches()
+    yield
 
 
-def test_exec_exported_internals_source() -> None:
-    from pathlib import Path
+def test_allowed_runtime_symbols_exist_on_fixture_runtime() -> None:
+    from src.refactor_parity_gate import _runtime
+    from src.runtime_symbols import allowed_runtime_symbols
 
-    repo_root = Path(__file__).resolve().parents[1]
-    internals_path = repo_root / "dist" / "tiny_dsa" / "internals.py"
-    namespace = exec_internals_module(internals_path.read_text(encoding="utf-8"))
+    runtime = _runtime()
+    for symbol in allowed_runtime_symbols():
+        assert hasattr(runtime, symbol), symbol
+
+
+def test_exec_pristine_cluster_source() -> None:
+    namespace = exec_internals_module(PRISTINE_CLUSTER)
     assert callable(namespace["_resolve_formula"])
-    public_helpers = [
-        name
-        for name, value in namespace.items()
-        if callable(value) and not name.startswith("_")
-    ]
-    assert public_helpers
+    assert callable(namespace["cell_engine_c6"])
 
 
 def test_cluster_gate_passes_for_semantics_preserving_refactor() -> None:
@@ -220,7 +254,6 @@ def test_cluster_gate_rejects_semantics_breaking_refactor() -> None:
     message = str(excinfo.value)
     assert "combined_input_passthrough" in message
     assert "Engine!D6" in message
-    # Reports the diverging values so the model gets actionable feedback.
     assert "20.0" in message
 
 
@@ -237,6 +270,19 @@ def test_cluster_gate_converts_runtime_error_to_parity_error() -> None:
     assert "TypeError" in message
 
 
+def test_cluster_gate_surfaces_missing_symbol_as_retryable_parity_error() -> None:
+    with pytest.raises(ParityError) as excinfo:
+        check_cluster_parity(
+            pristine_source=PRISTINE_CLUSTER,
+            current_source=PRISTINE_CLUSTER,
+            response=_cluster_response(MISSING_SYMBOL_CLUSTER_SOURCE),
+            input_vectors=CLUSTER_INPUTS,
+        )
+    message = str(excinfo.value)
+    assert "refactored symbol combined_input_passthrough could not be loaded" in message
+    assert "KeyError" in message
+
+
 SINGLETON_DOCSTRING = (
     "Return the initial value.\n\n"
     "Args:\n    ctx: Workbook evaluation context.\n\n"
@@ -245,23 +291,28 @@ SINGLETON_DOCSTRING = (
 
 CORRECT_SINGLETON_SOURCE = f'''def initial_value(ctx):
     """{SINGLETON_DOCSTRING}"""
-    return xl_number(xl_cell(ctx, 'Inputs!B2')) * 2.0
+    return xl_mul(xl_cell(ctx, 'Inputs!B2'), 2.0)
 '''
 
 BROKEN_SINGLETON_SOURCE = f'''def initial_value(ctx):
     """{SINGLETON_DOCSTRING}"""
-    return xl_number(xl_cell(ctx, 'Inputs!B2')) * 3.0
+    return xl_mul(xl_cell(ctx, 'Inputs!B2'), 3.0)
 '''
 
-# Crashing: calls a runtime symbol with the wrong arity, raising TypeError at
-# evaluation time rather than diverging on value.
 CRASHING_SINGLETON_SOURCE = f'''def initial_value(ctx):
     """{SINGLETON_DOCSTRING}"""
-    return xl_number()
+    return xl_add()
+'''
+
+CORRECT_XLERROR_SINGLETON_SOURCE = f'''def initial_value(ctx):
+    """{SINGLETON_DOCSTRING}"""
+    return XlError.VALUE
 '''
 
 
 def _singleton_context() -> SingletonRefactorContext:
+    from src.runtime_symbols import allowed_runtime_symbols
+
     return SingletonRefactorContext(
         address="Inputs!B6",
         function_name="cell_inputs_b6",
@@ -271,7 +322,7 @@ def _singleton_context() -> SingletonRefactorContext:
         dependency_addresses=(),
         external_dependencies=(),
         call_sites=(),
-        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        allowed_runtime_symbols=allowed_runtime_symbols(),
         naming_hints={},
     )
 
@@ -323,6 +374,63 @@ def test_singleton_gate_converts_runtime_error_to_parity_error() -> None:
     assert "TypeError" in message
 
 
+def test_singleton_gate_passes_when_both_sides_return_excel_error() -> None:
+    check_singleton_parity(
+        pristine_source=PRISTINE_XLERROR_SINGLETON,
+        current_source=PRISTINE_XLERROR_SINGLETON,
+        response=_singleton_response(CORRECT_XLERROR_SINGLETON_SOURCE),
+        ctx=_singleton_context(),
+        input_vectors=SINGLETON_INPUTS,
+    )
+
+
+def test_evaluate_golden_normalizes_excel_errors() -> None:
+    from src.refactor_parity_gate import _runtime
+
+    runtime = _runtime()
+
+    result = _evaluate_golden(
+        lambda: (_ for _ in ()).throw(runtime.XlErrorException(runtime.XlError.VALUE))
+    )
+    assert result is runtime.XlError.VALUE
+
+
+def test_evaluate_golden_propagates_non_excel_exceptions() -> None:
+    with pytest.raises(RuntimeError, match="pipeline defect"):
+        _evaluate_golden(lambda: (_ for _ in ()).throw(RuntimeError("pipeline defect")))
+
+
+def test_evaluate_candidate_normalizes_excel_errors() -> None:
+    from src.refactor_parity_gate import _runtime
+
+    runtime = _runtime()
+
+    result = _evaluate_candidate(
+        lambda: (_ for _ in ()).throw(runtime.XlErrorException(runtime.XlError.NA)),
+        call="helper(ctx)",
+    )
+    assert result is runtime.XlError.NA
+
+
+def test_evaluate_candidate_wraps_non_excel_exceptions_with_call_site() -> None:
+    with pytest.raises(ParityError) as excinfo:
+        _evaluate_candidate(
+            lambda: (_ for _ in ()).throw(ValueError("bad helper")),
+            call="helper(ctx, time_period=1)",
+        )
+    message = str(excinfo.value)
+    assert "helper(ctx, time_period=1)" in message
+    assert "ValueError" in message
+
+
+def test_load_candidate_surfaces_compile_errors_as_parity_error() -> None:
+    with pytest.raises(ParityError) as excinfo:
+        _load_candidate("def broken(\n", "broken")
+    message = str(excinfo.value)
+    assert "refactored symbol broken could not be loaded" in message
+    assert "SyntaxError" in message
+
+
 def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:
     constraints = {
         "Inputs!B5": Literal["Borvelia", "Litellia", "Aurelium"],
@@ -342,7 +450,6 @@ def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:
         seed=0,
     )
 
-    # First vector is the canonical default merged with constants.
     assert vectors[0] == {**default_inputs, **constants}
     assert len(vectors) == 6
 
@@ -354,11 +461,9 @@ def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:
         growth_rate = vector["Inputs!C16"]
         assert isinstance(growth_rate, float)
         assert -10.0 <= growth_rate <= 15.0
-        # Constants are never perturbed.
         assert vector["Inputs!A10"] == "Borvelia"
         assert vector["Engine!C5"] == 1
 
-    # Deterministic under a fixed seed.
     again = sample_input_vectors(
         constraints=constraints,
         default_inputs=default_inputs,

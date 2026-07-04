@@ -25,7 +25,6 @@ Requires Microsoft Excel installed locally (xlwings drives Excel via COM).
 from __future__ import annotations
 
 import csv
-import importlib
 import itertools
 import math
 import re
@@ -50,11 +49,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Import the canonical configuration from the extraction pipeline so the
-# differential always tests the same shape the pipeline ships.
-_pipeline = importlib.import_module("src.extraction_pipeline")
+# Import the canonical configuration from workbook_config so the differential
+# always tests the same shape the pipeline ships.
+from src.pipeline_config import load_pipeline_config  # noqa: E402
+
+_pipeline = load_pipeline_config(repo_root=PROJECT_ROOT)
 PIPELINE_CONSTRAINTS = _pipeline.constraints
-PIPELINE_TARGETS = _pipeline.targets
+PIPELINE_TARGETS = list(_pipeline.targets)
 PIPELINE_WORKBOOK_PATH = _pipeline.workbook_path
 
 # ---- Configuration -----------------------------------------------------------

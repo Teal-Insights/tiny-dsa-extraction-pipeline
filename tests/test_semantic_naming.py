@@ -18,12 +18,12 @@ def test_semantic_label_hints_from_metadata() -> None:
         {
             "table_labels": [{"label": "Country profile", "concept": "TABLE"}],
             "row_labels": [{"label": "Debt-to-GDP ratio", "concept": "INDICATOR"}],
-            "column_labels": [{"label": "Borvelia", "concept": "COUNTRY"}],
+            "column_labels": [{"label": "Example Country", "concept": "COUNTRY"}],
         }
     )
     assert hints.table_labels == "Country profile"
     assert hints.row_labels == "Debt-to-GDP ratio"
-    assert hints.column_labels == "Borvelia"
+    assert hints.column_labels == "Example Country"
 
 
 def test_cluster_naming_hints_includes_member_column_labels() -> None:

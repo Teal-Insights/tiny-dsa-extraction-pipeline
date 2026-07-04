@@ -34,7 +34,8 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, get_args, get
 
 from excel_grapher.core.cell_types import Between, RealBetween
 
-from src.internals_refactor import ALLOWED_RUNTIME_SYMBOLS
+from src.pipeline_context import require_pipeline_config
+from src.runtime_symbols import allowed_runtime_symbols
 
 if TYPE_CHECKING:
     from src.internals_refactor import (
@@ -50,8 +51,17 @@ DEFAULT_SAMPLE_SEED = 0
 _MAX_REPORTED_MISMATCHES = 10
 
 repo_root = Path(__file__).resolve().parents[1]
-_RUNTIME_PATH = repo_root / "dist" / "tiny_dsa" / "runtime.py"
-_DATA_PATH = repo_root / "dist" / "tiny_dsa" / "data.py"
+
+
+def _runtime_path() -> Path:
+    config = require_pipeline_config()
+    return config.package_root / "runtime.py"
+
+
+def _data_path() -> Path:
+    config = require_pipeline_config()
+    return config.package_root / "data.py"
+
 
 InputVector = Mapping[str, Any]
 
@@ -72,11 +82,12 @@ class _Mismatch:
 @lru_cache(maxsize=1)
 def _runtime() -> ModuleType:
     """Load the exported runtime module in isolation (no package side effects)."""
+    runtime_path = _runtime_path()
     spec = importlib_util.spec_from_file_location(
-        "_tiny_dsa_runtime_for_parity", _RUNTIME_PATH
+        "_exported_runtime_for_parity", runtime_path
     )
     if spec is None or spec.loader is None:
-        raise FileNotFoundError(f"Could not load runtime module from {_RUNTIME_PATH}")
+        raise FileNotFoundError(f"Could not load runtime module from {runtime_path}")
     module = importlib_util.module_from_spec(spec)
     # Register before exec so the module's dataclasses can resolve their own
     # string annotations via sys.modules[cls.__module__].
@@ -105,9 +116,9 @@ def exec_internals_module(source: str) -> dict[str, Any]:
     """Execute an ``internals.py`` source string with runtime symbols injected."""
     runtime = _runtime()
     namespace: dict[str, Any] = {
-        name: getattr(runtime, name) for name in ALLOWED_RUNTIME_SYMBOLS
+        name: getattr(runtime, name) for name in allowed_runtime_symbols()
     }
-    namespace["__name__"] = "_tiny_dsa_internals_parity"
+    namespace["__name__"] = "_exported_internals_parity"
     compiled = compile(_strip_runtime_import(source), "<internals-parity>", "exec")
     exec(compiled, namespace)
     return namespace
@@ -213,11 +224,9 @@ def _format_message(
         lines.append(f"  ... and {len(mismatches) - _MAX_REPORTED_MISMATCHES} more")
     lines.append(
         f"The refactored helper must reproduce each member cell's original computed "
-        f"value exactly (atol={atol:g}) across all inputs. Fix the mismatch while "
-        f"preserving the xl_* call structure from python_source: same cell reads, same "
-        f"dynamic division denominators that codegen guards, and the semantic_dependencies "
-        f"call_forms. For prior-year recursion, call helper(ctx, time_period=time_period "
-        f"- 1) with every parameter passed through; do not define nested def helpers."
+        f"value exactly (atol={atol:g}) across all inputs. Re-derive the body from the "
+        f"per-member Excel formulas in the Note section; do not substitute a different "
+        f"helper or change which input rows are read."
     )
     return "\n".join(lines)
 
@@ -349,11 +358,12 @@ def check_singleton_parity(
 @lru_cache(maxsize=1)
 def _dist_data() -> ModuleType:
     """Load the exported ``data.py`` (DEFAULT_INPUTS/CONSTANTS) in isolation."""
+    data_path = _data_path()
     spec = importlib_util.spec_from_file_location(
-        "_tiny_dsa_data_for_parity", _DATA_PATH
+        "_exported_data_for_parity", data_path
     )
     if spec is None or spec.loader is None:
-        raise FileNotFoundError(f"Could not load data module from {_DATA_PATH}")
+        raise FileNotFoundError(f"Could not load data module from {data_path}")
     module = importlib_util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -366,11 +376,12 @@ def build_default_input_vectors(
     seed: int = DEFAULT_SAMPLE_SEED,
 ) -> list[dict[str, object]]:
     """Build gate input vectors from pipeline constraints and exported defaults."""
-    from src.extraction_pipeline import constraints
+    from src.pipeline_context import require_pipeline_config
 
+    config = require_pipeline_config()
     data = _dist_data()
     return sample_input_vectors(
-        constraints=constraints,
+        constraints=config.constraints,
         default_inputs=data.DEFAULT_INPUTS,
         constants=data.CONSTANTS,
         count=count,

@@ -20,87 +20,82 @@ from src.llm_providers import (
     model_from_env,
     provider_for_model,
 )
-from src.qmd_python_validation import validate_qmd_files
-
-repo_root = Path(__file__).resolve().parents[1]
-dist_root = repo_root / "dist"
-guide_path = repo_root / "data" / "tiny-dsa-guide.md"
-pipeline_doc_path = repo_root / "docs" / "extraction-pipeline.qmd"
-api_module_path = dist_root / "tiny_dsa" / "api.py"
-user_guide_root = dist_root / "user_guide"
-rewrite_cache_path = repo_root / ".cache" / "guide-rewrites.json"
-great_docs_yml = dist_root / "great-docs.yml"
-docs_workflow_path = dist_root / ".github" / "workflows" / "deploy-docs.yml"
+from src.pipeline_config import PipelineConfig, discover_public_api_symbols
+from src.qmd_python_validation import PublicApiPolicy, validate_qmd_files
 
 SECTION_REWRITE_MODEL_ENV = "SECTION_REWRITE_MODEL"
-SECTION_REWRITE_PROMPT_VERSION = 4
+SECTION_REWRITE_PROMPT_VERSION = 6
 MAX_SECTION_REWRITE_ATTEMPTS = 3
-CANONICAL_API_USAGE_HEADING = "Canonical API usage"
-NO_API_SIGNATURES = "No tiny_dsa.api symbols are required for this section."
 VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
-VALIDATION_REPORT_URL = (
-    "https://github.com/Teal-Insights/py-tiny-dsa/blob/main/"
-    "tests/results/reference/parity_report.txt"
-)
-VALIDATION_BUNDLE_README_URL = (
-    "https://github.com/Teal-Insights/py-tiny-dsa/blob/main/tests/README.md"
-)
-VALIDATION_HARNESS_URL = (
-    "https://github.com/Teal-Insights/py-tiny-dsa/blob/main/"
-    "tests/differential_test_exported_library.py"
+
+SETTER_INPUT_SHAPE_GUIDANCE = (
+    "Setter input shapes: single-cell setters accept a bare scalar; series setters "
+    "accept a 1-D sequence of measure values, a tidy Polars DataFrame, a single "
+    "record, or a list of records when the series is keyed. Reuse "
+    "ctx = make_context() across runnable cells. Tabulate compute_* results with "
+    "Polars, selecting the measure column with a clear alias as shown in the "
+    "canonical_api_usage reference."
 )
 
-FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS = (
-    "Preserve section structure and conceptual flow, but replace workbook "
-    "navigation and manual cell editing with tiny_dsa.api usage. "
-    "Mirror the canonical_api_usage reference example for import style, "
-    "ctx = make_context(), and compute_output_* calls. Setters accept "
-    "whichever input shape reads most naturally: a bare scalar for "
-    "single-cell setters, and records, a single record, a tidy Polars "
-    "DataFrame, or a 1D sequence of measure values for multi-cell setters. "
-    "Tabulate outputs with Polars using debt_to_gdp_frame-style select on OBS_VALUE."
-)
 
-ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS = (
-    "Keep the scenario faithful to the original narrative. "
-    "Express each step with tiny_dsa.api using the same interaction model as "
-    "canonical_api_usage, including debt_to_gdp_frame-style Polars tables for "
-    "compute_output_* results. Split the workflow into several short runnable "
-    "cells that reuse ctx = make_context(), passing each setter the input "
-    "shape that reads most naturally: a bare scalar for single-cell setters, "
-    "and records, a single record, a tidy Polars DataFrame, or a 1D sequence "
-    "of measure values for multi-cell setters."
-)
+def _rewrite_cache_path(config: PipelineConfig) -> Path:
+    return config.repo_root / ".cache" / "guide-rewrites.json"
 
-GREAT_DOCS_SETTINGS = [
-    ("display_name", "Tiny DSA"),
-    ("homepage", "user_guide"),
-]
 
-INTRODUCTION_FOCUS_INSTRUCTIONS = (
-    "Rewrite the source introduction as the landing page for the generated "
-    "Python package documentation. Recommend installing the package with uv "
-    "from https://github.com/Teal-Insights/py-tiny-dsa. Clarify that Tiny DSA "
-    "is a Python reimplementation of the illustrative Excel workbook, produced "
-    "using a combination of programmatic extraction, machine translation, and AI. "
-    "Keep the provenance concise and do not add pipeline details beyond that summary."
-)
+def _user_guide_root(config: PipelineConfig) -> Path:
+    return config.dist_root / "user_guide"
 
-FUNCTIONAL_OVERVIEW_API_SYMBOLS = [
-    "make_context",
-    "set_country_name",
-    "set_growth_baseline",
-    "set_interest_baseline",
-    "set_primary_balance_baseline",
-    "set_shock_year",
-    "set_shock_type",
-    "set_shock_magnitudes",
-    "compute_output_baseline",
-    "compute_output_shocked",
-    "compute_output_delta",
-]
 
-ILLUSTRATIVE_EXAMPLE_API_SYMBOLS = FUNCTIONAL_OVERVIEW_API_SYMBOLS
+def _great_docs_yml(config: PipelineConfig) -> Path:
+    return config.dist_root / "great-docs.yml"
+
+
+def _docs_workflow_path(config: PipelineConfig) -> Path:
+    return config.dist_root / ".github" / "workflows" / "deploy-docs.yml"
+
+
+def _no_api_signatures() -> str:
+    return "No generated package API symbols are required for this section."
+
+
+def _format_section_focus_template(template_path: Path, **placeholders: str) -> str:
+    return template_path.read_text(encoding="utf-8").strip().format(**placeholders)
+
+
+def introduction_focus_instructions(config: PipelineConfig) -> str:
+    metadata = config.dist_metadata
+    install = metadata.resolved_install_command()
+    repo_hint = (
+        f"from {metadata.repository_url}"
+        if metadata.repository_url
+        else "from the configured package source"
+    )
+    return _format_section_focus_template(
+        config.section_rewrite_introduction_focus_path,
+        install=install,
+        repo_hint=repo_hint,
+        library_name=metadata.library_name,
+    )
+
+
+def functional_overview_focus_instructions(config: PipelineConfig) -> str:
+    return _format_section_focus_template(
+        config.section_rewrite_functional_overview_focus_path,
+        api_import_path=config.api_import_path,
+        canonical_api_example_path=config.repo_relative_posix_path(
+            config.canonical_api_example_path
+        ),
+    )
+
+
+def illustrative_example_focus_instructions(config: PipelineConfig) -> str:
+    return _format_section_focus_template(
+        config.section_rewrite_illustrative_example_focus_path,
+        api_import_path=config.api_import_path,
+        canonical_api_example_path=config.repo_relative_posix_path(
+            config.canonical_api_example_path
+        ),
+    )
 
 
 class SectionRewriteResponse(BaseModel):
@@ -120,7 +115,7 @@ class SectionRewriteResponse(BaseModel):
         )
     )
     api_symbols_used: list[str] = Field(
-        description="Symbols from tiny_dsa.api referenced in the rewritten section."
+        description="Symbols from the generated package API referenced in the rewritten section."
     )
     fidelity_notes: list[str] = Field(
         description=(
@@ -178,7 +173,12 @@ def parse_parity_report(report_text: str) -> ParityReportSummary:
     )
 
 
-def render_validation_page(summary: ParityReportSummary) -> str:
+def render_validation_page(
+    summary: ParityReportSummary,
+    *,
+    library_name: str,
+    package_name: str,
+) -> str:
     """Render the deterministic GreatDocs page for Excel parity validation."""
     passed = f"{summary.passed:,}"
     total = f"{summary.total_comparisons:,}"
@@ -187,8 +187,8 @@ def render_validation_page(summary: ParityReportSummary) -> str:
 title: "Excel parity validation"
 ---
 
-Tiny DSA includes an exported validation bundle that checks the generated
-`tiny_dsa` package against the illustrative Excel workbook. The test drives
+{library_name} includes an exported validation bundle that checks the generated
+`{package_name}` package against the source Excel workbook. The test drives
 the workbook with Microsoft Excel through `xlwings`, applies the same inputs
 through the package's public `set_*` functions, and compares the public
 `compute_*` outputs cell by cell.
@@ -205,13 +205,12 @@ cell-level comparisons passed at `{summary.tolerance}`.
 - Pass rate: **{summary.pass_rate}**
 - Acceptance bar: **{summary.acceptance_bar}**
 
-The sweep covers 118 scenarios and 15 output cells, for 1,770 comparisons
-against Excel.
+The sweep covers **{total}** cell-level comparisons against Excel.
 
 ## What Was Tested
 
 The validation checks the exported standalone library, not just the extraction
-graph. It imports `tiny_dsa.api`, creates a fresh context for each scenario,
+graph. It imports `{package_name}.api`, creates a fresh context for each scenario,
 sets inputs through the records-shaped public setters, computes the exported
 output series, and compares those values against the workbook's calculated
 output cells.
@@ -222,9 +221,9 @@ The validation bundle is shipped in the source repository under `tests/`.
 Because the golden-master oracle uses Microsoft Excel through COM automation,
 reruns require Windows with Microsoft Excel installed.
 
-- [Reference parity report]({VALIDATION_REPORT_URL})
-- [Validation bundle README]({VALIDATION_BUNDLE_README_URL})
-- [Differential test harness]({VALIDATION_HARNESS_URL})
+- Reference parity report: `tests/results/reference/parity_report.txt`
+- Validation bundle README: `tests/README.md`
+- Differential test harness: `tests/differential_test_exported_library.py`
 
 To re-run the validation from the exported project:
 
@@ -243,25 +242,26 @@ def render_introduction_validation_note() -> str:
     )
 
 
-def write_validation_page(
-    *,
-    dist_root_path: Path = dist_root,
-    user_guide_root_path: Path = user_guide_root,
-) -> None:
+def write_validation_page(*, config: PipelineConfig) -> None:
     """Write the deterministic user-guide page from exported validation assets."""
+    user_guide_root = _user_guide_root(config)
     report_path = (
-        dist_root_path / "tests" / "results" / "reference" / "parity_report.txt"
+        config.dist_root / "tests" / "results" / "reference" / "parity_report.txt"
     )
-    readme_path = dist_root_path / "tests" / "README.md"
+    readme_path = config.dist_root / "tests" / "README.md"
     if not readme_path.is_file():
         raise FileNotFoundError(f"Validation README not found: {readme_path}")
     if not report_path.is_file():
         raise FileNotFoundError(f"Reference parity report not found: {report_path}")
 
     summary = parse_parity_report(report_path.read_text(encoding="utf-8"))
-    user_guide_root_path.mkdir(parents=True, exist_ok=True)
-    (user_guide_root_path / VALIDATION_PAGE_FILENAME).write_text(
-        render_validation_page(summary),
+    user_guide_root.mkdir(parents=True, exist_ok=True)
+    (user_guide_root / VALIDATION_PAGE_FILENAME).write_text(
+        render_validation_page(
+            summary,
+            library_name=config.dist_metadata.library_name,
+            package_name=config.dist_metadata.package_name,
+        ),
         encoding="utf-8",
     )
 
@@ -270,15 +270,17 @@ def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def load_rewrite_cache() -> dict[str, str]:
-    if not rewrite_cache_path.exists():
+def load_rewrite_cache(config: PipelineConfig) -> dict[str, str]:
+    cache_path = _rewrite_cache_path(config)
+    if not cache_path.exists():
         return {}
-    return json.loads(rewrite_cache_path.read_text(encoding="utf-8"))
+    return json.loads(cache_path.read_text(encoding="utf-8"))
 
 
-def save_rewrite_cache(cache: dict[str, str]) -> None:
-    rewrite_cache_path.parent.mkdir(parents=True, exist_ok=True)
-    rewrite_cache_path.write_text(
+def save_rewrite_cache(config: PipelineConfig, cache: dict[str, str]) -> None:
+    cache_path = _rewrite_cache_path(config)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
         json.dumps(cache, indent=2, sort_keys=True),
         encoding="utf-8",
     )
@@ -300,13 +302,13 @@ def extract_qmd_section(qmd_text: str, heading: str) -> str:
     return match.group(1).strip()
 
 
-def load_canonical_api_example(pipeline_doc_text: str) -> str:
-    return extract_qmd_section(pipeline_doc_text, CANONICAL_API_USAGE_HEADING)
+def load_canonical_api_example(config: PipelineConfig) -> str:
+    return config.canonical_api_example_path.read_text(encoding="utf-8").strip()
 
 
-def canonical_api_context(pipeline_doc_text: str) -> dict[str, str]:
+def canonical_api_context(config: PipelineConfig) -> dict[str, str]:
     return {
-        "canonical_api_usage": load_canonical_api_example(pipeline_doc_text),
+        "canonical_api_usage": load_canonical_api_example(config),
     }
 
 
@@ -328,6 +330,8 @@ def extract_api_signatures(api_path: Path, symbol_names: list[str]) -> str:
 
 def build_section_prompt(
     *,
+    library_name: str,
+    api_import_path: str,
     section_name: str,
     source_section_markdown: str,
     python_focus_instructions: str,
@@ -339,7 +343,7 @@ def build_section_prompt(
         [f"[{label}]\n{text}" for label, text in pipeline_context_blocks.items()]
     )
     return f"""
-Rewrite one section from the Tiny-DSA guide into Python-first documentation for a generated library website.
+Rewrite one section from the workbook guide into Python-first documentation for {library_name}.
 
 Goals:
 - Stay faithful to the source section's structure and intent.
@@ -357,7 +361,7 @@ Hard constraints:
 - For runnable code examples, use Quarto executable fences exactly as ` ```{{python}} ` and not ` ```python `.
 - Return valid JSON matching the response schema exactly.
 - Runnable code may only use Python standard library, polars, and matplotlib.
-- Tabulate compute_output_* results with polars, following the reference example.
+- {SETTER_INPUT_SHAPE_GUIDANCE}
 - Use matplotlib when plots are needed.
 
 Section name: {section_name}
@@ -368,7 +372,7 @@ Source section:
 Python focus instructions:
 {python_focus_instructions}
 
-tiny_dsa.api signatures:
+{api_import_path} signatures:
 {api_signatures}
 
 Response schema:
@@ -443,26 +447,24 @@ def sync_cached_rewrite_from_qmd(
 
 def sync_validated_pages_to_rewrite_cache(
     *,
+    config: PipelineConfig,
     guide_text: str,
-    pipeline_doc_text: str,
 ) -> None:
-    """Update cached guide rewrites from validated generated QMD pages.
-
-    Only pure LLM-authored pages are synced. ``index.qmd`` gets a deterministic
-    validation note appended outside the cached rewrite and is intentionally
-    excluded.
-    """
+    """Update cached guide rewrites from validated generated QMD pages."""
     response_schema = SectionRewriteResponse.model_json_schema()
+    api_symbols = list(discover_public_api_symbols(config.api_module_path))
+    api_context = canonical_api_context(config)
+    user_guide_root = _user_guide_root(config)
+    cache_path = _rewrite_cache_path(config)
+
     functional_key = rewrite_cache_key(
         section_id="functional_overview",
         source_section_markdown=extract_markdown_section(
             guide_text, "II. Functional Overview"
         ),
-        python_focus_instructions=FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS,
-        pipeline_context_blocks=canonical_api_context(pipeline_doc_text),
-        api_signatures=extract_api_signatures(
-            api_module_path, FUNCTIONAL_OVERVIEW_API_SYMBOLS
-        ),
+        python_focus_instructions=functional_overview_focus_instructions(config),
+        pipeline_context_blocks=api_context,
+        api_signatures=extract_api_signatures(config.api_module_path, api_symbols),
         response_schema=response_schema,
     )
     illustrative_key = rewrite_cache_key(
@@ -470,21 +472,19 @@ def sync_validated_pages_to_rewrite_cache(
         source_section_markdown=extract_markdown_section(
             guide_text, "III. Illustrative Example"
         ),
-        python_focus_instructions=ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS,
-        pipeline_context_blocks=canonical_api_context(pipeline_doc_text),
-        api_signatures=extract_api_signatures(
-            api_module_path, ILLUSTRATIVE_EXAMPLE_API_SYMBOLS
-        ),
+        python_focus_instructions=illustrative_example_focus_instructions(config),
+        pipeline_context_blocks=api_context,
+        api_signatures=extract_api_signatures(config.api_module_path, api_symbols),
         response_schema=response_schema,
     )
 
     sync_cached_rewrite_from_qmd(
-        cache_path=rewrite_cache_path,
+        cache_path=cache_path,
         cache_key=functional_key,
         qmd_path=user_guide_root / "01-functional-overview.qmd",
     )
     sync_cached_rewrite_from_qmd(
-        cache_path=rewrite_cache_path,
+        cache_path=cache_path,
         cache_key=illustrative_key,
         qmd_path=user_guide_root / "02-illustrative-example.qmd",
     )
@@ -536,6 +536,7 @@ def _validate_section_rewrite(parsed: SectionRewriteResponse) -> SectionRewriteR
 
 def rewrite_guide_section(
     *,
+    config: PipelineConfig,
     client: OpenAI | None,
     section_id: str,
     section_name: str,
@@ -545,7 +546,7 @@ def rewrite_guide_section(
     api_signatures: str,
 ) -> SectionRewriteResponse:
     response_schema = SectionRewriteResponse.model_json_schema()
-    cache = load_rewrite_cache()
+    cache = load_rewrite_cache(config)
     cache_key = rewrite_cache_key(
         section_id=section_id,
         source_section_markdown=source_section_markdown,
@@ -558,11 +559,15 @@ def rewrite_guide_section(
         return SectionRewriteResponse.model_validate_json(cache[cache_key])
 
     if client is None:
+        provider = provider_for_model(section_rewrite_model())
         raise RuntimeError(
-            "OPENAI_API_KEY is required to generate uncached guide rewrites"
+            f"{provider.api_key_env} is required to generate uncached guide rewrites"
         )
 
+    api_import_path = config.api_import_path
     prompt = build_section_prompt(
+        library_name=config.dist_metadata.library_name,
+        api_import_path=api_import_path,
         section_name=section_name,
         source_section_markdown=source_section_markdown,
         python_focus_instructions=python_focus_instructions,
@@ -576,11 +581,11 @@ def rewrite_guide_section(
         model=model,
         provider=provider_for_model(model),
         system_prompt=(
-            "You are a technical documentation writer for the tiny_dsa library. "
-            "Runnable examples use tiny_dsa.api with make_context(), "
-            "records-shaped setters, and compute_output_* functions, "
-            "as shown in the reference example. "
-            "Return only valid JSON matching the provided schema."
+            f"You are a technical documentation writer for the "
+            f"{config.dist_metadata.library_name} library. "
+            f"Runnable examples use {api_import_path} with make_context(), "
+            "setter input shapes from the reference example, and compute_* "
+            "functions. Return only valid JSON matching the provided schema."
         ),
         user_prompt=prompt,
         response_model=SectionRewriteResponse,
@@ -588,7 +593,7 @@ def rewrite_guide_section(
         max_attempts=MAX_SECTION_REWRITE_ATTEMPTS,
     )
     cache[cache_key] = content
-    save_rewrite_cache(cache)
+    save_rewrite_cache(config, cache)
     return parsed
 
 
@@ -602,20 +607,27 @@ def has_top_level_key(yaml_content: str, key: str) -> bool:
     return False
 
 
-def configure_great_docs_yml() -> None:
+def configure_great_docs_yml(config: PipelineConfig) -> None:
+    great_docs_yml = _great_docs_yml(config)
+    package_module = config.dist_metadata.package_name
     content = great_docs_yml.read_text(encoding="utf-8")
-    content = content.replace("# module: yaml12", "module: tiny_dsa")
+    content = content.replace("# module: yaml12", f"module: {package_module}")
 
+    great_docs_settings = [
+        ("display_name", config.dist_metadata.library_name),
+        ("homepage", "user_guide"),
+    ]
     insert_lines = [
         f"{key}: {value}"
-        for key, value in GREAT_DOCS_SETTINGS
+        for key, value in great_docs_settings
         if not has_top_level_key(content, key)
     ]
     if insert_lines:
-        if "module: tiny_dsa" in content:
+        module_line = f"module: {package_module}"
+        if module_line in content:
             content = content.replace(
-                "module: tiny_dsa",
-                "module: tiny_dsa\n" + "\n".join(insert_lines),
+                module_line,
+                module_line + "\n" + "\n".join(insert_lines),
                 1,
             )
         else:
@@ -641,16 +653,22 @@ def run_cmd(
     )
 
 
-def write_introduction_page(client: OpenAI | None, guide_text: str) -> None:
+def write_introduction_page(
+    config: PipelineConfig,
+    client: OpenAI | None,
+    guide_text: str,
+) -> None:
+    user_guide_root = _user_guide_root(config)
     introduction_source = extract_markdown_section(guide_text, "I. Introduction[^1]")
     introduction_rewrite = rewrite_guide_section(
+        config=config,
         client=client,
         section_id="introduction",
         section_name="Introduction",
         source_section_markdown=introduction_source,
-        python_focus_instructions=INTRODUCTION_FOCUS_INSTRUCTIONS,
+        python_focus_instructions=introduction_focus_instructions(config),
         pipeline_context_blocks={},
-        api_signatures=NO_API_SIGNATURES,
+        api_signatures=_no_api_signatures(),
     )
     user_guide_root.mkdir(parents=True, exist_ok=True)
     landing_page_output = user_guide_root / "index.qmd"
@@ -665,26 +683,27 @@ title: "{introduction_rewrite.title}"
     landing_page_output.write_text(landing_page_qmd, encoding="utf-8")
 
 
-def write_rewritten_guide_pages(client: OpenAI | None) -> None:
-    guide_text = guide_path.read_text(encoding="utf-8")
-    pipeline_doc_text = pipeline_doc_path.read_text(encoding="utf-8")
+def write_rewritten_guide_pages(config: PipelineConfig, client: OpenAI | None) -> None:
+    guide_text = config.guide_path.read_text(encoding="utf-8")
+    api_symbols = list(discover_public_api_symbols(config.api_module_path))
+    api_context = canonical_api_context(config)
 
     functional_overview_source = extract_markdown_section(
         guide_text,
         "II. Functional Overview",
     )
-    functional_overview_context = canonical_api_context(pipeline_doc_text)
     functional_overview_api = extract_api_signatures(
-        api_module_path,
-        FUNCTIONAL_OVERVIEW_API_SYMBOLS,
+        config.api_module_path,
+        api_symbols,
     )
     functional_overview_rewrite = rewrite_guide_section(
+        config=config,
         client=client,
         section_id="functional_overview",
         section_name="Functional Overview",
         source_section_markdown=functional_overview_source,
-        python_focus_instructions=FUNCTIONAL_OVERVIEW_FOCUS_INSTRUCTIONS,
-        pipeline_context_blocks=functional_overview_context,
+        python_focus_instructions=functional_overview_focus_instructions(config),
+        pipeline_context_blocks=api_context,
         api_signatures=functional_overview_api,
     )
 
@@ -692,21 +711,22 @@ def write_rewritten_guide_pages(client: OpenAI | None) -> None:
         guide_text,
         "III. Illustrative Example",
     )
-    illustrative_example_context = canonical_api_context(pipeline_doc_text)
     illustrative_example_api = extract_api_signatures(
-        api_module_path,
-        ILLUSTRATIVE_EXAMPLE_API_SYMBOLS,
+        config.api_module_path,
+        api_symbols,
     )
     illustrative_example_rewrite = rewrite_guide_section(
+        config=config,
         client=client,
         section_id="illustrative_example",
         section_name="Illustrative Example",
         source_section_markdown=illustrative_example_source,
-        python_focus_instructions=ILLUSTRATIVE_EXAMPLE_FOCUS_INSTRUCTIONS,
-        pipeline_context_blocks=illustrative_example_context,
+        python_focus_instructions=illustrative_example_focus_instructions(config),
+        pipeline_context_blocks=api_context,
         api_signatures=illustrative_example_api,
     )
 
+    user_guide_root = _user_guide_root(config)
     user_guide_root.mkdir(parents=True, exist_ok=True)
     functional_overview_output = user_guide_root / "01-functional-overview.qmd"
     functional_overview_output.write_text(
@@ -731,7 +751,8 @@ title: "{illustrative_example_rewrite.title}"
     )
 
 
-def write_docs_deploy_workflow() -> None:
+def write_docs_deploy_workflow(config: PipelineConfig) -> None:
+    docs_workflow_path = _docs_workflow_path(config)
     docs_workflow_path.parent.mkdir(parents=True, exist_ok=True)
     docs_workflow = """name: Build and deploy docs
 
@@ -786,40 +807,42 @@ jobs:
     docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
 
 
-def run_documentation_pipeline() -> None:
+def run_documentation_pipeline(config: PipelineConfig) -> None:
+    great_docs_yml = _great_docs_yml(config)
     if not great_docs_yml.exists():
         run_cmd(
             [
                 "uv",
                 "run",
                 "--project",
-                str(dist_root),
+                str(config.dist_root),
                 "--with",
                 "great-docs",
                 "great-docs",
                 "init",
                 "--project-path",
-                str(dist_root),
+                str(config.dist_root),
             ]
         )
 
-    configure_great_docs_yml()
+    configure_great_docs_yml(config)
 
     model = section_rewrite_model()
     section_client, _ = build_client_if_configured(model)
-    guide_text = guide_path.read_text(encoding="utf-8")
-    write_introduction_page(section_client, guide_text)
-    write_rewritten_guide_pages(section_client)
-    write_validation_page()
+    guide_text = config.guide_path.read_text(encoding="utf-8")
+    write_introduction_page(config, section_client, guide_text)
+    write_rewritten_guide_pages(config, section_client)
+    write_validation_page(config=config)
+    api_symbols = discover_public_api_symbols(config.api_module_path)
     validate_qmd_files(
-        dist_root=dist_root,
-        qmd_paths=sorted(user_guide_root.glob("*.qmd")),
+        dist_root=config.dist_root,
+        qmd_paths=sorted(_user_guide_root(config).glob("*.qmd")),
+        api_policy=PublicApiPolicy(
+            api_import_path=config.api_import_path,
+            allowed_symbols=frozenset(api_symbols),
+        ),
+        metadata=config.dist_metadata,
         client=section_client,
-        model=model,
     )
-    pipeline_doc_text = pipeline_doc_path.read_text(encoding="utf-8")
-    sync_validated_pages_to_rewrite_cache(
-        guide_text=guide_text,
-        pipeline_doc_text=pipeline_doc_text,
-    )
-    write_docs_deploy_workflow()
+    sync_validated_pages_to_rewrite_cache(config=config, guide_text=guide_text)
+    write_docs_deploy_workflow(config)

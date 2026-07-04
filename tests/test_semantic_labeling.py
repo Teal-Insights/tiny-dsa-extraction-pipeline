@@ -1,17 +1,9 @@
-from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
 import pytest
-from excel_grapher.grapher import DynamicRefConfig, create_dependency_graph
-from excel_grapher.series_bindings import (
-    derive_input_series,
-    derive_output_series,
-    load_series_bindings,
-)
 
 from src.dependency_graph_viz import series_cell_keys
-from src.extraction_pipeline import constraints, targets, workbook_path
 from src.semantic_labeling import (
     CellSemanticLabels,
     SemanticLabel,
@@ -23,41 +15,21 @@ from src.semantic_labeling import (
 
 
 @pytest.fixture()
-def tiny_graph():
-    config = DynamicRefConfig.from_constraints(constraints, {})
-    return create_dependency_graph(
-        workbook_path,
-        targets,
-        load_values=True,
-        dynamic_refs=config,
-    )
-
-
-@pytest.fixture()
-def series_context(tiny_graph):
-    bindings_path = Path(__file__).resolve().parents[1] / "bindings"
-    series_bindings = load_series_bindings(bindings_path)
-    input_series = derive_input_series(
-        tiny_graph,
-        series_bindings,
-        workbook=workbook_path,
-    )
-    output_series = derive_output_series(
-        tiny_graph,
-        series_bindings,
-        workbook=workbook_path,
-    )
+def series_context(tiny_dsa_configured_pipeline):
+    pipeline = tiny_dsa_configured_pipeline
     return {
-        "bindings": series_bindings,
-        "input_cells": series_cell_keys(input_series),
-        "output_cells": series_cell_keys(output_series),
+        "graph": pipeline.graph,
+        "workbook_path": pipeline.config.workbook_path,
+        "bindings": pipeline.series_bindings,
+        "input_cells": series_cell_keys(pipeline.input_series),
+        "output_cells": series_cell_keys(pipeline.output_series),
     }
 
 
 def test_group_candidate_cells_by_sheet_excludes_inputs_and_targets(
-    tiny_graph,
     series_context,
 ) -> None:
+    tiny_graph = series_context["graph"]
     target_cells = series_context["output_cells"] | set(tiny_graph.target_keys())
     candidate_cells_by_sheet = group_candidate_cells_by_sheet(
         tiny_graph,
@@ -102,9 +74,9 @@ def test_validate_sheet_semantic_labels_rejects_unknown_concepts() -> None:
 
 
 def test_label_internal_graph_cells_applies_provider_metadata(
-    tiny_graph,
     series_context,
 ) -> None:
+    tiny_graph = series_context["graph"]
     calls: list[tuple[str, list[str], list[dict[str, Any]]]] = []
 
     def provider(
@@ -133,7 +105,7 @@ def test_label_internal_graph_cells_applies_provider_metadata(
 
     summary = label_internal_graph_cells(
         graph=tiny_graph,
-        workbook_path=workbook_path,
+        workbook_path=series_context["workbook_path"],
         input_cells=series_context["input_cells"],
         target_cells=series_context["output_cells"],
         concept_scheme=series_context["bindings"]["concept_scheme"],

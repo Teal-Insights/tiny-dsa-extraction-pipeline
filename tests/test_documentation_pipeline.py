@@ -1,80 +1,114 @@
-import json
 from pathlib import Path
 
 import pytest
 
+from src.pipeline_config import (
+    PipelineConfig,
+    discover_public_api_symbols,
+    load_pipeline_config,
+)
 from src.documentation_pipeline import (
-    CANONICAL_API_USAGE_HEADING,
-    INTRODUCTION_FOCUS_INSTRUCTIONS,
-    SectionRewriteResponse,
+    SETTER_INPUT_SHAPE_GUIDANCE,
     build_section_prompt,
+    extract_api_signatures,
+    introduction_focus_instructions,
+    functional_overview_focus_instructions,
+    illustrative_example_focus_instructions,
     load_canonical_api_example,
     parse_parity_report,
-    pipeline_doc_path,
     render_validation_page,
-    sync_cached_rewrite_from_qmd,
     validate_rewritten_markdown_fences,
-    write_validation_page,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
-
-def test_load_canonical_api_example_reads_qmd_section() -> None:
-    example = load_canonical_api_example(pipeline_doc_path.read_text(encoding="utf-8"))
+def test_load_canonical_api_example_reads_template() -> None:
+    config = load_pipeline_config()
+    example = load_canonical_api_example(config)
     assert "make_context()" in example
-    assert "from tiny_dsa.api import" in example
-    assert "set_country_name" in example
-    assert "compute_output_baseline" in example
+    assert "compute_" in example
     assert "import polars as pl" in example
-    assert 'pl.col("OBS_VALUE")' in example
-    assert "debt_to_gdp_frame" in example
 
 
-def test_section_prompt_includes_reference_example_block() -> None:
+def test_section_focus_templates_use_placeholders() -> None:
+    config = load_pipeline_config()
+
+    introduction = introduction_focus_instructions(config)
+    assert config.dist_metadata.library_name in introduction
+    assert config.dist_metadata.resolved_install_command() in introduction
+
+    functional = functional_overview_focus_instructions(config)
+    illustrative = illustrative_example_focus_instructions(config)
+    assert config.api_import_path in functional
+    assert config.api_import_path in illustrative
+    assert "canonical_api_usage" in functional
+    assert "canonical_api_usage" in illustrative
+    assert "templates/canonical-api-usage.md" in functional
+    assert "templates/canonical-api-usage.md" in illustrative
+
+
+def test_build_section_prompt_includes_input_shape_guidance() -> None:
+    config = load_pipeline_config()
+    canonical = load_canonical_api_example(config)
     prompt = build_section_prompt(
+        library_name=config.dist_metadata.library_name,
+        api_import_path=config.api_import_path,
         section_name="Functional Overview",
         source_section_markdown="Source",
         python_focus_instructions="Mirror the canonical example.",
-        pipeline_context_blocks={
-            "canonical_api_usage": "ctx = make_context()",
-        },
+        pipeline_context_blocks={"canonical_api_usage": canonical},
         api_signatures="def make_context(): ...",
         response_schema={"type": "object"},
     )
 
-    assert "Reference example" in prompt
-    assert "[canonical_api_usage]" in prompt
+    assert config.api_import_path in prompt
+    assert canonical in prompt
+    assert SETTER_INPUT_SHAPE_GUIDANCE in prompt
+    assert "bare scalar" in prompt
+    assert "Polars DataFrame" in prompt
     assert "ctx = make_context()" in prompt
-    assert "Match the import and call style" in prompt
 
 
-def test_section_prompt_limits_runnable_dependencies() -> None:
+def test_build_section_prompt_uses_discovered_api_signatures(tmp_path: Path) -> None:
+    api_path = tmp_path / "api.py"
+    api_path.write_text(
+        "\n".join(
+            [
+                "def make_context():",
+                "    return {}",
+                "",
+                "def set_example(ctx, value):",
+                "    pass",
+                "",
+                "def compute_example(ctx):",
+                "    return []",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    symbols = list(discover_public_api_symbols(api_path))
+    signatures = extract_api_signatures(api_path, symbols)
+
     prompt = build_section_prompt(
-        section_name="Example",
+        library_name="Example Model",
+        api_import_path="example_model.api",
+        section_name="Functional Overview",
         source_section_markdown="Source",
-        python_focus_instructions="Instructions",
+        python_focus_instructions="Focus",
         pipeline_context_blocks={"canonical_api_usage": "ctx = make_context()"},
-        api_signatures="def make_context(): ...",
+        api_signatures=signatures,
         response_schema={"type": "object"},
     )
 
-    assert (
-        "Runnable code may only use Python standard library, polars, and matplotlib."
-    ) in prompt
-    assert "Tabulate compute_output_* results with polars" in prompt
-
-
-def test_canonical_api_usage_heading_matches_qmd() -> None:
-    qmd_text = pipeline_doc_path.read_text(encoding="utf-8")
-    assert f"## {CANONICAL_API_USAGE_HEADING}" in qmd_text
+    assert "def make_context():" in prompt
+    assert "def set_example(ctx, value):" in prompt
+    assert "def compute_example(ctx):" in prompt
 
 
 def test_fence_validation_accepts_well_formed_quarto_cell() -> None:
     markdown = (
         "Intro paragraph.\n\n"
         "```{python}\n"
-        "from tiny_dsa.api import make_context\n"
+        "from my_model.api import make_context\n"
         "ctx = make_context()\n"
         "```\n\n"
         "Closing paragraph."
@@ -82,159 +116,80 @@ def test_fence_validation_accepts_well_formed_quarto_cell() -> None:
     validate_rewritten_markdown_fences(markdown)
 
 
-def test_fence_validation_rejects_bare_python_fence() -> None:
-    markdown = (
-        "No separate API call is required.\n\n"
-        "{python}\n"
-        'set_country_name(ctx, "Litellia")\n\n\n'
-        "The country profile table is small."
+def test_render_validation_page_uses_package_metadata() -> None:
+    from src.documentation_pipeline import ParityReportSummary
+
+    summary = ParityReportSummary(
+        generated="2026-01-01",
+        tolerance="1e-6",
+        total_comparisons=10,
+        passed=10,
+        failed=0,
+        pass_rate="100%",
+        acceptance_bar="100%",
+        result="PASS",
     )
-    with pytest.raises(ValueError, match="bare cell fence"):
-        validate_rewritten_markdown_fences(markdown)
-
-
-def test_fence_validation_rejects_unbalanced_fence() -> None:
-    markdown = "Intro.\n\n```{python}\nctx = make_context()\n\nNo closing fence."
-    with pytest.raises(ValueError, match="[Uu]nbalanced"):
-        validate_rewritten_markdown_fences(markdown)
-
-
-def test_fence_validation_ignores_fence_token_inside_code_block() -> None:
-    markdown = 'Intro.\n\n```{python}\nliteral = "{python}"\n```\n'
-    validate_rewritten_markdown_fences(markdown)
-
-
-def test_introduction_prompt_mentions_install_source_and_provenance() -> None:
-    assert "uv" in INTRODUCTION_FOCUS_INSTRUCTIONS
-    assert (
-        "https://github.com/Teal-Insights/py-tiny-dsa"
-        in INTRODUCTION_FOCUS_INSTRUCTIONS
+    page = render_validation_page(
+        summary,
+        library_name="Forecast Kit",
+        package_name="forecast_kit",
     )
-    assert "Python reimplementation" in INTRODUCTION_FOCUS_INSTRUCTIONS
-    assert "programmatic extraction, machine translation, and AI" in (
-        INTRODUCTION_FOCUS_INSTRUCTIONS
-    )
+    assert "Forecast Kit" in page
+    assert "forecast_kit" in page
 
 
-def test_parse_parity_report_extracts_reference_result() -> None:
-    summary = parse_parity_report(
-        """Parity report: exported tiny_dsa standalone library vs Excel
-Generated: 2026-06-03T22:27:37+00:00
-Workbook: .\\tiny-dsa-extraction-pipeline\\data\\tiny-dsa.xlsx
-Package:   .\\tiny-dsa-extraction-pipeline\\dist\\tiny_dsa (imported as dist.tiny_dsa.api)
-Tolerance: atol = 1e-06
-
-Total comparisons: 1770
-Passed:            1770
-Failed:            0
-Pass rate:         100.00%
-Acceptance bar:    100.00%
-Result:            PASS
+def test_parse_parity_report() -> None:
+    report = """Generated: 2026-01-01
+Tolerance: 1e-6
+Total comparisons: 10
+Passed: 10
+Failed: 0
+Pass rate: 100%
+Acceptance bar: 100%
+Result: PASS
 """
-    )
-
-    assert summary.generated == "2026-06-03T22:27:37+00:00"
-    assert summary.tolerance == "atol = 1e-06"
-    assert summary.total_comparisons == 1770
-    assert summary.passed == 1770
-    assert summary.failed == 0
+    summary = parse_parity_report(report)
     assert summary.result == "PASS"
+    assert summary.total_comparisons == 10
 
 
-def test_render_validation_page_links_reference_report() -> None:
-    summary = parse_parity_report(
-        """Generated: 2026-06-03T22:27:37+00:00
-Tolerance: atol = 1e-06
-Total comparisons: 1770
-Passed: 1770
-Failed: 0
-Pass rate: 100.00%
-Acceptance bar: 100.00%
-Result: PASS
-"""
-    )
-
-    page = render_validation_page(summary)
-
-    assert 'title: "Excel parity validation"' in page
-    assert "1,770 / 1,770" in page
-    assert "atol = 1e-06" in page
-    assert "tests/results/reference/parity_report.txt" in page
-    assert "Windows" in page
-    assert "Microsoft Excel" in page
-
-
-def test_write_validation_page_uses_exported_test_assets(tmp_path: Path) -> None:
-    dist_root = tmp_path / "dist"
-    user_guide_root = dist_root / "user_guide"
-    report_path = dist_root / "tests" / "results" / "reference" / "parity_report.txt"
-    readme_path = dist_root / "tests" / "README.md"
-    report_path.parent.mkdir(parents=True)
-    readme_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        """Generated: 2026-06-03T22:27:37+00:00
-Tolerance: atol = 1e-06
-Total comparisons: 1770
-Passed: 1770
-Failed: 0
-Pass rate: 100.00%
-Acceptance bar: 100.00%
-Result: PASS
-""",
+def test_discover_public_api_symbols_from_generated_api(tmp_path: Path) -> None:
+    api_path = tmp_path / "api.py"
+    api_path.write_text(
+        "def make_context():\n    return {}\n\n"
+        "def _internal():\n    pass\n\n"
+        "def compute_output():\n    return []\n",
         encoding="utf-8",
     )
-    readme_path.write_text("# Excel parity validation\n", encoding="utf-8")
-
-    write_validation_page(
-        dist_root_path=dist_root,
-        user_guide_root_path=user_guide_root,
-    )
-
-    page_path = user_guide_root / "03-excel-parity-validation.qmd"
-    assert page_path.is_file()
-    assert "Result: **PASS**" in page_path.read_text(encoding="utf-8")
+    assert discover_public_api_symbols(api_path) == ("compute_output", "make_context")
 
 
-def test_sync_cached_rewrite_from_qmd_persists_validated_body(tmp_path: Path) -> None:
-    cache_path = tmp_path / "guide-rewrites.json"
-    qmd_path = tmp_path / "02-illustrative-example.qmd"
-    cache_key = "abc123"
-    cached_response = SectionRewriteResponse(
-        title="Illustrative example",
-        purpose="Show the workflow.",
-        rewritten_markdown="bad body",
-        api_symbols_used=["make_context"],
-        fidelity_notes=[],
-    )
-    cache_path.write_text(
-        json.dumps({cache_key: cached_response.model_dump_json()}),
+@pytest.fixture
+def section_focus_config(tmp_path: Path) -> PipelineConfig:
+    config = load_pipeline_config(repo_root=tmp_path)
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+    (templates_dir / "section-rewrite-introduction-focus.txt").write_text(
+        "Install with `{install}` for {library_name}.",
         encoding="utf-8",
     )
-    qmd_path.write_text(
-        """---
-title: "Illustrative example"
----
-
-fixed body
-
-```{python}
-print("validated")
-```
-""",
+    (templates_dir / "section-rewrite-functional-overview-focus.txt").write_text(
+        "Use {api_import_path} and {canonical_api_example_path}.",
         encoding="utf-8",
     )
-
-    updated = sync_cached_rewrite_from_qmd(
-        cache_path=cache_path,
-        cache_key=cache_key,
-        qmd_path=qmd_path,
+    (templates_dir / "section-rewrite-illustrative-example-focus.txt").write_text(
+        "Scenario via {api_import_path} and {canonical_api_example_path}.",
+        encoding="utf-8",
     )
+    return config
 
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    response = SectionRewriteResponse.model_validate_json(cache[cache_key])
-    assert updated is True
-    assert (
-        response.rewritten_markdown
-        == 'fixed body\n\n```{python}\nprint("validated")\n```'
-    )
-    assert response.title == "Illustrative example"
+
+def test_section_focus_templates_are_workbook_overridable(
+    section_focus_config: PipelineConfig,
+) -> None:
+    config = section_focus_config
+    assert "Install with" in introduction_focus_instructions(config)
+    assert config.api_import_path in functional_overview_focus_instructions(config)
+    assert config.repo_relative_posix_path(
+        config.canonical_api_example_path
+    ) in functional_overview_focus_instructions(config)

@@ -12,15 +12,19 @@ from src.refactor_bindings import (
     load_key_concept_vocabulary,
     varying_key_concepts,
 )
-from src.extraction_pipeline import input_series, output_series
+import workbook_config
 
 BINDINGS_PATH = Path("bindings")
-WORKBOOK_PATH = Path("data/tiny-dsa.xlsx")
+WORKBOOK_PATH = workbook_config.WORKBOOK_PATH
+PROJECTION_LAYOUT = workbook_config.PROJECTION_LAYOUT
 
 
 @pytest.fixture(scope="module")
-def bound_address_keys() -> dict[str, dict[str, BindingKeyValue]]:
-    return build_bound_address_keys(input_series, output_series)
+def bound_address_keys(
+    tiny_dsa_configured_pipeline,
+) -> dict[str, dict[str, BindingKeyValue]]:
+    pipeline = tiny_dsa_configured_pipeline
+    return build_bound_address_keys(pipeline.input_series, pipeline.output_series)
 
 
 def test_load_key_concept_vocabulary_includes_cell_scoped_keys() -> None:
@@ -39,6 +43,7 @@ def test_expected_keys_for_engine_row_use_time_period(
         "Engine!D10",
         bound_address_keys=bound_address_keys,
         workbook_path=WORKBOOK_PATH,
+        layout=PROJECTION_LAYOUT,
     ) == {"TIME_PERIOD": 2}
 
 
@@ -67,6 +72,7 @@ def test_varying_key_concepts_for_engine_row_10(
         addresses,
         bound_address_keys=bound_address_keys,
         workbook_path=WORKBOOK_PATH,
+        layout=PROJECTION_LAYOUT,
     ) == frozenset({"TIME_PERIOD"})
 
 
@@ -83,6 +89,7 @@ def test_expected_member_keys_for_engine_row_10(
         ),
         bound_address_keys=bound_address_keys,
         workbook_path=WORKBOOK_PATH,
+        layout=PROJECTION_LAYOUT,
     )
     assert expected["Engine!C10"] == {"TIME_PERIOD": 1}
     assert expected["Engine!D10"] == {"TIME_PERIOD": 2}

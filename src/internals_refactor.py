@@ -22,12 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from src.formula_clustering import FormulaCluster
 from src.llm_json import generate_validated_json
 from src.llm_providers import build_client, model_from_env, provider_for_model
-from src.projection_columns import (
-    ENGINE_COLUMNS,
-    EngineColumn,
-    TIME_PERIOD_TO_ENGINE_COLUMN,
-    engine_column_for_address,
-)
+from src.pipeline_context import projection_layout as active_projection_layout
+from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 from src.refactor_bindings import (
     BindingKeyValue,
     KeyConceptSpec,
@@ -52,11 +48,9 @@ from src.semantic_naming import (
     validate_semantic_identifier,
 )
 
-logger = logging.getLogger(__name__)
-
 repo_root = Path(__file__).resolve().parents[1]
-BINDINGS_PATH = repo_root / "bindings"
-DEFAULT_WORKBOOK_PATH = repo_root / "data/tiny-dsa.xlsx"
+
+logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
 REFACTOR_PROMPT_VERSION = 14
@@ -77,10 +71,8 @@ RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
 
 AddressDispatch = dict[str, tuple[str, dict[str, BindingKeyValue]]]
 
-REFACTOR_ROW_ORDER: tuple[int, ...] = (10, 16, 6, 20, 14)
-"""Legacy Tiny DSA apply order; prefer ``compute_multi_member_cluster_refactor_order``."""
-
-ALLOWED_RUNTIME_SYMBOLS: tuple[str, ...] = allowed_runtime_symbols()
+REFACTOR_ROW_ORDER: tuple[int, ...] = ()
+"""Optional legacy row order hint; prefer ``compute_multi_member_cluster_refactor_order``."""
 
 
 @dataclass(frozen=True)
@@ -98,7 +90,7 @@ class CallSite:
 class MemberContext:
     address: str
     function_name: str
-    engine_column: EngineColumn
+    engine_column: str
     normalized_formula: str
     python_source: str
     dependency_addresses: tuple[str, ...]
@@ -276,9 +268,54 @@ def address_to_function_name(address: str) -> str:
     return f"cell_{base}"
 
 
-def _default_bound_address_keys() -> dict[str, dict[str, BindingKeyValue]]:
-    from src.extraction_pipeline import input_series, output_series
+def _resolved_projection_layout(
+    layout: ProjectionColumnLayout | None = None,
+) -> ProjectionColumnLayout | None:
+    if layout is not None:
+        return layout
+    try:
+        return active_projection_layout()
+    except RuntimeError:
+        return None
 
+
+def _member_engine_column(
+    address: str,
+    layout: ProjectionColumnLayout | None,
+) -> str | None:
+    if layout is not None:
+        column = layout.engine_column_for_address(address)
+        if column is not None:
+            return column
+    _, column, _row = parse_workbook_address(address)
+    return column
+
+
+def _engine_column_for_time_period(
+    time_period: int,
+    layout: ProjectionColumnLayout | None,
+) -> str | None:
+    if layout is None:
+        return None
+    return layout.time_period_to_engine_column.get(time_period)
+
+
+def _time_period_for_engine_column(
+    column: str,
+    layout: ProjectionColumnLayout | None,
+) -> int | None:
+    if layout is None:
+        return None
+    return layout.time_period_for_engine_column(column)
+
+
+def _default_bound_address_keys() -> dict[str, dict[str, BindingKeyValue]]:
+    from src.extraction_pipeline import build_pipeline_graph
+    from src.pipeline_context import require_pipeline_config
+
+    _graph, _series_bindings, input_series, output_series = build_pipeline_graph(
+        require_pipeline_config()
+    )
     return build_bound_address_keys(input_series, output_series)
 
 
@@ -295,15 +332,11 @@ def _label_hints_for_address(
 
 
 def _default_source_graph() -> DependencyGraph | None:
-    try:
-        from src.extraction_pipeline import graph as source_graph
-    except ImportError:
-        return None
-    return source_graph
+    return None
 
 
-def _default_key_vocabulary() -> tuple[KeyConceptSpec, ...]:
-    return load_key_concept_vocabulary(BINDINGS_PATH)
+def _default_key_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ...]:
+    return load_key_concept_vocabulary(bindings_path)
 
 
 def build_cluster_refactor_context(
@@ -313,8 +346,10 @@ def build_cluster_refactor_context(
     *,
     bound_address_keys: dict[str, dict[str, BindingKeyValue]] | None = None,
     key_vocabulary: tuple[KeyConceptSpec, ...] | None = None,
-    workbook_path: Path = DEFAULT_WORKBOOK_PATH,
+    workbook_path: Path,
+    bindings_path: Path,
     source_graph: DependencyGraph | None = None,
+    layout: ProjectionColumnLayout | None = None,
 ) -> ClusterRefactorContext | None:
     if len(cluster.members) < 2:
         return None
@@ -322,6 +357,7 @@ def build_cluster_refactor_context(
     resolved_source_graph = (
         source_graph if source_graph is not None else _default_source_graph()
     )
+    resolved_layout = _resolved_projection_layout(layout)
 
     source = internals_path.read_text(encoding="utf-8")
     module = ast.parse(source)
@@ -340,7 +376,7 @@ def build_cluster_refactor_context(
         if function_name not in defined_functions:
             continue
 
-        engine_column = engine_column_for_address(address)
+        engine_column = _member_engine_column(address, resolved_layout)
         if engine_column is None:
             continue
 
@@ -384,13 +420,16 @@ def build_cluster_refactor_context(
         else _default_bound_address_keys()
     )
     resolved_vocabulary = (
-        key_vocabulary if key_vocabulary is not None else _default_key_vocabulary()
+        key_vocabulary
+        if key_vocabulary is not None
+        else _default_key_vocabulary(bindings_path)
     )
     member_address_list = tuple(member.address for member in members)
     expected_member_keys = expected_member_keys_for_cluster(
         member_address_list,
         bound_address_keys=resolved_bound_keys,
         workbook_path=workbook_path,
+        layout=resolved_layout,
     )
 
     external_dependency_addresses = sorted(
@@ -419,8 +458,12 @@ def build_cluster_refactor_context(
         external_dependencies=external_dependencies,
         semantic_dependencies=semantic_dependencies,
         call_sites=scan_call_sites(source, member_addresses, member_functions),
-        first_year_column=ENGINE_COLUMNS[0],
-        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        first_year_column=(
+            resolved_layout.engine_columns[0]
+            if resolved_layout is not None and resolved_layout.engine_columns
+            else members[0].engine_column
+        ),
+        allowed_runtime_symbols=allowed_runtime_symbols(),
         key_vocabulary=resolved_vocabulary,
         expected_member_keys=expected_member_keys,
         naming_hints=cluster_naming_hints(
@@ -488,7 +531,7 @@ def build_singleton_refactor_context(
             frozenset({address}),
             {function_name},
         ),
-        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        allowed_runtime_symbols=allowed_runtime_symbols(),
         naming_hints=_label_hints_for_address(
             resolved_source_graph, address
         ).to_payload(),
@@ -919,55 +962,77 @@ def validate_no_cell_function_references(function_def: ast.FunctionDef) -> None:
         )
 
 
-def validate_no_nested_helper_functions(function_def: ast.FunctionDef) -> None:
-    for node in ast.walk(function_def):
-        if isinstance(node, ast.FunctionDef) and node is not function_def:
-            raise ValueError(
-                f"helper must not define nested functions such as {node.name!r}; "
-                "use inline expressions and allowed runtime symbols only"
-            )
+def _suggested_param_name_by_concept(
+    key_vocabulary: tuple[KeyConceptSpec, ...],
+) -> dict[str, str]:
+    return {item.concept: item.suggested_param_name for item in key_vocabulary}
 
 
-def _references_xl_error(node: ast.expr) -> bool:
-    return any(
-        isinstance(sub, ast.Name) and sub.id == "XlError" for sub in ast.walk(node)
+def validate_parameter_names_match_vocabulary(
+    ctx: ClusterRefactorContext,
+    response: ClusterRefactorResponse,
+) -> None:
+    suggested = _suggested_param_name_by_concept(ctx.key_vocabulary)
+    mismatches = sorted(
+        {
+            f"{parameter.concept!r}: expected {suggested[parameter.concept]!r}, "
+            f"got {parameter.name!r}"
+            for parameter in response.parameters
+            if parameter.concept in suggested
+            and parameter.name != suggested[parameter.concept]
+        }
     )
+    if mismatches:
+        raise ValueError(
+            "parameter names must match suggested_param_name from key_vocabulary: "
+            + "; ".join(mismatches)
+        )
 
 
-def validate_no_sentinel_error_handling(function_def: ast.FunctionDef) -> None:
-    """Reject sentinel-style Excel error handling in refactored helpers.
+_FIRST_YEAR_BRANCH_PATTERN = re.compile(
+    r"(first_year_column|time_period\s*==\s*1|time_period\s*<=\s*1)"
+)
 
-    Runtime accessors raise `XlErrorException` and never return an `XlError`
-    sentinel, so helpers must not test values against `XlError` nor return one.
-    Errors are signalled with `xl_raise(...)`; comparisons and coercions use the
-    raising `xl_*` wrappers.
-    """
+
+def validate_uses_first_year_branch_flag(
+    response: ClusterRefactorResponse,
+) -> None:
+    references = _FIRST_YEAR_BRANCH_PATTERN.search(response.helper_source) is not None
+    if response.uses_first_year_branch and not references:
+        raise ValueError(
+            "uses_first_year_branch is True but helper_source does not reference "
+            "first-year branching (first_year_column or time_period == 1)"
+        )
+
+
+def validate_allowed_global_references(
+    function_def: ast.FunctionDef,
+    *,
+    allowed_names: set[str],
+) -> None:
+    parameter_names = {arg.arg for arg in function_def.args.args}
+    local_names = _local_binding_names(function_def) | parameter_names
+    builtin_names = set(dir(builtins))
+    disallowed: set[str] = set()
     for node in ast.walk(function_def):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "isinstance"
-            and len(node.args) == 2
-            and _references_xl_error(node.args[1])
-        ):
-            raise ValueError(
-                "helper must not test values against XlError; runtime accessors "
-                "raise XlErrorException, so drop isinstance(x, XlError) checks"
-            )
-        if isinstance(node, ast.Return) and node.value is not None:
-            value = node.value
-            returns_sentinel = (
-                isinstance(value, ast.Name) and value.id == "XlError"
-            ) or (
-                isinstance(value, ast.Attribute)
-                and isinstance(value.value, ast.Name)
-                and value.value.id == "XlError"
-            )
-            if returns_sentinel:
-                raise ValueError(
-                    "helper must not return an XlError sentinel; signal errors with "
-                    "xl_raise(XlError.CODE) instead of return XlError.CODE"
-                )
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if (
+                node.id in local_names
+                or node.id in builtin_names
+                or node.id in allowed_names
+            ):
+                continue
+            disallowed.add(node.id)
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            root = node.value.id
+            if root in local_names or root in allowed_names or root in builtin_names:
+                continue
+            disallowed.add(root)
+    if disallowed:
+        raise ValueError(
+            "helper_source references disallowed global names "
+            f"{sorted(disallowed)}; allowed: {sorted(allowed_names)}"
+        )
 
 
 def validate_cluster_refactor_response(
@@ -1048,7 +1113,9 @@ def validate_cluster_refactor_response(
                     f"expected {expected_value!r}"
                 )
         engine_column = engine_column_from_member_keys(
-            entry.keys, address=entry.address
+            entry.keys,
+            address=entry.address,
+            layout=_resolved_projection_layout(),
         )
         if engine_column is None:
             raise ValueError(
@@ -1089,8 +1156,8 @@ def validate_cluster_refactor_response(
 
     validate_semantic_local_names(helper_def)
     validate_no_cell_function_references(helper_def)
-    validate_no_nested_helper_functions(helper_def)
-    validate_no_sentinel_error_handling(helper_def)
+    validate_parameter_names_match_vocabulary(ctx, response)
+    validate_uses_first_year_branch_flag(response)
 
     arg_names = [arg.arg for arg in helper_def.args.args]
     expected_args = ["ctx", *[parameter.name for parameter in response.parameters]]
@@ -1126,6 +1193,8 @@ def validate_cluster_refactor_response(
             f"helper_source calls disallowed function {name!r}; "
             f"allowed: {sorted(allowed_names)}"
         )
+
+    validate_allowed_global_references(helper_def, allowed_names=allowed_names)
 
 
 def singleton_refactor_cache_key(
@@ -1226,8 +1295,6 @@ def validate_singleton_refactor_response(
 
     validate_semantic_local_names(symbol_def)
     validate_no_cell_function_references(symbol_def)
-    validate_no_nested_helper_functions(symbol_def)
-    validate_no_sentinel_error_handling(symbol_def)
 
     arg_names = [arg.arg for arg in symbol_def.args.args]
     if arg_names != ["ctx"]:
@@ -1260,6 +1327,8 @@ def validate_singleton_refactor_response(
             f"symbol_source calls disallowed function {name!r}; "
             f"allowed: {sorted(allowed_names)}"
         )
+
+    validate_allowed_global_references(symbol_def, allowed_names=allowed_names)
 
 
 def _replace_function_definition(source: str, old_name: str, new_source: str) -> str:
@@ -1441,7 +1510,10 @@ def parse_thin_wrapper(function_def: ast.FunctionDef) -> tuple[str, str] | None:
     helper_name, key_kwargs = parsed
     if len(key_kwargs) != 1 or "time_period" not in key_kwargs:
         return None
-    column = _engine_column_for_time_period(int(key_kwargs["time_period"]))
+    column = _engine_column_for_time_period(
+        int(key_kwargs["time_period"]),
+        _resolved_projection_layout(),
+    )
     if column is None:
         return None
     return helper_name, column
@@ -1452,10 +1524,6 @@ def parse_thin_literal_wrapper(
 ) -> tuple[str, dict[str, BindingKeyValue]] | None:
     """Return ``(helper_name, key_kwargs)`` for a one-line semantic helper wrapper."""
     return _parse_thin_helper_return(function_def)
-
-
-def _engine_column_for_time_period(time_period: int) -> str | None:
-    return TIME_PERIOD_TO_ENGINE_COLUMN.get(time_period)
 
 
 def _parse_thin_helper_return(
@@ -1502,7 +1570,10 @@ def _parse_thin_helper_return(
         and isinstance(call.args[1], ast.Constant)
         and isinstance(call.args[1].value, str)
     ):
-        time_period = _time_period_for_engine_column(call.args[1].value)
+        time_period = _time_period_for_engine_column(
+            call.args[1].value,
+            _resolved_projection_layout(),
+        )
         if time_period is None:
             return None
         return call.func.id, {"time_period": time_period}
@@ -1674,6 +1745,10 @@ def function_name_to_workbook_address(function_name: str) -> str | None:
 
 def address_needs_resolver_dispatch(address: str) -> bool:
     """Engine cells are reached via helpers; only external entry addresses need dispatch."""
+    layout = _resolved_projection_layout()
+    sheet, _, _ = parse_workbook_address(address)
+    if layout is not None:
+        return sheet != layout.engine_sheet
     return not address.startswith("Engine!")
 
 
@@ -1713,13 +1788,6 @@ def apply_phase_c(source: str) -> tuple[str, int]:
     )
     updated, trimmed = _trim_engine_dispatch_entries(updated)
     return updated, len(to_prune) + trimmed
-
-
-def _time_period_for_engine_column(column: str) -> int | None:
-    for time_period, engine_column in TIME_PERIOD_TO_ENGINE_COLUMN.items():
-        if engine_column == column:
-            return time_period
-    return None
 
 
 def _parse_address_dispatch(source: str) -> AddressDispatch | None:
@@ -2153,10 +2221,8 @@ def refactor_internals_all_singletons(
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
 ) -> tuple[SingletonRefactorApplyResult, ...]:
-    ordered = compute_singleton_cluster_refactor_order(projection, clusters)
-    logger.info("Refactoring singletons: %d candidate clusters", len(ordered))
     results: list[SingletonRefactorApplyResult] = []
-    for cluster in ordered:
+    for cluster in compute_singleton_cluster_refactor_order(projection, clusters):
         ctx = build_singleton_refactor_context(
             projection,
             cluster,
@@ -2165,12 +2231,6 @@ def refactor_internals_all_singletons(
         )
         if ctx is None:
             continue
-        logger.info(
-            "Singleton refactor %d: %s (%s)",
-            len(results) + 1,
-            ctx.function_name,
-            ctx.address,
-        )
         result = refactor_internals_singleton(
             ctx,
             internals_path=internals_path,
@@ -2179,7 +2239,6 @@ def refactor_internals_all_singletons(
             input_vectors=input_vectors,
         )
         results.append(result)
-    logger.info("Refactored %d singletons", len(results))
     return tuple(results)
 
 
@@ -2225,9 +2284,12 @@ def refactor_internals_all_clusters(
     clusters: tuple[FormulaCluster, ...],
     *,
     internals_path: Path,
+    bindings_path: Path,
+    workbook_path: Path,
     dry_run: bool = False,
     source_graph: DependencyGraph | None = None,
     parity_gate: bool = True,
+    layout: ProjectionColumnLayout | None = None,
 ) -> tuple[ClusterRefactorApplyResult, ...]:
     """Refactor singletons, then every multi-member cluster in dependency order.
 
@@ -2253,25 +2315,20 @@ def refactor_internals_all_clusters(
         input_vectors=input_vectors,
     )
     ordered_clusters = compute_multi_member_cluster_refactor_order(projection, clusters)
-    logger.info("Refactoring clusters: %d in dependency order", len(ordered_clusters))
     results: list[ClusterRefactorApplyResult] = []
     responses: list[ClusterRefactorResponse] = []
-    for index, cluster in enumerate(ordered_clusters, start=1):
+    for cluster in ordered_clusters:
         ctx = build_cluster_refactor_context(
             projection,
             cluster,
             internals_path,
             source_graph=source_graph,
+            bindings_path=bindings_path,
+            workbook_path=workbook_path,
+            layout=layout,
         )
         if ctx is None:
             continue
-        logger.info(
-            "Cluster refactor %d/%d: id=%s, %d members",
-            index,
-            len(ordered_clusters),
-            cluster.cluster_id,
-            len(ctx.members),
-        )
         result = refactor_internals_cluster(
             ctx,
             internals_path=internals_path,
@@ -2283,7 +2340,6 @@ def refactor_internals_all_clusters(
         responses.append(result.response)
 
     if not dry_run and responses:
-        logger.info("Applying phase C: pruning unreferenced thin wrappers")
         source = internals_path.read_text(encoding="utf-8")
         updated, phase_c_pruned = apply_phase_c(source)
         validate_refactored_internals(updated)
@@ -2344,26 +2400,35 @@ def llm_refactor_singleton(
     cached_content = cache.get(cache_key)
     if cached_content is not None:
         try:
-            result = _prepare_and_validate_singleton(
+            logger.info(
+                "singleton refactor cache hit address=%s key=%s",
+                ctx.address,
+                cache_key[:12],
+            )
+            return _prepare_and_validate_singleton(
                 SingletonRefactorResponse.model_validate_json(cached_content)
             )
-            logger.info("Cache hit for singleton %s", ctx.function_name)
-            return result
         except (ValueError, ValidationError) as error:
             if not _refactor_provider_key_present():
                 raise
-            logger.info(
-                "Stale cache for singleton %s, regenerating: %s",
-                ctx.function_name,
+            logger.warning(
+                "singleton refactor cache stale address=%s key=%s: %s",
+                ctx.address,
+                cache_key[:12],
                 error,
             )
             del cache[cache_key]
             save_refactor_cache(cache)
 
     model = refactor_model()
-    logger.info("Calling %s for singleton %s (cache miss)", model, ctx.function_name)
     client, provider = build_client(model)
     payload = singleton_prompt_payload(ctx)
+    logger.info(
+        "singleton refactor LLM request address=%s model=%s prompt_version=%s",
+        ctx.address,
+        model,
+        REFACTOR_PROMPT_VERSION,
+    )
     parsed, _ = generate_validated_json(
         client=client,
         model=model,
@@ -2373,7 +2438,9 @@ def llm_refactor_singleton(
             "You rename and refactor one Excel-generated singleton helper "
             "into a semantic function. Return only JSON matching the schema. "
             "Preserve semantics exactly; do not algebraically simplify. "
-            "Write Google-style docstrings with Args and Returns sections."
+            "Write Google-style docstrings with Args and Returns sections. "
+            "Use only runtime symbols listed in constraints.allowed_runtime_symbols. "
+            "Choose domain-meaningful snake_case names for the symbol and locals."
         ),
         user_prompt=_prompt_for_singleton_refactor(payload, schema),
         response_model=SingletonRefactorResponse,
@@ -2423,28 +2490,38 @@ def llm_refactor_cluster(
     cached_content = cache.get(cache_key)
     if cached_content is not None:
         try:
-            result = _prepare_and_validate_cluster(
+            logger.info(
+                "cluster refactor cache hit cluster_id=%s key=%s",
+                ctx.cluster_id,
+                cache_key[:12],
+            )
+            return _prepare_and_validate_cluster(
                 ClusterRefactorResponse.model_validate_json(cached_content)
             )
-            logger.info("Cache hit for cluster %s", ctx.cluster_id)
-            return result
         except (ValueError, ValidationError) as error:
             # A cached response that no longer satisfies the gate is stale or
             # broken: drop it and regenerate (which re-prompts on failure).
             if not _refactor_provider_key_present():
                 raise
-            logger.info(
-                "Stale cache for cluster %s, regenerating: %s",
+            logger.warning(
+                "cluster refactor cache stale cluster_id=%s key=%s: %s",
                 ctx.cluster_id,
+                cache_key[:12],
                 error,
             )
             del cache[cache_key]
             save_refactor_cache(cache)
 
     model = refactor_model()
-    logger.info("Calling %s for cluster %s (cache miss)", model, ctx.cluster_id)
     client, provider = build_client(model)
     payload = prompt_payload(ctx)
+    logger.info(
+        "cluster refactor LLM request cluster_id=%s members=%d model=%s prompt_version=%s",
+        ctx.cluster_id,
+        len(ctx.members),
+        model,
+        REFACTOR_PROMPT_VERSION,
+    )
     parsed, _ = generate_validated_json(
         client=client,
         model=model,
@@ -2454,7 +2531,10 @@ def llm_refactor_cluster(
             "You refactor parallel Excel-generated Python helpers into one "
             "parameterized function. Return only JSON matching the schema. "
             "Preserve semantics exactly; do not algebraically simplify. "
-            "Write Google-style docstrings with Args and Returns sections."
+            "Write Google-style docstrings with Args and Returns sections. "
+            "Use only runtime symbols listed in constraints.allowed_runtime_symbols. "
+            "Parameter names must match suggested_param_name from key_vocabulary. "
+            "Emit one helper function; do not nest helpers or import modules."
         ),
         user_prompt=_prompt_for_refactor(payload, schema),
         response_model=ClusterRefactorResponse,
@@ -2465,76 +2545,36 @@ def llm_refactor_cluster(
     return parsed
 
 
-_RUNTIME_API_PROMPT_RULES = """\
-Runtime API rules:
-- Use only symbols listed in constraints.allowed_runtime_symbols.
-- Coerce scalars with the raising wrappers: xl_number for floats, xl_int for integer
-  indices, xl_bool for truth values; compare with xl_compare(op, left, right).
-- Reference model for INDEX/OFFSET: xl_index_ref((sheet, start_row, start_col, end_row,
-  end_col), row_num, col_num) returns a *reference* (coordinate metadata), not a value; read the
-  value it points to with xl_offset(ctx, <reference>, 0.0, 0.0). Its first argument is a
-  coordinate tuple, never an xl_range(...) result, and its result must be dereferenced.
-- Use xl_range(ctx, address) only to materialize an array for xl_match's lookup_array; never
-  pass an xl_range(...) result to xl_index_ref.
-- Do not import numpy or use np, and do not call removed helpers such as xl_add, xl_mul,
-  xl_div, xl_sub, or xl_ge.
-- Codegen may guard division only before dynamic denominators (the divisor subexpression
-  in each member's python_source, not literal constants such as 100.0). When collapsing
-  nested codegen, keep those same dynamic denominators guarded inline; do not add new
-  xl_raise checks, do not guard literal divisors, and do not define nested def helpers.
-- To signal an Excel error yourself, call xl_raise(XlError.CODE).\
-"""
-
-_RUNTIME_API_EXAMPLE_BODY = """\
-Example helper body shape:
-column_by_time_period = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}
-column = column_by_time_period.get(time_period)
-if column is None:
-    xl_raise(XlError.VALUE)
-projection_year = xl_cell(ctx, f'Engine!{{column}}5')
-shock_year = xl_cell(ctx, 'Inputs!B21')
-is_active = xl_compare('>=', projection_year, shock_year)
-baseline_growth_rate = xl_cell(ctx, f'Inputs!{{column}}16')
-shock_adjustment = xl_number(selected_shock_magnitude_pp(ctx)) * xl_number(
-    1.0 if is_active else 0.0
-)
-return xl_number(baseline_growth_rate) + shock_adjustment
-
-Example INDEX/MATCH shape (build a reference, then dereference it to a value):
-country_table = ('Inputs', 10, 1, 12, 3)
-selected_country = xl_cell(ctx, 'Inputs!B5')
-matched_row = xl_match(selected_country, xl_range(ctx, 'Inputs!A10:Inputs!A12'), 0.0)
-initial_ratio_ref = xl_index_ref(country_table, matched_row, 2.0)
-return xl_offset(ctx, initial_ratio_ref, 0.0, 0.0)\
-"""
-
-
 def _prompt_for_singleton_refactor(
     payload: dict[str, object], response_schema: dict[str, object]
 ) -> str:
     payload_json = json.dumps(payload, indent=2, default=str)
     schema_json = json.dumps(response_schema, indent=2)
+    constraints_obj = payload.get("constraints", {})
+    if not isinstance(constraints_obj, dict):
+        constraints_obj = {}
+    allowed_symbols_raw = constraints_obj.get("allowed_runtime_symbols", [])
+    allowed_symbols = (
+        list(allowed_symbols_raw) if isinstance(allowed_symbols_raw, list) else []
+    )
+    allowed_symbols_json = json.dumps(allowed_symbols, indent=2)
     return f"""
 Rename and refactor one Excel-generated singleton helper into a semantic function.
 
 Rules:
-- Preserve the runtime-call expressions in python_source verbatim: keep the same xl_* calls,
-  with the same arguments and nesting (including any xl_index_ref/xl_offset reference-then-deref
-  pattern). Change only the function name, add the docstring, and rename local variables. Do not
-  re-derive INDEX/MATCH/OFFSET logic or substitute one runtime helper for another.
-- Keep signature (ctx) exactly; do not add a col parameter.
+- Keep signature (ctx) exactly; do not add parameters.
 - Do not rename dependency functions.
 - Choose symbol_name as a clear snake_case semantic identifier informed by naming_hints.
 - Rename local temporaries to domain-meaningful snake_case informed by naming_hints.
 - Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
 - Do not reference cell_* helpers; call semantic helpers already present in internals.py.
-- Emit one complete symbol_source function with signature (ctx).
+- Call only these runtime symbols (plus semantic helpers from external_dependencies):
+{allowed_symbols_json}
+- Emit one complete symbol_source function with signature (ctx); no nested helpers or imports.
 - symbol_source must include a Google-style docstring with Args and Returns sections.
 - symbol_docstring must match the docstring embedded in symbol_source exactly.
 - Include a Note section listing the workbook address and Excel formula.
 - Return only JSON matching the response schema.
-
-{_RUNTIME_API_PROMPT_RULES}
 
 Example docstring shape:
 \"\"\"
@@ -2553,10 +2593,8 @@ Note:
 Example case-switch shape (use a lookup table, not an if/elif ladder):
 year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
 if year_address is None:
-    xl_raise(XlError.VALUE)
+    return XlError.VALUE
 year = xl_cell(ctx, year_address)
-
-{_RUNTIME_API_EXAMPLE_BODY}
 
 Singleton context:
 {payload_json}
@@ -2571,45 +2609,50 @@ def _prompt_for_refactor(
 ) -> str:
     payload_json = json.dumps(payload, indent=2, default=str)
     schema_json = json.dumps(response_schema, indent=2)
+    constraints_obj = payload.get("constraints", {})
+    if not isinstance(constraints_obj, dict):
+        constraints_obj = {}
+    allowed_symbols_raw = constraints_obj.get("allowed_runtime_symbols", [])
+    allowed_symbols = (
+        list(allowed_symbols_raw) if isinstance(allowed_symbols_raw, list) else []
+    )
+    allowed_symbols_json = json.dumps(allowed_symbols, indent=2)
     return f"""
 Refactor one parallel formula cluster into a single parameterized helper.
 
 Rules:
-- Preserve the runtime-call structure from each member's python_source: reuse the same xl_*
-  calls (including any xl_index_ref/xl_offset reference-then-deref pattern) with the same
-  arguments, generalizing only the varying column/address through the parameters. Do not
-  re-derive INDEX/MATCH/OFFSET logic or substitute one runtime helper for another.
 - Declare parameters[] using binding key concepts from key_vocabulary; do not use column letters.
+- Use suggested_param_name from key_vocabulary as each parameter's Python name.
 - For each cluster member, emit member_keys[] with literal key values from expected_keys.
+- member_keys[].keys must use binding concept names (e.g. TIME_PERIOD), not parameter names.
 - Series-constant binding keys (scope: series) are not parameters; bake them into the helper.
-- Emit helper_source with signature (ctx, <parameters>) using semantic parameter names.
+- Emit helper_source with signature (ctx, <parameters>) using the suggested parameter names.
+- Set uses_first_year_branch true when the helper branches on first-year {{PRIOR_DEBT}} logic.
 - Choose helper_name as a clear snake_case semantic identifier informed by naming_hints.
-- Use time_period == 1 branch for first-year {{PRIOR_DEBT}} logic when needed.
+- Use time_period == 1 or engine_column == first_year_column for first-year branching when needed.
 - Map time_period to workbook columns internally when reading xl_cell addresses.
-- When python_source reads a prior projection year via xl_eval on a cell_* in this
-  cluster, call the helper recursively as helper(ctx, time_period=time_period - 1),
-  passing every parameter through; xl_eval with a lambda is also acceptable.
+- Keep xl_eval only for leaf inputs read with xl_cell; never for refactored cells.
 - Do not rename dependency functions.
 - Rename local temporaries to domain-meaningful snake_case informed by naming_hints.
 - Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
 - Do not reference cell_* helpers anywhere in the body.
+- Call only these runtime symbols (plus semantic helpers from external_dependencies):
+{allowed_symbols_json}
 - For every entry in semantic_dependencies, replace reads with call_form using pass-through
   parameter names, e.g. shock_active(ctx, time_period=time_period).
-- Emit one complete helper_source function.
+- Emit one complete helper_source function; no nested helpers or imports.
 - helper_source must include a Google-style docstring with Args and Returns sections.
 - helper_docstring must match the docstring embedded in helper_source exactly.
 - Include a Note section listing covered workbook addresses and the Excel formula.
 - Return only JSON matching the response schema.
 
-{_RUNTIME_API_PROMPT_RULES}
-
 Example docstring shape:
 \"\"\"
-Return 1.0 when the shock is active for the given projection year.
+Return 1.0 when the shock is active for the given projection period.
 
 Args:
     ctx: Workbook evaluation context.
-    time_period: Projection year index (1 through 5).
+    time_period: Projection period (1 for the first year).
 
 Returns:
     1.0 if the projection year is at or after the shock year, else 0.0.
@@ -2621,10 +2664,8 @@ Note:
 Example case-switch shape (use a lookup table, not an if/elif ladder):
 year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
 if year_address is None:
-    xl_raise(XlError.VALUE)
+    return XlError.VALUE
 year = xl_cell(ctx, year_address)
-
-{_RUNTIME_API_EXAMPLE_BODY}
 
 Cluster context:
 {payload_json}

@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ty_cache/
+.env
+docs/dependency-graph/
+artifacts/dependency-graph/
+docs/human-hypothesis-graph/

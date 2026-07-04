@@ -1,8 +1,7 @@
 from pathlib import Path
 
-import pytest
 
-from excel_grapher.grapher import create_dependency_graph, DynamicRefConfig, to_graphviz
+from excel_grapher.grapher import to_graphviz
 from excel_grapher.series_bindings import (
     derive_input_series,
     derive_output_series,
@@ -19,26 +18,12 @@ from src.dependency_graph_viz import (
     series_cell_keys,
     write_dependency_graph_site,
 )
-from src.extraction_pipeline import (
-    constraints,
-    leaf_classification,
-    targets,
-    workbook_path,
-)
 
 
-@pytest.fixture(scope="module")
-def tiny_graph():
-    config = DynamicRefConfig.from_constraints(constraints, {})
-    return create_dependency_graph(
-        workbook_path,
-        targets,
-        load_values=True,
-        dynamic_refs=config,
-    )
-
-
-def test_build_dot_with_sheet_clusters_wraps_to_graphviz_nodes(tiny_graph) -> None:
+def test_build_dot_with_sheet_clusters_wraps_to_graphviz_nodes(
+    tiny_dsa_configured_pipeline,
+) -> None:
+    tiny_graph = tiny_dsa_configured_pipeline.graph
     flat = to_graphviz(tiny_graph, max_formula_length=40)
     clustered = build_dot_with_sheet_clusters(tiny_graph, max_formula_length=40)
     assert "subgraph" in clustered
@@ -49,16 +34,18 @@ def test_build_dot_with_sheet_clusters_wraps_to_graphviz_nodes(tiny_graph) -> No
             assert stripped in clustered or f"    {stripped}" in clustered
 
 
-def test_parse_graphviz_json_and_build_payload(tiny_graph) -> None:
+def test_parse_graphviz_json_and_build_payload(tiny_dsa_configured_pipeline) -> None:
+    pipeline = tiny_dsa_configured_pipeline
+    tiny_graph = pipeline.graph
     dot_text = build_dot_with_sheet_clusters(tiny_graph, max_formula_length=40)
     graphviz_json = parse_graphviz_json(dot_text)
     bindings_path = Path(__file__).resolve().parents[1] / "bindings"
     series_bindings = load_series_bindings(bindings_path)
     input_series = derive_input_series(
-        tiny_graph, series_bindings, workbook=workbook_path
+        tiny_graph, series_bindings, workbook=pipeline.config.workbook_path
     )
     output_series = derive_output_series(
-        tiny_graph, series_bindings, workbook=workbook_path
+        tiny_graph, series_bindings, workbook=pipeline.config.workbook_path
     )
     payload = build_cytoscape_preset_payload(
         tiny_graph,
@@ -66,7 +53,9 @@ def test_parse_graphviz_json_and_build_payload(tiny_graph) -> None:
         target_keys=series_cell_keys(output_series),
         input_keys=series_cell_keys(input_series),
         output_keys=series_cell_keys(output_series),
-        constant_keys=constant_keys_from_leaf_classification(leaf_classification),
+        constant_keys=constant_keys_from_leaf_classification(
+            pipeline.leaf_classification
+        ),
     )
     assert payload["meta"]["node_count"] == len(list(tiny_graph))
     assert payload["meta"]["cluster_count"] >= 1
@@ -82,7 +71,10 @@ def test_parse_graphviz_json_and_build_payload(tiny_graph) -> None:
     assert payload["elements"]["edges"]
 
 
-def test_build_dot_with_custom_clusters_and_node_labels(tiny_graph) -> None:
+def test_build_dot_with_custom_clusters_and_node_labels(
+    tiny_dsa_configured_pipeline,
+) -> None:
+    tiny_graph = tiny_dsa_configured_pipeline.graph
     node_labels = {
         "Engine!C10": "Engine!C10\nrow: Baseline debt",
         "Engine!D10": "Engine!D10\nrow: Baseline debt",
@@ -112,7 +104,10 @@ def test_build_dot_with_custom_clusters_and_node_labels(tiny_graph) -> None:
     assert engine_c10["data"]["parent"].startswith("cluster::cluster_group_")
 
 
-def test_semantic_node_labels_include_row_and_column_metadata(tiny_graph) -> None:
+def test_semantic_node_labels_include_row_and_column_metadata(
+    tiny_dsa_configured_pipeline,
+) -> None:
+    tiny_graph = tiny_dsa_configured_pipeline.graph
     tiny_graph.set_node_metadata(
         "Engine!C10",
         {
@@ -154,7 +149,10 @@ def test_semantic_node_labels_include_row_and_column_metadata(tiny_graph) -> Non
     }
 
 
-def test_payload_node_data_includes_semantic_label_fields(tiny_graph) -> None:
+def test_payload_node_data_includes_semantic_label_fields(
+    tiny_dsa_configured_pipeline,
+) -> None:
+    tiny_graph = tiny_dsa_configured_pipeline.graph
     tiny_graph.set_node_metadata(
         "Engine!C10",
         {
@@ -178,7 +176,10 @@ def test_payload_node_data_includes_semantic_label_fields(tiny_graph) -> None:
     assert engine_c10["data"]["column_labels"] == "1"
 
 
-def test_write_dependency_graph_site(tmp_path: Path, tiny_graph) -> None:
+def test_write_dependency_graph_site(
+    tmp_path: Path, tiny_dsa_configured_pipeline
+) -> None:
+    tiny_graph = tiny_dsa_configured_pipeline.graph
     meta = write_dependency_graph_site(tiny_graph, tmp_path)
     html = (tmp_path / "index.html").read_text(encoding="utf-8")
     assert (tmp_path / "index.html").is_file()

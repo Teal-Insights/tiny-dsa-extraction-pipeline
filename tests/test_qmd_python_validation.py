@@ -5,9 +5,9 @@ from typing import cast
 import pytest
 from openai import OpenAI
 
+from src.pipeline_config import DistProjectMetadata
 from src.qmd_python_validation import (
-    DEFAULT_DIST_PROJECT_METADATA,
-    DistProjectMetadata,
+    PublicApiPolicy,
     aggregate_python_cells,
     extract_python_cells,
     fix_python_cell_with_llm,
@@ -37,6 +37,19 @@ More text.
 print(x + pd.Series([1]))
 ```
 """
+
+API_POLICY = PublicApiPolicy(
+    api_import_path="my_model.api",
+    allowed_symbols=frozenset({"make_context", "compute_output_baseline"}),
+)
+
+SAMPLE_METADATA = DistProjectMetadata(
+    project_name="my-model",
+    package_name="my_model",
+    library_name="My Model",
+    description="Example library.",
+    documentation_url="https://example.com/",
+)
 
 
 class _FakeMessage:
@@ -128,19 +141,20 @@ def test_merge_dev_dependencies_deduplicates_and_preserves_order() -> None:
     ]
 
 
-def test_render_dist_pyproject_toml_omits_numpy_runtime_dependency() -> None:
-    text = render_dist_pyproject_toml(dev_dependencies=[])
-    assert '"fastpyxl"' in text
-    assert '"numpy"' not in text
-
-
 def test_render_dist_pyproject_toml_includes_dev_dependencies() -> None:
     text = render_dist_pyproject_toml(
         dev_dependencies=["quarto>=0.1.0", "great-docs>=0.12.0", "tabulate"],
+        metadata=DistProjectMetadata(
+            project_name="my-model",
+            package_name="my_model",
+            library_name="My Model",
+            description="Example library.",
+            documentation_url="https://example.com/",
+        ),
     )
     assert "[dependency-groups]" in text
     assert '"tabulate"' in text
-    assert 'name = "tiny-dsa"' in text
+    assert 'name = "my-model"' in text
 
 
 def test_render_dist_pyproject_toml_uses_project_metadata() -> None:
@@ -161,12 +175,43 @@ def test_render_dist_pyproject_toml_uses_project_metadata() -> None:
     assert 'packages = ["forecast_kit"]' in text
 
 
-def test_default_metadata_description_is_single_line() -> None:
-    assert "\n" not in DEFAULT_DIST_PROJECT_METADATA.description
+def test_template_metadata_description_is_single_line() -> None:
+    from src.pipeline_config import load_pipeline_config
+
+    assert "\n" not in load_pipeline_config().dist_metadata.description
 
 
 def test_render_dist_pyproject_toml_description_has_no_embedded_newline() -> None:
-    text = render_dist_pyproject_toml(dev_dependencies=[])
+    text = render_dist_pyproject_toml(
+        dev_dependencies=[],
+        metadata=DistProjectMetadata(
+            project_name="my-model",
+            package_name="my_model",
+            library_name="My Model",
+            description="Example library.",
+            documentation_url="https://example.com/",
+        ),
+    )
+    assert "\\n" not in text
+
+
+def test_render_dist_pyproject_toml_excludes_multiline_attribution() -> None:
+    attribution = "Created by Example Corp.\n\n![Logo](README_files/logo.png)"
+    text = render_dist_pyproject_toml(
+        dev_dependencies=[],
+        metadata=DistProjectMetadata(
+            project_name="my-model",
+            package_name="my_model",
+            library_name="My Model",
+            description="Example library.",
+            attribution=attribution,
+            documentation_url="https://example.com/",
+        ),
+    )
+
+    assert 'description = "Example library."' in text
+    assert "Created by Example Corp." not in text
+    assert "![Logo]" not in text
     assert "\\n" not in text
 
 
@@ -260,17 +305,20 @@ def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> No
 
     fixed = fix_python_cell_with_llm(
         client=cast(OpenAI, fake),
-        model="gpt-5.5",
         cell_source="print(unknown)\n",
         error_message="NameError: name 'unknown' is not defined",
         qmd_label="guide.qmd",
         cell_number=1,
+        api_policy=PublicApiPolicy(
+            api_import_path="my_model.api",
+            allowed_symbols=frozenset({"make_context"}),
+        ),
     )
 
     assert fixed == "print('fixed')\n"
     assert len(fake.chat.completions.calls) == 1
     assert fake.chat.completions.calls[0]["reasoning_effort"] == "high"
-    assert fake.chat.completions.calls[0]["extra_body"] is None
+    assert "extra_body" not in fake.chat.completions.calls[0]
 
 
 def test_default_run_uv_script_forces_utf8_stdio(
@@ -313,7 +361,11 @@ def test_validate_runnable_cell_imports_accepts_api_symbols() -> None:
     from src.qmd_python_validation import validate_runnable_cell_imports
 
     validate_runnable_cell_imports(
-        "from tiny_dsa.api import make_context, compute_output_baseline\n"
+        "from my_model.api import make_context, compute_output_baseline\n",
+        api_policy=PublicApiPolicy(
+            api_import_path="my_model.api",
+            allowed_symbols=frozenset({"make_context", "compute_output_baseline"}),
+        ),
     )
 
 
@@ -359,6 +411,8 @@ tabulate.tabulate([[1]])
     discovered = validation.validate_qmd_files(
         dist_root=dist_root,
         qmd_paths=[qmd_path],
+        api_policy=API_POLICY,
+        metadata=SAMPLE_METADATA,
         run_uv_script=fake_run_uv_script,
     )
 
@@ -429,9 +483,10 @@ print(table_1)
     validation.validate_qmd_files(
         dist_root=dist_root,
         qmd_paths=[qmd_path],
+        api_policy=API_POLICY,
+        metadata=SAMPLE_METADATA,
         run_uv_script=fake_run_uv_script,
         client=cast(OpenAI, object()),
-        model="gpt-5.5",
         write_pyproject=False,
     )
 
@@ -473,6 +528,8 @@ raise RuntimeError("boom")
         validation.validate_qmd_files(
             dist_root=dist_root,
             qmd_paths=[qmd_path],
+            api_policy=API_POLICY,
+            metadata=SAMPLE_METADATA,
             run_uv_script=fake_run_uv_script,
             write_pyproject=False,
         )
@@ -489,7 +546,16 @@ def test_validate_qmd_files_writes_pyproject(
     dist_root.mkdir()
     pyproject_path = dist_root / "pyproject.toml"
     pyproject_path.write_text(
-        render_dist_pyproject_toml(dev_dependencies=["quarto>=0.1.0"]),
+        render_dist_pyproject_toml(
+            dev_dependencies=["quarto>=0.1.0"],
+            metadata=DistProjectMetadata(
+                project_name="my-model",
+                package_name="my_model",
+                library_name="My Model",
+                description="Example library.",
+                documentation_url="https://example.com/",
+            ),
+        ),
         encoding="utf-8",
     )
     qmd_path = dist_root / "user_guide" / "page.qmd"
@@ -508,6 +574,8 @@ plt.plot([1, 2])
     validation.validate_qmd_files(
         dist_root=dist_root,
         qmd_paths=[qmd_path],
+        api_policy=API_POLICY,
+        metadata=SAMPLE_METADATA,
         run_uv_script=fake_run_uv_script,
         write_pyproject=True,
     )

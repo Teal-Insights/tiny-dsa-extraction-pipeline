@@ -1,34 +1,32 @@
-import shutil
-import sys
-from pathlib import Path
+from __future__ import annotations
+
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Any
+from unittest.mock import patch
 
 import pytest
-from excel_grapher.exporter import CodeGenerator
+from excel_grapher.grapher import DependencyGraph
+from excel_grapher.series_bindings import validate_series_bindings
+from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
-from src.docstring_callback import available_docstring_callback
 from src.extraction_pipeline import (
-    graph,
-    series_bindings,
-    targets,
-    workbook_path,
+    DependencyGraphExtraction,
+    build_pipeline_graph,
+    classify_leaves_from_constraints,
+    extract_dependency_graph_result,
+    write_dependency_graph_artifacts,
 )
-from src.formula_clustering import cluster_graph_formulas
-from src.internals_refactor import (
-    ClusterRefactorResponse,
-    apply_phase_c,
-    apply_refactor_plan,
-    apply_singleton_refactor_plan,
-    build_cluster_refactor_context,
-    build_singleton_refactor_context,
-    validate_refactored_internals,
+from src.pipeline_config import PipelineConfig, load_pipeline_config
+from src.semantic_labeling import SemanticLabelingSummary
+from tests.fixtures.synthetic_pipeline import (
+    build_synthetic_graph,
+    build_synthetic_projection,
+    load_synthetic_series_bindings,
+    synthetic_pipeline_config,
+    write_synthetic_workbook,
 )
-from src.refactor_order import (
-    compute_multi_member_cluster_refactor_order,
-    compute_singleton_cluster_refactor_order,
-)
-from tests.fixtures.cluster_refactor_golden import GOLDEN_CLUSTER_REFACTOR_RESPONSES
-from tests.fixtures.singleton_refactor_golden import GOLDEN_SINGLETON_REFACTOR_RESPONSES
-from src.subgraph_projection import build_tiny_dsa_refactor_projection
+from tests.fixtures.test_state import reset_pipeline_test_state
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -59,170 +57,153 @@ def pytest_collection_modifyitems(
             item.add_marker(pytest.mark.skip(reason=skip_reason))
 
 
-@pytest.fixture(scope="session")
-def tiny_dsa_refactor_projection():
-    return build_tiny_dsa_refactor_projection(graph)
+@pytest.fixture(autouse=True)
+def _reset_shared_pipeline_state_after_test() -> Iterator[None]:
+    yield
+    reset_pipeline_test_state()
 
 
 @pytest.fixture(scope="session")
-def codegen_package_root(tmp_path_factory, tiny_dsa_refactor_projection) -> Path:
-    root = tmp_path_factory.mktemp("tiny_dsa_codegen")
-    package_root = root / "tiny_dsa"
-    package_root.mkdir()
-    with CodeGenerator(tiny_dsa_refactor_projection) as generator:
-        modules = generator.generate_modules(
-            targets,
-            series_bindings=series_bindings,
-            bindings_workbook=workbook_path,
-            series_docstring_callback=available_docstring_callback(),
-            docstring_renderer="google",
-        )
-    for filename, code in modules.items():
-        output_path = package_root / filename
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(code, encoding="utf-8", newline="\n")
-    return root
+def synthetic_workbook_path(tmp_path_factory: pytest.TempPathFactory):
+    path = tmp_path_factory.mktemp("synthetic_workbook") / "workbook.xlsx"
+    write_synthetic_workbook(path)
+    return path
 
 
 @pytest.fixture(scope="session")
-def codegen_internals_path(codegen_package_root) -> Path:
-    return codegen_package_root / "tiny_dsa" / "internals.py"
+def synthetic_graph(synthetic_workbook_path):
+    return build_synthetic_graph(synthetic_workbook_path)
 
 
 @pytest.fixture(scope="session")
-def codegen_internals_source(codegen_internals_path) -> str:
-    return codegen_internals_path.read_text(encoding="utf-8")
+def synthetic_projection(synthetic_graph):
+    return build_synthetic_projection(synthetic_graph)
 
 
 @pytest.fixture(scope="session")
-def singleton_refactored_internals_source(
-    codegen_internals_source,
-    tiny_dsa_refactor_projection,
-    codegen_internals_path,
-) -> str:
-    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
-    updated = codegen_internals_source
-    for cluster in compute_singleton_cluster_refactor_order(
-        tiny_dsa_refactor_projection, clusters
-    ):
-        address = cluster.members[0]
-        ctx = build_singleton_refactor_context(
-            tiny_dsa_refactor_projection,
-            cluster,
-            codegen_internals_path,
-            source_graph=graph,
-        )
-        assert ctx is not None
-        response = GOLDEN_SINGLETON_REFACTOR_RESPONSES[address]
-        updated, _rewrite_count = apply_singleton_refactor_plan(updated, response, ctx)
-    validate_refactored_internals(updated)
-    codegen_internals_path.write_text(updated, encoding="utf-8", newline="\n")
-    return updated
+def synthetic_series_bindings():
+    return load_synthetic_series_bindings()
 
 
 @pytest.fixture(scope="session")
-def cluster_refactor_responses(
-    tiny_dsa_refactor_projection,
-    codegen_internals_path,
-) -> tuple[ClusterRefactorResponse, ...]:
-    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
-    responses: list[ClusterRefactorResponse] = []
-    for cluster in compute_multi_member_cluster_refactor_order(
-        tiny_dsa_refactor_projection, clusters
-    ):
-        if cluster.row is None:
-            continue
-        ctx = build_cluster_refactor_context(
-            tiny_dsa_refactor_projection,
-            cluster,
-            codegen_internals_path,
-            source_graph=graph,
-        )
-        assert ctx is not None
-        responses.append(GOLDEN_CLUSTER_REFACTOR_RESPONSES[cluster.row])
-    return tuple(responses)
+def synthetic_pipeline_config_fixture(synthetic_workbook_path):
+    return synthetic_pipeline_config(workbook_path=synthetic_workbook_path)
+
+
+@dataclass(frozen=True)
+class SyntheticConfiguredPipeline:
+    config: PipelineConfig
+    graph: DependencyGraph
+    series_bindings: WorkbookSeriesBindings
+    input_series: Sequence[Mapping[str, Any]]
+    output_series: Sequence[Mapping[str, Any]]
+    leaf_classification: dict[str, str]
+    binding_validation_report: Mapping[str, Any]
 
 
 @pytest.fixture(scope="session")
-def phase_a_internals_source(
-    singleton_refactored_internals_source,
-    cluster_refactor_responses,
-    tiny_dsa_refactor_projection,
-    codegen_internals_path,
-) -> str:
-    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
-    updated = singleton_refactored_internals_source
-    response_iter = iter(cluster_refactor_responses)
-    for cluster in compute_multi_member_cluster_refactor_order(
-        tiny_dsa_refactor_projection, clusters
-    ):
-        if cluster.row is None:
-            continue
-        response = next(response_iter)
-        ctx = build_cluster_refactor_context(
-            tiny_dsa_refactor_projection,
-            cluster,
-            codegen_internals_path,
-            source_graph=graph,
-        )
-        assert ctx is not None
-        updated = apply_refactor_plan(updated, response, ctx)
-    validate_refactored_internals(updated)
-    return updated
-
-
-@pytest.fixture(scope="session")
-def phase_c_internals_source(
-    phase_a_internals_source,
-) -> str:
-    updated, _pruned = apply_phase_c(phase_a_internals_source)
-    validate_refactored_internals(updated)
-    return updated
-
-
-@pytest.fixture(scope="session")
-def refactored_package_root(
-    tmp_path_factory,
-    codegen_package_root,
-    phase_c_internals_source,
-) -> Path:
-    root = tmp_path_factory.mktemp("tiny_dsa_refactored")
-    shutil.copytree(codegen_package_root / "tiny_dsa", root / "tiny_dsa")
-    (root / "tiny_dsa" / "internals.py").write_text(
-        phase_c_internals_source,
-        encoding="utf-8",
-        newline="\n",
+def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
+    config = load_pipeline_config()
+    stub_summary = SemanticLabelingSummary(
+        labeled_cell_count=0,
+        sheet_count=0,
+        candidate_cells_by_sheet={},
     )
-    return root
+    with patch(
+        "src.extraction_pipeline.label_internal_graph_cells",
+        return_value=stub_summary,
+    ):
+        graph, series_bindings, input_series, output_series = build_pipeline_graph(
+            config
+        )
+    leaf_classification = classify_leaves_from_constraints(
+        config.constraints,
+        graph.leaf_keys(),
+    )
+    graph.leaf_classification = leaf_classification
+    binding_validation_report = validate_series_bindings(
+        graph,
+        series_bindings,
+        workbook=config.workbook_path,
+    )
+    return SyntheticConfiguredPipeline(
+        config=config,
+        graph=graph,
+        series_bindings=series_bindings,
+        input_series=input_series,
+        output_series=output_series,
+        leaf_classification=leaf_classification,
+        binding_validation_report=binding_validation_report,
+    )
 
 
 @pytest.fixture(scope="session")
-def refactored_tiny_dsa_api(refactored_package_root):
-    import importlib
-
-    root = str(refactored_package_root)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    api = importlib.import_module("tiny_dsa.api")
-    return importlib.reload(api)
-
-
-@pytest.fixture
-def shock_cluster_context(
-    tiny_dsa_refactor_projection, codegen_internals_source, tmp_path
-):
-    internals_path = tmp_path / "internals.py"
-    internals_path.write_text(codegen_internals_source, encoding="utf-8", newline="\n")
-    cluster = next(
-        cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.row == 10 and len(cluster.members) == 5
+def synthetic_configured_pipeline(
+    synthetic_pipeline_config_fixture: PipelineConfig,
+) -> SyntheticConfiguredPipeline:
+    stub_summary = SemanticLabelingSummary(
+        labeled_cell_count=0,
+        sheet_count=0,
+        candidate_cells_by_sheet={},
     )
-    ctx = build_cluster_refactor_context(
-        tiny_dsa_refactor_projection,
-        cluster,
-        internals_path,
-        source_graph=graph,
+    with patch(
+        "src.extraction_pipeline.label_internal_graph_cells",
+        return_value=stub_summary,
+    ):
+        graph, series_bindings, input_series, output_series = build_pipeline_graph(
+            synthetic_pipeline_config_fixture
+        )
+    leaf_classification = classify_leaves_from_constraints(
+        synthetic_pipeline_config_fixture.constraints,
+        graph.leaf_keys(),
     )
-    assert ctx is not None
-    return ctx
+    graph.leaf_classification = leaf_classification
+    binding_validation_report = validate_series_bindings(
+        graph,
+        series_bindings,
+        workbook=synthetic_pipeline_config_fixture.workbook_path,
+    )
+    return SyntheticConfiguredPipeline(
+        config=synthetic_pipeline_config_fixture,
+        graph=graph,
+        series_bindings=series_bindings,
+        input_series=input_series,
+        output_series=output_series,
+        leaf_classification=leaf_classification,
+        binding_validation_report=binding_validation_report,
+    )
+
+
+@dataclass(frozen=True)
+class SyntheticGraphExtractionArtifacts:
+    config: PipelineConfig
+    extraction: DependencyGraphExtraction
+    summary: dict[str, Any]
+
+
+@pytest.fixture(scope="session")
+def synthetic_graph_extraction_artifacts(
+    tmp_path_factory: pytest.TempPathFactory,
+    synthetic_pipeline_config_fixture: PipelineConfig,
+) -> SyntheticGraphExtractionArtifacts:
+    output_dir = tmp_path_factory.mktemp("synthetic_graph_extraction")
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        graph_output_dir=output_dir,
+    )
+    stub_summary = SemanticLabelingSummary(
+        labeled_cell_count=0,
+        sheet_count=0,
+        candidate_cells_by_sheet={},
+    )
+    with patch(
+        "src.extraction_pipeline.label_internal_graph_cells",
+        return_value=stub_summary,
+    ):
+        extraction = extract_dependency_graph_result(config)
+        summary = write_dependency_graph_artifacts(extraction, config)
+    return SyntheticGraphExtractionArtifacts(
+        config=config,
+        extraction=extraction,
+        summary=summary,
+    )

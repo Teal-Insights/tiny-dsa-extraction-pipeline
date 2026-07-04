@@ -1,4 +1,4 @@
-"""Discover allowed runtime symbols from the exported tiny_dsa runtime module."""
+"""Discover allowed runtime symbols from the exported runtime module."""
 
 from __future__ import annotations
 
@@ -8,9 +8,6 @@ from functools import lru_cache
 from importlib import util as importlib_util
 from pathlib import Path
 from types import ModuleType
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_RUNTIME_PATH = _REPO_ROOT / "dist" / "tiny_dsa" / "runtime.py"
 
 # Sentinel-returning helpers retained for internal runtime use (coercion
 # primitives and skip-semantics scans) but withheld from the generated-code
@@ -23,7 +20,7 @@ _SENTINEL_RETURNING_EXCLUDED_SYMBOLS: frozenset[str] = frozenset(
 
 
 def _load_runtime_module(path: Path) -> ModuleType:
-    spec = importlib_util.spec_from_file_location("_tiny_dsa_runtime_symbols", path)
+    spec = importlib_util.spec_from_file_location("_runtime_symbols_probe", path)
     if spec is None or spec.loader is None:
         raise FileNotFoundError(f"Could not load runtime module from {path}")
     module = importlib_util.module_from_spec(spec)
@@ -32,9 +29,7 @@ def _load_runtime_module(path: Path) -> ModuleType:
     return module
 
 
-def discover_allowed_runtime_symbols(
-    runtime_path: Path = _DEFAULT_RUNTIME_PATH,
-) -> tuple[str, ...]:
+def discover_allowed_runtime_symbols(runtime_path: Path) -> tuple[str, ...]:
     """Return public formula-runtime callables and ``XlError`` from exported runtime."""
     source = runtime_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -46,12 +41,21 @@ def discover_allowed_runtime_symbols(
             names.append(node.name)
     names = [name for name in names if name not in _SENTINEL_RETURNING_EXCLUDED_SYMBOLS]
     module = _load_runtime_module(runtime_path)
-    for name in names:
-        getattr(module, name)
-    return tuple(sorted(names))
+    try:
+        for name in names:
+            getattr(module, name)
+        return tuple(sorted(names))
+    finally:
+        sys.modules.pop("_runtime_symbols_probe", None)
+
+
+def _runtime_path_from_config() -> Path:
+    from src.pipeline_context import require_pipeline_config
+
+    return require_pipeline_config().package_root / "runtime.py"
 
 
 @lru_cache(maxsize=1)
 def allowed_runtime_symbols() -> tuple[str, ...]:
     """Cached allowlist used by refactor validation and the parity gate."""
-    return discover_allowed_runtime_symbols()
+    return discover_allowed_runtime_symbols(_runtime_path_from_config())

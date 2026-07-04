@@ -1,0 +1,31 @@
+schema_version: 1.5.0
+workbook: workbook.xlsx
+concept_scheme:
+  id: synthetic_model
+  concepts:
+    - id: OBS_VALUE
+      name: Observation value
+      dtype: number
+    - id: TIME_PERIOD
+      name: Time period
+      dtype: int
+series:
+  - id: input_rate
+    sheet: Inputs
+    data_range: Inputs!A1
+    layout: scalar
+    input:
+      setter:
+        name: set_input_rate
+        record_contract: records
+        strict: true
+    structure:
+      measure:
+        concept: OBS_VALUE
+        dtype: float
+        bind:
+          kind: data_cell
+          read: float
+      dimensions: []
+    key: []
+    notes: Scalar input rate for the synthetic smoke workbook.
