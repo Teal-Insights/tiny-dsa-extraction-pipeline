@@ -22,7 +22,6 @@ DEFAULT_SEMANTIC_LABEL_PROMPT_VERSION = 1
 DEFAULT_SEMANTIC_LABEL_CACHE_PATH = (
     Path(__file__).resolve().parents[1] / ".cache/semantic-labels.json"
 )
-
 SheetLabelProvider = Callable[
     [str, list[NodeKey], list[dict[str, Any]], Mapping[str, Any]],
     "SheetSemanticLabels",
@@ -329,6 +328,7 @@ def label_internal_graph_cells(
     cache_path: Path = DEFAULT_SEMANTIC_LABEL_CACHE_PATH,
     api_key: str | None = None,
 ) -> SemanticLabelingSummary:
+    resolved_model = resolve_semantic_label_model(model) if provider is None else None
     formula_workbook = fastpyxl.load_workbook(workbook_path, data_only=False)
     value_workbook = fastpyxl.load_workbook(workbook_path, data_only=True)
     graph_cells = set(graph.keys(order="workbook"))
@@ -354,7 +354,7 @@ def label_internal_graph_cells(
                 candidate_addresses=candidate_addresses,
                 sheet_cells=sheet_cells,
                 concept_scheme=concept_scheme,
-                model=model,
+                model=resolved_model,
                 prompt_version=prompt_version,
                 cache_path=cache_path,
                 api_key=api_key,

@@ -35,6 +35,7 @@ def test_repo_layout_defaults() -> None:
     assert config.package_name == "dist.tiny_dsa.api"
     assert config.import_root == REPO_ROOT
     assert config.report_dir == REPO_ROOT / "data" / "differential" / "exported_library"
+    assert config.library_name == "Tiny DSA"
 
 
 def test_exported_layout_defaults() -> None:
@@ -50,9 +51,10 @@ def test_exported_layout_defaults() -> None:
     assert config.package_name == "tiny_dsa.api"
     assert config.import_root == dist_root
     assert config.report_dir == script_path.parent / "results" / "local"
+    assert config.library_name == "Tiny DSA"
 
 
-def test_parse_args_defaults_to_repo_layout_when_script_in_extraction_repo() -> None:
+def test_parse_args_defaults_to_repo_layout() -> None:
     harness = _load_harness_module()
     args = harness.parse_args([])
     assert args.layout == "repo"

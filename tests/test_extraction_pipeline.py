@@ -14,29 +14,37 @@ from excel_grapher.grapher import to_mermaid
 from excel_grapher.grapher.resolver import NamedRangeMaps, build_named_range_map
 from excel_grapher.grapher.parser import expand_range
 
-from src.extraction_pipeline import (
-    leaf_classification,
-    required_constraints,
-    constraints,
-    graph,
-    targets,
-    workbook_path,
-)
+from tests.conftest import SyntheticConfiguredPipeline
 
 load_dotenv()
 
+REQUIRED_CONSTRAINT_KEYS = frozenset(
+    {
+        "Inputs!A10",
+        "Inputs!A11",
+        "Inputs!A12",
+        "Inputs!B22",
+        "Inputs!B5",
+    }
+)
 
-def test_all_leaf_cells_are_constrained():
-    assert all([key in constraints.keys() for key in graph.leaf_keys()])
-    assert all([key in graph.leaf_keys() for key in constraints.keys()])
+
+def test_all_leaf_cells_are_constrained(tiny_dsa_configured_pipeline):
+    pipeline = tiny_dsa_configured_pipeline
+    graph = pipeline.graph
+    constraints = pipeline.config.constraints
+    assert all(key in constraints for key in graph.leaf_keys())
+    assert all(key in graph.leaf_keys() for key in constraints)
 
 
-def test_all_leaf_cells_are_classified():
+def test_all_leaf_cells_are_classified(tiny_dsa_configured_pipeline):
+    pipeline = tiny_dsa_configured_pipeline
+    graph = pipeline.graph
+    leaf_classification = pipeline.leaf_classification
     assert all(key in leaf_classification for key in graph.leaf_keys())
     assert all(key in graph.leaf_keys() for key in leaf_classification)
 
 
-# Lookup keys and Engine year headers are fixed model data, not scenario inputs.
 EXPECTED_CONSTANT_LEAVES = frozenset(
     {
         "Engine!C5",
@@ -49,7 +57,6 @@ EXPECTED_CONSTANT_LEAVES = frozenset(
         "Inputs!A12",
     }
 )
-# Cornsilk user-editable cells and lookup-table debt ratios (constrained for tests).
 EXPECTED_INPUT_LEAVES = frozenset(
     {
         "Inputs!B5",
@@ -80,7 +87,9 @@ EXPECTED_INPUT_LEAVES = frozenset(
 )
 
 
-def test_leaf_classification():
+def test_leaf_classification(tiny_dsa_configured_pipeline):
+    graph = tiny_dsa_configured_pipeline.graph
+    leaf_classification = tiny_dsa_configured_pipeline.leaf_classification
     assert EXPECTED_CONSTANT_LEAVES | EXPECTED_INPUT_LEAVES == frozenset(
         graph.leaf_keys()
     )
@@ -91,13 +100,19 @@ def test_leaf_classification():
 
 
 @pytest.mark.skipped(reason="Opt-in test; pass --run-skipped to run")
-def test_llm_judges_that_graph_is_correct():
+def test_llm_judges_that_graph_is_correct(tiny_dsa_configured_pipeline):
     if not os.environ.get("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY is not set")
     openai = pytest.importorskip(
         "openai", reason="requires openai for LLM-based testing"
     )
 
+    pipeline = tiny_dsa_configured_pipeline
+    graph = pipeline.graph
+    constraints = pipeline.config.constraints
+    required_constraints = {
+        key: constraints[key] for key in REQUIRED_CONSTRAINT_KEYS if key in constraints
+    }
     client = openai.OpenAI(
         api_key=os.environ.get("OPENAI_API_KEY"), base_url="https://api.openai.com/v1/"
     )
@@ -141,11 +156,13 @@ Graph:
     assert response.choices[0].message.content.strip().upper() == "CORRECT"
 
 
-def test_formula_evaluator_matches_excel_for_default_inputs():
-    """
-    For each target, we evaluate the formula in the workbook and compare
-    the result to the cached value in the workbook.
-    """
+def test_formula_evaluator_matches_excel_for_default_inputs(
+    tiny_dsa_configured_pipeline: SyntheticConfiguredPipeline,
+):
+    pipeline = tiny_dsa_configured_pipeline
+    graph = pipeline.graph
+    targets = list(pipeline.config.targets)
+    workbook_path = pipeline.config.workbook_path
     wb_formulas = fastpyxl.load_workbook(workbook_path, data_only=False)
     wb_values = fastpyxl.load_workbook(workbook_path, data_only=True)
     maps = build_named_range_map(wb_formulas)
@@ -169,7 +186,15 @@ def test_formula_evaluator_matches_excel_for_default_inputs():
                 ), f"Cell {dep_sheet}!{dep_a1} value mismatch"
 
 
-def test_formula_evaluator_matches_excel_for_randomized_inputs():
+def test_formula_evaluator_matches_excel_for_randomized_inputs(
+    tiny_dsa_configured_pipeline: SyntheticConfiguredPipeline,
+):
+    pipeline = tiny_dsa_configured_pipeline
+    graph = pipeline.graph
+    constraints = pipeline.config.constraints
+    targets = list(pipeline.config.targets)
+    workbook_path = pipeline.config.workbook_path
+
     def _sample_constraint(rng: random.Random, constraint: object) -> object:
         origin = get_origin(constraint)
         if origin is Literal:

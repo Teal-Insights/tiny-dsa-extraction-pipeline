@@ -11,10 +11,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from openai import Omit, OpenAI, omit
-from openai.types.shared import ReasoningEffort
+from openai import OpenAI
 
-from src.llm_providers import provider_for_model
+from src.pipeline_config import DistProjectMetadata
 
 DOCUMENTATION_BASELINE_DEV_DEPS: tuple[str, ...] = (
     "quarto>=0.1.0",
@@ -37,20 +36,6 @@ DOCUMENTATION_BASELINE_RUNTIME_WITH: tuple[str, ...] = (
     "matplotlib",
 )
 
-TINY_DSA_API_SYMBOLS: tuple[str, ...] = (
-    "make_context",
-    "set_country_name",
-    "set_growth_baseline",
-    "set_interest_baseline",
-    "set_primary_balance_baseline",
-    "set_shock_year",
-    "set_shock_type",
-    "set_shock_magnitudes",
-    "compute_output_baseline",
-    "compute_output_shocked",
-    "compute_output_delta",
-)
-
 MAX_IMPORT_FIX_ATTEMPTS = 20
 MAX_LLM_CELL_FIX_ATTEMPTS_PER_CELL = 2
 MAX_LLM_CELL_FIX_ATTEMPTS_TOTAL = 5
@@ -59,45 +44,10 @@ VALIDATION_SCRIPT_NAME = "_validate_user_guide_cells.py"
 
 
 @dataclass(frozen=True)
-class DistProjectMetadata:
-    project_name: str
-    package_name: str
-    library_name: str
-    # Single-line summary only: this populates [project].description, which
-    # downstream tools (e.g. great-docs) embed verbatim into YAML frontmatter.
-    # Embedded newlines or markdown produce invalid YAML and break the docs build.
-    description: str
-    documentation_url: str
-    repository_url: str | None = None
-    install_command: str | None = None
-    # Optional markdown rendered in the generated README below the description
-    # (e.g. attribution and logo) that must not leak into [project].description.
-    attribution: str | None = None
+class PublicApiPolicy:
+    api_import_path: str
+    allowed_symbols: frozenset[str]
 
-    def resolved_install_command(self) -> str:
-        if self.install_command is not None:
-            return self.install_command
-        if self.repository_url is not None:
-            return f'uv add "{self.project_name} @ git+{self.repository_url}"'
-        return f"uv add {self.project_name}"
-
-
-DEFAULT_DIST_PROJECT_METADATA = DistProjectMetadata(
-    project_name="tiny-dsa",
-    package_name="tiny_dsa",
-    library_name="Tiny DSA",
-    description=(
-        "A Python implementation of the Tiny-DSA Excel workbook, a stylized "
-        "debt-sustainability tool for computing the debt-to-GDP ratio over a "
-        "five-year horizon with one configurable shock."
-    ),
-    attribution=(
-        "Created by Teal Insights.\n\n"
-        "![Teal Insights logo](https://teal-insights.github.io/assets/logo.png)"
-    ),
-    documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
-    repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
-)
 
 _PYTHON_CELL_PATTERN = re.compile(
     r"^```\{python\}\s*\n(.*?)^```\s*$",
@@ -113,6 +63,8 @@ _NAME_ERROR_PATTERN = re.compile(
     r"NameError: (?P<message>.+)",
     re.DOTALL,
 )
+
+_CELL_FIX_MODEL = "gpt-5.5"
 
 
 @dataclass(frozen=True)
@@ -190,7 +142,7 @@ def render_dist_pyproject_toml(
     *,
     dev_dependencies: list[str],
     validation_dependencies: list[str] | None = None,
-    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
+    metadata: DistProjectMetadata,
 ) -> str:
     dep_lines = "\n".join(f'    "{dep}",' for dep in dev_dependencies)
     validation_block = ""
@@ -211,6 +163,7 @@ description = {_toml_string(metadata.description)}
 requires-python = ">=3.13"
 dependencies = [
     "fastpyxl",
+    "numpy",
 ]
 
 [tool.setuptools]
@@ -229,7 +182,7 @@ def _toml_string(value: str) -> str:
 
 def render_dist_readme_markdown(
     *,
-    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
+    metadata: DistProjectMetadata,
 ) -> str:
     attribution_block = f"{metadata.attribution}" if metadata.attribution else ""
     return f"""# {metadata.library_name}
@@ -252,7 +205,7 @@ See the [full documentation]({metadata.documentation_url}).
 def write_dist_readme(
     dist_root: Path,
     *,
-    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
+    metadata: DistProjectMetadata,
 ) -> None:
     (dist_root / "README.md").write_text(
         render_dist_readme_markdown(metadata=metadata),
@@ -265,7 +218,7 @@ def write_dist_pyproject(
     *,
     dev_dependencies: list[str],
     validation_dependencies: list[str] | None = None,
-    metadata: DistProjectMetadata = DEFAULT_DIST_PROJECT_METADATA,
+    metadata: DistProjectMetadata,
 ) -> None:
     pyproject_path = dist_root / "pyproject.toml"
     pyproject_path.write_text(
@@ -327,44 +280,45 @@ def default_run_uv_script(
     )
 
 
-def validate_runnable_cell_imports(source: str) -> None:
+def validate_runnable_cell_imports(
+    source: str,
+    *,
+    api_policy: PublicApiPolicy,
+) -> None:
     module = ast.parse(source)
     for node in ast.walk(module):
         if not isinstance(node, ast.ImportFrom):
             continue
-        if node.module != "tiny_dsa.api":
+        if node.module != api_policy.api_import_path:
             continue
         for alias in node.names:
             symbol = alias.name
-            if symbol not in TINY_DSA_API_SYMBOLS:
+            if symbol not in api_policy.allowed_symbols:
                 raise ValueError(
-                    f"invalid tiny_dsa.api import {symbol!r}; "
-                    f"allowed: {list(TINY_DSA_API_SYMBOLS)}"
+                    f"invalid {api_policy.api_import_path} import {symbol!r}; "
+                    f"allowed: {sorted(api_policy.allowed_symbols)}"
                 )
 
 
 def fix_python_cell_with_llm(
     *,
     client: OpenAI,
-    model: str,
     cell_source: str,
     error_message: str,
     qmd_label: str,
     cell_number: int,
+    api_policy: PublicApiPolicy,
 ) -> str:
-    provider = provider_for_model(model)
-    effort: ReasoningEffort | Omit = (
-        "high" if provider.supports_reasoning_effort else omit
-    )
+    allowed = ", ".join(sorted(api_policy.allowed_symbols))
     response = client.chat.completions.create(
-        model=model,
+        model=_CELL_FIX_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
                     "You fix runnable Quarto Python cells for library documentation. "
                     "Return only the corrected Python source code with no fences or commentary. "
-                    "Never import Workbook or other symbols that are not exported by tiny_dsa.api."
+                    f"Never import Workbook or other symbols that are not exported by {api_policy.api_import_path}."
                 ),
             },
             {
@@ -374,10 +328,10 @@ Fix this runnable Python cell from {qmd_label} (cell {cell_number}).
 
 Constraints:
 - Use only the Python standard library, polars, and matplotlib.
-- Tabulate compute_output_* results with polars (sort by TIME_PERIOD, select OBS_VALUE).
-- Keep tiny_dsa.api usage intact.
-- tiny_dsa.api exports only: {", ".join(TINY_DSA_API_SYMBOLS)}.
-- Do not import Workbook or any other symbol from tiny_dsa.api.
+- Tabulate compute_* results with polars when returning record lists.
+- Keep {api_policy.api_import_path} usage intact.
+- {api_policy.api_import_path} exports only: {allowed}.
+- Do not import Workbook or any other symbol from {api_policy.api_import_path}.
 - Return only valid Python source for the cell body.
 
 Execution error:
@@ -389,8 +343,7 @@ Cell source:
             },
         ],
         stream=False,
-        reasoning_effort=effort,
-        extra_body=provider.extra_body,
+        reasoning_effort="high",
     )
     content = response.choices[0].message.content
     if content is None:
@@ -444,7 +397,7 @@ def _apply_runtime_cell_fix(
     error_text: str,
     ordered_paths: list[Path],
     client: OpenAI,
-    model: str,
+    api_policy: PublicApiPolicy,
 ) -> None:
     cell_number = _cell_number_from_script(script_text, error_text)
     if cell_number is None:
@@ -465,13 +418,13 @@ def _apply_runtime_cell_fix(
     cell = extract_python_cells(qmd_text)[cell_number - 1]
     fixed_source = fix_python_cell_with_llm(
         client=client,
-        model=model,
         cell_source=cell.source,
         error_message=error_text.strip(),
         qmd_label=qmd_label,
         cell_number=cell_number,
+        api_policy=api_policy,
     )
-    validate_runnable_cell_imports(fixed_source)
+    validate_runnable_cell_imports(fixed_source, api_policy=api_policy)
     qmd_path.write_text(
         replace_python_cell(qmd_text, cell.index, fixed_source),
         encoding="utf-8",
@@ -487,9 +440,10 @@ def validate_qmd_files(
     *,
     dist_root: Path,
     qmd_paths: Iterable[Path],
+    api_policy: PublicApiPolicy,
+    metadata: DistProjectMetadata,
     run_uv_script: Callable[..., ScriptRunResult] | None = None,
     client: OpenAI | None = None,
-    model: str | None = None,
     write_pyproject: bool = True,
 ) -> list[str]:
     """Execute aggregated runnable cells and record extra dev dependencies."""
@@ -530,11 +484,6 @@ def validate_qmd_files(
                 else None
             )
             if cell_number is not None and qmd_label is not None and client is not None:
-                if model is None:
-                    raise RuntimeError(
-                        "model is required to apply LLM cell fixes when a client "
-                        "is provided"
-                    )
                 fix_key = (qmd_label, cell_number)
                 fix_attempts_for_cell = llm_fix_attempts_by_cell.get(fix_key, 0)
                 if (
@@ -550,7 +499,7 @@ def validate_qmd_files(
                     error_text=error_text,
                     ordered_paths=ordered_paths,
                     client=client,
-                    model=model,
+                    api_policy=api_policy,
                 )
                 llm_fix_attempts_total += 1
                 llm_fix_attempts_by_cell[fix_key] = fix_attempts_for_cell + 1
@@ -574,6 +523,7 @@ def validate_qmd_files(
                     discovered_packages,
                 ),
                 validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+                metadata=metadata,
             )
 
         return discovered_packages

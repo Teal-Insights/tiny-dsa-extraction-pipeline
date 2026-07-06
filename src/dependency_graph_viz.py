@@ -7,8 +7,12 @@ import os
 import re
 import subprocess
 from collections.abc import Iterable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+if TYPE_CHECKING:
+    from src.pipeline_monitor import StageTimer
 
 from excel_grapher.grapher.export import to_graphviz
 from excel_grapher.grapher.graph import DependencyGraph
@@ -19,6 +23,69 @@ GRAPH_FONT_SIZE = 10
 GRAPH_NODE_SEP = 0.4
 GRAPH_RANK_SEP = 0.7
 DEFAULT_JSON_FILENAME = "dependency-graph.json"
+DEFAULT_DOT_FILENAME = "dependencies.dot"
+DEFAULT_TOPOLOGY_FILENAME = "graph-topology.json"
+DEFAULT_GRAPHVIZ_NODE_LIMIT = 10_000
+DEFAULT_GRAPHVIZ_EDGE_LIMIT = 50_000
+LayoutMode = Literal["graphviz_preset", "structure_only"]
+GraphvizLayoutSetting = Literal["auto", "always", "never"]
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
+
+
+def _graphviz_layout_setting() -> GraphvizLayoutSetting:
+    raw = os.environ.get("GRAPHVIZ_LAYOUT", "auto").strip().lower()
+    if raw not in ("auto", "always", "never"):
+        raise ValueError(f"GRAPHVIZ_LAYOUT must be auto, always, or never; got {raw!r}")
+    return cast(GraphvizLayoutSetting, raw)
+
+
+def graph_topology_metrics(graph: DependencyGraph) -> dict[str, Any]:
+    """Return node/edge counts with a per-worksheet breakdown."""
+    sheet_nodes: dict[str, int] = {}
+    sheet_edges: dict[str, int] = {}
+    edge_count = 0
+
+    for key in graph.keys(order="workbook"):
+        sheet = _node_sheet(key, graph)
+        sheet_nodes[sheet] = sheet_nodes.get(sheet, 0) + 1
+        for dependency in graph.get_dependencies(key):
+            edge_count += 1
+            source_sheet = _node_sheet(dependency, graph)
+            sheet_edges[source_sheet] = sheet_edges.get(source_sheet, 0) + 1
+
+    sheets = sorted(set(sheet_nodes) | set(sheet_edges))
+    return {
+        "node_count": len(graph),
+        "edge_count": edge_count,
+        "sheets": {
+            sheet: {
+                "node_count": sheet_nodes.get(sheet, 0),
+                "edge_count": sheet_edges.get(sheet, 0),
+            }
+            for sheet in sheets
+        },
+    }
+
+
+def graphviz_layout_enabled(metrics: Mapping[str, Any]) -> bool:
+    """Decide whether to run Graphviz layout from topology and env settings."""
+    setting = _graphviz_layout_setting()
+    if setting == "always":
+        return True
+    if setting == "never":
+        return False
+    node_limit = _env_int("GRAPHVIZ_NODE_LIMIT", DEFAULT_GRAPHVIZ_NODE_LIMIT)
+    edge_limit = _env_int("GRAPHVIZ_EDGE_LIMIT", DEFAULT_GRAPHVIZ_EDGE_LIMIT)
+    return (
+        int(metrics["node_count"]) <= node_limit
+        and int(metrics["edge_count"]) <= edge_limit
+    )
 
 
 def _quote(value: str) -> str:
@@ -472,6 +539,116 @@ def build_cytoscape_preset_payload(
     }
 
 
+def build_cytoscape_structure_payload(
+    graph: DependencyGraph,
+    *,
+    target_keys: set[NodeKey] | None = None,
+    input_keys: set[NodeKey] | None = None,
+    output_keys: set[NodeKey] | None = None,
+    constant_keys: set[NodeKey] | None = None,
+    node_labels: Mapping[NodeKey, str] | None = None,
+) -> dict[str, Any]:
+    """Build a worksheet-clustered Cytoscape payload without Graphviz coordinates."""
+    targets = set(target_keys or ())
+    inputs = set(input_keys or ())
+    outputs = set(output_keys or ())
+    constants = set(constant_keys or ())
+    labels = dict(node_labels or {})
+
+    elements_nodes: list[dict[str, Any]] = []
+    elements_edges: list[dict[str, Any]] = []
+
+    sheet_groups = _sheet_groups(graph)
+    cluster_node_id_by_sheet = {
+        sheet: f"cluster::{_sheet_cluster_id(sheet)}" for sheet in sheet_groups
+    }
+    for sheet in sorted(sheet_groups):
+        elements_nodes.append(
+            {
+                "data": {
+                    "id": cluster_node_id_by_sheet[sheet],
+                    "label": sheet,
+                    "type": "cluster",
+                    "cluster_name": _sheet_cluster_id(sheet),
+                }
+            }
+        )
+
+    graph_keys = set(graph.keys(order="workbook"))
+    for key in graph.keys(order="workbook"):
+        node = graph.get_node(key)
+        if node is None:
+            continue
+        role = _node_role(
+            key,
+            target_keys=targets,
+            input_keys=inputs,
+            output_keys=outputs,
+            constant_keys=constants,
+        )
+        data: dict[str, Any] = {
+            "id": key,
+            "label": labels.get(key, key),
+            "type": "cell",
+            "sheet": _node_sheet(key, graph),
+            "role": role,
+            "is_leaf": node.is_leaf,
+            "formula": node.formula,
+            "parent": cluster_node_id_by_sheet[_node_sheet(key, graph)],
+        }
+        for metadata_key in ("table_labels", "row_labels", "column_labels"):
+            label_text = _semantic_label_group_text(node.metadata.get(metadata_key))
+            if label_text is not None:
+                data[metadata_key] = label_text
+        elements_nodes.append({"data": data})
+
+    seen_edges: set[tuple[str, str]] = set()
+    for key in graph.keys(order="workbook"):
+        for dependency in graph.get_dependencies(key):
+            if dependency not in graph_keys or key not in graph_keys:
+                continue
+            edge_key = (dependency, key)
+            if edge_key in seen_edges:
+                continue
+            seen_edges.add(edge_key)
+            guarded = graph.get_edge_guard(dependency, key) is not None
+            elements_edges.append(
+                {
+                    "data": {
+                        "id": f"edge::{dependency}->{key}",
+                        "source": dependency,
+                        "target": key,
+                        "type": "dependency",
+                        "label": "",
+                        "guarded": guarded,
+                    }
+                }
+            )
+
+    sheets = sorted(sheet_groups)
+    return {
+        "meta": {
+            "layout": "structure_only",
+            "node_count": len(
+                [node for node in elements_nodes if node["data"]["type"] == "cell"]
+            ),
+            "cluster_count": len(
+                [node for node in elements_nodes if node["data"]["type"] == "cluster"]
+            ),
+            "edge_count": len(elements_edges),
+            "sheets": sheets,
+            "target_count": len(targets),
+            "input_count": len(inputs),
+            "output_count": len(outputs),
+            "constant_count": len(constants),
+        },
+        "elements": {
+            "nodes": elements_nodes,
+            "edges": elements_edges,
+        },
+    }
+
+
 def build_index_html(*, json_filename: str = DEFAULT_JSON_FILENAME) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -761,6 +938,302 @@ def build_index_html(*, json_filename: str = DEFAULT_JSON_FILENAME) -> str:
 """
 
 
+def build_structure_only_index_html(
+    *, json_filename: str = DEFAULT_JSON_FILENAME
+) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dependency Graph (structure only)</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      font-family: Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }}
+    body {{
+      margin: 0;
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: 100vh;
+    }}
+    #sidebar {{
+      border-right: 1px solid #8884;
+      padding: 12px;
+      overflow: auto;
+    }}
+    #cy {{
+      width: 100%;
+      height: 100%;
+      display: block;
+    }}
+    input, select, button {{
+      width: 100%;
+      margin: 0.3rem 0;
+      padding: 0.45rem;
+      box-sizing: border-box;
+    }}
+    .muted {{
+      opacity: 0.8;
+      font-size: 0.9rem;
+    }}
+    .notice {{
+      background: #fff3cd;
+      color: #664d03;
+      border: 1px solid #ffecb5;
+      border-radius: 0.35rem;
+      padding: 0.65rem;
+      margin: 0.75rem 0;
+      font-size: 0.85rem;
+    }}
+    .legend {{
+      display: grid;
+      gap: 0.35rem;
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+    }}
+    .swatch {{
+      display: inline-block;
+      width: 0.85rem;
+      height: 0.85rem;
+      border-radius: 0.15rem;
+      margin-right: 0.35rem;
+      vertical-align: -0.1rem;
+    }}
+  </style>
+</head>
+<body>
+  <aside id="sidebar">
+    <h3>Dependency graph</h3>
+    <div class="notice">
+      Graphviz layout skipped because this graph exceeds the configured node/edge
+      thresholds. The explorer uses a client-side layout instead of Graphviz preset
+      coordinates. See <code>graph-topology.json</code> and <code>dependencies.dot</code>.
+    </div>
+    <div id="summary" class="muted">Loading...</div>
+    <label for="sheetFilter">Sheet filter</label>
+    <select id="sheetFilter">
+      <option value="__all__">All sheets</option>
+    </select>
+    <label for="roleFilter">Role filter</label>
+    <select id="roleFilter">
+      <option value="__all__">All roles</option>
+      <option value="target">Targets</option>
+      <option value="input">Inputs</option>
+      <option value="constant">Constants</option>
+      <option value="output">Outputs</option>
+      <option value="internal">Internal</option>
+    </select>
+    <label for="searchBox">Search cells</label>
+    <input id="searchBox" type="text" placeholder="address, formula..." />
+    <button id="resetView">Reset view</button>
+    <div class="legend muted">
+      <div><span class="swatch" style="background:#FFB347"></span>Target</div>
+      <div><span class="swatch" style="background:#6DA6FF"></span>Input</div>
+      <div><span class="swatch" style="background:#6BCB77"></span>Constant</div>
+      <div><span class="swatch" style="background:#B28DFF"></span>Output</div>
+      <div><span class="swatch" style="background:#D9D9D9"></span>Internal</div>
+    </div>
+    <p class="muted">
+      Structure-only mode clusters cells by worksheet and lays them out in the browser.
+      Dashed edges are guarded dependencies.
+    </p>
+  </aside>
+  <main id="cy"></main>
+
+  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script>
+    async function init() {{
+      const res = await fetch({json.dumps(json_filename)});
+      if (!res.ok) {{
+        throw new Error(`Failed to load {json_filename}: ${{res.status}}`);
+      }}
+      const graph = await res.json();
+      const nodes = graph.elements.nodes || [];
+      const edges = graph.elements.edges || [];
+
+      const cy = cytoscape({{
+        container: document.getElementById('cy'),
+        elements: [...nodes, ...edges],
+        style: [
+          {{
+            selector: 'node',
+            style: {{
+              'label': 'data(label)',
+              'font-size': 10,
+              'text-wrap': 'wrap',
+              'text-max-width': 220,
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'shape': 'round-rectangle',
+            }}
+          }},
+          {{
+            selector: 'node[type = "cluster"]',
+            style: {{
+              'background-opacity': 0.06,
+              'border-width': 1.4,
+              'border-style': 'dashed',
+              'border-color': '#666',
+              'font-size': 12,
+              'font-weight': 600,
+              'text-valign': 'top',
+              'text-halign': 'center',
+              'text-wrap': 'wrap',
+              'text-max-width': 260,
+              'text-margin-y': -8,
+              'padding': '14px',
+            }}
+          }},
+          {{
+            selector: 'node[type = "cell"]',
+            style: {{
+              'background-opacity': 1,
+              'font-size': 9,
+              'text-wrap': 'wrap',
+              'text-max-width': 220,
+              'width': 'label',
+              'height': 'label',
+              'padding': '10px',
+            }}
+          }},
+          {{
+            selector: 'node[role = "target"]',
+            style: {{ 'background-color': '#FFB347' }}
+          }},
+          {{
+            selector: 'node[role = "input"]',
+            style: {{ 'background-color': '#6DA6FF' }}
+          }},
+          {{
+            selector: 'node[role = "constant"]',
+            style: {{ 'background-color': '#6BCB77' }}
+          }},
+          {{
+            selector: 'node[role = "output"]',
+            style: {{ 'background-color': '#B28DFF' }}
+          }},
+          {{
+            selector: 'node[role = "internal"]',
+            style: {{ 'background-color': '#D9D9D9' }}
+          }},
+          {{
+            selector: 'node[is_leaf = true][role = "internal"]',
+            style: {{ 'shape': 'round-rectangle' }}
+          }},
+          {{
+            selector: 'node[is_leaf = false][role = "internal"]',
+            style: {{ 'shape': 'ellipse' }}
+          }},
+          {{
+            selector: 'edge',
+            style: {{
+              'curve-style': 'bezier',
+              'target-arrow-shape': 'triangle',
+              'width': 1.4,
+              'line-color': '#666',
+              'target-arrow-color': '#666',
+              'label': 'data(label)',
+              'font-size': 8,
+              'text-background-opacity': 1,
+              'text-background-color': '#fff',
+              'text-background-padding': 1,
+            }}
+          }},
+          {{
+            selector: 'edge[guarded = true]',
+            style: {{
+              'line-style': 'dashed',
+            }}
+          }},
+          {{
+            selector: '.hidden',
+            style: {{
+              'display': 'none'
+            }}
+          }}
+        ],
+        layout: {{
+          name: 'cose',
+          fit: true,
+          padding: 30,
+          animate: false,
+        }}
+      }});
+
+      const summary = document.getElementById('summary');
+      summary.textContent =
+        `${{graph.meta.node_count}} cells · ${{graph.meta.edge_count}} edges · ${{graph.meta.sheets.length}} sheets`;
+
+      const sheetFilter = document.getElementById('sheetFilter');
+      for (const sheet of graph.meta.sheets || []) {{
+        const option = document.createElement('option');
+        option.value = sheet;
+        option.textContent = sheet;
+        sheetFilter.appendChild(option);
+      }}
+
+      const applyFilters = () => {{
+        const selectedSheet = sheetFilter.value;
+        const selectedRole = document.getElementById('roleFilter').value;
+        const query = document.getElementById('searchBox').value.trim().toLowerCase();
+        cy.elements().removeClass('hidden');
+
+        if (selectedSheet !== '__all__') {{
+          cy.nodes('[type = "cell"]').forEach((node) => {{
+            if (node.data('sheet') !== selectedSheet) {{
+              node.addClass('hidden');
+            }}
+          }});
+        }}
+
+        if (selectedRole !== '__all__') {{
+          cy.nodes('[type = "cell"]').forEach((node) => {{
+            if (node.data('role') !== selectedRole) {{
+              node.addClass('hidden');
+            }}
+          }});
+        }}
+
+        if (query) {{
+          cy.nodes('[type = "cell"]').forEach((node) => {{
+            const hay = `${{node.data('label')}} ${{node.data('formula') || ''}}`.toLowerCase();
+            if (!hay.includes(query)) {{
+              node.addClass('hidden');
+            }}
+          }});
+        }}
+
+        cy.edges().forEach((edge) => {{
+          if (edge.source().hasClass('hidden') || edge.target().hasClass('hidden')) {{
+            edge.addClass('hidden');
+          }}
+        }});
+      }};
+
+      sheetFilter.addEventListener('change', applyFilters);
+      document.getElementById('roleFilter').addEventListener('change', applyFilters);
+      document.getElementById('searchBox').addEventListener('input', applyFilters);
+      document.getElementById('resetView').addEventListener('click', () => {{
+        sheetFilter.value = '__all__';
+        document.getElementById('roleFilter').value = '__all__';
+        document.getElementById('searchBox').value = '';
+        cy.elements().removeClass('hidden');
+        cy.fit();
+      }});
+    }}
+
+    init().catch((error) => {{
+      document.getElementById('summary').textContent = String(error);
+      console.error(error);
+    }});
+  </script>
+</body>
+</html>
+"""
+
+
 def _semantic_label_text(value: Any) -> str | None:
     if isinstance(value, Mapping):
         label = value.get("label")
@@ -847,29 +1320,60 @@ def write_dependency_graph_site(
     rankdir: str = "TB",
     dot_bin: str | None = None,
     json_filename: str = DEFAULT_JSON_FILENAME,
+    timer: StageTimer | None = None,
 ) -> dict[str, Any]:
-    """Write Cytoscape preset JSON and HTML for a dependency graph."""
+    """Write Cytoscape JSON and HTML for a dependency graph."""
     dot_text = build_dot_with_clusters(
         graph,
         clusters=clusters,
         node_labels=node_labels,
         rankdir=rankdir,
     )
-    graphviz_json = parse_graphviz_json(dot_text, dot_bin=dot_bin)
-    payload = build_cytoscape_preset_payload(
-        graph,
-        graphviz_json,
-        target_keys=target_keys,
-        input_keys=input_keys,
-        output_keys=output_keys,
-        constant_keys=constant_keys,
-    )
+    metrics = graph_topology_metrics(graph)
+    layout_enabled = graphviz_layout_enabled(metrics)
+    layout_mode: LayoutMode = "graphviz_preset" if layout_enabled else "structure_only"
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    dot_path = output_dir / DEFAULT_DOT_FILENAME
+    dot_path.write_text(dot_text, encoding="utf-8")
+
+    topology = {
+        **metrics,
+        "layout_mode": layout_mode,
+        "graphviz_layout_enabled": layout_enabled,
+        "dot_byte_size": len(dot_text.encode("utf-8")),
+    }
+    topology_path = output_dir / DEFAULT_TOPOLOGY_FILENAME
+    topology_path.write_text(json.dumps(topology, indent=2), encoding="utf-8")
+
+    role_kwargs = {
+        "target_keys": target_keys,
+        "input_keys": input_keys,
+        "output_keys": output_keys,
+        "constant_keys": constant_keys,
+    }
+    if layout_enabled:
+        layout_stage = (
+            timer.stage("graphviz_layout") if timer is not None else nullcontext()
+        )
+        with layout_stage:
+            graphviz_json = parse_graphviz_json(dot_text, dot_bin=dot_bin)
+        payload = build_cytoscape_preset_payload(
+            graph,
+            graphviz_json,
+            **role_kwargs,
+        )
+        html = build_index_html(json_filename=json_filename)
+    else:
+        payload = build_cytoscape_structure_payload(
+            graph,
+            node_labels=node_labels,
+            **role_kwargs,
+        )
+        html = build_structure_only_index_html(json_filename=json_filename)
+
     json_path = output_dir / json_filename
     html_path = output_dir / "index.html"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    html_path.write_text(
-        build_index_html(json_filename=json_filename), encoding="utf-8"
-    )
-    return dict(payload["meta"])
+    html_path.write_text(html, encoding="utf-8")
+    return {**dict(payload["meta"]), "layout_mode": layout_mode}

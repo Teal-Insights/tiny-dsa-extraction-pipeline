@@ -5,12 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-from src.extraction_pipeline import (
-    binding_validation_report,
-    input_series,
-    output_series,
-    series_bindings,
-)
+from src.dependency_graph_viz import series_cell_keys
 
 
 def _series_addresses(series: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
@@ -21,11 +16,13 @@ def _series_addresses(series: Sequence[Mapping[str, Any]]) -> dict[str, list[str
     return addresses
 
 
-def test_series_bindings_validate_against_graph():
-    assert binding_validation_report["ok"], binding_validation_report["issues"]
+def test_series_bindings_validate_against_graph(tiny_dsa_configured_pipeline):
+    report = tiny_dsa_configured_pipeline.binding_validation_report
+    assert report["ok"], report["issues"]
 
 
-def test_binding_shards_merge_into_expected_series():
+def test_binding_shards_merge_into_expected_series(tiny_dsa_configured_pipeline):
+    series_bindings = tiny_dsa_configured_pipeline.series_bindings
     expected_ids = {
         "country_name",
         "country_initial_debt",
@@ -44,8 +41,8 @@ def test_binding_shards_merge_into_expected_series():
     assert {series["id"] for series in series_bindings["series"]} == expected_ids
 
 
-def test_input_series_resolve_to_expected_cells():
-    addresses = _series_addresses(input_series)
+def test_input_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
+    addresses = _series_addresses(tiny_dsa_configured_pipeline.input_series)
 
     assert addresses["country_name"] == ["Inputs!B5"]
     assert addresses["country_initial_debt"] == [
@@ -79,8 +76,8 @@ def test_input_series_resolve_to_expected_cells():
     assert addresses["shock_magnitudes"] == ["Inputs!B26", "Inputs!C26", "Inputs!D26"]
 
 
-def test_output_series_resolve_to_expected_cells():
-    addresses = _series_addresses(output_series)
+def test_output_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
+    addresses = _series_addresses(tiny_dsa_configured_pipeline.output_series)
 
     assert addresses["output_baseline"] == [
         "Outputs!B12",
@@ -132,15 +129,14 @@ def test_generated_records_api_computes_and_sets_values():
     assert updated_initial_debt[0]["OBS_VALUE"] != updated[0]["OBS_VALUE"]
 
 
-def test_every_mutable_input_leaf_has_input_series_binding():
-    """Every codegen input leaf must be covered by inputs.bindings.yaml."""
-    from src.dependency_graph_viz import series_cell_keys
-    from src.extraction_pipeline import leaf_classification
-
+def test_every_mutable_input_leaf_has_input_series_binding(
+    tiny_dsa_configured_pipeline,
+):
+    pipeline = tiny_dsa_configured_pipeline
     mutable_input_leaves = {
-        key for key, kind in leaf_classification.items() if kind == "input"
+        key for key, kind in pipeline.leaf_classification.items() if kind == "input"
     }
-    bound_input_cells = series_cell_keys(input_series)
+    bound_input_cells = series_cell_keys(pipeline.input_series)
     unbound = sorted(mutable_input_leaves - bound_input_cells)
 
     assert unbound == [], (

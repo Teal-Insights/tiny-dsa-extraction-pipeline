@@ -26,7 +26,6 @@ from excel_grapher.grapher import DynamicRefConfig, create_dependency_graph
 from dist.tiny_dsa import api
 from dist.tiny_dsa._api_helpers import Record, Records
 from dist.tiny_dsa.data import CONSTANTS, DEFAULT_INPUTS
-from src.extraction_pipeline import constraints, targets, workbook_path
 
 ATOL = 1e-6
 
@@ -41,18 +40,13 @@ OUTPUT_RANGES: tuple[tuple[ComputeFn, OutputLeaves], ...] = (
 
 
 @pytest.fixture(scope="module")
-def workbook_oracle() -> FormulaEvaluator:
-    """Evaluate the workbook's formula graph under the library's default inputs.
-
-    Builds the dependency graph with the same constraints/targets the extraction
-    pipeline ships, then drives it with the exact default inputs baked into the
-    exported package so both oracles see identical inputs at the cell level. Any
-    divergence is therefore a calculation difference, not an input difference.
-    """
-    config = DynamicRefConfig.from_constraints(constraints, {})
+def workbook_oracle(tiny_dsa_configured_pipeline) -> FormulaEvaluator:
+    """Evaluate the workbook's formula graph under the library's default inputs."""
+    pipeline = tiny_dsa_configured_pipeline
+    config = DynamicRefConfig.from_constraints(pipeline.config.constraints, {})
     graph = create_dependency_graph(
-        workbook_path,
-        list(targets),
+        pipeline.config.workbook_path,
+        list(pipeline.config.targets),
         load_values=True,
         dynamic_refs=config,
     )

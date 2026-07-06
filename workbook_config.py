@@ -1,0 +1,94 @@
+"""Workbook-specific configuration for the Tiny DSA extraction project.
+
+Edit values here before running the pipeline. See README.md for the
+configure → extract → export → test → document → refactor workflow.
+"""
+
+from pathlib import Path
+from typing import Annotated, Literal
+
+from excel_grapher.core.cell_types import Between, RealBetween
+
+from src.graph_dependency_audit import GraphAuditCase
+from src.pipeline_config import DistProjectMetadata
+from src.workbook_addresses import ProjectionColumnLayout
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+WORKBOOK_PATH = REPO_ROOT / "data" / "tiny-dsa.xlsx"
+GUIDE_PATH = REPO_ROOT / "data" / "tiny-dsa-guide.md"
+BINDINGS_PATH = REPO_ROOT / "bindings"
+
+TARGETS: list[str] = ["output_baseline", "output_shocked", "output_delta"]
+
+_cols = ("C", "D", "E", "F", "G")
+
+CONSTRAINTS: dict[str, object] = {
+    "Inputs!A10": Literal["Borvelia"],
+    "Inputs!A11": Literal["Litellia"],
+    "Inputs!A12": Literal["Aurelium"],
+    "Inputs!B22": Literal[1, 2, 3],
+    "Inputs!B5": Literal["Borvelia", "Litellia", "Aurelium"],
+    "Engine!C5": Literal[1],
+    "Engine!D5": Literal[2],
+    "Engine!E5": Literal[3],
+    "Engine!F5": Literal[4],
+    "Engine!G5": Literal[5],
+    "Inputs!B10": Annotated[float, RealBetween(0.0, 200.0)],
+    "Inputs!B11": Annotated[float, RealBetween(0.0, 200.0)],
+    "Inputs!B12": Annotated[float, RealBetween(0.0, 200.0)],
+    "Inputs!B21": Annotated[int, Between(1, 5)],
+    "Inputs!B26": Annotated[float, RealBetween(-30.0, 30.0)],
+    "Inputs!C26": Annotated[float, RealBetween(-30.0, 30.0)],
+    "Inputs!D26": Annotated[float, RealBetween(-30.0, 30.0)],
+    **{f"Inputs!{c}16": Annotated[float, RealBetween(-10.0, 15.0)] for c in _cols},
+    **{f"Inputs!{c}17": Annotated[float, RealBetween(0.0, 20.0)] for c in _cols},
+    **{f"Inputs!{c}18": Annotated[float, RealBetween(-15.0, 15.0)] for c in _cols},
+}
+
+DIST_METADATA = DistProjectMetadata(
+    project_name="tiny-dsa",
+    package_name="tiny_dsa",
+    library_name="Tiny DSA",
+    description=(
+        "A Python implementation of the Tiny-DSA Excel workbook, a stylized "
+        "debt-sustainability tool for computing the debt-to-GDP ratio over a "
+        "five-year horizon with one configurable shock."
+    ),
+    documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
+    repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
+    attribution=(
+        "Created by Teal Insights.\n\n![Teal Insights logo](README_files/logo.png)"
+    ),
+)
+
+DOCSTRING_CALLBACK_NAME = "series_docs"
+
+PROJECTION_LAYOUT = ProjectionColumnLayout(
+    engine_sheet="Engine",
+    engine_columns=("C", "D", "E", "F", "G"),
+    outputs_sheet="Outputs",
+    outputs_column_to_engine={
+        "B": "C",
+        "C": "D",
+        "D": "E",
+        "E": "F",
+        "F": "G",
+    },
+    time_period_to_engine_column={
+        1: "C",
+        2: "D",
+        3: "E",
+        4: "F",
+        5: "G",
+    },
+)
+
+DIFFERENTIAL_WORKBOOK_REL = Path("data/tiny-dsa.xlsx")
+DIFFERENTIAL_REPORT_DIR_REL = Path("data/differential/exported_library")
+
+GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = ()
+
+AUDIT_TITLE = "Tiny DSA Workbook Audit"
+AUDIT_PUBLIC_INPUTS: tuple[tuple[str, str, str], ...] = ()
+AUDIT_GUIDE_USE_CASES: tuple[tuple[str, str, str], ...] = ()

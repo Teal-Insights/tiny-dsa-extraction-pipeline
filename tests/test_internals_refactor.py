@@ -1,910 +1,335 @@
+"""Unit tests for internals refactor validation, collapse, and prompt contracts."""
+
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
-from typing import Any, cast
+from unittest.mock import patch
 
-from src.extraction_pipeline import graph
+import pytest
+
 from src.internals_refactor import (
+    REFACTOR_PROMPT_VERSION,
+    ClusterRefactorContext,
     ClusterRefactorResponse,
     HelperParameter,
+    MemberContext,
     MemberKeys,
-    SemanticDependency,
+    apply_cluster_collapse,
     apply_phase_c,
-    apply_refactor_plan,
-    apply_singleton_refactor_plan,
-    build_cluster_refactor_context,
-    build_singleton_refactor_context,
+    collapse_bindings_for_response,
     prompt_payload,
     refactor_cache_key,
-    singleton_refactor_cache_key,
-    resolve_semantic_dependencies,
+    validate_allowed_global_references,
     validate_cluster_refactor_response,
-    validate_google_style_docstring,
-    validate_refactored_internals,
+    validate_parameter_names_match_vocabulary,
     validate_semantic_local_names,
-    validate_singleton_refactor_response,
-    _address_in_docstring_range,
-    _align_singleton_response_docstring,
-    _normalize_google_docstring,
-    _prepare_cluster_refactor_response,
+    validate_uses_first_year_branch_flag,
+    _prompt_for_refactor,
+    _single_function_def,
 )
-from tests.fixtures.cluster_refactor_golden import (
-    GOLDEN_CLUSTER_REFACTOR_RESPONSES,
-    SHOCK_ACTIVE_DOCSTRING,
-    SHOCK_ACTIVE_HELPER,
+from src.refactor_bindings import KeyConceptSpec
+from src.workbook_addresses import ProjectionColumnLayout
+
+ALLOWED_RUNTIME_SYMBOLS = (
+    "XlError",
+    "xl_cell",
+    "xl_eval",
 )
-from tests.fixtures.singleton_refactor_golden import GOLDEN_SINGLETON_REFACTOR_RESPONSES
 
-TRIM_FIXTURE_SOURCE = """
-from .runtime import XlError, xl_cell
+TEST_LAYOUT = ProjectionColumnLayout(
+    engine_sheet="Engine",
+    engine_columns=("C", "D"),
+    outputs_sheet="Outputs",
+    outputs_column_to_engine={},
+    time_period_to_engine_column={1: "C", 2: "D"},
+)
 
-def shock_active(ctx, time_period: int):
-    return 1.0
+RUNTIME_IMPORT = """from __future__ import annotations
 
-def cell_outputs_b14(ctx):
-    return output_delta(ctx, time_period=1)
+from .runtime import (
+    XlError,
+    xl_cell,
+    xl_eval,
+)
+"""
 
-# --- Formula resolver ---
+RESOLVER_SECTION = """# --- Formula resolver ---
 _RESOLVED_FORMULAS = {}
-_ADDRESS_DISPATCH = {
-    'Engine!C10': ('shock_active', {'time_period': 1}),
-    'Outputs!B14': ('output_delta', {'time_period': 1}),
-}
+_ADDRESS_DISPATCH = {}
 _SYMBOL_DISPATCH = {}
-
-def output_delta(ctx, time_period: int):
-    return 0.0
 
 def _address_to_func_name(address):
     return "cell_placeholder"
 
 def _resolve_formula(address):
-    fn = _RESOLVED_FORMULAS.get(address)
-    if fn is not None:
-        return fn
-    dispatch = _ADDRESS_DISPATCH.get(address)
-    if dispatch is not None:
-        helper_name, key_kwargs = dispatch
-        helper = globals()[helper_name]
-
-        def _bound(ctx, _helper=helper, _key_kwargs=key_kwargs):
-            return _helper(ctx, **_key_kwargs)
-
-        _RESOLVED_FORMULAS[address] = _bound
-        return _bound
-    return None
+    return globals().get(_address_to_func_name(address))
 """
 
+PRISTINE_CLUSTER = (
+    RUNTIME_IMPORT
+    + """
+# --- Formula cell functions ---
 
-def test_validate_runnable_cell_imports_rejects_workbook() -> None:
-    from src.qmd_python_validation import validate_runnable_cell_imports
+def cell_engine_c6(ctx):
+    \"\"\"Covers Engine!C6.\"\"\"
+    return xl_cell(ctx, 'Inputs!C1')
 
-    source = (
-        "from tiny_dsa.api import Workbook, compute_output_baseline\n"
-        "compute_output_baseline(ctx=ctx)\n"
-    )
-    try:
-        validate_runnable_cell_imports(source)
-    except ValueError as error:
-        assert "Workbook" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
+def cell_engine_d6(ctx):
+    \"\"\"Covers Engine!D6.\"\"\"
+    return xl_cell(ctx, 'Inputs!D1')
 
-
-def test_validate_no_cell_function_references_rejects_cell_helpers() -> None:
-    from src.internals_refactor import validate_no_cell_function_references
-
-    source = """
-def debt_to_gdp(ctx, col):
-    return xl_eval(ctx, 'Engine!C10', cell_engine_c10)
 """
-    function_def = ast.parse(source).body[0]
-    assert isinstance(function_def, ast.FunctionDef)
-    try:
-        validate_no_cell_function_references(function_def)
-    except ValueError as error:
-        assert "cell_engine_c10" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_validate_no_nested_helper_functions_rejects_nested_def() -> None:
-    from src.internals_refactor import validate_no_nested_helper_functions
-
-    source = """
-def example(ctx, time_period):
-    def safe_divide(left, right):
-        return left / right if right != 0 else xl_raise(XlError.DIV)
-    return safe_divide(xl_number(1.0), xl_number(2.0))
-"""
-    function_def = ast.parse(source).body[0]
-    assert isinstance(function_def, ast.FunctionDef)
-    try:
-        validate_no_nested_helper_functions(function_def)
-    except ValueError as error:
-        assert "safe_divide" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_validate_no_sentinel_error_handling_rejects_isinstance_check() -> None:
-    from src.internals_refactor import validate_no_sentinel_error_handling
-
-    source = """
-def example(ctx, time_period):
-    shock = to_int(xl_cell(ctx, "Inputs!B22"))
-    if isinstance(shock, XlError):
-        return xl_raise(shock)
-    return xl_number(shock)
-"""
-    function_def = ast.parse(source).body[0]
-    assert isinstance(function_def, ast.FunctionDef)
-    try:
-        validate_no_sentinel_error_handling(function_def)
-    except ValueError as error:
-        assert "isinstance" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_validate_no_sentinel_error_handling_rejects_return_sentinel() -> None:
-    from src.internals_refactor import validate_no_sentinel_error_handling
-
-    source = """
-def example(ctx, time_period):
-    column = {1: 'C'}.get(time_period)
-    if column is None:
-        return XlError.VALUE
-    return xl_cell(ctx, f'Engine!{column}5')
-"""
-    function_def = ast.parse(source).body[0]
-    assert isinstance(function_def, ast.FunctionDef)
-    try:
-        validate_no_sentinel_error_handling(function_def)
-    except ValueError as error:
-        assert "sentinel" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_validate_no_sentinel_error_handling_accepts_raise_based_helper() -> None:
-    from src.internals_refactor import validate_no_sentinel_error_handling
-
-    source = """
-def example(ctx, time_period):
-    column = {1: 'C'}.get(time_period)
-    if column is None:
-        xl_raise(XlError.VALUE)
-    is_active = xl_compare('>=', xl_cell(ctx, f'Engine!{column}5'), 1)
-    return xl_number(1.0 if is_active else 0.0)
-"""
-    function_def = ast.parse(source).body[0]
-    assert isinstance(function_def, ast.FunctionDef)
-    validate_no_sentinel_error_handling(function_def)
-
-
-def test_allowed_runtime_symbols_excludes_sentinel_coercers() -> None:
-    from src.runtime_symbols import allowed_runtime_symbols
-
-    allowed = set(allowed_runtime_symbols())
-    assert allowed.isdisjoint({"to_number", "to_int", "to_bool", "compare_scalars"})
-    assert {"xl_number", "xl_compare"} <= allowed
-
-
-def test_validate_semantic_local_names_rejects_excel_shaped_names() -> None:
-    source = """
-def example(ctx, col):
-    t1 = xl_cell(ctx, "Inputs!B21")
-    return t1
-"""
-    function_def = ast.parse(source).body[0]
-    assert isinstance(function_def, ast.FunctionDef)
-    try:
-        validate_semantic_local_names(function_def)
-    except ValueError as error:
-        assert "excel-shaped" in str(error)
-        assert "t1" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_validate_google_style_docstring_accepts_complete_docstring() -> None:
-    validate_google_style_docstring(SHOCK_ACTIVE_DOCSTRING)
-
-
-def test_validate_google_style_docstring_accepts_returns_before_args() -> None:
-    docstring = """Resolve the shock magnitude.
-
-Returns:
-    Shock magnitude from the shock table.
-
-Args:
-    ctx: Workbook evaluation context.
-"""
-    validate_google_style_docstring(docstring)
-
-
-def test_normalize_google_docstring_strips_interstitial_prose() -> None:
-    docstring = """Look up the initial debt-to-GDP ratio.
-
-This helper reads the country profile table in Inputs.
-
-Args:
-    ctx: Workbook evaluation context.
-
-Returns:
-    Initial debt-to-GDP ratio.
-"""
-    normalized = _normalize_google_docstring(docstring)
-    validate_google_style_docstring(normalized)
-    assert normalized.startswith("Look up the initial debt-to-GDP ratio.\n\nArgs:\n")
-
-
-def test_build_singleton_refactor_context_inputs_b6(
-    tiny_dsa_refactor_projection,
-    codegen_internals_path,
-) -> None:
-    from src.formula_clustering import cluster_graph_formulas
-
-    cluster = next(
-        cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.members == ("Inputs!B6",)
-    )
-    ctx = build_singleton_refactor_context(
-        tiny_dsa_refactor_projection,
-        cluster,
-        codegen_internals_path,
-        source_graph=graph,
-    )
-    assert ctx is not None
-    assert ctx.address == "Inputs!B6"
-    assert ctx.function_name == "cell_inputs_b6"
-    assert isinstance(ctx.naming_hints, dict)
-    assert "def cell_inputs_b6" in ctx.python_source
-
-
-def test_apply_singleton_rename_rewrites_xl_eval_call_sites(
-    codegen_internals_source,
-    tiny_dsa_refactor_projection,
-    codegen_internals_path,
-) -> None:
-    from src.formula_clustering import cluster_graph_formulas
-
-    cluster = next(
-        cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.members == ("Inputs!B6",)
-    )
-    ctx = build_singleton_refactor_context(
-        tiny_dsa_refactor_projection,
-        cluster,
-        codegen_internals_path,
-    )
-    assert ctx is not None
-    response = GOLDEN_SINGLETON_REFACTOR_RESPONSES["Inputs!B6"]
-    validate_singleton_refactor_response(
-        ctx,
-        response,
-        existing_names=_function_names(codegen_internals_source),
-        internals_source=codegen_internals_source,
-    )
-    updated, rewrite_count = apply_singleton_refactor_plan(
-        codegen_internals_source,
-        response,
-        ctx,
-    )
-    validate_refactored_internals(updated)
-
-    assert "def initial_debt_to_gdp(ctx)" in updated
-    assert "def cell_inputs_b6(ctx)" not in updated
-    assert "cell_inputs_b6" not in updated
-    assert rewrite_count > 0
-    assert "'Inputs!B6': 'initial_debt_to_gdp'" in updated
-
-
-def test_golden_singleton_refactor_responses_validate(
-    codegen_internals_source,
-    tiny_dsa_refactor_projection,
-    codegen_internals_path,
-) -> None:
-    from src.formula_clustering import cluster_graph_formulas
-
-    singleton_clusters = {
-        cluster.members[0]: cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if len(cluster.members) == 1
-    }
-    existing_names = _function_names(codegen_internals_source)
-    for address in ("Inputs!B6", "Engine!B9"):
-        ctx = build_singleton_refactor_context(
-            tiny_dsa_refactor_projection,
-            singleton_clusters[address],
-            codegen_internals_path,
-            source_graph=graph,
-        )
-        assert ctx is not None
-        response = GOLDEN_SINGLETON_REFACTOR_RESPONSES[address]
-        validate_singleton_refactor_response(
-            ctx,
-            response,
-            existing_names=existing_names,
-            internals_source=codegen_internals_source,
-        )
-        existing_names = existing_names | {response.symbol_name}
-
-
-def test_golden_cluster_refactor_responses_validate(
-    singleton_refactored_internals_source,
-    tiny_dsa_refactor_projection,
-    codegen_internals_path,
-) -> None:
-    from src.formula_clustering import cluster_graph_formulas
-
-    from src.refactor_order import compute_multi_member_cluster_refactor_order
-
-    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
-    existing_names = _function_names(singleton_refactored_internals_source)
-    for cluster in compute_multi_member_cluster_refactor_order(
-        tiny_dsa_refactor_projection, clusters
-    ):
-        if cluster.row is None:
-            continue
-        ctx = build_cluster_refactor_context(
-            tiny_dsa_refactor_projection,
-            cluster,
-            codegen_internals_path,
-            source_graph=graph,
-        )
-        assert ctx is not None
-        response = GOLDEN_CLUSTER_REFACTOR_RESPONSES[cluster.row]
-        validate_cluster_refactor_response(
-            ctx,
-            response,
-            existing_names=existing_names,
-            internals_source=singleton_refactored_internals_source,
-        )
-        existing_names = existing_names | {response.helper_name}
-
-
-def test_validate_google_style_docstring_rejects_missing_args() -> None:
-    docstring = """Return the shocked path.
-
-Returns:
-    Debt-to-GDP ratio.
-"""
-    try:
-        validate_google_style_docstring(docstring)
-    except ValueError as error:
-        assert "Args" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_validate_cluster_refactor_response_rejects_docstring_mismatch(
-    shock_cluster_context,
-    codegen_internals_source,
-) -> None:
-    response = _shock_active_response(shock_cluster_context)
-    mismatched = response.model_copy(
-        update={
-            "helper_docstring": "Different docstring.\n\nArgs:\n    ctx: x.\n\nReturns:\n    y."
-        }
-    )
-    try:
-        validate_cluster_refactor_response(
-            shock_cluster_context,
-            mismatched,
-            existing_names=_function_names(codegen_internals_source),
-            internals_source=codegen_internals_source,
-        )
-    except ValueError as error:
-        assert "must match" in str(error)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_align_singleton_response_docstring_recovers_mismatch() -> None:
-    response = GOLDEN_SINGLETON_REFACTOR_RESPONSES["Inputs!B6"]
-    mismatched = response.model_copy(update={"symbol_docstring": "Stale duplicate."})
-    aligned = _align_singleton_response_docstring(mismatched)
-    assert aligned.symbol_docstring == response.symbol_docstring
-
-
-def test_prepare_cluster_refactor_response_aligns_docstring(
-    shock_cluster_context,
-    codegen_internals_source,
-) -> None:
-    response = _shock_active_response(shock_cluster_context)
-    mismatched = response.model_copy(
-        update={
-            "helper_docstring": "Different docstring.\n\nArgs:\n    ctx: x.\n\nReturns:\n    y."
-        }
-    )
-    prepared = _prepare_cluster_refactor_response(mismatched, shock_cluster_context)
-    assert prepared.helper_docstring.rstrip("\n") == response.helper_docstring.rstrip(
-        "\n"
-    )
-    validate_cluster_refactor_response(
-        shock_cluster_context,
-        prepared,
-        existing_names=_function_names(codegen_internals_source),
-        internals_source=codegen_internals_source,
-    )
-
-
-def test_prompt_payload_includes_naming_hints(shock_cluster_context) -> None:
-    payload = prompt_payload(shock_cluster_context)
-    naming_hints = cast(dict[str, object], payload["naming_hints"])
-    constraints = cast(dict[str, Any], payload["constraints"])
-    assert naming_hints or shock_cluster_context.naming_hints
-    assert "helper_name" not in constraints
-    assert constraints["docstring_style"] == "google"
-    assert constraints["require_semantic_locals"] is True
-
-
-def test_resolve_semantic_dependencies_maps_thin_wrappers() -> None:
-    source = (
-        "def shock_active(ctx, time_period: int):\n"
-        "    return 1.0\n\n"
-        "def cell_engine_c10(ctx):\n"
-        "    return shock_active(ctx, time_period=1)\n\n"
-        "def cell_engine_d10(ctx):\n"
-        "    return shock_active(ctx, time_period=2)\n"
-    )
-    semantic, unresolved = resolve_semantic_dependencies(
-        source, ["Engine!D10", "Engine!C10"]
-    )
-    assert unresolved == ()
-    assert len(semantic) == 1
-    dependency = semantic[0]
-    assert isinstance(dependency, SemanticDependency)
-    assert dependency.helper_name == "shock_active"
-    assert dependency.call_form == "shock_active(ctx, time_period=time_period)"
-    assert dependency.address_template == "Engine!{col}10"
-    assert dependency.columns == ("C", "D")
-
-
-def test_resolve_semantic_dependencies_reports_unresolved_cell_helpers() -> None:
-    source = "def cell_engine_c10(ctx):\n    return xl_cell(ctx, 'Engine!C10')\n"
-    semantic, unresolved = resolve_semantic_dependencies(source, ["Engine!C10"])
-    assert semantic == ()
-    assert unresolved == ("cell_engine_c10",)
-
-
-def test_address_in_docstring_range_ignores_excel_formula_addresses() -> None:
-    docstring = (
-        "Return the shocked-path debt-to-GDP percentage for a projection year.\n\n"
-        "Note:\n"
-        "    Covers Engine!C20:G20. Excel: =Inputs!B6*(1+Inputs!C17/100)"
-        "/(1+Inputs!C16/100)-Engine!C16.\n"
-    )
-    # Addresses the helper actually computes (the Covers range) are matched.
-    assert _address_in_docstring_range(docstring, "Engine!C20")
-    assert _address_in_docstring_range(docstring, "Engine!E20")
-    # Addresses that appear only inside the Excel formula transcription must not
-    # be mistaken for cells the helper computes.
-    assert not _address_in_docstring_range(docstring, "Inputs!C16")
-    assert not _address_in_docstring_range(docstring, "Engine!C16")
-    assert not _address_in_docstring_range(docstring, "Inputs!C17")
-
-
-def test_build_cluster_context_row_16_resolves_shock_active(
-    codegen_internals_source,
-    tiny_dsa_refactor_projection,
-    tmp_path,
-) -> None:
-    from src.formula_clustering import cluster_graph_formulas
-
-    clusters = cluster_graph_formulas(tiny_dsa_refactor_projection)
-    by_row = {
-        cluster.row: cluster
-        for cluster in clusters
-        if cluster.row is not None and len(cluster.members) >= 2
-    }
-    singleton_by_address = {
-        cluster.members[0]: cluster for cluster in clusters if len(cluster.members) == 1
-    }
-
-    internals_path = tmp_path / "internals.py"
-    internals_path.write_text(codegen_internals_source, encoding="utf-8")
-
-    for address in ("Inputs!B6", "Engine!B9"):
-        singleton_ctx = build_singleton_refactor_context(
-            tiny_dsa_refactor_projection,
-            singleton_by_address[address],
-            internals_path,
-            source_graph=graph,
-        )
-        assert singleton_ctx is not None
-        updated, _ = apply_singleton_refactor_plan(
-            internals_path.read_text(encoding="utf-8"),
-            GOLDEN_SINGLETON_REFACTOR_RESPONSES[address],
-            singleton_ctx,
-        )
-        internals_path.write_text(updated, encoding="utf-8")
-
-    cluster_ctx_10 = build_cluster_refactor_context(
-        tiny_dsa_refactor_projection,
-        by_row[10],
-        internals_path,
-        source_graph=graph,
-    )
-    assert cluster_ctx_10 is not None
-    updated = apply_refactor_plan(
-        internals_path.read_text(encoding="utf-8"),
-        GOLDEN_CLUSTER_REFACTOR_RESPONSES[10],
-        cluster_ctx_10,
-    )
-    internals_path.write_text(updated, encoding="utf-8")
-
-    cluster_ctx_16 = build_cluster_refactor_context(
-        tiny_dsa_refactor_projection,
-        by_row[16],
-        internals_path,
-        source_graph=graph,
-    )
-    assert cluster_ctx_16 is not None
-    resolved_helpers = {dep.helper_name for dep in cluster_ctx_16.semantic_dependencies}
-    assert "shock_active" in resolved_helpers
-    assert "shock_active" in cluster_ctx_16.external_dependencies
-
-    payload = prompt_payload(cluster_ctx_16)
-    semantic_payload = cast(list[dict[str, Any]], payload["semantic_dependencies"])
-    assert any(entry["helper_name"] == "shock_active" for entry in semantic_payload)
-
-
-def test_cluster_refactor_context_includes_semantic_naming_hints(
-    shock_cluster_context,
-) -> None:
-    payload = prompt_payload(shock_cluster_context)
-    members = cast(list[dict[str, object]], payload["members"])
-    assert any(
-        member.get("row_labels")
-        or member.get("table_labels")
-        or member.get("column_labels")
-        for member in members
-    )
-    assert "naming_hints" in payload
-
-
-def test_build_cluster_refactor_context_row_10(shock_cluster_context) -> None:
-    ctx = shock_cluster_context
-
-    assert ctx.cluster_id >= 0
-    assert ctx.row == 10
-    assert ctx.canonical_template == "=IF(Engine!C5>=Inputs!B21,1,0)"
-    assert ctx.first_year_column == "C"
-    assert len(ctx.members) == 5
-    assert {member.address for member in ctx.members} == {
-        "Engine!C10",
-        "Engine!D10",
-        "Engine!E10",
-        "Engine!F10",
-        "Engine!G10",
-    }
-    assert any(item.concept == "TIME_PERIOD" for item in ctx.key_vocabulary)
-    assert ctx.expected_member_keys["Engine!D10"] == {"TIME_PERIOD": 2}
-
-    c10 = next(member for member in ctx.members if member.address == "Engine!C10")
-    assert c10.function_name == "cell_engine_c10"
-    assert c10.engine_column == "C"
-    assert c10.normalized_formula == "=IF(Engine!C5>=Inputs!B21,1,0)"
-    assert "def cell_engine_c10" in c10.python_source
-    assert c10.dependency_addresses == ("Engine!C5", "Inputs!B21")
-    assert c10.dependency_functions == ()
-
-    assert ctx.external_dependencies == (
-        "cell_engine_c5",
-        "cell_engine_d5",
-        "cell_engine_e5",
-        "cell_engine_f5",
-        "cell_engine_g5",
-        "cell_inputs_b21",
-    )
-    xl_eval_sites = [site for site in ctx.call_sites if site.pattern == "xl_eval"]
-    if xl_eval_sites:
-        assert any(site.callee_address == "Engine!C10" for site in xl_eval_sites)
-
-
-def test_validate_cluster_refactor_response_accepts_safe_helper_name(
-    shock_cluster_context,
-    codegen_internals_source,
-) -> None:
-    response = _shock_active_response(shock_cluster_context)
-    validate_cluster_refactor_response(
-        shock_cluster_context,
-        response,
-        existing_names=_function_names(codegen_internals_source),
-        internals_source=codegen_internals_source,
-    )
-
-
-def test_prepare_cluster_refactor_response_preserves_helper_name(
-    shock_cluster_context,
-) -> None:
-    response = _shock_active_response(shock_cluster_context)
-    renamed = response.model_copy(update={"helper_name": "projection_shock_active"})
-    prepared = _prepare_cluster_refactor_response(renamed, shock_cluster_context)
-    assert prepared.helper_name == "projection_shock_active"
-
-
-def test_apply_cluster_collapse_row_10(
-    shock_cluster_context,
-    singleton_refactored_internals_source,
-) -> None:
-    response = _shock_active_response(shock_cluster_context)
-    validate_cluster_refactor_response(
-        shock_cluster_context,
-        response,
-        existing_names=_function_names(singleton_refactored_internals_source),
-        internals_source=singleton_refactored_internals_source,
-    )
-
-    result = apply_refactor_plan(
-        singleton_refactored_internals_source,
-        response,
-        shock_cluster_context,
-    )
-    validate_refactored_internals(result)
-
-    assert "def shock_active(ctx, time_period: int)" in result
-    assert "def cell_engine_c10(" not in result
-    assert "def cell_engine_d10(" not in result
-    assert "shock_active(ctx, time_period=2)" in _extract_function(
-        result, "cell_engine_d16"
-    )
-    assert "xl_eval(ctx, 'Engine!D10', cell_engine_d10)" not in result
-
-
-def test_full_cluster_collapse_pipeline_rewrites_semantic_helpers(
-    phase_c_internals_source,
-) -> None:
-    validate_refactored_internals(phase_c_internals_source)
-
-    debt_to_gdp = _extract_function(phase_c_internals_source, "debt_to_gdp")
-    assert "xl_eval(ctx, 'Engine!C10', cell_engine_c10)" not in debt_to_gdp
-    assert "shock_active(ctx, time_period=time_period)" in debt_to_gdp
-    assert "primary_balance_shocked(ctx, time_period=time_period)" in debt_to_gdp
-
-    primary_balance = _extract_function(
-        phase_c_internals_source, "primary_balance_shocked"
-    )
-    assert "ten_func_map" not in primary_balance
-    assert "shock_active(ctx, time_period=time_period)" in primary_balance
-
-    output_delta = _extract_function(phase_c_internals_source, "output_delta")
-    assert "fn20" not in output_delta
-    assert "debt_to_gdp(ctx, time_period=time_period)" in output_delta
-    assert "baseline_debt(ctx, time_period=time_period)" in output_delta
-
-
-def test_apply_phase_c_prunes_projection_alias_wrappers(
-    phase_a_internals_source,
-) -> None:
-    updated, pruned = apply_phase_c(phase_a_internals_source)
-    validate_refactored_internals(updated)
-
-    assert pruned == 10
-    assert "def cell_outputs_b12(" not in updated
-    dispatch = _extract_address_dispatch(updated)
-    assert dispatch["Outputs!B12"] == ("baseline_debt", {"time_period": 1})
-    assert dispatch["Outputs!B13"] == ("debt_to_gdp", {"time_period": 1})
-    assert dispatch["Outputs!B14"] == ("output_delta", {"time_period": 1})
-
-    second_pass, second_pruned = apply_phase_c(updated)
-    assert second_pass == updated
-    assert second_pruned == 0
-
-
-def test_apply_phase_c_resolver_dispatches_pruned_addresses(
-    phase_c_internals_source,
-) -> None:
-    dispatch = _extract_address_dispatch(phase_c_internals_source)
-    assert "Engine!C16" not in dispatch
-    assert dispatch["Outputs!B12"] == ("baseline_debt", {"time_period": 1})
-    assert dispatch["Outputs!B13"] == ("debt_to_gdp", {"time_period": 1})
-
-
-def test_apply_phase_c_trim_removes_engine_dispatch_entries() -> None:
-    updated, removed = apply_phase_c(TRIM_FIXTURE_SOURCE)
-    validate_refactored_internals(updated)
-    dispatch = _extract_address_dispatch(updated)
-
-    assert removed >= 1
-    assert "Engine!C10" not in dispatch
-    assert dispatch["Outputs!B14"] == ("output_delta", {"time_period": 1})
-
-
-def test_apply_phase_c_preserves_compute_all(refactored_tiny_dsa_api) -> None:
-    results = refactored_tiny_dsa_api.compute_all(
-        refactored_tiny_dsa_api.make_context()
-    )
-    assert len(results) == 3
-
-
-def test_normalize_member_key_concepts_maps_parameter_names(
-    shock_cluster_context,
-) -> None:
-    from src.internals_refactor import _normalize_member_key_concepts
-
-    response = _shock_active_response(shock_cluster_context)
-    aliased = response.model_copy(
-        update={
-            "member_keys": tuple(
-                entry.model_copy(
-                    update={"keys": {"time_period": entry.keys["TIME_PERIOD"]}}
-                )
-                for entry in response.member_keys
-            )
-        }
-    )
-    normalized = _normalize_member_key_concepts(aliased)
-    assert normalized.member_keys[0].keys == {"TIME_PERIOD": 1}
-
-
-def test_refactor_response_schema_uses_member_keys_not_engine_column() -> None:
-    schema = ClusterRefactorResponse.model_json_schema()
-    properties = schema["properties"]
-    assert "parameters" in properties
-    assert "member_keys" in properties
-    assert "member_bindings" not in properties
-    member_keys_schema = schema["$defs"]["MemberKeys"]["properties"]
-    assert "keys" in member_keys_schema
-    assert "engine_column" not in member_keys_schema
-
-
-def test_prompt_payload_includes_key_vocabulary(shock_cluster_context) -> None:
-    payload = prompt_payload(shock_cluster_context)
-    vocabulary = cast(list[dict[str, str]], payload["key_vocabulary"])
-    assert any(entry["concept"] == "TIME_PERIOD" for entry in vocabulary)
-    members = cast(list[dict[str, object]], payload["members"])
-    expected_keys = cast(dict[str, int], members[0]["expected_keys"])
-    assert expected_keys["TIME_PERIOD"] == 1
-
-
-def test_refactor_cache_key_is_stable(
-    shock_cluster_context,
-    codegen_internals_path,
-) -> None:
-    internals_bytes = codegen_internals_path.read_bytes()
-    schema = ClusterRefactorResponse.model_json_schema()
-    key_a = refactor_cache_key(shock_cluster_context, internals_bytes, schema)
-    key_b = refactor_cache_key(shock_cluster_context, internals_bytes, schema)
-    assert key_a == key_b
-    assert len(key_a) == 64
-
-
-def test_refactor_cache_key_changes_when_member_source_changes(
-    shock_cluster_context,
-    codegen_internals_path,
-) -> None:
-    schema = ClusterRefactorResponse.model_json_schema()
-    internals_bytes = codegen_internals_path.read_bytes()
-    baseline = refactor_cache_key(shock_cluster_context, internals_bytes, schema)
-
-    mutated_member = shock_cluster_context.members[0]
-    replacement = shock_cluster_context.members[1]
-    mutated_members = tuple(
-        replacement if member.address == mutated_member.address else member
-        for member in shock_cluster_context.members
-    )
-    mutated_ctx = replace(shock_cluster_context, members=mutated_members)
-    assert refactor_cache_key(mutated_ctx, internals_bytes, schema) != baseline
-
-
-def test_refactor_cache_key_ignores_internals_line_endings(
-    shock_cluster_context,
-) -> None:
-    schema = ClusterRefactorResponse.model_json_schema()
-    lf_bytes = b"x = 1\nif True:\n    y = 2\n"
-    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
-    assert refactor_cache_key(
-        shock_cluster_context, lf_bytes, schema
-    ) == refactor_cache_key(shock_cluster_context, crlf_bytes, schema)
-
-
-def test_singleton_refactor_cache_key_ignores_internals_line_endings(
-    tiny_dsa_refactor_projection,
-    codegen_internals_source,
-    tmp_path,
-) -> None:
-    from src.formula_clustering import cluster_graph_formulas
-
-    internals_path = tmp_path / "internals.py"
-    internals_path.write_text(codegen_internals_source, encoding="utf-8", newline="\n")
-    cluster = next(
-        cluster
-        for cluster in cluster_graph_formulas(tiny_dsa_refactor_projection)
-        if cluster.members == ("Inputs!B6",)
-    )
-    ctx = build_singleton_refactor_context(
-        tiny_dsa_refactor_projection,
-        cluster,
-        internals_path,
-        source_graph=graph,
-    )
-    assert ctx is not None
-    schema: dict[str, object] = {"type": "object"}
-    lf_bytes = b"x = 1\nif True:\n    y = 2\n"
-    crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
-    assert singleton_refactor_cache_key(
-        ctx, lf_bytes, schema
-    ) == singleton_refactor_cache_key(ctx, crlf_bytes, schema)
-
-
-def _extract_address_dispatch(
-    source: str,
-) -> dict[str, tuple[str, dict[str, int | str | float | bool]]]:
-    module = ast.parse(source)
-    for node in module.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "_ADDRESS_DISPATCH":
-                    assert isinstance(node.value, ast.Dict)
-                    dispatch: dict[
-                        str, tuple[str, dict[str, int | str | float | bool]]
-                    ] = {}
-                    for key, value in zip(node.value.keys, node.value.values):
-                        assert isinstance(key, ast.Constant) and isinstance(
-                            key.value, str
-                        )
-                        assert isinstance(value, ast.Tuple) and len(value.elts) == 2
-                        helper = value.elts[0]
-                        kwargs_node = value.elts[1]
-                        assert isinstance(helper, ast.Constant) and isinstance(
-                            helper.value, str
-                        )
-                        assert isinstance(kwargs_node, ast.Dict)
-                        key_kwargs: dict[str, int | str | float | bool] = {}
-                        for kw_key, kw_value in zip(
-                            kwargs_node.keys,
-                            kwargs_node.values,
-                        ):
-                            assert isinstance(kw_key, ast.Constant) and isinstance(
-                                kw_key.value, str
-                            )
-                            assert isinstance(kw_value, ast.Constant)
-                            literal = kw_value.value
-                            assert isinstance(literal, (str, int, float, bool))
-                            key_kwargs[kw_key.value] = literal
-                        dispatch[key.value] = (helper.value, key_kwargs)
-                    return dispatch
-    raise AssertionError("_ADDRESS_DISPATCH not found")
-
-
-def _function_names(source: str) -> frozenset[str]:
-    module = ast.parse(source)
-    return frozenset(
-        node.name for node in module.body if isinstance(node, ast.FunctionDef)
-    )
-
-
-def _extract_function(source: str, function_name: str) -> str:
-    module = ast.parse(source)
-    for node in module.body:
-        if isinstance(node, ast.FunctionDef) and node.name == function_name:
-            lines = source.splitlines()
-            return "\n".join(lines[node.lineno - 1 : node.end_lineno])
-    raise KeyError(function_name)
-
-
-def _shock_active_response(ctx) -> ClusterRefactorResponse:
+    + RESOLVER_SECTION
+)
+
+KEY_VOCABULARY = (
+    KeyConceptSpec(
+        concept="TIME_PERIOD",
+        dtype="int",
+        suggested_param_name="time_period",
+    ),
+)
+
+CLUSTER_MEMBERS = (
+    MemberContext(
+        address="Engine!C6",
+        function_name="cell_engine_c6",
+        engine_column="C",
+        normalized_formula="=Inputs!C1",
+        python_source="def cell_engine_c6(ctx):\n    return xl_cell(ctx, 'Inputs!C1')\n",
+        dependency_addresses=(),
+        dependency_functions=(),
+    ),
+    MemberContext(
+        address="Engine!D6",
+        function_name="cell_engine_d6",
+        engine_column="D",
+        normalized_formula="=Inputs!D1",
+        python_source="def cell_engine_d6(ctx):\n    return xl_cell(ctx, 'Inputs!D1')\n",
+        dependency_addresses=(),
+        dependency_functions=(),
+    ),
+)
+
+CLUSTER_CONTEXT = ClusterRefactorContext(
+    cluster_id=1,
+    canonical_template="=Inputs!{col}1",
+    row=6,
+    members=CLUSTER_MEMBERS,
+    external_dependencies=(),
+    semantic_dependencies=(),
+    call_sites=(),
+    first_year_column="C",
+    allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+    key_vocabulary=KEY_VOCABULARY,
+    expected_member_keys={
+        "Engine!C6": {"TIME_PERIOD": 1},
+        "Engine!D6": {"TIME_PERIOD": 2},
+    },
+    naming_hints={},
+)
+
+CLUSTER_DOCSTRING = (
+    "Return the passthrough input for a projection period.\n\n"
+    "Args:\n    ctx: Workbook evaluation context.\n"
+    "    time_period: Projection period.\n\n"
+    "Returns:\n    The corresponding input value.\n"
+)
+
+CLUSTER_PARAMETERS = (
+    HelperParameter(name="time_period", concept="TIME_PERIOD", dtype="int"),
+)
+
+CLUSTER_MEMBER_KEYS = (
+    MemberKeys(
+        address="Engine!C6", function_name="cell_engine_c6", keys={"TIME_PERIOD": 1}
+    ),
+    MemberKeys(
+        address="Engine!D6", function_name="cell_engine_d6", keys={"TIME_PERIOD": 2}
+    ),
+)
+
+VALID_CLUSTER_SOURCE = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    columns = {{1: 'C', 2: 'D'}}
+    column = columns[time_period]
+    return xl_cell(ctx, f'Inputs!{{column}}1')
+'''
+
+
+def _cluster_response(
+    *,
+    helper_source: str = VALID_CLUSTER_SOURCE,
+    parameters: tuple[HelperParameter, ...] = CLUSTER_PARAMETERS,
+    uses_first_year_branch: bool = False,
+) -> ClusterRefactorResponse:
     return ClusterRefactorResponse(
-        helper_name="shock_active",
-        helper_docstring=SHOCK_ACTIVE_DOCSTRING,
-        uses_first_year_branch=False,
-        parameters=(
-            HelperParameter(name="time_period", concept="TIME_PERIOD", dtype="int"),
-        ),
-        helper_source=SHOCK_ACTIVE_HELPER,
-        member_keys=tuple(
-            MemberKeys(
-                address=member.address,
-                function_name=member.function_name,
-                keys=ctx.expected_member_keys[member.address],
-            )
-            for member in ctx.members
-        ),
+        helper_name="combined_input_passthrough",
+        helper_docstring=CLUSTER_DOCSTRING,
+        uses_first_year_branch=uses_first_year_branch,
+        parameters=parameters,
+        helper_source=helper_source,
+        member_keys=CLUSTER_MEMBER_KEYS,
+    )
+
+
+def test_refactor_cache_key_includes_prompt_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("src.internals_refactor.refactor_model", lambda: "test-model")
+    schema: dict[str, object] = {"type": "object"}
+    internals_bytes = PRISTINE_CLUSTER.encode()
+    key_v14 = refactor_cache_key(CLUSTER_CONTEXT, internals_bytes, schema)
+    original = REFACTOR_PROMPT_VERSION
+    try:
+        import src.internals_refactor as module
+
+        setattr(module, "REFACTOR_PROMPT_VERSION", 99)
+        key_v99 = refactor_cache_key(CLUSTER_CONTEXT, internals_bytes, schema)
+    finally:
+        import src.internals_refactor as module
+
+        module.REFACTOR_PROMPT_VERSION = original
+    assert key_v14 != key_v99
+
+
+def test_prompt_payload_includes_allowed_runtime_symbols() -> None:
+    payload = prompt_payload(CLUSTER_CONTEXT)
+    constraints = payload["constraints"]
+    assert isinstance(constraints, dict)
+    allowed = constraints.get("allowed_runtime_symbols")
+    assert isinstance(allowed, list)
+    assert "xl_cell" in allowed
+
+
+def test_prompt_for_refactor_lists_allowed_runtime_symbols() -> None:
+    payload = prompt_payload(CLUSTER_CONTEXT)
+    schema = ClusterRefactorResponse.model_json_schema()
+    prompt = _prompt_for_refactor(payload, schema)
+    assert "xl_cell" in prompt
+    assert "suggested_param_name" in prompt
+    assert "uses_first_year_branch" in prompt
+
+
+def test_validate_cluster_accepts_well_formed_response() -> None:
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
+
+
+def test_validate_cluster_rejects_wrong_parameter_name() -> None:
+    bad_parameters = (
+        HelperParameter(name="period", concept="TIME_PERIOD", dtype="int"),
+    )
+    with pytest.raises(ValueError, match="suggested_param_name"):
+        validate_parameter_names_match_vocabulary(
+            CLUSTER_CONTEXT,
+            _cluster_response(parameters=bad_parameters),
+        )
+
+
+def test_validate_cluster_rejects_excel_shaped_locals() -> None:
+    bad_source = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    t1 = xl_cell(ctx, 'Inputs!C1')
+    return t1
+'''
+    helper_def = _single_function_def(bad_source)
+    assert helper_def is not None
+    with pytest.raises(ValueError, match="excel-shaped local names"):
+        validate_semantic_local_names(helper_def)
+
+
+def test_validate_cluster_rejects_disallowed_global_reference() -> None:
+    bad_source = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    return mystery_helper(ctx)
+'''
+    helper_def = _single_function_def(bad_source)
+    assert helper_def is not None
+    with pytest.raises(ValueError, match="disallowed global names"):
+        validate_allowed_global_references(
+            helper_def,
+            allowed_names={"xl_cell", "ctx", "time_period"},
+        )
+
+
+def test_validate_uses_first_year_branch_requires_branching_source() -> None:
+    with pytest.raises(ValueError, match="uses_first_year_branch is True"):
+        validate_uses_first_year_branch_flag(
+            _cluster_response(uses_first_year_branch=True),
+        )
+
+
+def test_validate_uses_first_year_branch_accepts_matching_source() -> None:
+    branch_source = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    if time_period == 1:
+        return xl_cell(ctx, 'Inputs!C1')
+    return xl_cell(ctx, 'Inputs!D1')
+'''
+    validate_uses_first_year_branch_flag(
+        _cluster_response(
+            helper_source=branch_source,
+            uses_first_year_branch=True,
+        )
+    )
+
+
+def test_collapse_bindings_for_response_renders_literal_calls() -> None:
+    bindings = collapse_bindings_for_response(_cluster_response())
+    assert len(bindings) == 2
+    assert bindings[0].literal_call == "combined_input_passthrough(ctx, time_period=1)"
+    assert bindings[1].literal_call == "combined_input_passthrough(ctx, time_period=2)"
+
+
+def test_apply_cluster_collapse_rewrites_and_removes_wrappers() -> None:
+    updated, rewrite_count = apply_cluster_collapse(
+        PRISTINE_CLUSTER,
+        _cluster_response(),
+    )
+    assert rewrite_count == 0
+    assert "def cell_engine_c6" not in updated
+    assert "def cell_engine_d6" not in updated
+    assert "def combined_input_passthrough" in updated
+
+
+def test_apply_phase_c_prunes_unreferenced_thin_wrappers() -> None:
+    source = (
+        RUNTIME_IMPORT
+        + """
+# --- Formula cell functions ---
+
+def shock_active(ctx, time_period):
+    \"\"\"Covers Engine!C10:G10.\"\"\"
+    return xl_cell(ctx, 'Inputs!B21')
+
+def cell_engine_c10(ctx):
+    \"\"\"Thin wrapper.\"\"\"
+    return shock_active(ctx, time_period=1)
+
+"""
+        + RESOLVER_SECTION
+    )
+    updated, pruned = apply_phase_c(source)
+    assert pruned >= 1
+    assert "def cell_engine_c10" not in updated
+    assert "_ADDRESS_DISPATCH" in updated
+
+
+def test_validate_allowed_global_references_allows_runtime_symbols() -> None:
+    module = ast.parse(VALID_CLUSTER_SOURCE)
+    function_def = next(
+        node for node in module.body if isinstance(node, ast.FunctionDef)
+    )
+    validate_allowed_global_references(
+        function_def,
+        allowed_names={"xl_cell", "ctx", "time_period", "columns", "column"},
     )

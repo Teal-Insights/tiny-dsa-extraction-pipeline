@@ -1,94 +1,183 @@
-import logging
-from pathlib import Path
-from typing import Annotated, Iterable, Literal, Mapping, get_args, get_origin
+from __future__ import annotations
 
-from excel_grapher.core.cell_types import Between, RealBetween
-from excel_grapher.exporter import CodeGenerator
+import argparse
+import json
+import time
+from contextlib import nullcontext
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Literal, Mapping, Sequence, cast, get_args, get_origin
+
+from excel_grapher.core.cell_types import normalize_cell_type_env_key
 from excel_grapher.grapher import (
     DependencyGraph,
     DynamicRefConfig,
     create_dependency_graph,
 )
+from excel_grapher.exporter import CodeGenerator
 from excel_grapher.series_bindings import (
     derive_input_series,
     derive_output_series,
     load_series_bindings,
     validate_series_bindings,
 )
+from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
-from src.docstring_callback import available_docstring_callback
-from src.dependency_graph_viz import series_cell_keys
-from src.logging_config import configure_logging
+from src.dependency_graph_viz import (
+    constant_keys_from_leaf_classification,
+    semantic_node_labels,
+    series_cell_keys,
+    write_dependency_graph_site,
+)
+from src.docstring_callback import configure_docstring_callback
 from src.export_validation_assets import export_validation_assets
+from src.pipeline_config import (
+    PipelineConfig,
+    load_pipeline_config,
+    validate_pipeline_config,
+)
+from src.pipeline_context import activate_pipeline_config
+from src.pipeline_monitor import (
+    StageTimer,
+    monitor_pipeline_stage,
+    profile_if_enabled,
+    resolve_stall_log_path,
+)
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
-    DistProjectMetadata,
     VALIDATION_BASELINE_DEV_DEPS,
     render_dist_pyproject_toml,
     write_dist_readme,
 )
-from src.subgraph_projection import build_tiny_dsa_refactor_projection
 from src.semantic_labeling import label_internal_graph_cells
+from src.subgraph_projection import build_refactor_projection
 
-logger = logging.getLogger(__name__)
+SeriesResolutionList = Sequence[Mapping[str, Any]]
 
-repo_root = Path(__file__).resolve().parents[1]
-workbook_path = repo_root / "data/tiny-dsa.xlsx"
-bindings_path = repo_root / "bindings"
-dist_root = repo_root / "dist"
-package_root = dist_root / "tiny_dsa"
-dist_project_metadata = DistProjectMetadata(
-    project_name="tiny-dsa",
-    package_name="tiny_dsa",
-    library_name="Tiny DSA",
-    description=(
-        "A Python implementation of the Tiny-DSA Excel workbook, a stylized "
-        "debt-sustainability tool for computing the debt-to-GDP ratio over a "
-        "five-year horizon with one configurable shock."
-    ),
-    attribution=(
-        "Created by Teal Insights.\n\n![Teal Insights logo](README_files/logo.png)"
-    ),
-    documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
-    repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
-)
+EXTRACTION_SUMMARY_SCHEMA_VERSION = "1.0.0"
 
-targets = ["output_baseline", "output_shocked", "output_delta"]
-series_bindings = load_series_bindings(bindings_path)
 
-# ------------------------------------------------------------
-# Constraint configuration
-# ------------------------------------------------------------
+@dataclass(frozen=True)
+class DependencyGraphExtraction:
+    """Graph build result plus timing diagnostics for the extract-only stage."""
 
-_cols = ("C", "D", "E", "F", "G")
+    graph: DependencyGraph
+    series_bindings: WorkbookSeriesBindings
+    input_series: SeriesResolutionList
+    output_series: SeriesResolutionList
+    timer: StageTimer
+    elapsed_seconds: float
 
-required_constraints = {
-    "Inputs!A10": Literal["Borvelia"],
-    "Inputs!A11": Literal["Litellia"],
-    "Inputs!A12": Literal["Aurelium"],
-    "Inputs!B22": Literal[1, 2, 3],
-    "Inputs!B5": Literal["Borvelia", "Litellia", "Aurelium"],
-}
 
-constraints = required_constraints | {
-    "Engine!C5": Literal[1],
-    "Engine!D5": Literal[2],
-    "Engine!E5": Literal[3],
-    "Engine!F5": Literal[4],
-    "Engine!G5": Literal[5],
-    "Inputs!B10": Annotated[float, RealBetween(0.0, 200.0)],
-    "Inputs!B11": Annotated[float, RealBetween(0.0, 200.0)],
-    "Inputs!B12": Annotated[float, RealBetween(0.0, 200.0)],
-    "Inputs!B21": Annotated[int, Between(1, 5)],
-    "Inputs!B26": Annotated[float, RealBetween(-30.0, 30.0)],
-    "Inputs!C26": Annotated[float, RealBetween(-30.0, 30.0)],
-    "Inputs!D26": Annotated[float, RealBetween(-30.0, 30.0)],
-    **{f"Inputs!{c}16": Annotated[float, RealBetween(-10.0, 15.0)] for c in _cols},
-    **{f"Inputs!{c}17": Annotated[float, RealBetween(0.0, 20.0)] for c in _cols},
-    **{f"Inputs!{c}18": Annotated[float, RealBetween(-15.0, 15.0)] for c in _cols},
-}
+def count_provenance_edges(graph: DependencyGraph) -> int:
+    """Count dependency edges that carry extraction provenance metadata."""
+    count = 0
+    for key in graph:
+        for dependency in graph.get_dependencies(key):
+            if graph.get_edge_attrs(key, dependency).provenance is not None:
+                count += 1
+    return count
 
-LeafKind = Literal["input", "constant"]
+
+def _graph_edge_count(graph: DependencyGraph) -> int:
+    return sum(len(graph.get_dependencies(key)) for key in graph)
+
+
+def extract_dependency_graph_result(
+    config: PipelineConfig,
+) -> DependencyGraphExtraction:
+    """Build the pipeline dependency graph and collect stage timings."""
+    timer = StageTimer()
+    stall_log_path = resolve_stall_log_path(config.graph_output_dir)
+    started = time.perf_counter()
+    with profile_if_enabled(config.graph_output_dir, basename="extract"):
+        graph, series_bindings, input_series, output_series = build_pipeline_graph(
+            config,
+            timer=timer,
+            stall_log_path=stall_log_path,
+        )
+    elapsed_seconds = time.perf_counter() - started
+    return DependencyGraphExtraction(
+        graph=graph,
+        series_bindings=series_bindings,
+        input_series=input_series,
+        output_series=output_series,
+        timer=timer,
+        elapsed_seconds=elapsed_seconds,
+    )
+
+
+def _artifact_output_path(config: PipelineConfig, path: Path) -> str:
+    resolved = path if path.is_absolute() else config.repo_root / path
+    try:
+        return resolved.relative_to(config.repo_root).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
+def write_dependency_graph_artifacts(
+    extraction: DependencyGraphExtraction,
+    config: PipelineConfig,
+) -> dict[str, Any]:
+    """Write the interactive graph site and extraction summary JSON."""
+    graph = extraction.graph
+    leaf_classification = graph.leaf_classification or {}
+    output_dir = config.graph_output_dir
+    write_dependency_graph_site(
+        graph,
+        output_dir,
+        node_labels=semantic_node_labels(graph),
+        target_keys=set(config.targets),
+        input_keys=series_cell_keys(extraction.input_series),
+        output_keys=series_cell_keys(extraction.output_series),
+        constant_keys=constant_keys_from_leaf_classification(leaf_classification),
+        timer=extraction.timer,
+    )
+
+    output_paths = {
+        "output_dir": _artifact_output_path(config, output_dir),
+        "index_html": _artifact_output_path(config, output_dir / "index.html"),
+        "dependency_graph_json": _artifact_output_path(
+            config, output_dir / "dependency-graph.json"
+        ),
+        "dependencies_dot": _artifact_output_path(
+            config, output_dir / "dependencies.dot"
+        ),
+        "graph_topology_json": _artifact_output_path(
+            config, output_dir / "graph-topology.json"
+        ),
+        "extraction_summary_json": _artifact_output_path(
+            config, output_dir / "extraction-summary.json"
+        ),
+    }
+    summary: dict[str, Any] = {
+        "schema_version": EXTRACTION_SUMMARY_SCHEMA_VERSION,
+        "node_count": len(graph),
+        "edge_count": _graph_edge_count(graph),
+        "leaf_count": len(graph.leaf_keys()),
+        "provenance_edge_count": count_provenance_edges(graph),
+        "elapsed_seconds": round(extraction.elapsed_seconds, 3),
+        "stage_timings": extraction.timer.as_dict(),
+        "output_paths": output_paths,
+    }
+    summary_path = output_dir / "extraction-summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return summary
+
+
+def extract_dependency_graph(config: PipelineConfig) -> dict[str, Any]:
+    """Build the dependency graph, write review artifacts, and return the summary."""
+    extraction = extract_dependency_graph_result(config)
+    summary = write_dependency_graph_artifacts(extraction, config)
+    extraction.timer.print_summary(header="Extract stage timings")
+    stall_log_path = resolve_stall_log_path(config.graph_output_dir)
+    if stall_log_path.is_file():
+        print(f"Stall diagnostics: {stall_log_path}")
+    print(f"Wrote dependency graph artifacts to {config.graph_output_dir.resolve()}/")
+    return summary
 
 
 def is_constant_constraint(constraint: object) -> bool:
@@ -101,76 +190,134 @@ def classify_leaves_from_constraints(
     leaf_keys: Iterable[str],
 ) -> dict[str, str]:
     """Classify graph leaves as inputs or constants from their constraints."""
+    normalized_constraints = {
+        normalize_cell_type_env_key(key): value for key, value in constraint_map.items()
+    }
     keys = list(leaf_keys)
-    missing = [key for key in keys if key not in constraint_map]
+    missing = [
+        key
+        for key in keys
+        if normalize_cell_type_env_key(key) not in normalized_constraints
+    ]
     if missing:
         raise KeyError(f"missing constraints for leaf cells: {missing}")
     return {
-        key: "constant" if is_constant_constraint(constraint_map[key]) else "input"
+        key: (
+            "constant"
+            if is_constant_constraint(
+                normalized_constraints[normalize_cell_type_env_key(key)]
+            )
+            else "input"
+        )
         for key in keys
     }
 
 
-# ------------------------------------------------------------
-# Extract the graph
-# ------------------------------------------------------------
+def build_pipeline_graph(
+    config: PipelineConfig,
+    *,
+    timer: StageTimer | None = None,
+    stall_log_path: Path | None = None,
+) -> tuple[
+    DependencyGraph,
+    WorkbookSeriesBindings,
+    SeriesResolutionList,
+    SeriesResolutionList,
+]:
+    def stage(name: str):
+        if timer is None:
+            return nullcontext()
+        return monitor_pipeline_stage(
+            timer,
+            name,
+            stall_log_path=stall_log_path,
+        )
 
-config = DynamicRefConfig.from_constraints(constraints, {})
+    with stage("load_series_bindings"):
+        series_bindings: WorkbookSeriesBindings = load_series_bindings(
+            config.bindings_path
+        )
+        dynamic_ref_config = DynamicRefConfig.from_constraints(config.constraints, {})
 
-graph: DependencyGraph = create_dependency_graph(
-    workbook_path,
-    targets,
-    load_values=True,
-    dynamic_refs=config,
-    capture_dependency_provenance=True,
-)
+    with stage("create_dependency_graph"):
+        graph = create_dependency_graph(
+            config.workbook_path,
+            list(config.targets),
+            load_values=True,
+            dynamic_refs=dynamic_ref_config,
+            capture_dependency_provenance=True,
+        )
 
-binding_validation_report = validate_series_bindings(
-    graph,
-    series_bindings,
-    workbook=workbook_path,
-)
-if not binding_validation_report["ok"]:
-    raise ValueError(
-        f"Invalid series bindings: {binding_validation_report['issues']!r}"
-    )
+    with stage("validate_series_bindings"):
+        binding_validation_report = validate_series_bindings(
+            graph,
+            series_bindings,
+            workbook=config.workbook_path,
+        )
+        if not binding_validation_report["ok"]:
+            raise ValueError(
+                f"Invalid series bindings: {binding_validation_report['issues']!r}"
+            )
 
-input_series = derive_input_series(graph, series_bindings, workbook=workbook_path)
-output_series = derive_output_series(graph, series_bindings, workbook=workbook_path)
+    with stage("derive_input_series"):
+        input_series = cast(
+            SeriesResolutionList,
+            derive_input_series(graph, series_bindings, workbook=config.workbook_path),
+        )
 
-label_internal_graph_cells(
-    graph=graph,
-    workbook_path=workbook_path,
-    input_cells=series_cell_keys(input_series),
-    target_cells=series_cell_keys(output_series),
-    concept_scheme=series_bindings["concept_scheme"],
-)
+    with stage("derive_output_series"):
+        output_series = cast(
+            SeriesResolutionList,
+            derive_output_series(graph, series_bindings, workbook=config.workbook_path),
+        )
+
+    with stage("label_internal_graph_cells"):
+        label_internal_graph_cells(
+            graph=graph,
+            workbook_path=config.workbook_path,
+            input_cells=series_cell_keys(input_series),
+            target_cells=series_cell_keys(output_series),
+            concept_scheme=series_bindings["concept_scheme"],
+        )
+
+    with stage("classify_leaves"):
+        leaf_classification = classify_leaves_from_constraints(
+            config.constraints, graph.leaf_keys()
+        )
+        graph.leaf_classification = leaf_classification
+
+    return graph, series_bindings, input_series, output_series
 
 
-# ------------------------------------------------------------
-# Export the graph to Python code
-# ------------------------------------------------------------
+def export_generated_package(config: PipelineConfig) -> None:
+    """Write the generated package under dist/."""
+    timer = StageTimer()
+    stall_log_path = resolve_stall_log_path(config.graph_output_dir)
+    with profile_if_enabled(config.graph_output_dir):
+        graph, series_bindings, _input_series, _output_series = build_pipeline_graph(
+            config,
+            timer=timer,
+            stall_log_path=stall_log_path,
+        )
+    timer.print_summary()
+    if stall_log_path.is_file():
+        print(f"Stall diagnostics: {stall_log_path}")
+    refactor_projection = build_refactor_projection(graph)
+    callback_name = configure_docstring_callback(config)
 
-leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_keys())
-graph.leaf_classification = leaf_classification
-refactor_projection = build_tiny_dsa_refactor_projection(graph)
-
-
-def export_generated_package() -> None:
-    """Write the generated tiny-dsa package under dist/."""
-    logger.info("Stage: generating package modules")
     with CodeGenerator(refactor_projection) as generator:
         modules = generator.generate_modules(
-            targets,
+            list(config.targets),
             series_bindings=series_bindings,
-            bindings_workbook=workbook_path,
-            series_docstring_callback=available_docstring_callback(),
+            bindings_workbook=config.workbook_path,
+            series_docstring_callback=callback_name,
             docstring_renderer="google",
         )
 
+    package_root = config.package_root
     package_root.mkdir(parents=True, exist_ok=True)
 
-    GENERATED_MODULE_NAMES = frozenset(
+    generated_module_names = frozenset(
         {"__init__.py", "api.py", "data.py", "runtime.py", "internals.py"}
     )
 
@@ -179,8 +326,8 @@ def export_generated_package() -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(code, encoding="utf-8", newline="\n")
 
-    for stale_module in GENERATED_MODULE_NAMES:
-        stale_path = dist_root / stale_module
+    for stale_module in generated_module_names:
+        stale_path = config.dist_root / stale_module
         if stale_path.is_file():
             stale_path.unlink()
 
@@ -193,43 +340,56 @@ _validate_user_guide_cells.py
 tests/results/local/
 """
 
-    (dist_root / ".gitignore").write_text(gitignore_content, encoding="utf-8")
-    (dist_root / "pyproject.toml").write_text(
+    (config.dist_root / ".gitignore").write_text(gitignore_content, encoding="utf-8")
+    (config.dist_root / "pyproject.toml").write_text(
         render_dist_pyproject_toml(
             dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
             validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
-            metadata=dist_project_metadata,
+            metadata=config.dist_metadata,
         ),
         encoding="utf-8",
     )
-    write_dist_readme(dist_root, metadata=dist_project_metadata)
+    write_dist_readme(config.dist_root, metadata=config.dist_metadata)
 
-    export_validation_assets(repo_root=repo_root, dist_root=dist_root)
+    export_validation_assets(config=config)
 
     from src.formula_clustering import cluster_graph_formulas
     from src.internals_refactor import refactor_internals_all_clusters
 
     formula_clusters = cluster_graph_formulas(refactor_projection)
-    logger.info("Stage: refactoring internals (%d clusters)", len(formula_clusters))
     refactor_internals_all_clusters(
         refactor_projection,
         formula_clusters,
         internals_path=package_root / "internals.py",
         source_graph=graph,
+        bindings_path=config.bindings_path,
+        workbook_path=config.workbook_path,
     )
-    logger.info("Stage: internals refactor complete")
 
 
-def main() -> None:
-    configure_logging()
-    logger.info("Stage: exporting generated package")
-    export_generated_package()
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the extraction pipeline.")
+    parser.add_argument(
+        "--extract-graph",
+        action="store_true",
+        help="Build the dependency graph, write review artifacts, and exit.",
+    )
+    args = parser.parse_args(list(argv) if argv is not None else None)
+
+    config = load_pipeline_config()
+    validate_pipeline_config(config)
+    activate_pipeline_config(config)
+    if args.extract_graph:
+        extract_dependency_graph(config)
+        return
+    export_generated_package(config)
     from src.documentation_pipeline import run_documentation_pipeline
 
-    logger.info("Stage: running documentation pipeline")
-    run_documentation_pipeline()
-    logger.info("Pipeline complete")
+    run_documentation_pipeline(config)
 
 
 if __name__ == "__main__":
+    from src.logging_config import configure_logging
+
+    configure_logging()
     main()

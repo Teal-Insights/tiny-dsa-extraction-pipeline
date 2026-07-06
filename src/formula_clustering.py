@@ -6,12 +6,11 @@ from typing import TypeAlias
 from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
 
-from src.projection_columns import parse_workbook_address
+from src.workbook_addresses import parse_workbook_address
 
 ClusterableGraph: TypeAlias = DependencyGraph | ProjectionResult
 
-# Max normalized-formula Levenshtein ratio among parallel Tiny DSA projection
-# families (including year-one carry-in vs chain columns on row 6).
+# Default normalized-formula Levenshtein ratio for parallel formula families.
 DEFAULT_SIMILARITY_THRESHOLD = 0.16
 
 

@@ -1,0 +1,40 @@
+schema_version: 1.5.0
+workbook: workbook.xlsx
+series:
+  - id: result_a
+    sheet: Outputs
+    data_range: Outputs!B1
+    layout: scalar
+    output:
+      compute:
+        name: compute_result_a
+        record_contract: records
+    structure:
+      measure:
+        concept: OBS_VALUE
+        dtype: float
+        bind:
+          kind: data_cell
+          read: float
+      dimensions: []
+    key: []
+    notes: First parallel output column.
+
+  - id: result_b
+    sheet: Outputs
+    data_range: Outputs!C1
+    layout: scalar
+    output:
+      compute:
+        name: compute_result_b
+        record_contract: records
+    structure:
+      measure:
+        concept: OBS_VALUE
+        dtype: float
+        bind:
+          kind: data_cell
+          read: float
+      dimensions: []
+    key: []
+    notes: Second parallel output column.

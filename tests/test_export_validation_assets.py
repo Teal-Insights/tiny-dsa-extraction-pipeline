@@ -7,12 +7,48 @@ from pathlib import Path
 import pytest
 
 from src.export_validation_assets import export_validation_assets
+from src.pipeline_config import DistProjectMetadata, PipelineConfig
 from src.qmd_python_validation import (
     VALIDATION_DEPENDENCY_GROUP,
     render_dist_pyproject_toml,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+
+def _sample_config(repo_root: Path) -> PipelineConfig:
+    return PipelineConfig(
+        repo_root=repo_root,
+        workbook_path=repo_root / "data" / "workbook.xlsx",
+        guide_path=repo_root / "data" / "guide.md",
+        bindings_path=repo_root / "bindings",
+        dist_root=repo_root / "dist",
+        targets=(),
+        constraints={},
+        dist_metadata=DistProjectMetadata(
+            project_name="my-model",
+            package_name="my_model",
+            library_name="My Model",
+            description="Example library.",
+            documentation_url="https://example.com/",
+        ),
+        docstring_callback_name="series_docs",
+        projection_layout=None,
+        canonical_api_example_path=repo_root / "templates" / "canonical-api-usage.md",
+        binding_authoring_prompt_path=repo_root
+        / "templates"
+        / "binding-authoring-prompt.txt",
+        section_rewrite_introduction_focus_path=(
+            repo_root / "templates" / "section-rewrite-introduction-focus.txt"
+        ),
+        section_rewrite_functional_overview_focus_path=(
+            repo_root / "templates" / "section-rewrite-functional-overview-focus.txt"
+        ),
+        section_rewrite_illustrative_example_focus_path=(
+            repo_root / "templates" / "section-rewrite-illustrative-example-focus.txt"
+        ),
+        differential_workbook_rel=Path("data/workbook.xlsx"),
+        differential_report_dir_rel=Path("data/differential/exported_library"),
+        graph_output_dir=repo_root / "artifacts" / "dependency-graph",
+    )
 
 
 def test_render_dist_pyproject_toml_includes_validation_dependency_group() -> None:
@@ -22,6 +58,13 @@ def test_render_dist_pyproject_toml_includes_validation_dependency_group() -> No
             "xlwings>=0.35.3",
             "pywin32>=311; sys_platform == 'win32'",
         ],
+        metadata=DistProjectMetadata(
+            project_name="my-model",
+            package_name="my_model",
+            library_name="My Model",
+            description="Example library.",
+            documentation_url="https://example.com/",
+        ),
     )
     assert "[dependency-groups]" in text
     assert "dev = [" in text
@@ -35,7 +78,7 @@ def test_export_validation_assets_copies_harness_workbook_and_reference_reports(
 ) -> None:
     repo_root = tmp_path / "repo"
     dist_root = repo_root / "dist"
-    workbook_src = repo_root / "data" / "tiny-dsa.xlsx"
+    workbook_src = repo_root / "data" / "workbook.xlsx"
     harness_src = (
         repo_root / "tests" / "differential" / "differential_test_exported_library.py"
     )
@@ -50,15 +93,15 @@ def test_export_validation_assets_copies_harness_workbook_and_reference_reports(
     (report_src / "parity_report.txt").write_text("PASS\n", encoding="utf-8")
 
     dist_root.mkdir()
-    (dist_root / "tiny_dsa").mkdir()
+    (dist_root / "my_model").mkdir()
 
-    export_validation_assets(repo_root=repo_root, dist_root=dist_root)
+    export_validation_assets(config=_sample_config(repo_root))
 
     tests_root = dist_root / "tests"
     assert (tests_root / "differential_test_exported_library.py").read_text(
         encoding="utf-8"
     ) == "# harness\n"
-    assert (tests_root / "fixtures" / "tiny-dsa.xlsx").read_bytes() == b"workbook"
+    assert (tests_root / "fixtures" / "workbook.xlsx").read_bytes() == b"workbook"
     assert (tests_root / "results" / "reference" / "parity_report.csv").exists()
     assert (tests_root / "results" / "reference" / "parity_report.txt").exists()
     assert (tests_root / "README.md").exists()
@@ -69,7 +112,7 @@ def test_export_validation_assets_raises_when_reference_reports_missing(
 ) -> None:
     repo_root = tmp_path / "repo"
     dist_root = repo_root / "dist"
-    workbook_src = repo_root / "data" / "tiny-dsa.xlsx"
+    workbook_src = repo_root / "data" / "workbook.xlsx"
     harness_src = (
         repo_root / "tests" / "differential" / "differential_test_exported_library.py"
     )
@@ -81,4 +124,4 @@ def test_export_validation_assets_raises_when_reference_reports_missing(
     dist_root.mkdir()
 
     with pytest.raises(FileNotFoundError, match="parity_report"):
-        export_validation_assets(repo_root=repo_root, dist_root=dist_root)
+        export_validation_assets(config=_sample_config(repo_root))
