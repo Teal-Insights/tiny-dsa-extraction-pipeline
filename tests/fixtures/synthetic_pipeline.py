@@ -38,6 +38,7 @@ PROJECTION_LAYOUT = ProjectionColumnLayout(
     time_period_to_engine_column={1: "B", 2: "C"},
 )
 
+# Synthetic audit catalog; wired into synthetic_pipeline_config as graph_audit_cases.
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = (
     GraphAuditCase(
         parent_key="Outputs!B1",
@@ -158,4 +159,5 @@ def synthetic_pipeline_config(
         differential_report_dir_rel=Path("data/differential/exported_library"),
         differential_graph_report_dir_rel=Path("data/differential/graph"),
         graph_output_dir=root / "artifacts" / "dependency-graph",
+        graph_audit_cases=GRAPH_AUDIT_CASES,
     )

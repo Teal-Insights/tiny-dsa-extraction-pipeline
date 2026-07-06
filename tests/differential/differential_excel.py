@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from excel_grapher import XlError
+from excel_grapher.core.address_keys import normalize_key, parse_address
 
 
 def read_cell_value(sheets: Any, address: str) -> Any:
@@ -14,7 +15,7 @@ def read_cell_value(sheets: Any, address: str) -> Any:
     default. ``err_to_str=True`` returns the literal error text so the golden
     oracle can be compared against typed ``XlError`` values from the SUT.
     """
-    sheet, cell = address.split("!", 1)
+    sheet, cell = parse_address(normalize_key(address))
     return sheets[sheet].range(cell).options(err_to_str=True).value
 
 

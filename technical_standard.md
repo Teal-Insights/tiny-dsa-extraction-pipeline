@@ -35,8 +35,24 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 | **Every mutable leaf is bound** | Each leaf classified as `input` appears in `inputs.bindings.yaml`; unbound mutable leaves fail the pipeline. |
 | **Constants distinguished from inputs** | Single-value `Literal[...]` constraints mark lookup/structural data; range constraints mark user-editable inputs. |
 | **Constraints cover all leaves** | Every graph leaf has a typed constraint (`Literal`, `Between`, `RealBetween`, etc.) for codegen, testing, and documentation. |
+| **Public input labels resolved** | Every scenario value written to an enum public input cell matches a workbook reference label exactly. A configure test fails if any scenario input cannot be resolved or if `CONSTRAINTS` literals diverge from reference cells. |
 
-`tests/test_workbook_constraints.py` enforces the configure-stage binding and constraint invariants above against the synthetic workbook fixture in CI.
+**Address keys:** `excel-grapher` stores sheet-qualified addresses in canonical form (e.g. `'Discrete Risks'!H2`). Human-authored `CONSTRAINTS` keys and graph `leaf_keys()` may differ in quoting but normalize to the same form via `normalize_cell_type_env_key()` (constraint matching) and `normalize_key()` (graph lookup). Harnesses and audits must normalize before comparing config addresses to graph keys. See [issue #51](https://github.com/Teal-Insights/extraction-pipeline-template/issues/51).
+
+**Workbook-exact label resolution:** Scenario matrices and exported APIs naturally use clean logical values (`"High"`, `"Real interest rate"`). Many workbooks branch with **exact string equality** on reference label cells (e.g. `IF($B$2=$B$9, …)`). If differential/configure harnesses write logical strings to public input cells instead of the workbook's exact label literals, formulas can silently fall through to `""` and produce `#VALUE!` on later projection years — while parity still passes when both oracles error the same way. This is distinct from address-key normalization ([#51](https://github.com/Teal-Insights/extraction-pipeline-template/issues/51)).
+
+Treat **workbook reference label cells** as the source of truth for values written to public input cells. Logical scenario ids and API parameter names may stay human-readable; **Excel-facing writes must match reference literals character-for-character** (including trailing spaces and suffixes like `(a)`).
+
+Configure checklist (workbook-neutral):
+
+1. **Discover reference labels** — Identify cells the workbook uses in IF/MATCH/CHOOSE guards for each public enum input. Sheet and range names are project-specific.
+2. **Audit exact literals** — Record values with `repr()`; do not assume trimmed or canonical spellings.
+3. **Align `CONSTRAINTS`** — `Literal[...]` on each public input must use those exact strings, not cleaned-up scenario names.
+4. **Resolve at the harness boundary** — Scenario definitions keep logical values; a small resolver maps logical → workbook-exact immediately before golden/graph `set_inputs`. Compare with `.strip()` (and prefix rules for suffix variants like `"Real interest rate"` → `"Real interest rate (a)"`); **write the raw workbook string**.
+5. **Normalize only internally** — Block lookups, dict keys, and test ids may strip; public input writes may not until the source workbook is corrected.
+6. **Configure test** — Assert every scenario value for each enum public input resolves to a loaded workbook label, and that every `CONSTRAINTS` literal appears among reference labels. See [`tests/differential/workbook_labels.py`](tests/differential/workbook_labels.py).
+
+`tests/test_workbook_constraints.py` enforces the configure-stage binding and constraint invariants above against the synthetic workbook fixture in CI. When `REFERENCE_LABEL_CELLS` is populated in `workbook_config.py`, `tests/test_workbook_labels.py` enforces label resolution.
 
 #### 2. Extract
 
@@ -46,7 +62,7 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 | **Graph is inspectable** | DAG from outputs to inputs; manual review confirms expected sheets, no spurious nodes, no missing shock/engine paths. |
 | **Provenance captured** | `capture_dependency_provenance=True` so later compression/refactor projections are safe and auditable. |
 | **Series derive cleanly** | `derive_input_series` / `derive_output_series` resolve every binding to concrete cell addresses. |
-| **Dependency chains pass AI-powered spot-checking** | Optional: declare `GRAPH_AUDIT_CASES` in `workbook_config.py`, set `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`; name prefix selects OpenAI, Z.AI, or DeepSeek), and run `pytest tests/test_extraction_graph_accuracy.py --run-skipped` with the matching provider API key. Per-parent audits spot-check direct dependency sets; they do not exhaust every conditional path. |
+| **Dependency chains pass AI-powered spot-checking** | Optional: declare `GRAPH_AUDIT_CASES` in `workbook_config.py` (loaded via `PipelineConfig.graph_audit_cases`), set `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`; name prefix selects OpenAI, Z.AI, or DeepSeek), and run `pytest tests/test_extraction_graph_accuracy.py --run-skipped` with the matching provider API key. The synthetic smoke-test audit runs without copying cases into `workbook_config.py`. Per-parent audits spot-check direct dependency sets; they do not exhaust every conditional path. `LLM_GRAPH_AUDIT_CASES` optionally caps how many declared cases are selected per run. Audits skip the LLM and return `inconclusive` when dependency evidence is truncated; returned addresses are normalized and validated (`spurious_dependencies` must be direct graph children; unknown addresses are flagged separately). Only `verdict: "correct"` counts as a pass. |
 
 #### 3. Export
 
@@ -88,6 +104,7 @@ Golden-master parity (100% pass rate, precision policy, first-divergence reporti
 - **Error handling is insufficiently Pythonic**: Our Python runtime replicates Excel error-handling semantics. In Excel, errors in "internals" are made visible via error codes like `#N/A` and `#VALUE!` appearing in user-visible cells. In Python, internals are hidden from the user, so we should raise Python exceptions instead.
 - **Excel runtime still uses ugly helpers for simple mathematical operations**: Where possible, we should use Python's built-in mathematical operators. This should be doable for adding, subtracting, and multiplying, but may not be possible for division (because Excel division coerces datatypes differently). (Perhaps we could implement division by wrapping operands in coercion functions like `float` or `int`.)
 - **Public API takes pandas/polars inputs but does not return pandas/polars outputs**: We should provide a way to return outputs as pandas/polars DataFrames if that's what the user specifies.
+- **Matched errors are not healthy by default:** A passing parity run where both oracles return the same `#VALUE!` or `#N/A` is not evidence of a healthy scenario unless the case explicitly sets `expects_error_values=True`. Dropdown label mismatches (logical `"High"` vs workbook `"High "`) are a common cause of silent matched errors on long-horizon outputs only.
 - **Dynamic ref resolution is not fully implemented for hard cases yet:** We don't yet fully support nested dynamic refs in `excel-grapher`, and constraint resolution can take a long time for wide domains due to combinatorial blowup.
 - **Similarity-aware graph packing should be explored as a better compression strategy:** Export uses `OptimalCompression` as the compression strategy; this seemed to work well on Tiny DSA, but similarity-aware compression might be better for larger workbooks (to maximize deduplication potential).
 
@@ -103,10 +120,12 @@ Ordered to match the onboarding checklist in [README.md](README.md#clone-and-con
 [ ] Configure: bindings/inputs.bindings.yaml + outputs.bindings.yaml validated
 [ ] Configure: dynamic-ref constraint candidates constrained
 [ ] Configure: all leaves classified; mutable leaves bound
+[ ] Configure: public enum input labels resolved to workbook reference literals
 [ ] Extract: graph extracts with provenance (--extract-graph)
 [ ] Review graph: manual completeness review done; optional LLM dependency audit passed
+[ ] Verify graph: scenario matrix defined in tests/differential/; graph-oracle parity passes (uv run python -m tests.differential.differential_test_graph)
 [ ] Export: dist package builds; semantic API scenario runs
-[ ] Export: validation bundle exported; differential parity passes
+[ ] Export: validation bundle exported; exported-library differential parity passes
 [ ] Document / refactor: public API uses domain language; docstrings present
 [ ] Document / refactor: internals refactored; parity re-confirmed
 
@@ -457,6 +476,12 @@ the section it enforces. Any unchecked box = not conformant.
 
 - [ ] All **three pre-flight checks** run before any scenario: path/package verification,
   staleness (content-hash **hard-fail**), and binding-cell verification (§4).
+- [ ] Sheet-qualified addresses are normalized with `normalize_key` / `parse_address` at harness
+  boundaries before graph lookup or xlwings writes — not compared or split with naive
+  `split("!", 1)` (Configure address-keys note).
+- [ ] Enum public input writes use **workbook-exact reference label strings** — logical scenario
+  values are resolved at the harness boundary, not trimmed or canonicalized on write
+  (Configure label-resolution note).
 - [ ] The sweep includes the canonical, single-axis, full-factorial, and boundary groups (§5).
 - [ ] The sweep includes an **error/boundary group** that actually *exercises* error-class
   equality — reachable error-return paths and domain edges, not happy-path only (§5).

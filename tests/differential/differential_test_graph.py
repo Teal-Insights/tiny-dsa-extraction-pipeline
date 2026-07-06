@@ -6,6 +6,13 @@ graph is built from the same ``constraints`` and ``TARGETS`` declared in
 ``workbook_config.py``, so this differential stays in lockstep with extraction
 as the pipeline evolves.
 
+Address keys: ``excel-grapher`` stores sheet-qualified addresses in canonical
+form (e.g. ``'Discrete Risks'!H2``). Human-authored scenario matrices and
+bindings may use unquoted spellings (``Discrete Risks!H2``). Harness drivers
+normalize with ``normalize_key`` before graph lookup and use
+``parse_address(normalize_key(...))`` for xlwings/COM writes — never
+``split("!", 1)`` on sheet-qualified addresses.
+
 Workbook-specific scenario definitions live in the ``Workbook-specific hooks``
 section at the bottom of this module.
 
@@ -35,9 +42,11 @@ from .differential_excel import (
     matched_error_values,
     read_cell_value,
 )
+from .differential_scenario_inputs import collect_scenario_input_addresses
 from .differential_types import ATOL, Axis, AxisPoint, Scenario
 
 from excel_grapher import XlError
+from excel_grapher.core.address_keys import normalize_key, parse_address
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import (
     DependencyGraph,
@@ -236,10 +245,23 @@ class GoldenDriver:
         self._app.display_alerts = False
         self._app.screen_updating = False
         self._book = self._app.books.open(str(self._tmp_wb))
+        self._input_baselines: dict[str, Any] = {}
+
+    def record_input_baselines(self, cells: frozenset[str]) -> None:
+        """Snapshot baseline values for the union of all scenario input cells."""
+        self._input_baselines = {cell: self.read(cell) for cell in cells}
+
+    def reset_inputs(self) -> None:
+        """Restore scenario input cells to values captured at sweep start."""
+        for key, value in self._input_baselines.items():
+            sheet, addr = parse_address(normalize_key(key))
+            self._book.sheets[sheet].range(addr).value = value
+        if self._input_baselines:
+            self._app.calculate()
 
     def set_inputs(self, inputs: dict[str, Any]) -> None:
         for key, value in inputs.items():
-            sheet, addr = key.split("!", 1)
+            sheet, addr = parse_address(normalize_key(key))
             self._book.sheets[sheet].range(addr).value = value
         self._app.calculate()
 
@@ -278,16 +300,32 @@ class MvpGraphDriver:
             self._graph.formula_keys()
         )
         self.missing_cells: set[str] = set()
+        self._input_baselines: dict[str, Any] = {}
+
+    def record_input_baselines(self, cells: frozenset[str]) -> None:
+        """Snapshot baseline values for the union of all scenario input cells."""
+        self._input_baselines = {
+            normalize_key(cell): node.value
+            for cell in cells
+            if normalize_key(cell) in self._known_keys
+            if (node := self._graph.get_node(normalize_key(cell))) is not None
+        }
+
+    def reset_inputs(self) -> None:
+        """Restore scenario input cells to values captured at sweep start."""
+        for key, value in self._input_baselines.items():
+            self._graph.set_node_value(key, value)
 
     def set_inputs(self, inputs: dict[str, Any]) -> None:
         for key, value in inputs.items():
-            if key in self._known_keys:
-                self._graph.set_node_value(key, value)
+            canonical = normalize_key(key)
+            if canonical in self._known_keys:
+                self._graph.set_node_value(canonical, value)
             else:
                 self.missing_cells.add(key)
 
     def read(self, cell: str) -> Any:
-        return self._evaluator.evaluate(cell)
+        return self._evaluator.evaluate(normalize_key(cell))
 
 
 def _resolve_axes() -> tuple[Axis, ...]:
@@ -528,22 +566,24 @@ def run_sweep(config: GraphDifferentialConfig) -> tuple[list[Trial], list[str]]:
         targets=config.targets,
         constraints=config.constraints,
     )
-    all_input_cells = {
-        cell
-        for axis in axes
-        for point in axis.points
-        for cell in inputs_for_excel(point.scenario)
-    }
-    missing_inputs_in_graph = sorted(all_input_cells - mvp._known_keys)  # noqa: SLF001
+    all_input_cells = collect_scenario_input_addresses(axes, inputs_for_excel)
+    missing_inputs_in_graph = sorted(  # noqa: SLF001
+        cell for cell in all_input_cells if normalize_key(cell) not in mvp._known_keys
+    )
     if missing_inputs_in_graph:
         logger.warning(
             "MVP graph is missing these input cells (set_inputs will skip them): %s",
             missing_inputs_in_graph,
         )
 
+    golden.record_input_baselines(all_input_cells)
+    mvp.record_input_baselines(all_input_cells)
+
     try:
         for axis in axes:
             for point in axis.points:
+                golden.reset_inputs()
+                mvp.reset_inputs()
                 cells_in = inputs_for_excel(point.scenario)
                 golden.set_inputs(cells_in)
                 mvp.set_inputs(cells_in)

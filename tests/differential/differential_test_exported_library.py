@@ -28,6 +28,7 @@ from types import ModuleType
 from typing import Any, Iterator, Literal, cast
 
 from excel_grapher import XlError
+from excel_grapher.core.address_keys import normalize_key, parse_address
 
 from .differential_excel import (
     coerce_excel_error,
@@ -430,7 +431,7 @@ def run_excel_oracle(
         try:
             app.calculation = "manual"
             for address, value in inputs_for_excel(scenario).items():
-                sheet, cell = address.split("!", 1)
+                sheet, cell = parse_address(normalize_key(address))
                 workbook.sheets[sheet].range(cell).value = value
             workbook.app.calculate()
 

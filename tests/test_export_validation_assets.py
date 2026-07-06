@@ -49,6 +49,7 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
         differential_report_dir_rel=Path("data/differential/exported_library"),
         differential_graph_report_dir_rel=Path("data/differential/graph"),
         graph_output_dir=repo_root / "artifacts" / "dependency-graph",
+        graph_audit_cases=(),
     )
 
 

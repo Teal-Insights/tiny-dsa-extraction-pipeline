@@ -19,10 +19,11 @@ from src.graph_dependency_audit import (
     collect_parent_audit_evidence,
     format_audit_failure,
     select_audit_cases,
+    validate_and_sanitize_audit_verdict,
     validate_audit_cases,
 )
 from src.llm_providers import provider_for_model
-from tests.fixtures.synthetic_pipeline import GRAPH_AUDIT_CASES
+from tests.conftest import SyntheticConfiguredPipeline
 
 
 def _formula_node(sheet: str, column: str, row: int, formula: str) -> Node:
@@ -168,7 +169,7 @@ def test_format_audit_failure_is_parent_specific() -> None:
 
 def test_system_prompt_includes_json_schema_and_example() -> None:
     assert "Respond with JSON only" in SYSTEM_PROMPT
-    assert '"verdict": "correct" | "incorrect"' in SYSTEM_PROMPT
+    assert '"verdict": "correct" | "incorrect" | "inconclusive"' in SYSTEM_PROMPT
     assert "Example response:" in SYSTEM_PROMPT
 
 
@@ -275,6 +276,124 @@ def test_audit_parent_dependencies_batch_with_llm_runs_all_cases() -> None:
 
 
 def test_synthetic_catalog_parents_exist_in_extracted_graph(
-    synthetic_graph,
+    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
 ) -> None:
-    validate_audit_cases(synthetic_graph, GRAPH_AUDIT_CASES)
+    validate_audit_cases(
+        synthetic_configured_pipeline.graph,
+        synthetic_configured_pipeline.config.graph_audit_cases,
+    )
+
+
+def _parent_with_many_children_graph() -> DependencyGraph:
+    graph = DependencyGraph()
+    parent = "Parent!A1"
+    graph.add_node(_formula_node("Parent", "A", 1, "=B1+C1+D1"))
+    for column in "BCD":
+        child = f"Child!{column}1"
+        graph.add_node(_leaf_node("Child", column, 1))
+        graph.add_edge(parent, child)
+    return graph
+
+
+def test_collect_parent_audit_evidence_prioritizes_formula_referenced_children() -> (
+    None
+):
+    graph = _parent_with_many_children_graph()
+    case = GraphAuditCase(parent_key="Parent!A1", label="parent", focus="direct deps")
+    evidence = collect_parent_audit_evidence(graph, case, max_children=2)
+    visible = {record.child_key for record in evidence.direct_dependencies}
+    assert "Child!C1" in visible
+    assert evidence.truncated_dependency_count == 1
+
+
+def test_validate_and_sanitize_audit_verdict_separates_hallucinated_addresses() -> None:
+    graph = _parent_with_many_children_graph()
+    parent_key = "Parent!A1"
+    verdict = GraphDependencyAuditVerdict(
+        verdict="incorrect",
+        missing_dependencies=["Phantom!Z99"],
+        spurious_dependencies=["AlsoFake!A1"],
+        reasoning="Looks wrong.",
+        confidence="high",
+    )
+    sanitized = validate_and_sanitize_audit_verdict(graph, parent_key, verdict)
+    assert sanitized.missing_dependencies == []
+    assert sanitized.spurious_dependencies == []
+    assert sanitized.unverified_missing_dependencies == ["Phantom!Z99"]
+    assert sanitized.invalid_spurious_dependencies == ["AlsoFake!A1"]
+    assert sanitized.verdict == "inconclusive"
+    assert sanitized.confidence == "low"
+
+
+def test_validate_and_sanitize_audit_verdict_keeps_valid_spurious_child() -> None:
+    graph = _parent_with_many_children_graph()
+    parent_key = "Parent!A1"
+    verdict = GraphDependencyAuditVerdict(
+        verdict="incorrect",
+        missing_dependencies=[],
+        spurious_dependencies=["Child!B1"],
+        reasoning="Extra edge.",
+        confidence="high",
+    )
+    sanitized = validate_and_sanitize_audit_verdict(graph, parent_key, verdict)
+    assert sanitized.spurious_dependencies == ["Child!B1"]
+    assert sanitized.invalid_spurious_dependencies == []
+    assert sanitized.verdict == "incorrect"
+
+
+def test_audit_parent_dependencies_with_llm_skips_truncated_evidence() -> None:
+    from typing import cast
+
+    from openai import OpenAI
+
+    graph = _parent_with_many_children_graph()
+    case = GraphAuditCase(parent_key="Parent!A1", label="parent", focus="direct deps")
+    provider = provider_for_model("gpt-5.5")
+
+    class FakeClient:
+        pass
+
+    fake_client = cast(OpenAI, FakeClient())
+
+    with patch(
+        "src.graph_dependency_audit.generate_validated_json",
+    ) as generate:
+        verdict, evidence = audit_parent_dependencies_with_llm(
+            client=fake_client,
+            provider=provider,
+            graph=graph,
+            case=case,
+            model="gpt-5.5",
+            max_children=2,
+        )
+
+    generate.assert_not_called()
+    assert evidence.truncated_dependency_count == 1
+    assert verdict.verdict == "inconclusive"
+    assert "evidence_truncated" in verdict.reasoning
+
+
+def test_format_audit_failure_surfaces_invalid_addresses() -> None:
+    case = GraphAuditCase("Parent!A1", "parent", "focus")
+    evidence = collect_parent_audit_evidence(
+        _parent_with_many_children_graph(),
+        case,
+        max_children=3,
+    )
+    verdict = GraphDependencyAuditVerdict(
+        verdict="inconclusive",
+        missing_dependencies=[],
+        spurious_dependencies=[],
+        unverified_missing_dependencies=["Phantom!Z99"],
+        invalid_spurious_dependencies=["AlsoFake!A1"],
+        reasoning="Hallucinated addresses removed.",
+        confidence="low",
+    )
+    message = format_audit_failure(case, verdict, evidence)
+    assert "unverified_missing=['Phantom!Z99']" in message
+    assert "invalid_spurious=['AlsoFake!A1']" in message
+
+
+def test_system_prompt_does_not_encourage_truncated_completeness_judgments() -> None:
+    assert "When dependency children are truncated" not in SYSTEM_PROMPT
+    assert '"verdict": "correct" | "incorrect" | "inconclusive"' in SYSTEM_PROMPT

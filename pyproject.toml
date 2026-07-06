@@ -30,4 +30,4 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-v -p no:faulthandler -p no:warnings -p no:cacheprovider"
+addopts = "-v -p no:faulthandler -p no:cacheprovider"

@@ -31,17 +31,67 @@ callers consume.
 
 Both harnesses import shared scenario types from
 [`differential_types.py`](differential_types.py) (`Scenario`, optional `Axis` /
-`AxisPoint`, and `ATOL`). Golden-master cell reads go through
+`AxisPoint`, and `ATOL`) and input-isolation helpers from
+[`differential_scenario_inputs.py`](differential_scenario_inputs.py). Golden-master cell reads go through
 [`differential_excel.py`](differential_excel.py), which sets xlwings
 `err_to_str=True` so Excel error cells (`#VALUE!`, `#N/A`, …) are returned as
 strings rather than `None`. Workbook-specific hooks live at the bottom of each
 harness module.
+
+### Address keys
+
+`excel-grapher` stores graph keys in **canonical** form. Sheets whose names
+contain spaces, hyphens, or apostrophes are quoted (e.g. `'Discrete Risks'!H2`).
+Human-authored config (`CONSTRAINTS`, scenario matrices, bindings) often uses
+unquoted spellings (`Discrete Risks!H2`). Both refer to the same cell, but naive
+string equality against graph keys fails.
+
+At harness boundaries, import from `excel_grapher.core.address_keys`:
+
+| Helper | Use when |
+|--------|----------|
+| `normalize_key(address)` | Comparing to `leaf_keys()` / `formula_keys()`, calling `graph.set_node_value()`, `graph.get_node()`, `FormulaEvaluator.evaluate()` |
+| `parse_address(normalize_key(address))` | Driving Excel via xlwings/COM (sheet name + A1 coordinate) |
+
+Do **not** re-implement quoting rules or use `split("!", 1)` on sheet-qualified
+addresses inside harness code. Config authors may keep unquoted addresses;
+normalization belongs at the boundary.
+
+### Workbook-exact dropdown labels
+
+Scenario matrices and exported APIs naturally use clean logical values (`"High"`,
+`"Real interest rate"`). Many workbooks branch with **exact string equality** on
+reference label cells (e.g. `IF($B$2=$B$9, …)`). Writing logical strings to
+public input cells instead of the workbook's exact label literals can silently
+fall through to `""` and produce `#VALUE!` on later projection years — while
+parity still passes when both oracles error the same way.
+
+This is distinct from [address-key normalization](#address-keys) ([issue #51](https://github.com/Teal-Insights/extraction-pipeline-template/issues/51)): #51 covers sheet-qualified **addresses**; [issue #53](https://github.com/Teal-Insights/extraction-pipeline-template/issues/53) covers **cell values** for dropdown/enum inputs.
+
+At the harness boundary:
+
+1. Load reference label literals from project-configured cells (see
+   `REFERENCE_LABEL_CELLS` in `workbook_config.py`).
+2. Keep logical values in scenario definitions and API parameter names.
+3. Resolve logical → workbook-exact immediately before `inputs_for_excel()` /
+   graph `set_inputs()` using [`workbook_labels.py`](workbook_labels.py).
+4. Write the **raw workbook string** — do not strip trailing spaces or suffixes.
+
+Pass `--warn-on-error-values` to flag matched `#VALUE!` / `#N/A` comparisons.
+These still count as passes, but a matched error on a long-horizon output often
+signals a label mismatch rather than an intentional error-boundary scenario.
+Set `expects_error_values=True` on scenarios that deliberately exercise error paths.
 
 ### Graph harness hooks
 
 1. **`build_scenarios()`** or **`build_axes()`** — representative input combinations.
 2. **`output_cell_labels()`** — mirror output bindings as `(label, address)` pairs.
 3. **`inputs_for_excel()`** — map each scenario to Excel cell writes.
+
+Before each scenario the graph harness restores every input cell in the union of
+all scenario writes to its workbook baseline, then applies that scenario's
+declared overrides. Undeclared cells therefore do not inherit values from prior
+scenarios.
 
 The graph harness also reports input cells absent from the extracted graph —
 itself a differential signal about extraction coverage.
@@ -91,6 +141,19 @@ indicate unintended scenario setup unless the scenario sets
 `expects_error_values=True`.
 
 Exit codes: **`0`** all comparisons pass, **`1`** any failure, **`2`** prerequisite missing or scenarios not configured.
+
+## Golden-master conformance
+
+The comparison ladder, report schema, and acceptance bar are defined in
+[`technical_standard.md`](../../technical_standard.md) (§1–§3 and the conformance
+checklist at the end). Unit tests in
+[`tests/test_differential_harness.py`](../test_differential_harness.py) lock the
+exported-library harness helpers (`compare_cell`, `crash_comparisons`,
+`write_csv_report`, `write_txt_summary`) to that standard on every PR — no Excel
+required.
+
+CSV columns use `excel_value` / `mvp_value` as aliases for the standard's
+`golden_value` / `sut_value` terminology.
 
 ## Output locations
 

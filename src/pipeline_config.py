@@ -6,6 +6,7 @@ import importlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.graph_dependency_audit import GraphAuditCase
 from src.workbook_addresses import ProjectionColumnLayout
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +52,7 @@ class PipelineConfig:
     differential_report_dir_rel: Path
     differential_graph_report_dir_rel: Path
     graph_output_dir: Path
+    graph_audit_cases: tuple[GraphAuditCase, ...] = ()
 
     @property
     def package_root(self) -> Path:
@@ -127,6 +129,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         )
     )
     graph_output_dir = root / "artifacts" / "dependency-graph"
+    graph_audit_cases = tuple(getattr(user_config, "GRAPH_AUDIT_CASES", ()))
 
     if not isinstance(dist_metadata, DistProjectMetadata):
         raise TypeError("workbook_config.DIST_METADATA must be a DistProjectMetadata")
@@ -155,6 +158,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         differential_report_dir_rel=differential_report_dir_rel,
         differential_graph_report_dir_rel=differential_graph_report_dir_rel,
         graph_output_dir=graph_output_dir,
+        graph_audit_cases=graph_audit_cases,
     )
 
 

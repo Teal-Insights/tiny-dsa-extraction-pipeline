@@ -29,6 +29,9 @@ DYNAMIC_REF_FUNCTIONS = frozenset(
 )
 EXTERNAL_FORMULA_RE = re.compile(r"\[[^\]]+\]")
 FUNCTION_CALL_RE = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_.]*)\(")
+FORMULA_IDENTIFIER_RE = re.compile(
+    r"(?<![A-Z0-9_])([A-Za-z_][A-Za-z0-9_.]*)(?![A-Z0-9_])"
+)
 NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
@@ -102,6 +105,46 @@ def count_function_call_sites(formula: str) -> Counter[str]:
     return Counter(
         match.group(1) for match in FUNCTION_CALL_RE.finditer(formula.upper())
     )
+
+
+def _defined_name_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?<![A-Z0-9_]){re.escape(name)}(?![A-Z0-9_])",
+        re.IGNORECASE,
+    )
+
+
+def count_named_range_formula_usage(
+    formulas: Iterable[str],
+    defined_names: Iterable[str],
+) -> Counter[str]:
+    """Count formulas that reference each defined name with word-boundary semantics."""
+    names = list(defined_names)
+    if not names:
+        return Counter()
+
+    formulas_list = list(formulas)
+    if not formulas_list:
+        return Counter()
+
+    usage: Counter[str] = Counter()
+    if len(names) <= len(formulas_list):
+        for name in names:
+            pattern = _defined_name_pattern(name)
+            count = sum(1 for formula in formulas_list if pattern.search(formula))
+            if count:
+                usage[name] = count
+        return usage
+
+    name_by_upper = {name.upper(): name for name in names}
+    for formula in formulas_list:
+        seen_in_formula: set[str] = set()
+        for match in FORMULA_IDENTIFIER_RE.finditer(formula):
+            canonical = name_by_upper.get(match.group(1).upper())
+            if canonical is not None and canonical not in seen_in_formula:
+                seen_in_formula.add(canonical)
+                usage[canonical] += 1
+    return usage
 
 
 def load_audit_config() -> tuple[
@@ -274,7 +317,6 @@ def audit_workbook(
     function_formula_counts: Counter[str] = Counter()
     dynamic_ref_call_sites: Counter[str] = Counter()
     external_formula_refs: list[tuple[str, str, str]] = []
-    named_range_formula_usage: Counter[str] = Counter()
     index_match_by_sheet: Counter[str] = Counter()
     arithmetic_only_formulas = 0
     formula_records: list[tuple[str, str]] = []
@@ -331,13 +373,6 @@ def audit_workbook(
                         )
                     if "INDEX(" in upper and "MATCH(" in upper:
                         index_match_by_sheet[sheet_name] += 1
-                    for defined_name in wb.defined_names.keys():
-                        if re.search(
-                            rf"(?<![A-Z0-9_]){re.escape(defined_name)}(?![A-Z0-9_])",
-                            formula,
-                            re.IGNORECASE,
-                        ):
-                            named_range_formula_usage[defined_name] += 1
                 elif isinstance(value, str) and value.startswith("#"):
                     counts["error_cells"] = int(counts["error_cells"]) + 1
                     cell_totals["error_cells"] += 1
@@ -358,6 +393,11 @@ def audit_workbook(
         )
         for counts in sheet_counts.values()
     ]
+
+    named_range_formula_usage = count_named_range_formula_usage(
+        (formula for _, formula in formula_records),
+        wb.defined_names.keys(),
+    )
 
     return WorkbookAuditReport(
         workbook_path=workbook_path.resolve(),

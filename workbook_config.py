@@ -46,6 +46,16 @@ CONSTRAINTS: dict[str, object] = {
     **{f"Inputs!{c}18": Annotated[float, RealBetween(-15.0, 15.0)] for c in _cols},
 }
 
+# Optional: exact dropdown label literals for enum public inputs, keyed by the
+# public input cell address. Populate when the workbook uses IF/MATCH/CHOOSE
+# guards that compare against reference label cells. Used by configure tests and
+# differential harness label resolution (see tests/differential/workbook_labels.py).
+REFERENCE_LABEL_CELLS: dict[str, tuple[str, ...]] = {}
+
+# Optional: scenario logical values per enum public input, keyed by input cell.
+# Used by tests/test_workbook_labels.py when REFERENCE_LABEL_CELLS is populated.
+REFERENCE_LABEL_SCENARIO_VALUES: dict[str, tuple[str, ...]] = {}
+
 DIST_METADATA = DistProjectMetadata(
     project_name="tiny-dsa",
     package_name="tiny_dsa",
@@ -89,8 +99,10 @@ DIFFERENTIAL_REPORT_DIR_REL = Path("data/differential/exported_library")
 DIFFERENTIAL_GRAPH_REPORT_DIR_REL = Path("data/differential/graph")
 
 # Optional per-parent formula cells for LLM direct-dependency graph audits
-# (``pytest tests/test_extraction_graph_accuracy.py --run-skipped``). Provider
-# and model come from ``LLM_GRAPH_AUDIT_MODEL`` (see ``.env.example``).
+# (``pytest tests/test_extraction_graph_accuracy.py --run-skipped``). Loaded
+# through :func:`src.pipeline_config.load_pipeline_config` as
+# ``PipelineConfig.graph_audit_cases``. Provider and model come from
+# ``LLM_GRAPH_AUDIT_MODEL`` (see ``.env.example``).
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = ()
 
 AUDIT_TITLE = "Tiny DSA Workbook Audit"

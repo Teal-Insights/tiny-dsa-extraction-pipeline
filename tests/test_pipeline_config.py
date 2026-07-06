@@ -18,6 +18,7 @@ def test_load_pipeline_config_reads_workbook_config() -> None:
         "output_shocked",
         "output_delta",
     )
+    assert config.graph_audit_cases == ()
     assert config.canonical_api_example_path.name == "canonical-api-usage.md"
     assert (
         config.repo_relative_posix_path(config.canonical_api_example_path)

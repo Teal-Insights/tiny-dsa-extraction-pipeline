@@ -12,9 +12,10 @@ Follow this order when adapting the pipeline to a new workbook (or re-onboarding
 | 2. Audit | **Config author** | Run `uv run python -m src.workbook_audit --output artifacts/workbook-audit.md`. Resolve blocking automation (VBA, macros, external links) before graph work. |
 | 3. Configure | **Config author** | Declare extraction targets, author bindings, constrain every dynamic-ref controller, and classify all graph leaves. See [Configure](#1-configure) below. |
 | 4. Extract | **Config author** | Run `uv run python -m src.extraction_pipeline --extract-graph`. Confirm the graph builds without `DynamicRefError`. |
-| 5. Review graph | **Graph reviewer** | Inspect `artifacts/dependency-graph/` (see [artifacts/README.md](artifacts/README.md)). Confirm expected sheets, no spurious nodes, and complete shock/engine paths. Optionally run opt-in LLM dependency audits: `uv run pytest tests/test_extraction_graph_accuracy.py --run-skipped` (requires `GRAPH_AUDIT_CASES` in `workbook_config.py` and the provider API key for `LLM_GRAPH_AUDIT_MODEL`; defaults to `gpt-5.5`). |
-| 6. Export and test | **Parity owner** | Run the full pipeline (`uv run python -m src.extraction_pipeline`). Run differential parity; on Windows with Excel, re-run from the exported project (see [Test](#4-test)). |
-| 7. Document and refactor | **Config author** | Generate docs, refactor internals behind parity gates, and update committed parity evidence under `data/differential/`. |
+| 5. Review graph | **Graph reviewer** | Inspect `artifacts/dependency-graph/` (see [artifacts/README.md](artifacts/README.md)). Confirm expected sheets, no spurious nodes, and complete shock/engine paths. Optionally run opt-in LLM dependency audits: `uv run pytest tests/test_extraction_graph_accuracy.py --run-skipped` (workbook audits require `GRAPH_AUDIT_CASES` in `workbook_config.py`; the synthetic smoke-test audit runs without extra configuration). Set the provider API key for `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`). |
+| 6. Verify graph | **Parity owner** | Define a scenario matrix in `tests/differential/` and run graph-oracle differential parity before export (see [Verify graph](#3-verify-graph)). Do not proceed to export until graph-oracle parity passes. |
+| 7. Export and test | **Parity owner** | Run the full pipeline (`uv run python -m src.extraction_pipeline`). Run exported-library differential parity; on Windows with Excel, re-run from the exported project (see [Test](#5-test)). |
+| 8. Document and refactor | **Config author** | Generate docs, refactor internals behind parity gates, and update committed parity evidence under `data/differential/`. |
 
 Copy the checkbox list in [Checklist for a new workbook](#checklist-for-a-new-workbook) into your extraction tracking issue and check items off as you go.
 
@@ -30,8 +31,10 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml` | Records-shaped public API surface |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
-| Projection layout | `workbook_config.py` → `PROJECTION_LAYOUT` | Engine/Outputs column mapping for internals refactor |
-| Parity evidence | `data/differential/graph/`, `data/differential/exported_library/` | Reference reports after passing Excel sweeps |
+| Projection layout | `workbook_config.py` → `PROJECTION_LAYOUT` | Optional Engine/Outputs column mapping for internals refactor (see below) |
+| Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
+| Graph parity evidence | `data/differential/graph/` | Reference reports after passing pre-export graph-oracle sweeps (optional until configured) |
+| Exported-library parity evidence | `data/differential/exported_library/` | Reference reports after passing post-export parity sweeps (optional until configured) |
 
 Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt) with a coding agent to draft bindings from the guide, workbook, and extracted graph.
 
@@ -42,7 +45,8 @@ The end-to-end workflow follows the stage gates in [technical_standard.md](techn
 ```mermaid
 flowchart LR
   configure[Configure] --> extract[Extract]
-  extract --> export[Export]
+  extract --> verifyGraph[Verify graph]
+  verifyGraph --> export[Export]
   export --> test[Test]
   export --> document[Document]
   export --> refactor[Refactor]
@@ -85,20 +89,35 @@ This writes `artifacts/dependency-graph/` (see [artifacts/artifacts-catalog.md](
 
 The extraction design is documented in [docs/extraction-pipeline.qmd](docs/extraction-pipeline.qmd) (rendered to [docs/extraction-pipeline.md](docs/extraction-pipeline.md)).
 
-After review, run the full pipeline (`uv run python -m src.extraction_pipeline`) to export.
+After manual review (onboarding step 5), run graph-oracle differential parity (step 6) before export.
 
-### 3. Export
+### 3. Verify graph
+
+**Why:** Graph-oracle parity isolates extraction, configuration, and dynamic-ref resolution bugs from export and codegen bugs. When export happens first, exported-library differential failures are ambiguous — they may come from the graph, the bindings, or the generated package.
+
+**What:** A scenario matrix (canonical baselines, single-axis shocks, categorical factorials, and boundary cases) exercised by [`tests/differential/differential_test_graph.py`](tests/differential/differential_test_graph.py). The harness compares Microsoft Excel (golden master via `xlwings`) against the in-memory dependency graph evaluated with `FormulaEvaluator.evaluate`.
+
+**How:**
+
+```bash
+uv run python -m tests.differential.differential_test_graph
+```
+
+Reports land under `data/differential/graph/`. Exit codes: **`0`** all comparisons pass, **`1`** any failure, **`2`** prerequisite missing or scenarios not configured. See [tests/differential/README.md](tests/differential/README.md) for harness hooks, address-key normalization, and workbook-exact label resolution.
+
+**Gate:** Do not run the full pipeline until graph-oracle parity passes.
+
+### 4. Export
 
 The pipeline applies `OptimalCompression` over the canonical graph, generates a records-shaped API (`make_context`, `set_*`, `compute_*`), writes `dist/tiny_dsa/`, and copies the validation bundle into `dist/tests/`.
 
 On every push to `main`, [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs the full pipeline and syncs `dist/` to the [`Teal-Insights/py-tiny-dsa`](https://github.com/Teal-Insights/py-tiny-dsa) repository.
 
-### 4. Test
+### 5. Test
 
-Run graph parity against Excel before export, then exported-library parity after:
+Run exported-library differential parity after export. Graph-oracle parity (step 6 in the [onboarding checklist](#clone-and-configure-onboarding-checklist)) should already have passed before you exported.
 
 ```bash
-uv run python -m tests.differential.differential_test_graph
 uv run python -m tests.differential.differential_test_exported_library
 ```
 
@@ -110,15 +129,17 @@ uv run --project dist --group validation python -m tests.differential.differenti
 
 See [tests/differential/README.md](tests/differential/README.md) for coverage details and report locations.
 
-### 5. Document
+### 6. Document
 
 Great Docs generates the distributable website from the exported package. LLM rewrites guide sections into Python-first user-guide pages when cache misses require an API key.
 
-### 6. Refactor
+### 7. Refactor
 
 Cluster parallel formula families, collapse internals with LLM-authored semantic helpers behind a parity gate, and prune thin wrappers. Each refactor pass re-runs differential tests.
 
 ## Run the pipeline
+
+After graph-oracle parity passes (see [Verify graph](#3-verify-graph)), run the full export pipeline:
 
 ```bash
 uv sync
@@ -149,7 +170,7 @@ LLM_GRAPH_AUDIT_MODEL=gpt-5.5
 
 If an uncached LLM step is reached without the required API key, the pipeline fails fast with an `*_API_KEY is required ...` error.
 
-Opt-in graph dependency audits (`pytest --run-skipped`) use the same multi-provider routing: set `LLM_GRAPH_AUDIT_MODEL` to a `gpt-*`, `glm-*`, or `deepseek-*` model name and provide the matching API key (`OPENAI_API_KEY`, `ZAI_API_KEY`, or `DEEPSEEK_API_KEY`). One model drives every audit case in a run.
+Opt-in graph dependency audits (`pytest --run-skipped`) use the same multi-provider routing: set `LLM_GRAPH_AUDIT_MODEL` to a `gpt-*`, `glm-*`, or `deepseek-*` model name and provide the matching API key (`OPENAI_API_KEY`, `ZAI_API_KEY`, or `DEEPSEEK_API_KEY`). One model drives every audit case in a run. Declare audit parents in `workbook_config.GRAPH_AUDIT_CASES` (loaded into `PipelineConfig.graph_audit_cases`) for workbook-specific checks; the synthetic smoke-test audit uses the fixture catalog and runs on a fresh clone without copying cases.
 
 DeepSeek runs with thinking mode disabled by default. To enable it (and pass reasoning effort through, which DeepSeek only honors in thinking mode), set `DEEPSEEK_THINKING` to a truthy value (`1`, `true`, `yes`, or `on`):
 
@@ -201,8 +222,9 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 - [ ] **Configure:** All leaves classified; mutable leaves bound
 - [ ] **Extract:** Graph extracts with provenance (`--extract-graph`)
 - [ ] **Review graph:** Manual completeness review done; optional LLM dependency audit passed (`pytest --run-skipped`)
+- [ ] **Verify graph:** Scenario matrix defined in `tests/differential/`; graph-oracle parity passes (`uv run python -m tests.differential.differential_test_graph`)
 - [ ] **Export:** `dist/` package builds; semantic API scenario runs
-- [ ] **Export:** Validation bundle exported; differential parity passes (Windows Excel sweep when available)
+- [ ] **Export:** Validation bundle exported; exported-library differential parity passes (Windows Excel sweep when available)
 - [ ] **Document / refactor:** Public API uses domain language; docstrings present
 - [ ] **Document / refactor:** Internals refactored; parity re-confirmed after refactor passes
 
@@ -232,4 +254,19 @@ uv run ty check
 
 Pull requests run the same test suite on Ubuntu via `.github/workflows/test.yml`.
 
-Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (requires `GRAPH_AUDIT_CASES` in `workbook_config.py` and the provider API key for `LLM_GRAPH_AUDIT_MODEL`).
+Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audits require `GRAPH_AUDIT_CASES` in `workbook_config.py`; synthetic fixture audits run without extra setup; provider API key required for `LLM_GRAPH_AUDIT_MODEL`).
+
+## Repository layout
+
+| Path | Role |
+|---|---|
+| `workbook_config.py` | Workbook-specific configuration boundary |
+| `src/` | Reusable pipeline implementation |
+| `bindings/` | Series binding sidecars (user-authored) |
+| `data/` | Workbook, guide, differential reports |
+| `dist/` | Generated distributable package (gitignored) |
+| `templates/` | Binding prompt and canonical API usage reference |
+| `.github/workflows/` | Template CI (PR tests) and manual deploy workflow |
+| `technical_standard.md` | Acceptance bar and stage gates |
+| `lessons-learned.md` | Design rationale from the Tiny DSA rehearsal |
+| `artifacts/` | Generated exploration artifacts; see [artifacts/README.md](artifacts/README.md) |
