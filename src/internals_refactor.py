@@ -34,10 +34,7 @@ from src.refactor_bindings import (
     load_key_concept_vocabulary,
     render_literal_helper_call,
 )
-from src.refactor_order import (
-    compute_multi_member_cluster_refactor_order,
-    compute_singleton_cluster_refactor_order,
-)
+from src.refactor_order import compute_cluster_refactor_order
 from src.runtime_symbols import allowed_runtime_symbols
 from src.semantic_naming import (
     SemanticLabelHints,
@@ -72,7 +69,7 @@ RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
 AddressDispatch = dict[str, tuple[str, dict[str, BindingKeyValue]]]
 
 REFACTOR_ROW_ORDER: tuple[int, ...] = ()
-"""Optional legacy row order hint; prefer ``compute_multi_member_cluster_refactor_order``."""
+"""Optional legacy row order hint; prefer ``compute_cluster_refactor_order``."""
 
 
 @dataclass(frozen=True)
@@ -2228,37 +2225,6 @@ def refactor_internals_singleton(
     )
 
 
-def refactor_internals_all_singletons(
-    projection: ProjectionResult,
-    clusters: tuple[FormulaCluster, ...],
-    *,
-    internals_path: Path,
-    dry_run: bool = False,
-    source_graph: DependencyGraph | None = None,
-    pristine_source: str | None = None,
-    input_vectors: Sequence[Mapping[str, object]] | None = None,
-) -> tuple[SingletonRefactorApplyResult, ...]:
-    results: list[SingletonRefactorApplyResult] = []
-    for cluster in compute_singleton_cluster_refactor_order(projection, clusters):
-        ctx = build_singleton_refactor_context(
-            projection,
-            cluster,
-            internals_path,
-            source_graph=source_graph,
-        )
-        if ctx is None:
-            continue
-        result = refactor_internals_singleton(
-            ctx,
-            internals_path=internals_path,
-            dry_run=dry_run,
-            pristine_source=pristine_source,
-            input_vectors=input_vectors,
-        )
-        results.append(result)
-    return tuple(results)
-
-
 def refactor_internals_cluster(
     ctx: ClusterRefactorContext,
     *,
@@ -2308,7 +2274,7 @@ def refactor_internals_all_clusters(
     parity_gate: bool = True,
     layout: ProjectionColumnLayout | None = None,
 ) -> tuple[ClusterRefactorApplyResult, ...]:
-    """Refactor singletons, then every multi-member cluster in dependency order.
+    """Refactor every eligible cluster in unified dependency order.
 
     When ``parity_gate`` is enabled, each refactored helper is checked against the
     pristine pre-refactor cell semantics across several input vectors before its
@@ -2322,19 +2288,30 @@ def refactor_internals_all_clusters(
         pristine_source = internals_path.read_text(encoding="utf-8")
         input_vectors = build_default_input_vectors()
 
-    refactor_internals_all_singletons(
-        projection,
-        clusters,
-        internals_path=internals_path,
-        dry_run=dry_run,
-        source_graph=source_graph,
-        pristine_source=pristine_source,
-        input_vectors=input_vectors,
-    )
-    ordered_clusters = compute_multi_member_cluster_refactor_order(projection, clusters)
+    ordered_clusters = compute_cluster_refactor_order(projection, clusters)
     results: list[ClusterRefactorApplyResult] = []
     responses: list[ClusterRefactorResponse] = []
+    refactored_any = False
     for cluster in ordered_clusters:
+        if len(cluster.members) == 1:
+            ctx = build_singleton_refactor_context(
+                projection,
+                cluster,
+                internals_path,
+                source_graph=source_graph,
+            )
+            if ctx is None:
+                continue
+            refactor_internals_singleton(
+                ctx,
+                internals_path=internals_path,
+                dry_run=dry_run,
+                pristine_source=pristine_source,
+                input_vectors=input_vectors,
+            )
+            refactored_any = True
+            continue
+
         ctx = build_cluster_refactor_context(
             projection,
             cluster,
@@ -2355,8 +2332,9 @@ def refactor_internals_all_clusters(
         )
         results.append(result)
         responses.append(result.response)
+        refactored_any = True
 
-    if not dry_run and responses:
+    if not dry_run and refactored_any:
         source = internals_path.read_text(encoding="utf-8")
         updated, phase_c_pruned = apply_phase_c(source)
         validate_refactored_internals(updated)

@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import cast
 
 from excel_grapher.exporter import (
-    BaseProjectionManifest,
     OptimalCompression,
     ProjectionManifest,
     ProjectionResult,
@@ -111,9 +110,6 @@ def load_projection_payload(
         return None
     projected_graph, manifest = payload
     if not isinstance(projected_graph, DependencyGraph):
-        payload_path.unlink(missing_ok=True)
-        return None
-    if not isinstance(manifest, BaseProjectionManifest):
         payload_path.unlink(missing_ok=True)
         return None
     return projected_graph, cast(ProjectionManifest, manifest)
