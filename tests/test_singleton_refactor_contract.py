@@ -6,13 +6,23 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
-from pydantic import BaseModel, ConfigDict
 
 from src.internals_refactor import (
     SingletonRefactorContext,
+    SingletonRefactorLLMResponse,
     SingletonRefactorResponse,
     _prompt_for_singleton_refactor,
+    append_refactor_note_section,
     apply_singleton_refactor_plan,
+    assemble_singleton_symbol_source,
+    build_singleton_refactor_context_dump,
+    ensure_singleton_refactor_imports,
+    format_singleton_refactor_context_dump,
+    load_singleton_refactor_prompt_fixed_portion,
+    parse_singleton_return_type_hint,
+    prepare_singleton_refactor_response,
+    strip_python_string_delimiters,
+    validate_singleton_return_type_hint,
 )
 
 FIXTURE_PATH = (
@@ -193,14 +203,6 @@ EVAL_CONTEXT_REFACTOR_RESPONSE = SingletonRefactorResponse(
 )
 
 
-class SingletonRefactorLLMResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    symbol_signature: str
-    symbol_docstring: str
-    symbol_body: str
-
-
 MINIMAL_PROMPT_PAYLOAD: dict[str, object] = {
     "address": "Engine!C20",
     "function_name": "cell_engine_c20",
@@ -213,8 +215,6 @@ MINIMAL_PROMPT_PAYLOAD: dict[str, object] = {
 
 
 def test_load_singleton_refactor_prompt_fixed_portion_matches_fixture() -> None:
-    from src.internals_refactor import load_singleton_refactor_prompt_fixed_portion  # ty: ignore[unresolved-import]
-
     assert (
         load_singleton_refactor_prompt_fixed_portion().strip() == EXPECTED_FIXED_PORTION
     )
@@ -243,8 +243,6 @@ def test_prompt_for_singleton_refactor_does_not_require_llm_note_section() -> No
 
 
 def test_strip_python_string_delimiters_removes_triple_quotes() -> None:
-    from src.internals_refactor import strip_python_string_delimiters  # ty: ignore[unresolved-import]
-
     raw = '''"""
 Summary line.
 
@@ -262,8 +260,6 @@ Returns:
 
 
 def test_strip_python_string_delimiters_leaves_bare_docstring_unchanged() -> None:
-    from src.internals_refactor import strip_python_string_delimiters  # ty: ignore[unresolved-import]
-
     bare = (
         "Summary line.\n\n"
         "Args:\n    ctx: Workbook evaluation context.\n\n"
@@ -273,8 +269,6 @@ def test_strip_python_string_delimiters_leaves_bare_docstring_unchanged() -> Non
 
 
 def test_append_refactor_note_section_appends_covers_and_formula() -> None:
-    from src.internals_refactor import append_refactor_note_section  # ty: ignore[unresolved-import]
-
     docstring = (
         "Projected debt-to-GDP for period 1.\n\n"
         "Args:\n    ctx: Workbook evaluation context.\n\n"
@@ -292,8 +286,6 @@ def test_append_refactor_note_section_appends_covers_and_formula() -> None:
 
 
 def test_assemble_singleton_symbol_source_indents_body_and_wraps_docstring() -> None:
-    from src.internals_refactor import assemble_singleton_symbol_source  # ty: ignore[unresolved-import]
-
     assembled = assemble_singleton_symbol_source(
         signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
         docstring=(
@@ -308,22 +300,20 @@ def test_assemble_singleton_symbol_source_indents_body_and_wraps_docstring() -> 
         "def projected_debt_to_gdp(ctx: EvalContext) -> float:\n"
         '    """Projected debt-to-GDP for period 1.\n'
         "\n"
-        "    Args:\n"
-        "        ctx: Workbook evaluation context.\n"
+        "Args:\n"
+        "    ctx: Workbook evaluation context.\n"
         "\n"
-        "    Returns:\n"
-        "        Projected debt-to-GDP ratio.\n"
+        "Returns:\n"
+        "    Projected debt-to-GDP ratio.\n"
         "\n"
-        "    Note:\n"
-        "        Covers Engine!C20. Excel: =1.\n"
+        "Note:\n"
+        "    Covers Engine!C20. Excel: =1.\n"
         '    """\n'
         "    return shock_active(ctx, time_period=1)\n"
     )
 
 
 def test_prepare_singleton_refactor_response_assembles_and_appends_note() -> None:
-    from src.internals_refactor import prepare_singleton_refactor_response  # ty: ignore[unresolved-import]
-
     ctx = SingletonRefactorContext(
         address="Engine!C20",
         function_name="cell_engine_c20",
@@ -364,8 +354,6 @@ def test_prepare_singleton_refactor_response_assembles_and_appends_note() -> Non
 
 
 def test_format_singleton_refactor_context_dump_matches_fixture() -> None:
-    from src.internals_refactor import format_singleton_refactor_context_dump  # ty: ignore[unresolved-import]
-
     dump = format_singleton_refactor_context_dump(
         function_source=EXCESS_DEATHS_FUNCTION_SOURCE,
         cell_metadata=EXCESS_DEATHS_CELL_METADATA,
@@ -375,8 +363,6 @@ def test_format_singleton_refactor_context_dump_matches_fixture() -> None:
 
 
 def test_build_singleton_refactor_context_dump_from_sources_matches_fixture() -> None:
-    from src.internals_refactor import build_singleton_refactor_context_dump  # ty: ignore[unresolved-import]
-
     dump = build_singleton_refactor_context_dump(
         function_name="cell_some_sheet_z22",
         address="SomeSheet!Z22",
@@ -388,8 +374,6 @@ def test_build_singleton_refactor_context_dump_from_sources_matches_fixture() ->
 
 
 def test_build_singleton_refactor_context_dump_excludes_legacy_prompt_fields() -> None:
-    from src.internals_refactor import build_singleton_refactor_context_dump  # ty: ignore[unresolved-import]
-
     dump = build_singleton_refactor_context_dump(
         function_name="cell_some_sheet_z22",
         address="SomeSheet!Z22",
@@ -404,8 +388,6 @@ def test_build_singleton_refactor_context_dump_excludes_legacy_prompt_fields() -
 
 
 def test_prompt_for_singleton_refactor_appends_context_dump() -> None:
-    from src.internals_refactor import build_singleton_refactor_context_dump  # ty: ignore[unresolved-import]
-
     context_dump = build_singleton_refactor_context_dump(
         function_name="cell_some_sheet_z22",
         address="SomeSheet!Z22",
@@ -413,7 +395,7 @@ def test_prompt_for_singleton_refactor_appends_context_dump() -> None:
         runtime_source=EXCESS_DEATHS_RUNTIME_STUB,
         cell_metadata=EXCESS_DEATHS_CELL_METADATA,
     )
-    prompt = _prompt_for_singleton_refactor(context_dump)  # ty: ignore[missing-argument]
+    prompt = _prompt_for_singleton_refactor(context_dump)
     assert prompt.startswith(EXPECTED_FIXED_PORTION)
     assert prompt.endswith(context_dump.strip())
     assert "Function to refactor:" in prompt
@@ -422,8 +404,6 @@ def test_prompt_for_singleton_refactor_appends_context_dump() -> None:
 
 
 def test_parse_singleton_return_type_hint_from_signature() -> None:
-    from src.internals_refactor import parse_singleton_return_type_hint  # ty: ignore[unresolved-import]
-
     assert (
         parse_singleton_return_type_hint(
             "def united_states_excess_deaths(ctx: EvalContext) -> float:"
@@ -440,8 +420,6 @@ def test_parse_singleton_return_type_hint_from_signature() -> None:
 
 
 def test_validate_singleton_return_type_hint_accepts_allowlisted_types() -> None:
-    from src.internals_refactor import validate_singleton_return_type_hint  # ty: ignore[unresolved-import]
-
     for hint in ALLOWED_SINGLETON_RETURN_TYPE_HINTS:
         validate_singleton_return_type_hint(hint)
 
@@ -449,15 +427,11 @@ def test_validate_singleton_return_type_hint_accepts_allowlisted_types() -> None
 def test_validate_singleton_return_type_hint_accepts_union_of_allowlisted_scalars() -> (
     None
 ):
-    from src.internals_refactor import validate_singleton_return_type_hint  # ty: ignore[unresolved-import]
-
     validate_singleton_return_type_hint("float | str")
     validate_singleton_return_type_hint("int | float")
 
 
 def test_validate_singleton_return_type_hint_rejects_xlerror_sentinel() -> None:
-    from src.internals_refactor import validate_singleton_return_type_hint  # ty: ignore[unresolved-import]
-
     with pytest.raises(ValueError, match="unsupported return type hint"):
         validate_singleton_return_type_hint("XlError")
 
@@ -466,15 +440,11 @@ def test_validate_singleton_return_type_hint_rejects_xlerror_sentinel() -> None:
 
 
 def test_validate_singleton_return_type_hint_rejects_unknown_type() -> None:
-    from src.internals_refactor import validate_singleton_return_type_hint  # ty: ignore[unresolved-import]
-
     with pytest.raises(ValueError, match="unsupported return type hint"):
         validate_singleton_return_type_hint("dict[str, float]")
 
 
 def test_apply_singleton_refactor_plan_injects_eval_context_import() -> None:
-    from src.internals_refactor import ensure_singleton_refactor_imports  # ty: ignore[unresolved-import]
-
     ctx = SingletonRefactorContext(
         address="SomeSheet!Z22",
         function_name="cell_some_sheet_z22",

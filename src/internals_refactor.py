@@ -50,7 +50,7 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 15
+REFACTOR_PROMPT_VERSION = 16
 
 
 def refactor_model() -> str:
@@ -228,6 +228,33 @@ class SingletonRefactorResponse(BaseModel):
             "docstring, and body. Signature must be (ctx)."
         )
     )
+
+
+class SingletonRefactorLLMResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol_signature: str = Field(
+        description=(
+            "Python function signature, including `def` keyword, `snake_case` "
+            "semantic name, a single `ctx: EvalContext` argument, and return type hint."
+        )
+    )
+    symbol_docstring: str = Field(
+        description="Google-style docstring. Include Args and Returns sections."
+    )
+    symbol_body: str = Field(description="Python function body.")
+
+
+ALLOWED_SINGLETON_RETURN_TYPE_HINTS = frozenset({"bool", "float", "int", "str"})
+
+SINGLETON_REFACTOR_PROMPT_FIXTURE = (
+    repo_root / "tests" / "fixtures" / "singleton_refactor_prompt.md"
+)
+
+_RUNTIME_IMPORT_PATTERN = re.compile(
+    r"^from \.runtime import (.+)$",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -1238,6 +1265,316 @@ def singleton_refactor_cache_key(
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
 
 
+def load_singleton_refactor_prompt_fixed_portion() -> str:
+    return SINGLETON_REFACTOR_PROMPT_FIXTURE.read_text(encoding="utf-8")
+
+
+def strip_python_string_delimiters(docstring: str) -> str:
+    stripped = docstring.strip()
+    for quote in ('"""', "'''"):
+        if stripped.startswith(quote) and stripped.endswith(quote):
+            inner = stripped[len(quote) : -len(quote)]
+            if inner.startswith("\n"):
+                inner = inner[1:]
+            return inner.rstrip("\n")
+    return docstring
+
+
+def append_refactor_note_section(
+    docstring: str,
+    *,
+    address: str,
+    formula: str,
+) -> str:
+    return f"{docstring.rstrip()}\n\nNote:\n    Covers {address}. Excel: {formula}."
+
+
+def assemble_singleton_symbol_source(
+    *,
+    signature: str,
+    docstring: str,
+    body: str,
+) -> str:
+    normalized = textwrap.dedent(docstring).strip()
+    if not normalized:
+        raise ValueError("docstring must not be empty")
+    body_block = "\n".join(f"    {line}" for line in body.splitlines()) + "\n"
+    return f'{signature}\n    """{normalized}\n    """\n{body_block}'
+
+
+def parse_singleton_return_type_hint(signature: str) -> str:
+    match = re.search(r"->\s*(.+?)\s*:?\s*$", signature.strip())
+    if match is None:
+        raise ValueError(f"no return type hint in signature: {signature!r}")
+    return match.group(1).strip().removesuffix(":")
+
+
+def validate_singleton_return_type_hint(hint: str) -> None:
+    parts = [part.strip() for part in hint.split("|")]
+    for part in parts:
+        if part not in ALLOWED_SINGLETON_RETURN_TYPE_HINTS:
+            raise ValueError(f"unsupported return type hint: {hint!r}")
+
+
+def _parse_symbol_name_from_signature(signature: str) -> str:
+    match = re.match(r"def\s+(\w+)\s*\(", signature.strip())
+    if match is None:
+        raise ValueError(f"invalid function signature: {signature!r}")
+    return match.group(1)
+
+
+def prepare_singleton_refactor_response(
+    llm_response: SingletonRefactorLLMResponse,
+    ctx: SingletonRefactorContext,
+) -> SingletonRefactorResponse:
+    validate_singleton_return_type_hint(
+        parse_singleton_return_type_hint(llm_response.symbol_signature)
+    )
+    docstring = strip_python_string_delimiters(llm_response.symbol_docstring)
+    docstring = append_refactor_note_section(
+        docstring,
+        address=ctx.address,
+        formula=ctx.normalized_formula,
+    )
+    symbol_source = assemble_singleton_symbol_source(
+        signature=llm_response.symbol_signature,
+        docstring=docstring,
+        body=llm_response.symbol_body,
+    )
+    return SingletonRefactorResponse(
+        symbol_name=_parse_symbol_name_from_signature(llm_response.symbol_signature),
+        symbol_docstring=docstring,
+        symbol_source=symbol_source,
+    )
+
+
+def _format_cell_metadata_yaml(cell_metadata: Mapping[str, object]) -> str:
+    lines = [f"address: {cell_metadata['address']}"]
+    for key in ("table_labels", "row_labels", "column_labels"):
+        labels = cell_metadata.get(key, [])
+        if not isinstance(labels, list) or not labels:
+            lines.append(f"{key}: []")
+            continue
+        lines.append(f"{key}:")
+        for item in labels:
+            if not isinstance(item, Mapping):
+                continue
+            label = item.get("label")
+            if label is None:
+                continue
+            lines.append(f"  - label: {label}")
+            concept = item.get("concept")
+            if concept is not None:
+                lines.append(f"    concept: {concept}")
+    return "\n".join(lines)
+
+
+def format_singleton_refactor_context_dump(
+    *,
+    function_source: str,
+    cell_metadata: Mapping[str, object],
+    dependency_stubs: str,
+) -> str:
+    yaml_block = _format_cell_metadata_yaml(cell_metadata)
+    return (
+        "Function to refactor:\n\n"
+        f"```python\n{function_source.strip()}\n```\n\n"
+        "Cell metadata:\n\n"
+        f"```yaml\n{yaml_block}\n```\n\n"
+        "Dependencies:\n\n"
+        f"```python\n{dependency_stubs.strip()}\n```"
+    )
+
+
+def _function_defs_by_name(source: str) -> dict[str, ast.FunctionDef]:
+    module = ast.parse(source)
+    return {
+        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
+    }
+
+
+def _called_function_names(function_source: str) -> tuple[str, ...]:
+    module = ast.parse(function_source)
+    function_defs = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+    if len(function_defs) != 1:
+        raise ValueError("function_source must contain exactly one FunctionDef")
+    function_def = function_defs[0]
+    names: list[str] = []
+    for node in ast.walk(function_def):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            names.append(node.func.id)
+    return tuple(dict.fromkeys(names))
+
+
+def _function_signature_line(function_def: ast.FunctionDef) -> str:
+    args = ast.unparse(function_def.args)
+    returns = (
+        f" -> {ast.unparse(function_def.returns)}"
+        if function_def.returns is not None
+        else ""
+    )
+    return f"def {function_def.name}({args}){returns}:"
+
+
+def _strip_note_section(docstring: str) -> str:
+    dedented = textwrap.dedent(docstring).strip()
+    for pattern in (r"\n\nNote:\n.*\Z", r"\nNote:\n.*\Z"):
+        match = re.search(pattern, dedented, re.DOTALL)
+        if match is not None:
+            return dedented[: match.start()].rstrip()
+    return dedented
+
+
+def _format_runtime_dependency_stub(function_def: ast.FunctionDef) -> str:
+    docstring = _function_docstring(function_def)
+    lines = [_function_signature_line(function_def)]
+    if docstring is not None:
+        if "\n" in docstring:
+            compact = " ".join(docstring.split())
+            lines.append(f'    """{compact}"""')
+        else:
+            lines.append(f'    """{docstring}"""')
+    lines.append("    # ...")
+    return "\n".join(lines)
+
+
+def _format_semantic_dependency_stub(function_def: ast.FunctionDef) -> str:
+    docstring = _function_docstring(function_def)
+    lines = [f"def {function_def.name}(ctx: EvalContext) -> float:"]
+    if docstring is not None:
+        trimmed = _strip_note_section(docstring)
+        lines.append('    """')
+        for line in trimmed.splitlines():
+            lines.append(f"    {line}" if line else "")
+        lines.append('    """')
+    lines.append("    # ...")
+    return "\n".join(lines)
+
+
+def _build_dependency_stubs(
+    *,
+    function_source: str,
+    internals_source: str,
+    runtime_source: str,
+) -> str:
+    called = _called_function_names(function_source)
+    runtime_defs = _function_defs_by_name(runtime_source)
+    internals_defs = _function_defs_by_name(internals_source)
+    runtime_names = sorted(name for name in called if name in runtime_defs)
+    semantic_names = sorted(
+        name
+        for name in called
+        if name in internals_defs and not name.startswith("cell_")
+    )
+    stubs = [
+        *(
+            _format_runtime_dependency_stub(runtime_defs[name])
+            for name in runtime_names
+        ),
+        *(
+            _format_semantic_dependency_stub(internals_defs[name])
+            for name in semantic_names
+        ),
+    ]
+    return "\n\n".join(stubs)
+
+
+def build_singleton_refactor_context_dump(
+    *,
+    function_name: str,
+    address: str,
+    internals_source: str,
+    runtime_source: str,
+    cell_metadata: Mapping[str, object],
+) -> str:
+    function_source = extract_function_source(internals_source, function_name)
+    metadata = dict(cell_metadata)
+    metadata["address"] = address
+    dependency_stubs = _build_dependency_stubs(
+        function_source=function_source,
+        internals_source=internals_source,
+        runtime_source=runtime_source,
+    )
+    return format_singleton_refactor_context_dump(
+        function_source=function_source,
+        cell_metadata=metadata,
+        dependency_stubs=dependency_stubs,
+    )
+
+
+def _cell_metadata_for_singleton_refactor(
+    ctx: SingletonRefactorContext,
+    *,
+    source_graph: DependencyGraph | None = None,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {"address": ctx.address}
+    if source_graph is not None:
+        node = source_graph.get_node(ctx.address)
+        if node is not None and node.metadata is not None:
+            for key in ("table_labels", "row_labels", "column_labels"):
+                labels = node.metadata.get(key)
+                metadata[key] = labels if isinstance(labels, list) else []
+            return metadata
+    for key in ("table_labels", "row_labels", "column_labels"):
+        hint = ctx.naming_hints.get(key)
+        if isinstance(hint, str):
+            metadata[key] = [{"label": hint}]
+        else:
+            metadata[key] = []
+    return metadata
+
+
+def build_singleton_refactor_prompt_context(
+    ctx: SingletonRefactorContext,
+    *,
+    internals_path: Path,
+    runtime_path: Path | None = None,
+    source_graph: DependencyGraph | None = None,
+) -> str:
+    resolved_runtime_path = (
+        runtime_path
+        if runtime_path is not None
+        else internals_path.parent / "runtime.py"
+    )
+    return build_singleton_refactor_context_dump(
+        function_name=ctx.function_name,
+        address=ctx.address,
+        internals_source=internals_path.read_text(encoding="utf-8"),
+        runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
+        cell_metadata=_cell_metadata_for_singleton_refactor(
+            ctx,
+            source_graph=source_graph,
+        ),
+    )
+
+
+def _singleton_runtime_imports(response: SingletonRefactorResponse) -> set[str]:
+    imports: set[str] = set()
+    if "EvalContext" in response.symbol_source:
+        imports.add("EvalContext")
+    return imports
+
+
+def _merge_runtime_imports(source: str, symbols: set[str]) -> str:
+    match = _RUNTIME_IMPORT_PATTERN.search(source)
+    if match is None:
+        return source
+    existing = {part.strip() for part in match.group(1).split(",")}
+    merged = sorted(existing | symbols)
+    replacement = "from .runtime import " + ", ".join(merged)
+    return source[: match.start()] + replacement + source[match.end() :]
+
+
+def ensure_singleton_refactor_imports(
+    source: str,
+    response: SingletonRefactorResponse,
+) -> str:
+    needed = _singleton_runtime_imports(response)
+    if not needed:
+        return source
+    return _merge_runtime_imports(source, needed)
+
+
 def singleton_prompt_payload(ctx: SingletonRefactorContext) -> dict[str, object]:
     return {
         "address": ctx.address,
@@ -1377,6 +1714,7 @@ def apply_singleton_refactor_plan(
     response: SingletonRefactorResponse,
     ctx: SingletonRefactorContext,
 ) -> tuple[str, int]:
+    source = ensure_singleton_refactor_imports(source, response)
     updated = _replace_function_definition(
         source,
         ctx.function_name,
@@ -1389,13 +1727,14 @@ def apply_singleton_refactor_plan(
         literal_call=f"{response.symbol_name}(ctx)",
     )
     updated, rewrite_count = substitute_collapse_bindings(updated, (binding,))
-    symbol_dispatch = _parse_symbol_dispatch(source)
-    symbol_dispatch[ctx.address] = response.symbol_name
-    updated = _replace_resolver_section(
-        updated,
-        _parse_address_dispatch(updated) or {},
-        symbol_dispatch=symbol_dispatch,
-    )
+    if RESOLVER_SECTION_MARKER in updated:
+        symbol_dispatch = _parse_symbol_dispatch(source)
+        symbol_dispatch[ctx.address] = response.symbol_name
+        updated = _replace_resolver_section(
+            updated,
+            _parse_address_dispatch(updated) or {},
+            symbol_dispatch=symbol_dispatch,
+        )
     return updated, rewrite_count
 
 
@@ -2186,6 +2525,7 @@ def refactor_internals_singleton(
     dry_run: bool = False,
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
+    source_graph: DependencyGraph | None = None,
 ) -> SingletonRefactorApplyResult:
     source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(source)
@@ -2195,6 +2535,7 @@ def refactor_internals_singleton(
             internals_path=internals_path,
             pristine_source=pristine_source,
             input_vectors=input_vectors,
+            source_graph=source_graph,
         )
     validate_singleton_refactor_response(
         ctx,
@@ -2299,6 +2640,7 @@ def refactor_internals_all_clusters(
                 dry_run=dry_run,
                 pristine_source=pristine_source,
                 input_vectors=input_vectors,
+                source_graph=source_graph,
             )
             refactored_any = True
             continue
@@ -2353,18 +2695,19 @@ def llm_refactor_singleton(
     internals_path: Path,
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
+    source_graph: DependencyGraph | None = None,
 ) -> SingletonRefactorResponse:
-    schema = SingletonRefactorResponse.model_json_schema()
+    llm_schema = SingletonRefactorLLMResponse.model_json_schema()
     internals_bytes = internals_path.read_bytes()
     internals_source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(internals_source)
     cache = load_refactor_cache()
-    cache_key = singleton_refactor_cache_key(ctx, internals_bytes, schema)
+    cache_key = singleton_refactor_cache_key(ctx, internals_bytes, llm_schema)
 
-    def _prepare_and_validate_singleton(
-        parsed: SingletonRefactorResponse,
+    def _validate_singleton_response(
+        prepared: SingletonRefactorResponse,
     ) -> SingletonRefactorResponse:
-        prepared = _prepare_singleton_refactor_response(parsed, ctx)
+        prepared = _prepare_singleton_refactor_response(prepared, ctx)
         validate_singleton_refactor_response(
             ctx,
             prepared,
@@ -2383,6 +2726,12 @@ def llm_refactor_singleton(
             )
         return prepared
 
+    def _prepare_and_validate_singleton(
+        parsed: SingletonRefactorLLMResponse,
+    ) -> SingletonRefactorResponse:
+        prepared = prepare_singleton_refactor_response(parsed, ctx)
+        return _validate_singleton_response(prepared)
+
     cached_content = cache.get(cache_key)
     if cached_content is not None:
         try:
@@ -2391,7 +2740,7 @@ def llm_refactor_singleton(
                 ctx.address,
                 cache_key[:12],
             )
-            return _prepare_and_validate_singleton(
+            return _validate_singleton_response(
                 SingletonRefactorResponse.model_validate_json(cached_content)
             )
         except (ValueError, ValidationError) as error:
@@ -2408,29 +2757,29 @@ def llm_refactor_singleton(
 
     model = refactor_model()
     client, provider = build_client(model)
-    payload = singleton_prompt_payload(ctx)
+    context_dump = build_singleton_refactor_prompt_context(
+        ctx,
+        internals_path=internals_path,
+        source_graph=source_graph,
+    )
     logger.info(
         "singleton refactor LLM request address=%s model=%s prompt_version=%s",
         ctx.address,
         model,
         REFACTOR_PROMPT_VERSION,
     )
-    parsed, _ = generate_validated_json(
+    llm_parsed, _ = generate_validated_json(
         client=client,
         model=model,
         provider=provider,
         system_prompt=(
-            "You rename and refactor one Excel-generated singleton helper "
-            "into a semantic function. Return only JSON matching the schema. "
-            "Preserve semantics exactly; do not algebraically simplify. "
-            "Write Google-style docstrings with Args and Returns sections. "
-            "Use only runtime symbols listed in constraints.allowed_runtime_symbols. "
-            "Choose domain-meaningful snake_case names for the symbol and locals."
+            "You rename and refactor one Excel-generated singleton helper into a "
+            "domain-aware semantic function. Return only JSON matching the schema."
         ),
-        user_prompt=_prompt_for_singleton_refactor(payload, schema),
-        response_model=SingletonRefactorResponse,
-        post_validate=_prepare_and_validate_singleton,
+        user_prompt=_prompt_for_singleton_refactor(context_dump),
+        response_model=SingletonRefactorLLMResponse,
     )
+    parsed = _prepare_and_validate_singleton(llm_parsed)
     cache[cache_key] = parsed.model_dump_json()
     save_refactor_cache(cache)
     return parsed
@@ -2530,62 +2879,15 @@ def llm_refactor_cluster(
 
 
 def _prompt_for_singleton_refactor(
-    payload: dict[str, object], response_schema: dict[str, object]
+    payload_or_context: dict[str, object] | str,
+    response_schema: dict[str, object] | None = None,
 ) -> str:
-    payload_json = json.dumps(payload, indent=2, default=str)
-    schema_json = json.dumps(response_schema, indent=2)
-    constraints = payload.get("constraints", {})
-    if not isinstance(constraints, dict):
-        constraints = {}
-    raw_allowed = constraints.get("allowed_runtime_symbols", [])
-    allowed_symbols = list(raw_allowed) if isinstance(raw_allowed, list) else []
-    allowed_symbols_json = json.dumps(allowed_symbols, indent=2)
-    return f"""
-Rename and refactor one Excel-generated singleton helper into a semantic function.
-
-Rules:
-- Keep signature (ctx) exactly; do not add parameters.
-- Do not rename dependency functions.
-- Choose symbol_name as a clear snake_case semantic identifier informed by naming_hints.
-- Rename local temporaries to domain-meaningful snake_case informed by naming_hints.
-- Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
-- Do not reference cell_* helpers; call semantic helpers already present in internals.py.
-- Call only these runtime symbols (plus semantic helpers from external_dependencies):
-{allowed_symbols_json}
-- For every entry in semantic_dependencies, replace reads with call_form using pass-through
-  parameter names, e.g. shock_active(ctx, time_period=time_period).
-- Emit one complete symbol_source function with signature (ctx); no nested helpers or imports.
-- symbol_source must include a Google-style docstring with Args and Returns sections.
-- symbol_docstring must match the docstring embedded in symbol_source exactly.
-- Include a Note section listing the workbook address and Excel formula.
-- Return only JSON matching the response schema.
-
-Example docstring shape:
-\"\"\"
-Look up the initial debt-to-GDP ratio for the selected country.
-
-Args:
-    ctx: Workbook evaluation context.
-
-Returns:
-    Initial debt-to-GDP ratio from the country profile table.
-
-Note:
-    Covers Inputs!B6. Excel: =INDEX($A$10:$C$12,MATCH($B$5,$A$10:$A$12,0),2).
-\"\"\"
-
-Example case-switch shape (use a lookup table, not an if/elif ladder):
-year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
-if year_address is None:
-    return XlError.VALUE
-year = xl_cell(ctx, year_address)
-
-Singleton context:
-{payload_json}
-
-Response schema:
-{schema_json}
-""".strip()
+    _ = response_schema
+    fixed = load_singleton_refactor_prompt_fixed_portion().strip()
+    if isinstance(payload_or_context, str):
+        return f"{fixed}\n\n{payload_or_context.strip()}"
+    payload_json = json.dumps(payload_or_context, indent=2, default=str)
+    return f"{fixed}\n\nSingleton context:\n{payload_json}"
 
 
 def _prompt_for_refactor(
