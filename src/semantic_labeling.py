@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import fastpyxl
 from excel_grapher.grapher.graph import DependencyGraph
@@ -17,6 +18,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.llm_json import generate_validated_json, generate_validated_json_async
+from src.semantic_naming import semantic_label_group_text
 from src.llm_providers import (
     ProviderConfig,
     build_async_client,
@@ -32,6 +34,11 @@ DEFAULT_SEMANTIC_LABEL_CACHE_PATH = (
     Path(__file__).resolve().parents[1] / ".cache/semantic-labels.json"
 )
 _semantic_label_cache_lock = asyncio.Lock()
+logger = logging.getLogger(__name__)
+
+SemanticLabelValidationMode = Literal["off", "warn", "error"]
+SemanticLabelValidationContext = Literal["pipeline", "pytest"]
+
 SheetLabelProvider = Callable[
     [str, list[NodeKey], list[dict[str, Any]], Mapping[str, Any]],
     "SheetSemanticLabels",
@@ -515,3 +522,130 @@ def label_internal_graph_cells(
         sheet_count=len(candidate_cells_by_sheet),
         candidate_cells_by_sheet=candidate_cells_by_sheet,
     )
+
+
+class SemanticLabelCoverageError(RuntimeError):
+    """Raised when required semantic labels are missing."""
+
+
+@dataclass(frozen=True)
+class SemanticLabelCoverageReport:
+    required_cell_count: int
+    unlabeled_cells: tuple[NodeKey, ...]
+
+
+def cell_meets_semantic_label_requirements(
+    metadata: Mapping[str, Any] | None,
+) -> bool:
+    """True when a cell has a table label and at least one row or column label."""
+    if metadata is None:
+        return False
+    table_labels = semantic_label_group_text(metadata.get("table_labels"))
+    row_labels = semantic_label_group_text(metadata.get("row_labels"))
+    column_labels = semantic_label_group_text(metadata.get("column_labels"))
+    if table_labels is None:
+        return False
+    return row_labels is not None or column_labels is not None
+
+
+def required_label_cells(
+    graph: DependencyGraph,
+    *,
+    input_cells: Iterable[NodeKey],
+    target_cells: Iterable[NodeKey],
+    exempt_cells: Iterable[NodeKey] = (),
+) -> frozenset[NodeKey]:
+    """Return graph cells that must carry semantic labels unless exempt."""
+    candidate_cells_by_sheet = group_candidate_cells_by_sheet(
+        graph,
+        input_cells=input_cells,
+        target_cells=set(target_cells) | set(graph.target_keys()),
+    )
+    required = {
+        address
+        for addresses in candidate_cells_by_sheet.values()
+        for address in addresses
+    }
+    return frozenset(required - set(exempt_cells))
+
+
+def find_unlabeled_cells(
+    graph: DependencyGraph,
+    *,
+    input_cells: Iterable[NodeKey],
+    target_cells: Iterable[NodeKey],
+    exempt_cells: Iterable[NodeKey] = (),
+) -> tuple[NodeKey, ...]:
+    """Return required cells that do not meet semantic label requirements."""
+    unlabeled: list[NodeKey] = []
+    for address in sorted(
+        required_label_cells(
+            graph,
+            input_cells=input_cells,
+            target_cells=target_cells,
+            exempt_cells=exempt_cells,
+        )
+    ):
+        node = graph.get_node(address)
+        metadata = node.metadata if node is not None else None
+        if not cell_meets_semantic_label_requirements(metadata):
+            unlabeled.append(address)
+    return tuple(unlabeled)
+
+
+def format_semantic_label_coverage_message(
+    unlabeled_cells: Iterable[NodeKey],
+) -> str:
+    cells = tuple(unlabeled_cells)
+    if not cells:
+        return "All required graph cells carry semantic labels."
+    preview = ", ".join(cells[:10])
+    suffix = "" if len(cells) <= 10 else f", ... ({len(cells)} total)"
+    return (
+        "Semantic label coverage validation failed for "
+        f"{len(cells)} required cell(s): {preview}{suffix}. "
+        "Each required cell needs a non-empty table label and at least one "
+        "non-empty row or column label, unless listed in "
+        "SEMANTIC_LABEL_EXEMPT_CELLS."
+    )
+
+
+def enforce_semantic_label_coverage(
+    *,
+    graph: DependencyGraph,
+    input_cells: Iterable[NodeKey],
+    target_cells: Iterable[NodeKey],
+    exempt_cells: Iterable[NodeKey],
+    mode: SemanticLabelValidationMode,
+    context: SemanticLabelValidationContext,
+) -> SemanticLabelCoverageReport | None:
+    """Validate semantic label coverage for required internal graph cells."""
+    if mode == "off":
+        return None
+
+    required_cell_count = len(
+        required_label_cells(
+            graph,
+            input_cells=input_cells,
+            target_cells=target_cells,
+            exempt_cells=exempt_cells,
+        )
+    )
+    unlabeled_cells = find_unlabeled_cells(
+        graph,
+        input_cells=input_cells,
+        target_cells=target_cells,
+        exempt_cells=exempt_cells,
+    )
+    report = SemanticLabelCoverageReport(
+        required_cell_count=required_cell_count,
+        unlabeled_cells=unlabeled_cells,
+    )
+    if not unlabeled_cells:
+        return report
+
+    message = format_semantic_label_coverage_message(unlabeled_cells)
+    if context == "pytest" or mode == "error":
+        raise SemanticLabelCoverageError(message)
+    logger.warning(message)
+    return report

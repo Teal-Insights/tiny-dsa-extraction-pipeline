@@ -4,6 +4,8 @@ Edit values here before running the pipeline. See README.md for the
 configure → extract → export → test → document → refactor workflow.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -11,6 +13,7 @@ from excel_grapher.core.cell_types import Between, RealBetween
 
 from src.graph_dependency_audit import GraphAuditCase
 from src.pipeline_config import DistProjectMetadata
+from src.semantic_labeling import SemanticLabelValidationMode
 from src.workbook_addresses import ProjectionColumnLayout
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -105,6 +108,13 @@ DIFFERENTIAL_GRAPH_REPORT_DIR_REL = Path("data/differential/graph")
 # ``LLM_GRAPH_AUDIT_MODEL`` (see ``.env.example``).
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = ()
 
+# Semantic label coverage validation for internal graph cells (see README.md).
+# off: disabled; warn: pipeline logs warnings; error: pipeline raises before export.
+SEMANTIC_LABEL_VALIDATION_MODE: SemanticLabelValidationMode = "warn"
+# Sheet-qualified addresses reviewed and intentionally allowed to remain unlabeled.
+SEMANTIC_LABEL_EXEMPT_CELLS: frozenset[str] = frozenset()
+
+# Optional hooks for ``uv run python -m src.workbook_audit`` (pre-extraction audit).
 AUDIT_TITLE = "Tiny DSA Workbook Audit"
 AUDIT_PUBLIC_INPUTS: tuple[tuple[str, str, str], ...] = ()
 AUDIT_GUIDE_USE_CASES: tuple[tuple[str, str, str], ...] = ()

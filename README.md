@@ -32,11 +32,23 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml` | Records-shaped public API surface |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
 | Projection layout | `workbook_config.py` → `PROJECTION_LAYOUT` | Optional Engine/Outputs column mapping for internals refactor (see below) |
+| Semantic label exemptions | `workbook_config.py` → `SEMANTIC_LABEL_EXEMPT_CELLS` | Reviewed internal cells allowed to remain unlabeled |
 | Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
 | Graph parity evidence | `data/differential/graph/` | Reference reports after passing pre-export graph-oracle sweeps (optional until configured) |
 | Exported-library parity evidence | `data/differential/exported_library/` | Reference reports after passing post-export parity sweeps (optional until configured) |
 
 Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt) with a coding agent to draft bindings from the guide, workbook, and extracted graph.
+
+### Iterative configuration
+
+The linear `configure → extract` summary is a stage gate, not a one-shot workflow. Expect several passes:
+
+1. **Draft** `TARGETS`, `CONSTRAINTS`, and minimal bindings so the graph can build.
+2. **Extract** with `--extract-graph` and review `artifacts/dependency-graph/`.
+3. **Refine** bindings, constraints, and leaf classification using what the graph reveals (missing paths, unbound leaves, lookup tables).
+4. **Re-extract** and repeat until graph review and graph-oracle parity are stable.
+
+Binding authoring explicitly assumes an extracted graph. Leaf classification (`CONSTRAINTS`) and series bindings belong to the same configure bundle and should settle before you treat export as done.
 
 ## Pipeline stages
 
@@ -90,6 +102,31 @@ This writes `artifacts/dependency-graph/` (see [artifacts/artifacts-catalog.md](
 The extraction design is documented in [docs/extraction-pipeline.qmd](docs/extraction-pipeline.qmd) (rendered to [docs/extraction-pipeline.md](docs/extraction-pipeline.md)).
 
 After manual review (onboarding step 5), run graph-oracle differential parity (step 6) before export.
+
+During graph build the pipeline also runs **semantic labeling** and optional **label coverage validation** (see below). Both run on `--extract-graph` and on the full export path.
+
+#### Semantic labeling
+
+After the dependency graph is extracted, bindings are validated, and leaves are classified, an LLM labels **internal graph cells** (every graph node except bound inputs, outputs, and extraction targets—including constant lookup leaves). Labels are stored on node metadata as structured `table_labels`, `row_labels`, and `column_labels`, optionally mapped to concepts from the binding `concept_scheme`.
+
+Results cache under `.cache/semantic-labels.json`. Labels feed the graph explorer and internals refactor naming hints.
+
+#### Semantic label coverage validation
+
+Configure validation in [workbook_config.py](workbook_config.py):
+
+- `SEMANTIC_LABEL_VALIDATION_MODE` — `off`, `warn` (default), or `error`
+- `SEMANTIC_LABEL_EXEMPT_CELLS` — sheet-qualified addresses reviewed and intentionally allowed to remain unlabeled
+
+A cell counts as **labeled** when it has a non-empty **table** label and at least one non-empty **row** or **column** label.
+
+| Mode | Pipeline | Pytest (`tests/test_semantic_label_coverage.py`) |
+|---|---|---|
+| `off` | Skipped | Skipped |
+| `warn` | Logs warnings for unlabeled required cells | Fails the test suite |
+| `error` | Raises before export/refactor | Fails the test suite |
+
+Use `warn` while iterating locally; treat pytest failures as the CI gate once exemptions are committed. Add reviewed bare cells to `SEMANTIC_LABEL_EXEMPT_CELLS` rather than weakening the mode.
 
 ### 3. Verify graph
 
@@ -148,7 +185,7 @@ uv run python -m src.extraction_pipeline
 
 ### Prerequisites
 
-LLM steps (semantic labeling, docstrings, internals refactor, guide rewrites) cache results under `.cache/`. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
+LLM steps (semantic labeling, docstrings, internals refactor, guide rewrites) cache results under `.cache/`. Dependency graph extraction and `OptimalCompression` projection also cache gzipped pickle payloads under `.cache/dependency-graph/` and `.cache/projection/` (keyed by workbook bytes, targets, constraints, bindings, and `excel-grapher` version). Pass `--no-cache` to bypass graph and projection caches for a single run. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
 
 ```bash
 # .env — logging verbosity for pipeline entry points (default: INFO)
@@ -220,9 +257,11 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 - [ ] **Configure:** `bindings/inputs.bindings.yaml` + `outputs.bindings.yaml` validated
 - [ ] **Configure:** Dynamic-ref constraint candidates constrained
 - [ ] **Configure:** All leaves classified; mutable leaves bound
+- [ ] **Configure:** Semantic label exemptions reviewed (`SEMANTIC_LABEL_EXEMPT_CELLS`)
 - [ ] **Extract:** Graph extracts with provenance (`--extract-graph`)
 - [ ] **Review graph:** Manual completeness review done; optional LLM dependency audit passed (`pytest --run-skipped`)
 - [ ] **Verify graph:** Scenario matrix defined in `tests/differential/`; graph-oracle parity passes (`uv run python -m tests.differential.differential_test_graph`)
+- [ ] **Configure:** Semantic label coverage passes (`uv run pytest tests/test_semantic_label_coverage.py`)
 - [ ] **Export:** `dist/` package builds; semantic API scenario runs
 - [ ] **Export:** Validation bundle exported; exported-library differential parity passes (Windows Excel sweep when available)
 - [ ] **Document / refactor:** Public API uses domain language; docstrings present

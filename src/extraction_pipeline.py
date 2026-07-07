@@ -12,7 +12,6 @@ from excel_grapher.core.cell_types import normalize_cell_type_env_key
 from excel_grapher.grapher import (
     DependencyGraph,
     DynamicRefConfig,
-    create_dependency_graph,
 )
 from excel_grapher.exporter import CodeGenerator
 from excel_grapher.series_bindings import (
@@ -50,7 +49,11 @@ from src.qmd_python_validation import (
     render_dist_pyproject_toml,
     write_dist_readme,
 )
-from src.semantic_labeling import label_internal_graph_cells
+from src.graph_cache import get_or_build_dependency_graph
+from src.semantic_labeling import (
+    enforce_semantic_label_coverage,
+    label_internal_graph_cells,
+)
 from src.subgraph_projection import build_refactor_projection
 
 SeriesResolutionList = Sequence[Mapping[str, Any]]
@@ -86,16 +89,23 @@ def _graph_edge_count(graph: DependencyGraph) -> int:
 
 def extract_dependency_graph_result(
     config: PipelineConfig,
+    *,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
 ) -> DependencyGraphExtraction:
     """Build the pipeline dependency graph and collect stage timings."""
     timer = StageTimer()
     stall_log_path = resolve_stall_log_path(config.graph_output_dir)
     started = time.perf_counter()
     with profile_if_enabled(config.graph_output_dir, basename="extract"):
-        graph, series_bindings, input_series, output_series = build_pipeline_graph(
-            config,
-            timer=timer,
-            stall_log_path=stall_log_path,
+        graph, series_bindings, input_series, output_series, _graph_cache_key = (
+            build_pipeline_graph(
+                config,
+                timer=timer,
+                stall_log_path=stall_log_path,
+                no_cache=no_cache,
+                force_rebuild=force_rebuild,
+            )
         )
     elapsed_seconds = time.perf_counter() - started
     return DependencyGraphExtraction(
@@ -173,9 +183,18 @@ def write_dependency_graph_artifacts(
     return summary
 
 
-def extract_dependency_graph(config: PipelineConfig) -> dict[str, Any]:
+def extract_dependency_graph(
+    config: PipelineConfig,
+    *,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
+) -> dict[str, Any]:
     """Build the dependency graph, write review artifacts, and return the summary."""
-    extraction = extract_dependency_graph_result(config)
+    extraction = extract_dependency_graph_result(
+        config,
+        no_cache=no_cache,
+        force_rebuild=force_rebuild,
+    )
     summary = write_dependency_graph_artifacts(extraction, config)
     extraction.timer.print_summary(header="Extract stage timings")
     stall_log_path = resolve_stall_log_path(config.graph_output_dir)
@@ -223,11 +242,14 @@ def build_pipeline_graph(
     *,
     timer: StageTimer | None = None,
     stall_log_path: Path | None = None,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
 ) -> tuple[
     DependencyGraph,
     WorkbookSeriesBindings,
     SeriesResolutionList,
     SeriesResolutionList,
+    str,
 ]:
     def stage(name: str):
         if timer is None:
@@ -245,13 +267,19 @@ def build_pipeline_graph(
         dynamic_ref_config = DynamicRefConfig.from_constraints(config.constraints, {})
 
     with stage("create_dependency_graph"):
-        graph = create_dependency_graph(
-            config.workbook_path,
-            list(config.targets),
-            load_values=True,
+        graph_result = get_or_build_dependency_graph(
+            workbook_path=config.workbook_path,
+            targets=config.targets,
+            constraints=config.constraints,
+            bindings_path=config.bindings_path,
             dynamic_refs=dynamic_ref_config,
+            load_values=True,
             capture_dependency_provenance=True,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
         )
+        graph = graph_result.graph
+        graph_cache_key = graph_result.cache_key
 
     with stage("validate_series_bindings"):
         binding_validation_report = validate_series_bindings(
@@ -276,39 +304,66 @@ def build_pipeline_graph(
             derive_output_series(graph, series_bindings, workbook=config.workbook_path),
         )
 
-    with stage("label_internal_graph_cells"):
-        label_internal_graph_cells(
-            graph=graph,
-            workbook_path=config.workbook_path,
-            input_cells=series_cell_keys(input_series),
-            target_cells=series_cell_keys(output_series),
-            concept_scheme=series_bindings["concept_scheme"],
-        )
-
     with stage("classify_leaves"):
         leaf_classification = classify_leaves_from_constraints(
             config.constraints, graph.leaf_keys()
         )
         graph.leaf_classification = leaf_classification
 
-    return graph, series_bindings, input_series, output_series
+    input_cell_keys = series_cell_keys(input_series)
+    output_cell_keys = series_cell_keys(output_series)
+
+    with stage("label_internal_graph_cells"):
+        label_internal_graph_cells(
+            graph=graph,
+            workbook_path=config.workbook_path,
+            input_cells=input_cell_keys,
+            target_cells=output_cell_keys,
+            concept_scheme=series_bindings["concept_scheme"],
+        )
+
+    with stage("validate_semantic_label_coverage"):
+        enforce_semantic_label_coverage(
+            graph=graph,
+            input_cells=input_cell_keys,
+            target_cells=output_cell_keys,
+            exempt_cells=config.semantic_label_exempt_cells,
+            mode=config.semantic_label_validation_mode,
+            context="pipeline",
+        )
+
+    return graph, series_bindings, input_series, output_series, graph_cache_key
 
 
-def export_generated_package(config: PipelineConfig) -> None:
+def export_generated_package(
+    config: PipelineConfig,
+    *,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
+) -> None:
     """Write the generated package under dist/."""
     configure_logging()
     timer = StageTimer()
     stall_log_path = resolve_stall_log_path(config.graph_output_dir)
     with profile_if_enabled(config.graph_output_dir):
-        graph, series_bindings, _input_series, _output_series = build_pipeline_graph(
-            config,
-            timer=timer,
-            stall_log_path=stall_log_path,
+        graph, series_bindings, _input_series, _output_series, graph_cache_key = (
+            build_pipeline_graph(
+                config,
+                timer=timer,
+                stall_log_path=stall_log_path,
+                no_cache=no_cache,
+                force_rebuild=force_rebuild,
+            )
         )
     timer.print_summary()
     if stall_log_path.is_file():
         print(f"Stall diagnostics: {stall_log_path}")
-    refactor_projection = build_refactor_projection(graph)
+    refactor_projection = build_refactor_projection(
+        graph,
+        graph_cache_key=graph_cache_key,
+        no_cache=no_cache,
+        force_rebuild=force_rebuild,
+    )
     callback_name = configure_docstring_callback(config)
 
     with CodeGenerator(refactor_projection) as generator:
@@ -381,15 +436,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="Build the dependency graph, write review artifacts, and exit.",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass on-disk graph and projection caches for this run.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config = load_pipeline_config()
     validate_pipeline_config(config)
     activate_pipeline_config(config)
     if args.extract_graph:
-        extract_dependency_graph(config)
+        extract_dependency_graph(config, no_cache=args.no_cache)
         return
-    export_generated_package(config)
+    export_generated_package(config, no_cache=args.no_cache)
     from src.documentation_pipeline import run_documentation_pipeline
 
     run_documentation_pipeline(config)

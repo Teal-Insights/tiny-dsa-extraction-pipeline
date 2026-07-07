@@ -80,7 +80,10 @@ def build_synthetic_pipeline_graph(
 ]:
     """Build the dependency graph through the same path as production export."""
     with stub_semantic_labeling():
-        return build_pipeline_graph(config)
+        graph, series_bindings, input_series, output_series, _graph_cache_key = (
+            build_pipeline_graph(config)
+        )
+        return graph, series_bindings, input_series, output_series
 
 
 def write_synthetic_workbook(path: Path) -> Path:
@@ -160,4 +163,6 @@ def synthetic_pipeline_config(
         differential_graph_report_dir_rel=Path("data/differential/graph"),
         graph_output_dir=root / "artifacts" / "dependency-graph",
         graph_audit_cases=GRAPH_AUDIT_CASES,
+        semantic_label_validation_mode="off",
+        semantic_label_exempt_cells=frozenset(),
     )

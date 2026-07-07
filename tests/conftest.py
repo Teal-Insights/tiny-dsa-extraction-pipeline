@@ -99,8 +99,8 @@ def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
         "src.extraction_pipeline.label_internal_graph_cells",
         return_value=stub_summary,
     ):
-        graph, series_bindings, input_series, output_series = build_pipeline_graph(
-            config
+        graph, series_bindings, input_series, output_series, _graph_cache_key = (
+            build_pipeline_graph(config)
         )
     leaf_classification = classify_leaves_from_constraints(
         config.constraints,
