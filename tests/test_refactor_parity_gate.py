@@ -326,6 +326,7 @@ def _singleton_context() -> SingletonRefactorContext:
         python_source="",
         dependency_addresses=(),
         external_dependencies=(),
+        semantic_dependencies=(),
         call_sites=(),
         allowed_runtime_symbols=allowed_runtime_symbols(),
         naming_hints={},

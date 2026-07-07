@@ -204,6 +204,7 @@ class SingletonRefactorContext:
     python_source: str
     dependency_addresses: tuple[str, ...]
     external_dependencies: tuple[str, ...]
+    semantic_dependencies: tuple[SemanticDependency, ...]
     call_sites: tuple[CallSite, ...]
     allowed_runtime_symbols: tuple[str, ...]
     naming_hints: dict[str, object]
@@ -519,11 +520,13 @@ def build_singleton_refactor_context(
         return None
 
     dependency_addresses = tuple(sorted(projection.get_dependencies(address)))
+    semantic_dependencies, unresolved = resolve_semantic_dependencies(
+        source, dependency_addresses
+    )
     external_dependencies = tuple(
         sorted(
-            address_to_function_name(dependency)
-            for dependency in dependency_addresses
-            if address_to_function_name(dependency) in defined_functions
+            {dependency.helper_name for dependency in semantic_dependencies}
+            | set(unresolved)
         )
     )
 
@@ -535,6 +538,7 @@ def build_singleton_refactor_context(
         python_source=extract_function_source(source, function_name),
         dependency_addresses=dependency_addresses,
         external_dependencies=external_dependencies,
+        semantic_dependencies=semantic_dependencies,
         call_sites=scan_call_sites(
             source,
             frozenset({address}),
@@ -1243,6 +1247,15 @@ def singleton_prompt_payload(ctx: SingletonRefactorContext) -> dict[str, object]
         "python_source": ctx.python_source,
         "dependency_addresses": list(ctx.dependency_addresses),
         "external_dependencies": list(ctx.external_dependencies),
+        "semantic_dependencies": [
+            {
+                "address_template": dependency.address_template,
+                "columns": list(dependency.columns),
+                "helper_name": dependency.helper_name,
+                "call_form": dependency.call_form,
+            }
+            for dependency in ctx.semantic_dependencies
+        ],
         "call_sites": [
             {
                 "caller_function": site.caller_function,
@@ -2561,6 +2574,8 @@ Rules:
 - Do not reference cell_* helpers; call semantic helpers already present in internals.py.
 - Call only these runtime symbols (plus semantic helpers from external_dependencies):
 {allowed_symbols_json}
+- For every entry in semantic_dependencies, replace reads with call_form using pass-through
+  parameter names, e.g. shock_active(ctx, time_period=time_period).
 - Emit one complete symbol_source function with signature (ctx); no nested helpers or imports.
 - symbol_source must include a Google-style docstring with Args and Returns sections.
 - symbol_docstring must match the docstring embedded in symbol_source exactly.

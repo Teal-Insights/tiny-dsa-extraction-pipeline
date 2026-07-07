@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
+from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 
+from src.formula_clustering import FormulaCluster
 from src.internals_refactor import (
     REFACTOR_PROMPT_VERSION,
     ClusterRefactorContext,
@@ -17,17 +21,21 @@ from src.internals_refactor import (
     MemberKeys,
     apply_cluster_collapse,
     apply_phase_c,
+    build_singleton_refactor_context,
     collapse_bindings_for_response,
     prompt_payload,
     refactor_cache_key,
+    singleton_prompt_payload,
     validate_allowed_global_references,
     validate_cluster_refactor_response,
     validate_parameter_names_match_vocabulary,
     validate_semantic_local_names,
     validate_uses_first_year_branch_flag,
     _prompt_for_refactor,
+    _prompt_for_singleton_refactor,
     _single_function_def,
 )
+from excel_grapher.exporter import ProjectionResult
 from src.refactor_bindings import KeyConceptSpec
 from src.workbook_addresses import ProjectionColumnLayout
 
@@ -338,3 +346,95 @@ def test_validate_allowed_global_references_allows_runtime_symbols() -> None:
         function_def,
         allowed_names={"xl_cell", "ctx", "time_period", "columns", "column"},
     )
+
+
+INTERNALS_AFTER_C10_COLLAPSE = '''
+def shock_active(ctx, time_period: int) -> float:
+    """Return 1.0 when the shock is active for the given projection period.
+
+    Args:
+        ctx: Workbook evaluation context.
+        time_period: Projection period.
+
+    Returns:
+        1.0 when active.
+
+    Note:
+        Covers Engine!C10:G10. Excel: =IF(1,1,0).
+    """
+    return 1.0
+
+
+def cell_inputs_b6(ctx) -> float:
+    return xl_cell(ctx, "Inputs!B6")
+
+
+def cell_engine_c20(ctx) -> float:
+    return shock_active(ctx, time_period=1) + cell_inputs_b6(ctx)
+'''
+
+
+@dataclass(frozen=True)
+class _ProjectionNode:
+    normalized_formula: str
+
+
+class _SingletonProjectionStub:
+    def get_dependencies(self, address: str) -> tuple[str, ...]:
+        if address == "Engine!C20":
+            return ("Engine!C10", "Inputs!B6")
+        return ()
+
+    def get_node(self, address: str) -> _ProjectionNode | None:
+        if address == "Engine!C20":
+            return _ProjectionNode(normalized_formula="=Engine!C10+Inputs!B6")
+        return None
+
+
+def test_build_singleton_refactor_context_includes_collapsed_semantic_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_symbols",
+        lambda: ALLOWED_RUNTIME_SYMBOLS,
+    )
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(INTERNALS_AFTER_C10_COLLAPSE, encoding="utf-8")
+    cluster = FormulaCluster(
+        cluster_id=4,
+        members=("Engine!C20",),
+        canonical_template="=Engine!C10+Inputs!B6",
+        row=20,
+    )
+    projection = cast(ProjectionResult, _SingletonProjectionStub())
+
+    ctx = build_singleton_refactor_context(
+        projection,
+        cluster,
+        internals_path,
+    )
+
+    assert ctx is not None
+    assert ctx.external_dependencies == ("cell_inputs_b6", "shock_active")
+    assert len(ctx.semantic_dependencies) == 1
+    assert ctx.semantic_dependencies[0].helper_name == "shock_active"
+    assert ctx.semantic_dependencies[0].call_form == (
+        "shock_active(ctx, time_period=time_period)"
+    )
+    assert "Engine!C10" in ctx.semantic_dependencies[0].addresses
+
+    payload = singleton_prompt_payload(ctx)
+    semantic_dependencies = payload["semantic_dependencies"]
+    assert isinstance(semantic_dependencies, list)
+    assert len(semantic_dependencies) == 1
+    assert semantic_dependencies[0] == {
+        "address_template": ctx.semantic_dependencies[0].address_template,
+        "columns": list(ctx.semantic_dependencies[0].columns),
+        "helper_name": "shock_active",
+        "call_form": "shock_active(ctx, time_period=time_period)",
+    }
+
+    prompt = _prompt_for_singleton_refactor(payload, {"type": "object"})
+    assert "semantic_dependencies" in prompt
+    assert "shock_active(ctx, time_period=time_period)" in prompt
