@@ -1,0 +1,76 @@
+You will be provided a mechanical Python translation of a single-cell Excel formula. Your task is to rename and refactor it as a domain-aware semantic function.
+
+## Output format
+
+Return only JSON matching the response schema:
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "symbol_signature": {
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and return type hint.",
+      "title": "Symbol Signature",
+      "type": "string"
+    },
+    "symbol_docstring": {
+      "description": "Google-style docstring. Include Args and Returns sections.",
+      "title": "Symbol Docstring",
+      "type": "string"
+    },
+    "symbol_body": {
+      "description": "Python function body.",
+      "title": "Symbol Body",
+      "type": "string"
+    }
+  },
+  "required": [
+    "symbol_signature",
+    "symbol_docstring",
+    "symbol_body"
+  ],
+  "title": "SingletonRefactorResponse",
+  "type": "object"
+}
+```
+
+## Signature
+
+- `symbol_signature` should take only one argument: `(ctx: EvalContext)`. Do not add parameters.
+- Choose function name as a clear `snake_case` semantic identifier informed by naming hints.
+- Return type should be documented with a type hint, e.g., `-> float`.
+
+## Docstring
+
+- `symbol_docstring` must include a Google-style docstring with a semantic description and `Args` and `Returns` sections.
+- You may omit Python string delimiters.
+
+## Body
+
+- Emit `symbol_body` for one self-contained function; no nested helpers or imports.
+- Call only runtime symbols from the original translation and, if necessary, Python stdlib functions/operators.
+- Preserve dependency function names and signatures.
+- Call dependencies using pass-through parameter names, e.g. `shock_active(ctx, time_period=time_period)`.
+- Rename local temporaries to domain-meaningful `snake_case` informed by naming hints.
+
+## Example:
+
+Refactor will mostly consist of unpacking nested calls and assigning to local temporaries for readability. For example, suppose you are assigned to refactor the following function:
+
+```python
+def cell_some_sheet_z22(ctx):
+    '''Formula: =AnotherSheet!Z20-AnotherSheet!Z6.'''
+    return (xl_number(united_states_total_deaths(ctx)) - xl_number(united_states_expected_deaths(ctx)))
+```
+
+In this case, to reduce line length, you could assign `total_deaths = xl_number(united_states_total_deaths(ctx))` and `expected_deaths = xl_number(united_states_expected_deaths(ctx))` and then return `total_deaths - expected_deaths`.
+
+To support function naming and docstring generation, you will be provided label metadata about the current cell and signatures and docstrings for all dependencies. This cell might have "United States Vital Statistics" in `table_labels` and "Excess Deaths" in `row_labels`, with empty `column_labels`. You might then naturally name the function `united_states_excess_deaths` and document it as "Excess deaths for the United States: total deaths less expected deaths".
+
+```json
+{
+  "symbol_signature": "def united_states_excess_deaths(ctx: EvalContext) -> float:",
+  "symbol_docstring": "Excess deaths for the United States: total deaths less expected deaths.\n\nArgs:\n    ctx: Workbook evaluation context.\n\nReturns:\n    Excess deaths for the United States.",
+  "symbol_body": "total_deaths = xl_number(united_states_total_deaths(ctx))\nexpected_deaths = xl_number(united_states_expected_deaths(ctx))\nreturn total_deaths - expected_deaths"
+}
+```

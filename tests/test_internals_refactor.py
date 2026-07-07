@@ -19,8 +19,11 @@ from src.internals_refactor import (
     MemberContext,
     MemberKeyEntry,
     MemberKeys,
+    SingletonRefactorContext,
+    SingletonRefactorResponse,
     apply_cluster_collapse,
     apply_phase_c,
+    apply_singleton_refactor_plan,
     build_singleton_refactor_context,
     collapse_bindings_for_response,
     prompt_payload,
@@ -59,6 +62,7 @@ from .runtime import (
     XlError,
     xl_cell,
     xl_eval,
+    xl_number,
 )
 """
 
@@ -438,3 +442,78 @@ def test_build_singleton_refactor_context_includes_collapsed_semantic_dependenci
     prompt = _prompt_for_singleton_refactor(payload, {"type": "object"})
     assert "semantic_dependencies" in prompt
     assert "shock_active(ctx, time_period=time_period)" in prompt
+
+
+INTERNALS_WITH_SINGLETON_CALLER = (
+    RUNTIME_IMPORT
+    + """
+# --- Formula cell functions ---
+
+def shock_active(ctx, time_period):
+    return 1.0
+
+def cell_engine_c20(ctx):
+    \"\"\"Covers Engine!C20.\"\"\"
+    return shock_active(ctx, time_period=1)
+
+def cell_engine_d20(ctx):
+    \"\"\"Covers Engine!D20.\"\"\"
+    return xl_number(xl_eval(ctx, 'Engine!C20', cell_engine_c20))
+
+"""
+    + RESOLVER_SECTION
+)
+
+PROJECTED_DEBT_TO_GDP_SOURCE = '''def projected_debt_to_gdp(ctx):
+    """Return projected debt-to-GDP for the first projection period.
+
+    Args:
+        ctx: Workbook evaluation context.
+
+    Returns:
+        Projected debt-to-GDP ratio.
+
+    Note:
+        Covers Engine!C20. Excel: =1.
+    """
+    return shock_active(ctx, time_period=1)
+'''
+
+
+def test_apply_singleton_refactor_plan_replaces_xl_eval_at_call_sites() -> None:
+    ctx = SingletonRefactorContext(
+        address="Engine!C20",
+        function_name="cell_engine_c20",
+        canonical_template="=1",
+        normalized_formula="=1",
+        python_source="def cell_engine_c20(ctx):\n    return 1.0\n",
+        dependency_addresses=("Engine!C10",),
+        external_dependencies=("shock_active",),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints={},
+    )
+    response = SingletonRefactorResponse(
+        symbol_name="projected_debt_to_gdp",
+        symbol_docstring=(
+            "Return projected debt-to-GDP for the first projection period.\n\n"
+            "Args:\n    ctx: Workbook evaluation context.\n\n"
+            "Returns:\n    Projected debt-to-GDP ratio.\n\n"
+            "Note:\n    Covers Engine!C20. Excel: =1."
+        ),
+        symbol_source=PROJECTED_DEBT_TO_GDP_SOURCE,
+    )
+
+    updated, rewrite_count = apply_singleton_refactor_plan(
+        INTERNALS_WITH_SINGLETON_CALLER,
+        response,
+        ctx,
+    )
+
+    assert rewrite_count == 1
+    assert "def cell_engine_c20" not in updated
+    assert "def projected_debt_to_gdp" in updated
+    assert "xl_eval(ctx, 'Engine!C20', cell_engine_c20)" not in updated
+    assert "xl_eval(ctx, 'Engine!C20', projected_debt_to_gdp)" not in updated
+    assert "xl_number(projected_debt_to_gdp(ctx))" in updated

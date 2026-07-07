@@ -1372,30 +1372,6 @@ def _replace_function_definition(source: str, old_name: str, new_source: str) ->
     raise KeyError(f"Function {old_name!r} not found")
 
 
-def rename_function_references(
-    source: str,
-    old_name: str,
-    new_name: str,
-) -> tuple[str, int]:
-    module = ast.parse(source)
-    replacements: list[tuple[int, int, str, str]] = []
-
-    for top_level in module.body:
-        if not isinstance(top_level, ast.FunctionDef):
-            continue
-        visitor = _FunctionReferenceRenameVisitor(
-            old_name=old_name,
-            new_name=new_name,
-            source=source,
-            replacements=replacements,
-        )
-        visitor.visit(top_level)
-
-    if not replacements:
-        return source, 0
-    return _apply_segment_replacements(source, replacements), len(replacements)
-
-
 def apply_singleton_refactor_plan(
     source: str,
     response: SingletonRefactorResponse,
@@ -1406,11 +1382,13 @@ def apply_singleton_refactor_plan(
         ctx.function_name,
         response.symbol_source,
     )
-    updated, rewrite_count = rename_function_references(
-        updated,
-        ctx.function_name,
-        response.symbol_name,
+    binding = CollapseBinding(
+        address=ctx.address,
+        function_name=ctx.function_name,
+        helper_name=response.symbol_name,
+        literal_call=f"{response.symbol_name}(ctx)",
     )
+    updated, rewrite_count = substitute_collapse_bindings(updated, (binding,))
     symbol_dispatch = _parse_symbol_dispatch(source)
     symbol_dispatch[ctx.address] = response.symbol_name
     updated = _replace_resolver_section(
@@ -2677,52 +2655,6 @@ Cluster context:
 Response schema:
 {schema_json}
 """.strip()
-
-
-class _FunctionReferenceRenameVisitor(ast.NodeVisitor):
-    def __init__(
-        self,
-        *,
-        old_name: str,
-        new_name: str,
-        source: str,
-        replacements: list[tuple[int, int, str, str]],
-    ) -> None:
-        self.old_name = old_name
-        self.new_name = new_name
-        self.source = source
-        self.replacements = replacements
-
-    def visit_Call(self, node: ast.Call) -> None:
-        if (
-            isinstance(node.func, ast.Name)
-            and node.func.id == "xl_eval"
-            and len(node.args) >= 3
-            and isinstance(node.args[2], ast.Name)
-            and node.args[2].id == self.old_name
-        ):
-            segment = ast.get_source_segment(self.source, node.args[2])
-            if segment is not None:
-                self.replacements.append(
-                    (
-                        node.args[2].lineno,
-                        node.args[2].end_lineno or node.args[2].lineno,
-                        segment,
-                        self.new_name,
-                    )
-                )
-        elif isinstance(node.func, ast.Name) and node.func.id == self.old_name:
-            segment = ast.get_source_segment(self.source, node.func)
-            if segment is not None:
-                self.replacements.append(
-                    (
-                        node.func.lineno,
-                        node.func.end_lineno or node.func.lineno,
-                        segment,
-                        self.new_name,
-                    )
-                )
-        self.generic_visit(node)
 
 
 class _CallSiteVisitor(ast.NodeVisitor):

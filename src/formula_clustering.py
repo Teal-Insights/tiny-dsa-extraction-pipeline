@@ -3,56 +3,42 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from excel_grapher.core.formula_ast import (
+    AstNode,
+    BinaryOpNode,
+    BoolNode,
+    CellRefNode,
+    EmptyArgNode,
+    ErrorNode,
+    FormulaParseError,
+    FunctionCallNode,
+    NumberNode,
+    RangeNode,
+    StringNode,
+    UnaryOpNode,
+    WholeColumnNode,
+    WholeRowNode,
+    parse,
+)
 from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
+from fastpyxl.utils.cell import column_index_from_string
 
 from src.workbook_addresses import parse_workbook_address
 
 ClusterableGraph: TypeAlias = DependencyGraph | ProjectionResult
 
-# Default normalized-formula Levenshtein ratio for parallel formula families.
-DEFAULT_SIMILARITY_THRESHOLD = 0.16
+StructuralFingerprint: TypeAlias = tuple[tuple, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
 class FormulaCluster:
-    """A group of workbook cells whose normalized formulas cluster by similarity."""
+    """A group of workbook cells whose normalized formulas share one AST shape."""
 
     cluster_id: int
     members: tuple[str, ...]
     canonical_template: str
     row: int | None
-
-
-def levenshtein_distance(left: str, right: str) -> int:
-    """Return the Levenshtein edit distance between two strings."""
-    if left == right:
-        return 0
-    if not left:
-        return len(right)
-    if not right:
-        return len(left)
-
-    previous = list(range(len(right) + 1))
-    for left_index, left_char in enumerate(left, start=1):
-        current = [left_index]
-        for right_index, right_char in enumerate(right, start=1):
-            insert_cost = current[right_index - 1] + 1
-            delete_cost = previous[right_index] + 1
-            replace_cost = previous[right_index - 1] + (left_char != right_char)
-            current.append(min(insert_cost, delete_cost, replace_cost))
-        previous = current
-    return previous[-1]
-
-
-def levenshtein_ratio(left: str, right: str) -> float:
-    """Return normalized Levenshtein distance in [0, 1]."""
-    if left == right:
-        return 0.0
-    max_len = max(len(left), len(right))
-    if max_len == 0:
-        return 0.0
-    return levenshtein_distance(left, right) / max_len
 
 
 def _projected_graph(graph: ClusterableGraph) -> DependencyGraph:
@@ -77,28 +63,157 @@ def _cluster_row_key(address: str) -> tuple[str, int]:
     return sheet, row
 
 
+def _formula_body(normalized_formula: str) -> str:
+    return (
+        normalized_formula[1:]
+        if normalized_formula.startswith("=")
+        else normalized_formula
+    )
+
+
+def _structural_tuple(node: AstNode, refs: list[str]) -> tuple:
+    if isinstance(node, NumberNode):
+        return ("num",)
+    if isinstance(node, StringNode):
+        return ("str",)
+    if isinstance(node, BoolNode):
+        return ("bool",)
+    if isinstance(node, ErrorNode):
+        return ("err", str(node.error))
+    if isinstance(node, CellRefNode):
+        if node.address not in refs:
+            refs.append(node.address)
+        return ("ref", refs.index(node.address))
+    if isinstance(node, RangeNode):
+        for address in (node.start, node.end):
+            if address not in refs:
+                refs.append(address)
+        return ("range", refs.index(node.start), refs.index(node.end))
+    if isinstance(node, WholeColumnNode):
+        return ("wcol", node.sheet, node.column)
+    if isinstance(node, WholeRowNode):
+        return ("wrow", node.sheet, node.row)
+    if isinstance(node, EmptyArgNode):
+        return ("empty",)
+    if isinstance(node, UnaryOpNode):
+        return ("unary", node.op, _structural_tuple(node.operand, refs))
+    if isinstance(node, BinaryOpNode):
+        return (
+            "bin",
+            node.op,
+            _structural_tuple(node.left, refs),
+            _structural_tuple(node.right, refs),
+        )
+    if isinstance(node, FunctionCallNode):
+        return (
+            "fn",
+            node.name,
+            tuple(_structural_tuple(arg, refs) for arg in node.args),
+        )
+    raise TypeError(type(node))
+
+
+def structural_fingerprint(
+    normalized_formula: str,
+) -> StructuralFingerprint | None:
+    """Return ``(skeleton, refs)`` with refs in deterministic AST visit order."""
+    try:
+        ast = parse(_formula_body(normalized_formula))
+    except FormulaParseError:
+        return None
+    refs: list[str] = []
+    return (_structural_tuple(ast, refs), tuple(refs))
+
+
+def _reference_deltas(
+    left_refs: tuple[str, ...], right_refs: tuple[str, ...]
+) -> list[tuple[int, int]] | None:
+    if len(left_refs) != len(right_refs):
+        return None
+    deltas: list[tuple[int, int]] = []
+    for left_ref, right_ref in zip(left_refs, right_refs, strict=True):
+        left_sheet, left_col, left_row = parse_workbook_address(left_ref)
+        right_sheet, right_col, right_row = parse_workbook_address(right_ref)
+        if left_sheet != right_sheet:
+            return None
+        left_col_index = column_index_from_string(left_col)
+        right_col_index = column_index_from_string(right_col)
+        deltas.append((right_col_index - left_col_index, right_row - left_row))
+    return deltas
+
+
+def _single_axis_reference_deltas(deltas: list[tuple[int, int]]) -> bool:
+    if not deltas:
+        return True
+    col_deltas = {delta[0] for delta in deltas}
+    row_deltas = {delta[1] for delta in deltas}
+    if col_deltas == {0} and row_deltas == {0}:
+        return True
+    if len(row_deltas) == 1 and row_deltas == {0}:
+        return True
+    if len(col_deltas) == 1 and col_deltas == {0}:
+        return True
+    for col_delta, row_delta in deltas:
+        if col_delta != 0 and row_delta != 0:
+            return False
+    cols_vary = any(delta[0] != 0 for delta in deltas)
+    rows_vary = any(delta[1] != 0 for delta in deltas)
+    return not (cols_vary and rows_vary)
+
+
+def formulas_are_parameterizable(
+    left_formula: str,
+    right_formula: str,
+    *,
+    left_address: str | None = None,
+    right_address: str | None = None,
+    require_same_row: bool = False,
+) -> bool:
+    """Return whether two normalized formulas differ only by refs or scalars."""
+    left_fingerprint = structural_fingerprint(left_formula)
+    right_fingerprint = structural_fingerprint(right_formula)
+    if left_fingerprint is None or right_fingerprint is None:
+        return False
+    left_skeleton, left_refs = left_fingerprint
+    right_skeleton, right_refs = right_fingerprint
+    if left_skeleton != right_skeleton:
+        return False
+    if require_same_row:
+        if left_address is None or right_address is None:
+            raise ValueError(
+                "left_address and right_address are required when require_same_row=True"
+            )
+        if _cluster_row_key(left_address) != _cluster_row_key(right_address):
+            return False
+    deltas = _reference_deltas(left_refs, right_refs)
+    if deltas is None:
+        return False
+    return _single_axis_reference_deltas(deltas)
+
+
 def _should_cluster(
     left_address: str,
     left_formula: str,
     right_address: str,
     right_formula: str,
     *,
-    similarity_threshold: float,
     require_same_row: bool,
 ) -> bool:
-    if require_same_row:
-        if _cluster_row_key(left_address) != _cluster_row_key(right_address):
-            return False
-    return levenshtein_ratio(left_formula, right_formula) <= similarity_threshold
+    return formulas_are_parameterizable(
+        left_formula,
+        right_formula,
+        left_address=left_address,
+        right_address=right_address,
+        require_same_row=require_same_row,
+    )
 
 
 def cluster_graph_formulas(
     graph: ClusterableGraph,
     *,
-    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-    require_same_row: bool = True,
+    require_same_row: bool = False,
 ) -> tuple[FormulaCluster, ...]:
-    """Cluster non-leaf formula nodes by ``normalized_formula`` similarity."""
+    """Cluster non-leaf formula nodes by AST shape and single-axis ref variation."""
     formula_nodes = _formula_nodes(graph)
     addresses = sorted(formula_nodes)
 
@@ -123,7 +238,6 @@ def cluster_graph_formulas(
                 formula_nodes[left_address],
                 right_address,
                 formula_nodes[right_address],
-                similarity_threshold=similarity_threshold,
                 require_same_row=require_same_row,
             ):
                 union(left_address, right_address)
