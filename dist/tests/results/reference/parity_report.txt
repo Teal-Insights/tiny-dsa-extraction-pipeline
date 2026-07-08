@@ -1,112 +1,12 @@
 Parity report: exported tiny_dsa standalone library vs Excel
-Generated: 2026-07-03T17:52:32+00:00
+Generated: 2026-07-03T18:21:23+00:00
 Workbook:  C:\Users\chris\Software\tiny-dsa-extraction-pipeline\data\tiny-dsa.xlsx
 Package:   C:\Users\chris\Software\tiny-dsa-extraction-pipeline\dist\tiny_dsa (imported as dist.tiny_dsa.api)
 Tolerance: atol = 1e-06
 
 Total comparisons: 1770
-Passed:            1680
-Failed:            90
-Pass rate:         94.92%
+Passed:            1770
+Failed:            0
+Pass rate:         100.00%
 Acceptance bar:    100.00%
-Result:            FAIL
-
-First divergence:
-  scenario:  single_axis:growth[year=1]=+0.0
-  cell:      Outputs!B12  (output_baseline[year=1])
-  excel:     '<exception: XlErrorException: #DIV/0!>'
-  mvp:       '<exception: XlErrorException: #DIV/0!>'
-  abs_diff:  None
-  rel_diff:  None
-
-All failing comparisons (90):
-  single_axis:growth[year=1]=+0.0 | Outputs!B12 (output_baseline[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!C12 (output_baseline[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!D12 (output_baseline[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!E12 (output_baseline[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!F12 (output_baseline[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!B13 (output_shocked[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!C13 (output_shocked[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!D13 (output_shocked[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!E13 (output_shocked[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!F13 (output_shocked[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!B14 (output_delta[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!C14 (output_delta[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!D14 (output_delta[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!E14 (output_delta[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=1]=+0.0 | Outputs!F14 (output_delta[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!B12 (output_baseline[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!C12 (output_baseline[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!D12 (output_baseline[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!E12 (output_baseline[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!F12 (output_baseline[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!B13 (output_shocked[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!C13 (output_shocked[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!D13 (output_shocked[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!E13 (output_shocked[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!F13 (output_shocked[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!B14 (output_delta[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!C14 (output_delta[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!D14 (output_delta[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!E14 (output_delta[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=3]=+0.0 | Outputs!F14 (output_delta[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!B12 (output_baseline[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!C12 (output_baseline[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!D12 (output_baseline[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!E12 (output_baseline[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!F12 (output_baseline[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!B13 (output_shocked[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!C13 (output_shocked[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!D13 (output_shocked[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!E13 (output_shocked[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!F13 (output_shocked[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!B14 (output_delta[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!C14 (output_delta[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!D14 (output_delta[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!E14 (output_delta[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:growth[year=5]=+0.0 | Outputs!F14 (output_delta[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!B12 (output_baseline[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!C12 (output_baseline[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!D12 (output_baseline[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!E12 (output_baseline[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!F12 (output_baseline[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!B13 (output_shocked[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!C13 (output_shocked[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!D13 (output_shocked[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!E13 (output_shocked[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!F13 (output_shocked[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!B14 (output_delta[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!C14 (output_delta[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!D14 (output_delta[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!E14 (output_delta[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=1]=+0.0 | Outputs!F14 (output_delta[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!B12 (output_baseline[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!C12 (output_baseline[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!D12 (output_baseline[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!E12 (output_baseline[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!F12 (output_baseline[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!B13 (output_shocked[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!C13 (output_shocked[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!D13 (output_shocked[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!E13 (output_shocked[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!F13 (output_shocked[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!B14 (output_delta[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!C14 (output_delta[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!D14 (output_delta[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!E14 (output_delta[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=3]=+0.0 | Outputs!F14 (output_delta[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!B12 (output_baseline[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!C12 (output_baseline[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!D12 (output_baseline[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!E12 (output_baseline[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!F12 (output_baseline[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!B13 (output_shocked[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!C13 (output_shocked[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!D13 (output_shocked[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!E13 (output_shocked[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!F13 (output_shocked[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!B14 (output_delta[year=1]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!C14 (output_delta[year=2]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!D14 (output_delta[year=3]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!E14 (output_delta[year=4]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
-  single_axis:interest[year=5]=+0.0 | Outputs!F14 (output_delta[year=5]) | excel='<exception: XlErrorException: #DIV/0!>' mvp='<exception: XlErrorException: #DIV/0!>' abs=None rel=None
+Result:            PASS

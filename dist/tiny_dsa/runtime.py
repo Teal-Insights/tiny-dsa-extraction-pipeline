@@ -207,6 +207,41 @@ def needs_quoting(sheet: str) -> bool:
     """Return True if a sheet name must be wrapped in single quotes in a formula."""
     return " " in sheet or "-" in sheet or "'" in sheet
 
+def parse_address(address: str) -> tuple[str, str]:
+    """Parse a sheet-qualified address into `(sheet, cell_coord)`.
+
+    The returned sheet name has any surrounding single quotes stripped and any
+    escaped apostrophes (`''`) unescaped to a single apostrophe.
+
+    Examples:
+        >>> parse_address("Sheet1!A1")
+        ('Sheet1', 'A1')
+        >>> parse_address("'My Sheet'!B2")
+        ('My Sheet', 'B2')
+        >>> parse_address("'It''s Data'!C3")
+        ("It's Data", 'C3')
+    """
+    if address.startswith("'"):
+        i = 1
+        while i < len(address):
+            if address[i] == "'":
+                if i + 1 < len(address) and address[i + 1] == "'":
+                    i += 2
+                    continue
+                break
+            i += 1
+        sheet = address[1:i].replace("''", "'")
+        rest = address[i + 1 :]
+        if rest.startswith("!"):
+            return sheet, rest[1:]
+        raise ValueError(f"Invalid address format: {address}")
+
+    if "!" in address:
+        sheet, cell = address.rsplit("!", 1)
+        return sheet, cell
+
+    raise ValueError(f"Address must be sheet-qualified: {address}")
+
 def quote_sheet_if_needed(sheet: str) -> str:
     """Return a sheet name quoted for formulas when quoting is required."""
     if not needs_quoting(sheet):
@@ -467,27 +502,12 @@ def split_sheet_qualified_address(address: str) -> tuple[str, str] | None:
 
     Returns `None` when *address* has no sheet qualifier (plain `A1`).
     """
-    if address.startswith("'"):
-        i = 1
-        while i < len(address):
-            if address[i] == "'":
-                if i + 1 < len(address) and address[i + 1] == "'":
-                    i += 2
-                    continue
-                break
-            i += 1
-        if i >= len(address):
-            return None
-        sheet = address[1:i].replace("''", "'")
-        rest = address[i + 1 :]
-        if not rest.startswith("!"):
-            return None
-        return sheet, rest[1:]
-
     if "!" not in address:
         return None
-    sheet, cell = address.rsplit("!", 1)
-    return sheet, cell
+    try:
+        return parse_address(address)
+    except ValueError:
+        return None
 
 def _parse_sheet_address(address: str) -> tuple[str, str] | None:
     return split_sheet_qualified_address(address)
@@ -533,6 +553,29 @@ def to_bool(value: CellValue) -> bool | XlError:
         return XlError.VALUE
     return XlError.VALUE
 
+def to_string(value: CellValue) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, XlError):
+        return value.value
+    if isinstance(value, (int, float)):
+        return _format_general_number(float(value))
+    if isinstance(value, ExcelRange):
+        return XlError.VALUE.value
+    return str(value)
+
+def try_coerce_string_to_float(text: str) -> float | None:
+    """Parse one Excel numeric string, or return None when coercion fails."""
+    stripped = text.strip()
+    if stripped == "":
+        return 0.0
+    try:
+        return float(stripped)
+    except ValueError:
+        return _try_parse_iso_date_serial(stripped)
+
 def to_number(value: CellValue) -> float | XlError:
     if value is None:
         return 0.0
@@ -543,16 +586,10 @@ def to_number(value: CellValue) -> float | XlError:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        s = value.strip()
-        if s == "":
-            return 0.0
-        try:
-            return float(s)
-        except ValueError:
-            serial = _try_parse_iso_date_serial(s)
-            if serial is not None:
-                return serial
+        number = try_coerce_string_to_float(value)
+        if number is None:
             return XlError.VALUE
+        return number
     if isinstance(value, ExcelRange):
         return XlError.VALUE
     return XlError.VALUE
@@ -594,6 +631,53 @@ def _values_match(a: CellValue, b: CellValue) -> bool:
     if not isinstance(an, XlError) and not isinstance(bn, XlError):
         return an == bn
     return a == b
+
+def compare_scalars(op: str, left: CellValue, right: CellValue) -> bool | XlError:
+    """Compare two scalar cell values using Excel coercion rules."""
+    if isinstance(left, XlError):
+        return left
+    if isinstance(right, XlError):
+        return right
+
+    def _cmp_str(a: str, b: str) -> bool:
+        if op == "=":
+            return a == b
+        if op == "<>":
+            return a != b
+        if op == "<":
+            return a < b
+        if op == ">":
+            return a > b
+        if op == "<=":
+            return a <= b
+        if op == ">=":
+            return a >= b
+        raise ValueError(f"Unknown comparison operator: {op}")
+
+    def _cmp_float(a: float, b: float) -> bool:
+        if op == "=":
+            return a == b
+        if op == "<>":
+            return a != b
+        if op == "<":
+            return a < b
+        if op == ">":
+            return a > b
+        if op == "<=":
+            return a <= b
+        if op == ">=":
+            return a >= b
+        raise ValueError(f"Unknown comparison operator: {op}")
+
+    if isinstance(left, str) and isinstance(right, str):
+        return _cmp_str(excel_casefold(left), excel_casefold(right))
+
+    ln = to_number(left)
+    rn = to_number(right)
+    if isinstance(ln, XlError) or isinstance(rn, XlError):
+        return _cmp_str(excel_casefold(to_string(left)), excel_casefold(to_string(right)))
+
+    return _cmp_float(float(ln), float(rn))
 
 def index_excel_range(
     base: ExcelRange,
@@ -683,66 +767,6 @@ def to_int(value: CellValue) -> int | XlError:
     if isinstance(n, XlError):
         return n
     return int(n)
-
-def to_string(value: CellValue) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, XlError):
-        return value.value
-    if isinstance(value, (int, float)):
-        return _format_general_number(float(value))
-    if isinstance(value, ExcelRange):
-        return XlError.VALUE.value
-    return str(value)
-
-def compare_scalars(op: str, left: CellValue, right: CellValue) -> bool | XlError:
-    """Compare two scalar cell values using Excel coercion rules."""
-    if isinstance(left, XlError):
-        return left
-    if isinstance(right, XlError):
-        return right
-
-    def _cmp_str(a: str, b: str) -> bool:
-        if op == "=":
-            return a == b
-        if op == "<>":
-            return a != b
-        if op == "<":
-            return a < b
-        if op == ">":
-            return a > b
-        if op == "<=":
-            return a <= b
-        if op == ">=":
-            return a >= b
-        raise ValueError(f"Unknown comparison operator: {op}")
-
-    def _cmp_float(a: float, b: float) -> bool:
-        if op == "=":
-            return a == b
-        if op == "<>":
-            return a != b
-        if op == "<":
-            return a < b
-        if op == ">":
-            return a > b
-        if op == "<=":
-            return a <= b
-        if op == ">=":
-            return a >= b
-        raise ValueError(f"Unknown comparison operator: {op}")
-
-    if isinstance(left, str) and isinstance(right, str):
-        return _cmp_str(excel_casefold(left), excel_casefold(right))
-
-    ln = to_number(left)
-    rn = to_number(right)
-    if isinstance(ln, XlError) or isinstance(rn, XlError):
-        return _cmp_str(excel_casefold(to_string(left)), excel_casefold(to_string(right)))
-
-    return _cmp_float(float(ln), float(rn))
 
 def xl_bool(value: CellValue) -> bool:
     """Coerce a scalar cell value to a boolean, raising on Excel errors."""
