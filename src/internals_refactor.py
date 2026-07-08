@@ -50,7 +50,7 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 16
+REFACTOR_PROMPT_VERSION = 17
 
 
 def refactor_model() -> str:
@@ -193,6 +193,43 @@ class ClusterRefactorResponse(BaseModel):
             "One entry per cluster member with literal key values for that address."
         )
     )
+
+
+class ClusterRefactorLLMResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol_signature: str = Field(
+        description=(
+            "Python function signature, including `def` keyword, `snake_case` "
+            "semantic name, `ctx: EvalContext`, typed economic parameters from "
+            "`key_vocabulary`, and return type hint."
+        )
+    )
+    symbol_docstring: str = Field(
+        description="Google-style docstring. Include Args and Returns sections."
+    )
+    symbol_body: str = Field(description="Python function body.")
+    parameters: tuple[HelperParameter, ...] = Field(
+        description=(
+            "Economic parameters the helper varies along, tied to binding key concepts."
+        )
+    )
+    member_keys: tuple[MemberKeys, ...] = Field(
+        description=(
+            "One entry per cluster member with literal key values for that address."
+        )
+    )
+    uses_first_year_branch: bool = Field(
+        description=(
+            "True when the helper branches on first-year logic "
+            "(e.g. time_period == 1 or prior-period recursion)."
+        )
+    )
+
+
+CLUSTER_REFACTOR_PROMPT_FIXTURE = (
+    repo_root / "tests" / "fixtures" / "cluster_refactor_prompt.md"
+)
 
 
 @dataclass(frozen=True)
@@ -1548,6 +1585,335 @@ def build_singleton_refactor_prompt_context(
     )
 
 
+def load_cluster_refactor_prompt_fixed_portion() -> str:
+    return CLUSTER_REFACTOR_PROMPT_FIXTURE.read_text(encoding="utf-8")
+
+
+def append_cluster_refactor_note_section(
+    docstring: str,
+    *,
+    covered_addresses: str,
+    formula: str,
+) -> str:
+    return (
+        f"{docstring.rstrip()}\n\n"
+        f"Note:\n    Covers {covered_addresses}. Excel: {formula}."
+    )
+
+
+def format_cluster_covered_addresses(addresses: Sequence[str]) -> str:
+    if not addresses:
+        raise ValueError("addresses must not be empty")
+    if len(addresses) == 1:
+        return addresses[0]
+    parsed = [parse_workbook_address(address) for address in addresses]
+    sheets = {sheet for sheet, _column, _row in parsed}
+    rows = {row for _sheet, _column, row in parsed}
+    if len(sheets) != 1 or len(rows) != 1:
+        return ", ".join(sorted(addresses))
+    sheet = next(iter(sheets))
+    row = next(iter(rows))
+    columns = sorted(
+        {column for _sheet, column, _row in parsed},
+        key=_column_index,
+    )
+    column_indices = [_column_index(column) for column in columns]
+    contiguous = all(
+        later - earlier == 1
+        for earlier, later in zip(column_indices, column_indices[1:], strict=False)
+    )
+    if contiguous:
+        return f"{sheet}!{columns[0]}{row}:{columns[-1]}{row}"
+    return ", ".join(sorted(addresses))
+
+
+def assemble_cluster_symbol_source(
+    *,
+    signature: str,
+    docstring: str,
+    body: str,
+) -> str:
+    return assemble_singleton_symbol_source(
+        signature=signature,
+        docstring=docstring,
+        body=body,
+    )
+
+
+def parse_cluster_return_type_hint(signature: str) -> str:
+    return parse_singleton_return_type_hint(signature)
+
+
+validate_cluster_return_type_hint = validate_singleton_return_type_hint
+
+
+def prepare_cluster_refactor_response(
+    llm_response: ClusterRefactorLLMResponse,
+    ctx: ClusterRefactorContext,
+) -> ClusterRefactorResponse:
+    validate_singleton_return_type_hint(
+        parse_cluster_return_type_hint(llm_response.symbol_signature)
+    )
+    docstring = strip_python_string_delimiters(llm_response.symbol_docstring)
+    covered_addresses = format_cluster_covered_addresses(
+        tuple(member.address for member in ctx.members)
+    )
+    docstring = append_cluster_refactor_note_section(
+        docstring,
+        covered_addresses=covered_addresses,
+        formula=ctx.canonical_template,
+    )
+    helper_source = assemble_cluster_symbol_source(
+        signature=llm_response.symbol_signature,
+        docstring=docstring,
+        body=llm_response.symbol_body,
+    )
+    return ClusterRefactorResponse(
+        helper_name=_parse_symbol_name_from_signature(llm_response.symbol_signature),
+        helper_docstring=docstring,
+        helper_source=helper_source,
+        parameters=llm_response.parameters,
+        member_keys=llm_response.member_keys,
+        uses_first_year_branch=llm_response.uses_first_year_branch,
+    )
+
+
+def _yaml_scalar(value: object) -> str:
+    if isinstance(value, str):
+        if (
+            not value
+            or value.isdigit()
+            or value != value.strip()
+            or value.startswith(("'", '"'))
+            or ":" in value
+            or "#" in value
+        ):
+            return json.dumps(value)
+        return value
+    return str(value)
+
+
+def _format_label_group_yaml(labels: object) -> list[str]:
+    if not isinstance(labels, list) or not labels:
+        return ["[]"]
+    lines: list[str] = []
+    for item in labels:
+        if not isinstance(item, Mapping):
+            continue
+        label = item.get("label")
+        if label is None:
+            continue
+        lines.append(f"  - label: {_yaml_scalar(label)}")
+        concept = item.get("concept")
+        if concept is not None:
+            lines.append(f"    concept: {concept}")
+    return lines if lines else ["[]"]
+
+
+def _format_key_vocabulary_yaml(
+    key_vocabulary: Sequence[KeyConceptSpec],
+) -> str:
+    lines: list[str] = []
+    for item in key_vocabulary:
+        lines.append(f"- concept: {item.concept}")
+        lines.append(f"  dtype: {item.dtype}")
+        lines.append(f"  suggested_param_name: {item.suggested_param_name}")
+    return "\n".join(lines)
+
+
+def _format_member_metadata_yaml(
+    member_metadata: Sequence[Mapping[str, object]],
+) -> str:
+    blocks: list[str] = []
+    for entry in member_metadata:
+        lines = [
+            f"- address: {entry['address']}",
+            f"  function_name: {entry['function_name']}",
+            "  expected_keys:",
+        ]
+        expected_keys = entry.get("expected_keys", {})
+        if isinstance(expected_keys, Mapping):
+            for concept, value in expected_keys.items():
+                lines.append(f"    {concept}: {value}")
+        for label_key in ("table_labels", "row_labels", "column_labels"):
+            label_lines = _format_label_group_yaml(entry.get(label_key, []))
+            if label_lines == ["[]"]:
+                lines.append(f"  {label_key}: []")
+                continue
+            lines.append(f"  {label_key}:")
+            for line in label_lines:
+                lines.append(f"  {line}")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
+def format_cluster_refactor_context_dump(
+    *,
+    member_sources: str,
+    key_vocabulary: Sequence[KeyConceptSpec],
+    member_metadata: Sequence[Mapping[str, object]],
+    dependency_stubs: str,
+) -> str:
+    vocabulary_yaml = _format_key_vocabulary_yaml(key_vocabulary)
+    metadata_yaml = _format_member_metadata_yaml(member_metadata)
+    return (
+        "Cluster to refactor:\n\n"
+        f"```python\n{member_sources.strip()}\n```\n\n"
+        "Key vocabulary:\n\n"
+        f"```yaml\n{vocabulary_yaml}\n```\n\n"
+        "Member metadata:\n\n"
+        f"```yaml\n{metadata_yaml}\n```\n\n"
+        "Dependencies:\n\n"
+        f"```python\n{dependency_stubs.strip()}\n```"
+    )
+
+
+def _called_function_names_from_sources(
+    function_sources: Iterable[str],
+) -> tuple[str, ...]:
+    names: list[str] = []
+    for function_source in function_sources:
+        names.extend(_called_function_names(function_source))
+    return tuple(dict.fromkeys(names))
+
+
+def _build_cluster_dependency_stubs(
+    *,
+    member_function_names: Sequence[str],
+    internals_source: str,
+    runtime_source: str,
+) -> str:
+    function_sources = [
+        extract_function_source(internals_source, function_name)
+        for function_name in member_function_names
+    ]
+    called = _called_function_names_from_sources(function_sources)
+    runtime_defs = _function_defs_by_name(runtime_source)
+    internals_defs = _function_defs_by_name(internals_source)
+    runtime_names = sorted(name for name in called if name in runtime_defs)
+    semantic_names = sorted(
+        name
+        for name in called
+        if name in internals_defs and not name.startswith("cell_")
+    )
+    stubs = [
+        *(
+            _format_runtime_dependency_stub(runtime_defs[name])
+            for name in runtime_names
+        ),
+        *(
+            _format_semantic_dependency_stub(internals_defs[name])
+            for name in semantic_names
+        ),
+    ]
+    return "\n\n".join(stubs)
+
+
+def build_cluster_refactor_context_dump(
+    *,
+    member_function_names: Sequence[str],
+    internals_source: str,
+    runtime_source: str,
+    key_vocabulary: Sequence[KeyConceptSpec],
+    member_metadata: Sequence[Mapping[str, object]],
+) -> str:
+    member_sources = "\n\n\n".join(
+        extract_function_source(internals_source, function_name).strip()
+        for function_name in member_function_names
+    )
+    dependency_stubs = _build_cluster_dependency_stubs(
+        member_function_names=member_function_names,
+        internals_source=internals_source,
+        runtime_source=runtime_source,
+    )
+    return format_cluster_refactor_context_dump(
+        member_sources=member_sources,
+        key_vocabulary=key_vocabulary,
+        member_metadata=member_metadata,
+        dependency_stubs=dependency_stubs,
+    )
+
+
+def _member_metadata_for_cluster_refactor(
+    ctx: ClusterRefactorContext,
+    *,
+    source_graph: DependencyGraph | None = None,
+) -> tuple[dict[str, object], ...]:
+    entries: list[dict[str, object]] = []
+    for member in ctx.members:
+        entry: dict[str, object] = {
+            "address": member.address,
+            "function_name": member.function_name,
+            "expected_keys": ctx.expected_member_keys.get(member.address, {}),
+        }
+        if source_graph is not None:
+            node = source_graph.get_node(member.address)
+            if node is not None and node.metadata is not None:
+                for key in ("table_labels", "row_labels", "column_labels"):
+                    labels = node.metadata.get(key)
+                    entry[key] = labels if isinstance(labels, list) else []
+            else:
+                for key in ("table_labels", "row_labels", "column_labels"):
+                    entry[key] = []
+        else:
+            for key, value in (
+                ("table_labels", member.table_labels),
+                ("row_labels", member.row_labels),
+                ("column_labels", member.column_labels),
+            ):
+                entry[key] = [{"label": value}] if value is not None else []
+        entries.append(entry)
+    return tuple(entries)
+
+
+def build_cluster_refactor_prompt_context(
+    ctx: ClusterRefactorContext,
+    *,
+    internals_path: Path,
+    runtime_path: Path | None = None,
+    source_graph: DependencyGraph | None = None,
+) -> str:
+    varying_concepts = frozenset(
+        concept for keys in ctx.expected_member_keys.values() for concept in keys
+    )
+    resolved_runtime_path = (
+        runtime_path
+        if runtime_path is not None
+        else internals_path.parent / "runtime.py"
+    )
+    return build_cluster_refactor_context_dump(
+        member_function_names=tuple(member.function_name for member in ctx.members),
+        internals_source=internals_path.read_text(encoding="utf-8"),
+        runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
+        key_vocabulary=tuple(
+            item for item in ctx.key_vocabulary if item.concept in varying_concepts
+        ),
+        member_metadata=_member_metadata_for_cluster_refactor(
+            ctx,
+            source_graph=source_graph,
+        ),
+    )
+
+
+def _cluster_runtime_imports(response: ClusterRefactorResponse) -> set[str]:
+    imports: set[str] = set()
+    if "EvalContext" in response.helper_source:
+        imports.add("EvalContext")
+    if "CellValue" in response.helper_source:
+        imports.add("CellValue")
+    return imports
+
+
+def ensure_cluster_refactor_imports(
+    source: str,
+    response: ClusterRefactorResponse,
+) -> str:
+    needed = _cluster_runtime_imports(response)
+    if not needed:
+        return source
+    return _merge_runtime_imports(source, needed)
+
+
 def _singleton_runtime_imports(response: SingletonRefactorResponse) -> set[str]:
     imports: set[str] = set()
     if "EvalContext" in response.symbol_source:
@@ -1774,6 +2140,7 @@ def apply_cluster_collapse(
     ctx: ClusterRefactorContext | None = None,
 ) -> tuple[str, int]:
     _ = ctx
+    source = ensure_cluster_refactor_imports(source, response)
     updated = insert_helper_source(source, response.helper_source)
     bindings = collapse_bindings_for_response(response)
     updated, rewrite_count = substitute_collapse_bindings(updated, bindings)
@@ -1782,7 +2149,7 @@ def apply_cluster_collapse(
     )
     updated = _remove_function_definitions(updated, collapsed_functions)
     dispatch_updates = _dispatch_entries_for_collapse(response)
-    if dispatch_updates:
+    if dispatch_updates and RESOLVER_SECTION_MARKER in updated:
         dispatch = _parse_address_dispatch(updated) or {}
         dispatch.update(dispatch_updates)
         updated = _replace_resolver_section(
@@ -2565,6 +2932,7 @@ def refactor_internals_cluster(
     dry_run: bool = False,
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
+    source_graph: DependencyGraph | None = None,
 ) -> ClusterRefactorApplyResult:
     source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(source)
@@ -2574,6 +2942,7 @@ def refactor_internals_cluster(
             internals_path=internals_path,
             pristine_source=pristine_source,
             input_vectors=input_vectors,
+            source_graph=source_graph,
         )
     validate_cluster_refactor_response(
         ctx,
@@ -2662,6 +3031,7 @@ def refactor_internals_all_clusters(
             dry_run=dry_run,
             pristine_source=pristine_source,
             input_vectors=input_vectors,
+            source_graph=source_graph,
         )
         results.append(result)
         responses.append(result.response)
@@ -2791,18 +3161,19 @@ def llm_refactor_cluster(
     internals_path: Path,
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
+    source_graph: DependencyGraph | None = None,
 ) -> ClusterRefactorResponse:
-    schema = ClusterRefactorResponse.model_json_schema()
+    llm_schema = ClusterRefactorLLMResponse.model_json_schema()
     internals_bytes = internals_path.read_bytes()
     internals_source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(internals_source)
     cache = load_refactor_cache()
-    cache_key = refactor_cache_key(ctx, internals_bytes, schema)
+    cache_key = refactor_cache_key(ctx, internals_bytes, llm_schema)
 
-    def _prepare_and_validate_cluster(
-        parsed: ClusterRefactorResponse,
+    def _validate_cluster_response(
+        prepared: ClusterRefactorResponse,
     ) -> ClusterRefactorResponse:
-        prepared = _prepare_cluster_refactor_response(parsed, ctx)
+        prepared = _prepare_cluster_refactor_response(prepared, ctx)
         validate_cluster_refactor_response(
             ctx,
             prepared,
@@ -2821,6 +3192,12 @@ def llm_refactor_cluster(
             )
         return prepared
 
+    def _prepare_and_validate_cluster(
+        parsed: ClusterRefactorLLMResponse,
+    ) -> ClusterRefactorResponse:
+        prepared = prepare_cluster_refactor_response(parsed, ctx)
+        return _validate_cluster_response(prepared)
+
     cached_content = cache.get(cache_key)
     if cached_content is not None:
         try:
@@ -2829,12 +3206,10 @@ def llm_refactor_cluster(
                 ctx.cluster_id,
                 cache_key[:12],
             )
-            return _prepare_and_validate_cluster(
+            return _validate_cluster_response(
                 ClusterRefactorResponse.model_validate_json(cached_content)
             )
         except (ValueError, ValidationError) as error:
-            # A cached response that no longer satisfies the gate is stale or
-            # broken: drop it and regenerate (which re-prompts on failure).
             if not _refactor_provider_key_present():
                 raise
             logger.warning(
@@ -2848,7 +3223,11 @@ def llm_refactor_cluster(
 
     model = refactor_model()
     client, provider = build_client(model)
-    payload = prompt_payload(ctx)
+    context_dump = build_cluster_refactor_prompt_context(
+        ctx,
+        internals_path=internals_path,
+        source_graph=source_graph,
+    )
     logger.info(
         "cluster refactor LLM request cluster_id=%s members=%d model=%s prompt_version=%s",
         ctx.cluster_id,
@@ -2856,23 +3235,18 @@ def llm_refactor_cluster(
         model,
         REFACTOR_PROMPT_VERSION,
     )
-    parsed, _ = generate_validated_json(
+    llm_parsed, _ = generate_validated_json(
         client=client,
         model=model,
         provider=provider,
         system_prompt=(
             "You refactor parallel Excel-generated Python helpers into one "
-            "parameterized function. Return only JSON matching the schema. "
-            "Preserve semantics exactly; do not algebraically simplify. "
-            "Write Google-style docstrings with Args and Returns sections. "
-            "Use only runtime symbols listed in constraints.allowed_runtime_symbols. "
-            "Parameter names must match suggested_param_name from key_vocabulary. "
-            "Emit one helper function; do not nest helpers or import modules."
+            "domain-aware parameterized function. Return only JSON matching the schema."
         ),
-        user_prompt=_prompt_for_refactor(payload, schema),
-        response_model=ClusterRefactorResponse,
-        post_validate=_prepare_and_validate_cluster,
+        user_prompt=_prompt_for_refactor(context_dump),
+        response_model=ClusterRefactorLLMResponse,
     )
+    parsed = _prepare_and_validate_cluster(llm_parsed)
     cache[cache_key] = parsed.model_dump_json()
     save_refactor_cache(cache)
     return parsed
@@ -2891,72 +3265,15 @@ def _prompt_for_singleton_refactor(
 
 
 def _prompt_for_refactor(
-    payload: dict[str, object], response_schema: dict[str, object]
+    payload_or_context: dict[str, object] | str,
+    response_schema: dict[str, object] | None = None,
 ) -> str:
-    payload_json = json.dumps(payload, indent=2, default=str)
-    schema_json = json.dumps(response_schema, indent=2)
-    constraints = payload.get("constraints", {})
-    if not isinstance(constraints, dict):
-        constraints = {}
-    raw_allowed = constraints.get("allowed_runtime_symbols", [])
-    allowed_symbols = list(raw_allowed) if isinstance(raw_allowed, list) else []
-    allowed_symbols_json = json.dumps(allowed_symbols, indent=2)
-    return f"""
-Refactor one parallel formula cluster into a single parameterized helper.
-
-Rules:
-- Declare parameters[] using binding key concepts from key_vocabulary; do not use column letters.
-- Use suggested_param_name from key_vocabulary as each parameter's Python name.
-- For each cluster member, emit member_keys[] with keys[] entries copied from expected_keys.
-- member_keys[].keys[].concept must use binding concept names (e.g. TIME_PERIOD), not parameter names.
-- Series-constant binding keys (scope: series) are not parameters; bake them into the helper.
-- Emit helper_source with signature (ctx, <parameters>) using the suggested parameter names.
-- Set uses_first_year_branch true when the helper branches on first-year {{PRIOR_DEBT}} logic.
-- Choose helper_name as a clear snake_case semantic identifier informed by naming_hints.
-- Use time_period == 1 or engine_column == first_year_column for first-year branching when needed.
-- Map time_period to workbook columns internally when reading xl_cell addresses.
-- Keep xl_eval only for leaf inputs read with xl_cell; never for refactored cells.
-- Do not rename dependency functions.
-- Rename local temporaries to domain-meaningful snake_case informed by naming_hints.
-- Do not use excel-shaped locals such as _t1, t2, b21, col10, choose1, func_map, or input17.
-- Do not reference cell_* helpers anywhere in the body.
-- Call only these runtime symbols (plus semantic helpers from external_dependencies):
-{allowed_symbols_json}
-- For every entry in semantic_dependencies, replace reads with call_form using pass-through
-  parameter names, e.g. shock_active(ctx, time_period=time_period).
-- Emit one complete helper_source function; no nested helpers or imports.
-- helper_source must include a Google-style docstring with Args and Returns sections.
-- helper_docstring must match the docstring embedded in helper_source exactly.
-- Include a Note section listing covered workbook addresses and the Excel formula.
-- Return only JSON matching the response schema.
-
-Example docstring shape:
-\"\"\"
-Return 1.0 when the shock is active for the given projection period.
-
-Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection period (1 for the first year).
-
-Returns:
-    1.0 if the projection year is at or after the shock year, else 0.0.
-
-Note:
-    Covers Engine!C10:G10. Excel: =IF(Engine!{{col}}5>=Inputs!$B$21,1,0).
-\"\"\"
-
-Example case-switch shape (use a lookup table, not an if/elif ladder):
-year_address = {{1991: 'SomeSheet!C1', 1992: 'SomeSheet!D1', 1993: 'SomeSheet!E1', 1994: 'SomeSheet!F1', 1995: 'SomeSheet!G1'}}.get(time_period)
-if year_address is None:
-    return XlError.VALUE
-year = xl_cell(ctx, year_address)
-
-Cluster context:
-{payload_json}
-
-Response schema:
-{schema_json}
-""".strip()
+    _ = response_schema
+    fixed = load_cluster_refactor_prompt_fixed_portion().strip()
+    if isinstance(payload_or_context, str):
+        return f"{fixed}\n\n{payload_or_context.strip()}"
+    payload_json = json.dumps(payload_or_context, indent=2, default=str)
+    return f"{fixed}\n\nCluster context:\n{payload_json}"
 
 
 class _CallSiteVisitor(ast.NodeVisitor):
