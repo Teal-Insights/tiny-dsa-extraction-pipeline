@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from textwrap import dedent
 
@@ -11,6 +12,7 @@ from src.internals_refactor import (
     SingletonRefactorContext,
     SingletonRefactorLLMResponse,
     SingletonRefactorResponse,
+    _prepare_singleton_refactor_response,
     _prompt_for_singleton_refactor,
     append_refactor_note_section,
     apply_singleton_refactor_plan,
@@ -22,6 +24,7 @@ from src.internals_refactor import (
     parse_singleton_return_type_hint,
     prepare_singleton_refactor_response,
     strip_python_string_delimiters,
+    validate_singleton_refactor_response,
     validate_singleton_return_type_hint,
 )
 
@@ -179,6 +182,23 @@ INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT = dedent(
     """
 ).strip()
 
+INTERNALS_WITH_PAREN_RUNTIME_IMPORT = dedent(
+    """
+    from __future__ import annotations
+
+    from .runtime import (
+        xl_cell,
+        xl_number,
+    )
+
+    def cell_some_sheet_z22(ctx):
+        return xl_number(united_states_total_deaths(ctx))
+
+    def united_states_total_deaths(ctx):
+        return 1.0
+    """
+).strip()
+
 EVAL_CONTEXT_REFACTOR_RESPONSE = SingletonRefactorResponse(
     symbol_name="united_states_excess_deaths",
     symbol_docstring=(
@@ -313,6 +333,54 @@ def test_assemble_singleton_symbol_source_indents_body_and_wraps_docstring() -> 
     )
 
 
+def test_validate_singleton_refactor_response_accepts_eval_context_type_hint() -> None:
+    ctx = SingletonRefactorContext(
+        address="SomeSheet!Z22",
+        function_name="cell_some_sheet_z22",
+        canonical_template="=1",
+        normalized_formula="=1",
+        python_source="def cell_some_sheet_z22(ctx):\n    return 1.0\n",
+        dependency_addresses=(),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints={},
+    )
+    prepared = _prepare_singleton_refactor_response(
+        prepare_singleton_refactor_response(
+            SingletonRefactorLLMResponse(
+                symbol_signature=(
+                    "def united_states_excess_deaths(ctx: EvalContext) -> float:"
+                ),
+                symbol_docstring=(
+                    '"""\n'
+                    "Excess deaths for the United States.\n\n"
+                    "Args:\n    ctx: Workbook evaluation context.\n\n"
+                    "Returns:\n    Excess deaths for the United States.\n"
+                    '"""'
+                ),
+                symbol_body="return xl_number(united_states_total_deaths(ctx))",
+            ),
+            ctx,
+        ),
+        ctx,
+    )
+
+    validate_singleton_refactor_response(
+        ctx,
+        prepared,
+        existing_names=frozenset(
+            {
+                "cell_some_sheet_z22",
+                "united_states_total_deaths",
+                "united_states_expected_deaths",
+            }
+        ),
+        internals_source=EXCESS_DEATHS_INTERNALS,
+    )
+
+
 def test_prepare_singleton_refactor_response_assembles_and_appends_note() -> None:
     ctx = SingletonRefactorContext(
         address="Engine!C20",
@@ -442,6 +510,17 @@ def test_validate_singleton_return_type_hint_rejects_xlerror_sentinel() -> None:
 def test_validate_singleton_return_type_hint_rejects_unknown_type() -> None:
     with pytest.raises(ValueError, match="unsupported return type hint"):
         validate_singleton_return_type_hint("dict[str, float]")
+
+
+def test_ensure_singleton_refactor_imports_handles_parenthesized_runtime_import() -> (
+    None
+):
+    updated = ensure_singleton_refactor_imports(
+        INTERNALS_WITH_PAREN_RUNTIME_IMPORT,
+        EVAL_CONTEXT_REFACTOR_RESPONSE,
+    )
+    ast.parse(updated)
+    assert "EvalContext" in updated.split("from .runtime import", maxsplit=1)[1]
 
 
 def test_apply_singleton_refactor_plan_injects_eval_context_import() -> None:

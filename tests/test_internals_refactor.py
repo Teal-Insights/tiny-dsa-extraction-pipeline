@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -20,12 +22,14 @@ from src.internals_refactor import (
     MemberKeyEntry,
     MemberKeys,
     SingletonRefactorContext,
+    SingletonRefactorLLMResponse,
     SingletonRefactorResponse,
     apply_cluster_collapse,
     apply_phase_c,
     apply_singleton_refactor_plan,
     build_singleton_refactor_context,
     collapse_bindings_for_response,
+    llm_refactor_singleton,
     prompt_payload,
     refactor_cache_key,
     singleton_prompt_payload,
@@ -34,10 +38,13 @@ from src.internals_refactor import (
     validate_parameter_names_match_vocabulary,
     validate_semantic_local_names,
     validate_uses_first_year_branch_flag,
+    write_refactor_failure_diagnostic,
     _prompt_for_refactor,
     _prompt_for_singleton_refactor,
     _single_function_def,
 )
+from src.llm_json import DEFAULT_MAX_ATTEMPTS
+from src.refactor_parity_gate import ParityError
 from excel_grapher.exporter import ProjectionResult
 from src.refactor_bindings import KeyConceptSpec
 from src.workbook_addresses import ProjectionColumnLayout
@@ -210,6 +217,44 @@ def test_refactor_cache_key_includes_prompt_version(
     assert key_v14 != key_v99
 
 
+def test_write_refactor_failure_diagnostic_persists_response_artifacts(
+    tmp_path: Path,
+) -> None:
+    dump_dir = write_refactor_failure_diagnostic(
+        kind="singleton",
+        target="Engine!C20",
+        error=ValueError("parity mismatch"),
+        dump_dir=tmp_path,
+        user_prompt="prompt body",
+        llm_response={
+            "symbol_signature": "def debt_to_gdp_shocked_path(ctx: EvalContext) -> float:",
+            "symbol_docstring": "Example.",
+            "symbol_body": "return 1.0",
+        },
+        prepared_response={
+            "symbol_name": "debt_to_gdp_shocked_path",
+            "symbol_docstring": "Example.",
+            "symbol_source": "def debt_to_gdp_shocked_path(ctx: EvalContext) -> float:\n    return 1.0\n",
+        },
+        raw_content='{"symbol_body": "return 1.0"}',
+        source="llm",
+        model="test-model",
+    )
+
+    manifest = json.loads((dump_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["target"] == "Engine!C20"
+    assert manifest["error_type"] == "ValueError"
+    assert manifest["model"] == "test-model"
+    assert (dump_dir / "llm_response.json").exists()
+    assert (dump_dir / "prepared_response.json").exists()
+    assert (dump_dir / "user_prompt.md").read_text(encoding="utf-8") == "prompt body"
+    assert (dump_dir / "error.txt").read_text(encoding="utf-8") == "parity mismatch\n"
+    llm_response = json.loads(
+        (dump_dir / "llm_response.json").read_text(encoding="utf-8")
+    )
+    assert llm_response["symbol_body"] == "return 1.0"
+
+
 def test_prompt_payload_includes_allowed_runtime_symbols() -> None:
     payload = prompt_payload(CLUSTER_CONTEXT)
     constraints = payload["constraints"]
@@ -236,6 +281,25 @@ def test_validate_cluster_accepts_well_formed_response() -> None:
         validate_cluster_refactor_response(
             CLUSTER_CONTEXT,
             _cluster_response(),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
+
+
+def test_validate_cluster_accepts_eval_context_type_hint() -> None:
+    helper_source = f'''def combined_input_passthrough(ctx: EvalContext, time_period: int) -> float:
+    """{CLUSTER_DOCSTRING}"""
+    columns = {{1: 'C', 2: 'D'}}
+    column = columns[time_period]
+    return xl_cell(ctx, f'Inputs!{{column}}1')
+'''
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(helper_source=helper_source),
             existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
             internals_source=PRISTINE_CLUSTER,
         )
@@ -517,3 +581,157 @@ def test_apply_singleton_refactor_plan_replaces_xl_eval_at_call_sites() -> None:
     assert "xl_eval(ctx, 'Engine!C20', cell_engine_c20)" not in updated
     assert "xl_eval(ctx, 'Engine!C20', projected_debt_to_gdp)" not in updated
     assert "xl_number(projected_debt_to_gdp(ctx))" in updated
+
+
+SINGLETON_LLM_RESPONSE = SingletonRefactorLLMResponse(
+    symbol_signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
+    symbol_docstring=(
+        "Projected debt-to-GDP.\n\n"
+        "Args:\n    ctx: Workbook evaluation context.\n\n"
+        "Returns:\n    Projected debt-to-GDP ratio."
+    ),
+    symbol_body="return 1.0",
+)
+
+
+def _singleton_refactor_test_context(tmp_path: Path) -> SingletonRefactorContext:
+    return SingletonRefactorContext(
+        address="Engine!C20",
+        function_name="cell_engine_c20",
+        canonical_template="=1",
+        normalized_formula="=1",
+        python_source="def cell_engine_c20(ctx):\n    return 1.0\n",
+        dependency_addresses=(),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints={},
+    )
+
+
+def test_llm_refactor_singleton_wires_parity_into_post_validate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import src.internals_refactor as module
+
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(
+        "def cell_engine_c20(ctx):\n    return 1.0\n", encoding="utf-8"
+    )
+    ctx = _singleton_refactor_test_context(tmp_path)
+    recorded: dict[str, object] = {}
+    parity_calls: list[int] = []
+
+    def fake_generate_validated_json(
+        **kwargs: object,
+    ) -> tuple[SingletonRefactorLLMResponse, str]:
+        recorded["post_validate"] = kwargs.get("post_validate")
+        recorded["max_attempts"] = kwargs.get("max_attempts")
+        post_validate = cast(
+            Callable[[SingletonRefactorLLMResponse], SingletonRefactorLLMResponse],
+            kwargs["post_validate"],
+        )
+        validated = post_validate(SINGLETON_LLM_RESPONSE)
+        return validated, SINGLETON_LLM_RESPONSE.model_dump_json()
+
+    def track_parity(**kwargs: object) -> None:
+        parity_calls.append(1)
+
+    monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
+    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
+    monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
+    monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
+    monkeypatch.setattr(module, "build_client", lambda _model: (object(), object()))
+    monkeypatch.setattr(
+        module,
+        "build_singleton_refactor_prompt_context",
+        lambda *_args, **_kwargs: "context",
+    )
+    monkeypatch.setattr(
+        "src.refactor_parity_gate.check_singleton_parity",
+        track_parity,
+    )
+
+    response = llm_refactor_singleton(
+        ctx,
+        internals_path=internals_path,
+        pristine_source="def cell_engine_c20(ctx):\n    return 1.0\n",
+        input_vectors=[{}],
+    )
+
+    assert response.symbol_name == "projected_debt_to_gdp"
+    assert recorded["post_validate"] is not None
+    assert recorded["max_attempts"] == DEFAULT_MAX_ATTEMPTS
+    assert parity_calls == [1]
+
+
+def test_llm_refactor_singleton_post_validate_retries_on_parity_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import src.internals_refactor as module
+
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(
+        "def cell_engine_c20(ctx):\n    return 1.0\n", encoding="utf-8"
+    )
+    ctx = _singleton_refactor_test_context(tmp_path)
+    parity_calls = 0
+
+    def fake_parity(**kwargs: object) -> None:
+        nonlocal parity_calls
+        parity_calls += 1
+        if parity_calls == 1:
+            raise ParityError("parity mismatch on vector #0")
+
+    def fake_generate_validated_json(
+        **kwargs: object,
+    ) -> tuple[SingletonRefactorLLMResponse, str]:
+        post_validate = cast(
+            Callable[[SingletonRefactorLLMResponse], SingletonRefactorLLMResponse],
+            kwargs["post_validate"],
+        )
+        max_attempts = cast(int, kwargs["max_attempts"])
+        llm_response = SINGLETON_LLM_RESPONSE
+        last_error: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                validated = post_validate(llm_response)
+                return validated, llm_response.model_dump_json()
+            except ValueError as error:
+                last_error = error
+                if attempt + 1 >= max_attempts:
+                    break
+                llm_response = llm_response.model_copy(
+                    update={"symbol_body": "return 2.0"},
+                )
+        raise RuntimeError("exhausted attempts") from last_error
+
+    monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
+    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
+    monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
+    monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
+    monkeypatch.setattr(module, "build_client", lambda _model: (object(), object()))
+    monkeypatch.setattr(
+        module,
+        "build_singleton_refactor_prompt_context",
+        lambda *_args, **_kwargs: "context",
+    )
+    monkeypatch.setattr(
+        "src.refactor_parity_gate.check_singleton_parity",
+        fake_parity,
+    )
+
+    response = llm_refactor_singleton(
+        ctx,
+        internals_path=internals_path,
+        pristine_source="def cell_engine_c20(ctx):\n    return 1.0\n",
+        input_vectors=[{}],
+    )
+
+    assert parity_calls == 2
+    assert "return 2.0" in response.symbol_source

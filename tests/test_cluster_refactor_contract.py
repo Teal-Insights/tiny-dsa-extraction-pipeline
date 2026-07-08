@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from textwrap import dedent
 from typing import TypedDict
@@ -293,6 +294,20 @@ INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT = dedent(
     """
 ).strip()
 
+INTERNALS_WITH_PAREN_RUNTIME_IMPORT = dedent(
+    """
+    from __future__ import annotations
+
+    from .runtime import (
+        xl_cell,
+        xl_compare,
+    )
+
+    def cell_forecast_b12(ctx):
+        return xl_cell(ctx, "Forecast!B4")
+    """
+).strip()
+
 RESOLVER_SECTION = """# --- Formula resolver ---
 _RESOLVED_FORMULAS = {}
 _ADDRESS_DISPATCH = {}
@@ -483,6 +498,19 @@ def test_parse_cluster_return_type_hint_from_signature() -> None:
 def test_validate_cluster_return_type_hint_rejects_xlerror_sentinel() -> None:
     with pytest.raises(ValueError, match="unsupported return type hint"):
         validate_singleton_return_type_hint("XlError")
+
+
+def test_ensure_cluster_refactor_imports_handles_parenthesized_runtime_import() -> None:
+    response = prepare_cluster_refactor_response(
+        GROWTH_THRESHOLD_LLM_RESPONSE,
+        GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+    )
+    updated = ensure_cluster_refactor_imports(
+        INTERNALS_WITH_PAREN_RUNTIME_IMPORT,
+        response,
+    )
+    ast.parse(updated)
+    assert "EvalContext" in updated.split("from .runtime import", maxsplit=1)[1]
 
 
 def test_ensure_cluster_refactor_imports_injects_eval_context() -> None:

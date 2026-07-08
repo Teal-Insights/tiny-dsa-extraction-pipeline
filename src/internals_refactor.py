@@ -11,8 +11,9 @@ import textwrap
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from excel_grapher.exporter import ProjectionResult
@@ -20,7 +21,7 @@ from excel_grapher.grapher.graph import DependencyGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.formula_clustering import FormulaCluster
-from src.llm_json import generate_validated_json
+from src.llm_json import DEFAULT_MAX_ATTEMPTS, generate_validated_json
 from src.llm_providers import build_client, model_from_env, provider_for_model
 from src.pipeline_context import projection_layout as active_projection_layout
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
@@ -63,6 +64,7 @@ def _refactor_provider_key_present() -> bool:
 
 
 REFACTOR_CACHE_PATH = repo_root / ".cache/internals-refactors.json"
+REFACTOR_FAILURE_DUMP_DIR = repo_root / ".cache" / "refactor_failures"
 FORMULA_SECTION_MARKER = "# --- Formula cell functions ---"
 RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
 
@@ -70,6 +72,83 @@ AddressDispatch = dict[str, tuple[str, dict[str, BindingKeyValue]]]
 
 REFACTOR_ROW_ORDER: tuple[int, ...] = ()
 """Optional legacy row order hint; prefer ``compute_cluster_refactor_order``."""
+
+
+def _refactor_failure_target_slug(
+    *, kind: Literal["singleton", "cluster"], target: str
+) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", target.lower()).strip("_")
+    if kind == "cluster" and not slug.startswith("cluster_"):
+        return f"cluster_{slug}"
+    return slug or kind
+
+
+def write_refactor_failure_diagnostic(
+    *,
+    kind: Literal["singleton", "cluster"],
+    target: str,
+    error: BaseException,
+    dump_dir: Path | None = None,
+    user_prompt: str | None = None,
+    llm_response: Mapping[str, Any] | None = None,
+    prepared_response: Mapping[str, Any] | None = None,
+    raw_content: str | None = None,
+    source: Literal["llm", "cache"] = "llm",
+    model: str | None = None,
+) -> Path:
+    """Persist refactor failure artifacts for offline diagnosis."""
+    root = dump_dir if dump_dir is not None else REFACTOR_FAILURE_DUMP_DIR
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    slug = _refactor_failure_target_slug(kind=kind, target=target)
+    failure_dir = root / f"{timestamp}_{slug}"
+    failure_dir.mkdir(parents=True, exist_ok=True)
+
+    files: dict[str, str] = {}
+    if llm_response is not None:
+        files["llm_response"] = "llm_response.json"
+        (failure_dir / files["llm_response"]).write_text(
+            json.dumps(dict(llm_response), indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    if prepared_response is not None:
+        files["prepared_response"] = "prepared_response.json"
+        (failure_dir / files["prepared_response"]).write_text(
+            json.dumps(dict(prepared_response), indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    if raw_content is not None:
+        files["raw_content"] = "raw_content.json"
+        (failure_dir / files["raw_content"]).write_text(
+            json.dumps({"content": raw_content}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    if user_prompt is not None:
+        files["user_prompt"] = "user_prompt.md"
+        (failure_dir / files["user_prompt"]).write_text(
+            user_prompt,
+            encoding="utf-8",
+        )
+
+    error_path = "error.txt"
+    files["error"] = error_path
+    (failure_dir / error_path).write_text(str(error) + "\n", encoding="utf-8")
+
+    manifest = {
+        "kind": kind,
+        "target": target,
+        "source": source,
+        "model": model,
+        "prompt_version": REFACTOR_PROMPT_VERSION,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "timestamp": timestamp,
+        "files": files,
+    }
+    (failure_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return failure_dir
 
 
 @dataclass(frozen=True)
@@ -283,14 +362,10 @@ class SingletonRefactorLLMResponse(BaseModel):
 
 
 ALLOWED_SINGLETON_RETURN_TYPE_HINTS = frozenset({"bool", "float", "int", "str"})
+ALLOWED_REFACTOR_TYPE_HINT_NAMES = frozenset({"CellValue", "EvalContext"})
 
 SINGLETON_REFACTOR_PROMPT_FIXTURE = (
     repo_root / "tests" / "fixtures" / "singleton_refactor_prompt.md"
-)
-
-_RUNTIME_IMPORT_PATTERN = re.compile(
-    r"^from \.runtime import (.+)$",
-    re.MULTILINE,
 )
 
 
@@ -1261,6 +1336,7 @@ def validate_cluster_refactor_response(
         | {member.function_name for member in ctx.members}
         | {response.helper_name}
         | semantic_helpers_available_for_calls(internals_source, existing_names)
+        | set(ALLOWED_REFACTOR_TYPE_HINT_NAMES)
         | {"ctx"}
         | {parameter.name for parameter in response.parameters}
     )
@@ -1922,13 +1998,20 @@ def _singleton_runtime_imports(response: SingletonRefactorResponse) -> set[str]:
 
 
 def _merge_runtime_imports(source: str, symbols: set[str]) -> str:
-    match = _RUNTIME_IMPORT_PATTERN.search(source)
-    if match is None:
-        return source
-    existing = {part.strip() for part in match.group(1).split(",")}
-    merged = sorted(existing | symbols)
-    replacement = "from .runtime import " + ", ".join(merged)
-    return source[: match.start()] + replacement + source[match.end() :]
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in module.body:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module != "runtime" or node.level != 1:
+            continue
+        existing = {alias.name for alias in node.names}
+        merged = sorted(existing | symbols)
+        replacement = "from .runtime import " + ", ".join(merged) + "\n"
+        start = node.lineno - 1
+        end = node.end_lineno or node.lineno
+        return "".join(lines[:start]) + replacement + "".join(lines[end:])
+    return source
 
 
 def ensure_singleton_refactor_imports(
@@ -2044,6 +2127,7 @@ def validate_singleton_refactor_response(
         | {ctx.function_name}
         | {response.symbol_name}
         | semantic_helpers_available_for_calls(internals_source, existing_names)
+        | set(ALLOWED_REFACTOR_TYPE_HINT_NAMES)
         | {"ctx"}
     )
     builtin_names = set(dir(builtins))
@@ -3074,7 +3158,7 @@ def llm_refactor_singleton(
     cache = load_refactor_cache()
     cache_key = singleton_refactor_cache_key(ctx, internals_bytes, llm_schema)
 
-    def _validate_singleton_response(
+    def _apply_singleton_refactor_validation(
         prepared: SingletonRefactorResponse,
     ) -> SingletonRefactorResponse:
         prepared = _prepare_singleton_refactor_response(prepared, ctx)
@@ -3096,11 +3180,33 @@ def llm_refactor_singleton(
             )
         return prepared
 
-    def _prepare_and_validate_singleton(
+    def _finalize_singleton_from_llm(
         parsed: SingletonRefactorLLMResponse,
     ) -> SingletonRefactorResponse:
         prepared = prepare_singleton_refactor_response(parsed, ctx)
-        return _validate_singleton_response(prepared)
+        return _apply_singleton_refactor_validation(prepared)
+
+    def _validate_cached_singleton_response(
+        cached_response: SingletonRefactorResponse,
+    ) -> SingletonRefactorResponse:
+        try:
+            return _apply_singleton_refactor_validation(cached_response)
+        except Exception as error:
+            dump_dir = write_refactor_failure_diagnostic(
+                kind="singleton",
+                target=ctx.address,
+                error=error,
+                llm_response=cached_response.model_dump(),
+                prepared_response=cached_response.model_dump(),
+                source="cache",
+            )
+            logger.error(
+                "singleton refactor failed address=%s source=cache diagnostic=%s: %s",
+                ctx.address,
+                dump_dir,
+                error,
+            )
+            raise
 
     cached_content = cache.get(cache_key)
     if cached_content is not None:
@@ -3110,7 +3216,7 @@ def llm_refactor_singleton(
                 ctx.address,
                 cache_key[:12],
             )
-            return _validate_singleton_response(
+            return _validate_cached_singleton_response(
                 SingletonRefactorResponse.model_validate_json(cached_content)
             )
         except (ValueError, ValidationError) as error:
@@ -3132,24 +3238,65 @@ def llm_refactor_singleton(
         internals_path=internals_path,
         source_graph=source_graph,
     )
+    user_prompt = _prompt_for_singleton_refactor(context_dump)
+    last_attempt: dict[str, Any] = {}
+    validated_prepared: SingletonRefactorResponse | None = None
+
+    def _post_validate_singleton_llm(
+        parsed: SingletonRefactorLLMResponse,
+    ) -> SingletonRefactorLLMResponse:
+        nonlocal validated_prepared
+        prepared = prepare_singleton_refactor_response(parsed, ctx)
+        last_attempt["llm_response"] = parsed.model_dump()
+        last_attempt["prepared_response"] = prepared.model_dump()
+        validated_prepared = _apply_singleton_refactor_validation(prepared)
+        return parsed
+
     logger.info(
         "singleton refactor LLM request address=%s model=%s prompt_version=%s",
         ctx.address,
         model,
         REFACTOR_PROMPT_VERSION,
     )
-    llm_parsed, _ = generate_validated_json(
-        client=client,
-        model=model,
-        provider=provider,
-        system_prompt=(
-            "You rename and refactor one Excel-generated singleton helper into a "
-            "domain-aware semantic function. Return only JSON matching the schema."
-        ),
-        user_prompt=_prompt_for_singleton_refactor(context_dump),
-        response_model=SingletonRefactorLLMResponse,
+    try:
+        llm_parsed, raw_content = generate_validated_json(
+            client=client,
+            model=model,
+            provider=provider,
+            system_prompt=(
+                "You rename and refactor one Excel-generated singleton helper into a "
+                "domain-aware semantic function. Return only JSON matching the schema."
+            ),
+            user_prompt=user_prompt,
+            response_model=SingletonRefactorLLMResponse,
+            post_validate=_post_validate_singleton_llm,
+            max_attempts=DEFAULT_MAX_ATTEMPTS,
+        )
+    except RuntimeError as error:
+        dump_dir = write_refactor_failure_diagnostic(
+            kind="singleton",
+            target=ctx.address,
+            error=error,
+            user_prompt=user_prompt,
+            llm_response=last_attempt.get("llm_response"),
+            prepared_response=last_attempt.get("prepared_response"),
+            source="llm",
+            model=model,
+        )
+        logger.error(
+            "singleton refactor LLM request failed address=%s attempts=%s diagnostic=%s: %s",
+            ctx.address,
+            DEFAULT_MAX_ATTEMPTS,
+            dump_dir,
+            error,
+        )
+        raise
+    parsed = (
+        validated_prepared
+        if validated_prepared is not None
+        else _finalize_singleton_from_llm(llm_parsed)
     )
-    parsed = _prepare_and_validate_singleton(llm_parsed)
+    _ = raw_content
     cache[cache_key] = parsed.model_dump_json()
     save_refactor_cache(cache)
     return parsed
@@ -3170,7 +3317,7 @@ def llm_refactor_cluster(
     cache = load_refactor_cache()
     cache_key = refactor_cache_key(ctx, internals_bytes, llm_schema)
 
-    def _validate_cluster_response(
+    def _apply_cluster_refactor_validation(
         prepared: ClusterRefactorResponse,
     ) -> ClusterRefactorResponse:
         prepared = _prepare_cluster_refactor_response(prepared, ctx)
@@ -3192,11 +3339,33 @@ def llm_refactor_cluster(
             )
         return prepared
 
-    def _prepare_and_validate_cluster(
+    def _finalize_cluster_from_llm(
         parsed: ClusterRefactorLLMResponse,
     ) -> ClusterRefactorResponse:
         prepared = prepare_cluster_refactor_response(parsed, ctx)
-        return _validate_cluster_response(prepared)
+        return _apply_cluster_refactor_validation(prepared)
+
+    def _validate_cached_cluster_response(
+        cached_response: ClusterRefactorResponse,
+    ) -> ClusterRefactorResponse:
+        try:
+            return _apply_cluster_refactor_validation(cached_response)
+        except Exception as error:
+            dump_dir = write_refactor_failure_diagnostic(
+                kind="cluster",
+                target=f"cluster_{ctx.cluster_id}",
+                error=error,
+                llm_response=cached_response.model_dump(),
+                prepared_response=cached_response.model_dump(),
+                source="cache",
+            )
+            logger.error(
+                "cluster refactor failed cluster_id=%s source=cache diagnostic=%s: %s",
+                ctx.cluster_id,
+                dump_dir,
+                error,
+            )
+            raise
 
     cached_content = cache.get(cache_key)
     if cached_content is not None:
@@ -3206,7 +3375,7 @@ def llm_refactor_cluster(
                 ctx.cluster_id,
                 cache_key[:12],
             )
-            return _validate_cluster_response(
+            return _validate_cached_cluster_response(
                 ClusterRefactorResponse.model_validate_json(cached_content)
             )
         except (ValueError, ValidationError) as error:
@@ -3228,6 +3397,20 @@ def llm_refactor_cluster(
         internals_path=internals_path,
         source_graph=source_graph,
     )
+    user_prompt = _prompt_for_refactor(context_dump)
+    last_attempt: dict[str, Any] = {}
+    validated_prepared: ClusterRefactorResponse | None = None
+
+    def _post_validate_cluster_llm(
+        parsed: ClusterRefactorLLMResponse,
+    ) -> ClusterRefactorLLMResponse:
+        nonlocal validated_prepared
+        prepared = prepare_cluster_refactor_response(parsed, ctx)
+        last_attempt["llm_response"] = parsed.model_dump()
+        last_attempt["prepared_response"] = prepared.model_dump()
+        validated_prepared = _apply_cluster_refactor_validation(prepared)
+        return parsed
+
     logger.info(
         "cluster refactor LLM request cluster_id=%s members=%d model=%s prompt_version=%s",
         ctx.cluster_id,
@@ -3235,18 +3418,45 @@ def llm_refactor_cluster(
         model,
         REFACTOR_PROMPT_VERSION,
     )
-    llm_parsed, _ = generate_validated_json(
-        client=client,
-        model=model,
-        provider=provider,
-        system_prompt=(
-            "You refactor parallel Excel-generated Python helpers into one "
-            "domain-aware parameterized function. Return only JSON matching the schema."
-        ),
-        user_prompt=_prompt_for_refactor(context_dump),
-        response_model=ClusterRefactorLLMResponse,
+    try:
+        llm_parsed, raw_content = generate_validated_json(
+            client=client,
+            model=model,
+            provider=provider,
+            system_prompt=(
+                "You refactor parallel Excel-generated Python helpers into one "
+                "domain-aware parameterized function. Return only JSON matching the schema."
+            ),
+            user_prompt=user_prompt,
+            response_model=ClusterRefactorLLMResponse,
+            post_validate=_post_validate_cluster_llm,
+            max_attempts=DEFAULT_MAX_ATTEMPTS,
+        )
+    except RuntimeError as error:
+        dump_dir = write_refactor_failure_diagnostic(
+            kind="cluster",
+            target=f"cluster_{ctx.cluster_id}",
+            error=error,
+            user_prompt=user_prompt,
+            llm_response=last_attempt.get("llm_response"),
+            prepared_response=last_attempt.get("prepared_response"),
+            source="llm",
+            model=model,
+        )
+        logger.error(
+            "cluster refactor LLM request failed cluster_id=%s attempts=%s diagnostic=%s: %s",
+            ctx.cluster_id,
+            DEFAULT_MAX_ATTEMPTS,
+            dump_dir,
+            error,
+        )
+        raise
+    parsed = (
+        validated_prepared
+        if validated_prepared is not None
+        else _finalize_cluster_from_llm(llm_parsed)
     )
-    parsed = _prepare_and_validate_cluster(llm_parsed)
+    _ = raw_content
     cache[cache_key] = parsed.model_dump_json()
     save_refactor_cache(cache)
     return parsed
