@@ -23,7 +23,7 @@ def test_series_bindings_validate_against_graph(tiny_dsa_configured_pipeline):
 
 def test_binding_shards_merge_into_expected_series(tiny_dsa_configured_pipeline):
     series_bindings = tiny_dsa_configured_pipeline.series_bindings
-    expected_ids = {
+    expected_public_ids = {
         "country_name",
         "country_initial_debt",
         "growth_baseline",
@@ -36,9 +36,22 @@ def test_binding_shards_merge_into_expected_series(tiny_dsa_configured_pipeline)
         "shock_type",
         "shock_year",
     }
+    expected_internal_ids = {
+        "initial_debt_resolved",
+        "engine_initial_debt_baseline",
+        "engine_initial_debt_shocked",
+        "shock_magnitude_resolved",
+        "shock_active",
+        "shocked_growth",
+        "shocked_interest",
+        "shocked_primary_balance",
+        "baseline_path_internal",
+        "shocked_path_internal",
+    }
 
     assert series_bindings["schema_version"] == "1.2.0"
-    assert {series["id"] for series in series_bindings["series"]} == expected_ids
+    series_ids = {series["id"] for series in series_bindings["series"]}
+    assert series_ids == expected_public_ids | expected_internal_ids
 
 
 def test_input_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
