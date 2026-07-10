@@ -1,8 +1,41 @@
+from excel_grapher.grapher.graph import DependencyGraph
+from excel_grapher.grapher.node import Node
+
 from src.formula_clustering import (
     cluster_graph_formulas,
     formulas_are_parameterizable,
     structural_fingerprint,
 )
+from src.workbook_addresses import parse_workbook_address
+
+
+def _formula_node(sheet: str, column: str, row: int, formula: str) -> Node:
+    return Node(
+        sheet=sheet,
+        column=column,
+        row=row,
+        formula=formula,
+        normalized_formula=formula,
+        value=None,
+        is_leaf=False,
+        metadata={},
+    )
+
+
+def _debt_to_gdp_anchor_recurrence_graph() -> DependencyGraph:
+    """Graph where period-1 anchor differs structurally from the recurrence chain."""
+    graph = DependencyGraph()
+    formulas = {
+        "Engine!C20": ("=Inputs!B6*(1+Inputs!C17/100)/(1+Inputs!C16/100)-Engine!C16"),
+        "Engine!D20": ("=Engine!C20*(1+Inputs!D17/100)/(1+Inputs!D16/100)-Engine!D16"),
+        "Engine!E20": ("=Engine!D20*(1+Inputs!E17/100)/(1+Inputs!D16/100)-Engine!E16"),
+        "Engine!F20": ("=Engine!E20*(1+Inputs!F17/100)/(1+Inputs!F16/100)-Engine!F16"),
+        "Engine!G20": ("=Engine!F20*(1+Inputs!G17/100)/(1+Inputs!G16/100)-Engine!G16"),
+    }
+    for address, formula in formulas.items():
+        sheet, column, row = parse_workbook_address(address)
+        graph.add_node(_formula_node(sheet, column, row, formula))
+    return graph
 
 
 def test_structural_fingerprint_abstracts_cell_addresses_and_scalars() -> None:
@@ -64,13 +97,11 @@ def test_cluster_graph_formulas_groups_parallel_row_on_synthetic_projection(
     assert engine_cluster.canonical_template == "=Inputs!A1+Inputs!B1+1"
 
 
-def test_cluster_graph_formulas_splits_anchor_from_recurrence_on_tiny_dsa(
-    tiny_dsa_configured_pipeline,
-) -> None:
-    from src.subgraph_projection import build_refactor_projection
-
-    projection = build_refactor_projection(tiny_dsa_configured_pipeline.graph)
-    clusters = cluster_graph_formulas(projection, require_same_row=False)
+def test_cluster_graph_formulas_splits_anchor_from_recurrence_chain() -> None:
+    clusters = cluster_graph_formulas(
+        _debt_to_gdp_anchor_recurrence_graph(),
+        require_same_row=False,
+    )
     debt_clusters = [
         cluster
         for cluster in clusters
@@ -84,3 +115,5 @@ def test_cluster_graph_formulas_splits_anchor_from_recurrence_on_tiny_dsa(
         "Engine!F20",
         "Engine!G20",
     )
+    singletons = [cluster for cluster in clusters if cluster.members == ("Engine!C20",)]
+    assert len(singletons) == 1
