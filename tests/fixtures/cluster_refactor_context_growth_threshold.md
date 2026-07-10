@@ -56,67 +56,47 @@ Member metadata:
   function_name: cell_forecast_b12
   expected_keys:
     REPORTING_PERIOD: 1
-  table_labels:
-    - label: Quarterly Forecast
-      concept: QUARTERLY_FORECAST
-  row_labels:
-    - label: Growth Threshold Met
-      concept: GROWTH_THRESHOLD_MET
-  column_labels:
-    - label: "1"
-      concept: REPORTING_PERIOD
+  binding_keys:
+    REPORTING_PERIOD: 1
+  binding_record:
+    INDICATOR: growth_threshold_met
+    TABLE: Quarterly Forecast
 - address: Forecast!C12
   function_name: cell_forecast_c12
   expected_keys:
     REPORTING_PERIOD: 2
-  table_labels:
-    - label: Quarterly Forecast
-      concept: QUARTERLY_FORECAST
-  row_labels:
-    - label: Growth Threshold Met
-      concept: GROWTH_THRESHOLD_MET
-  column_labels:
-    - label: "2"
-      concept: REPORTING_PERIOD
+  binding_keys:
+    REPORTING_PERIOD: 2
+  binding_record:
+    INDICATOR: growth_threshold_met
+    TABLE: Quarterly Forecast
 - address: Forecast!D12
   function_name: cell_forecast_d12
   expected_keys:
     REPORTING_PERIOD: 3
-  table_labels:
-    - label: Quarterly Forecast
-      concept: QUARTERLY_FORECAST
-  row_labels:
-    - label: Growth Threshold Met
-      concept: GROWTH_THRESHOLD_MET
-  column_labels:
-    - label: "3"
-      concept: REPORTING_PERIOD
+  binding_keys:
+    REPORTING_PERIOD: 3
+  binding_record:
+    INDICATOR: growth_threshold_met
+    TABLE: Quarterly Forecast
 - address: Forecast!E12
   function_name: cell_forecast_e12
   expected_keys:
     REPORTING_PERIOD: 4
-  table_labels:
-    - label: Quarterly Forecast
-      concept: QUARTERLY_FORECAST
-  row_labels:
-    - label: Growth Threshold Met
-      concept: GROWTH_THRESHOLD_MET
-  column_labels:
-    - label: "4"
-      concept: REPORTING_PERIOD
+  binding_keys:
+    REPORTING_PERIOD: 4
+  binding_record:
+    INDICATOR: growth_threshold_met
+    TABLE: Quarterly Forecast
 - address: Forecast!F12
   function_name: cell_forecast_f12
   expected_keys:
     REPORTING_PERIOD: 5
-  table_labels:
-    - label: Quarterly Forecast
-      concept: QUARTERLY_FORECAST
-  row_labels:
-    - label: Growth Threshold Met
-      concept: GROWTH_THRESHOLD_MET
-  column_labels:
-    - label: "5"
-      concept: REPORTING_PERIOD
+  binding_keys:
+    REPORTING_PERIOD: 5
+  binding_record:
+    INDICATOR: growth_threshold_met
+    TABLE: Quarterly Forecast
 ```
 
 Dependencies:

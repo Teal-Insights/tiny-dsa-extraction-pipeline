@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from src.graph_dependency_audit import GraphAuditCase
-from src.semantic_labeling import SemanticLabelValidationMode
+from src.internal_binding_coverage import InternalBindingValidationMode
 from src.workbook_addresses import ProjectionColumnLayout
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -55,8 +55,8 @@ class PipelineConfig:
     differential_graph_report_dir_rel: Path
     graph_output_dir: Path
     graph_audit_cases: tuple[GraphAuditCase, ...] = ()
-    semantic_label_validation_mode: SemanticLabelValidationMode = "warn"
-    semantic_label_exempt_cells: frozenset[str] = frozenset()
+    internal_binding_validation_mode: InternalBindingValidationMode = "warn"
+    internal_binding_exempt_cells: frozenset[str] = frozenset()
 
     @property
     def package_root(self) -> Path:
@@ -76,15 +76,17 @@ class PipelineConfig:
         return resolved.relative_to(self.repo_root).as_posix()
 
 
-def _load_semantic_label_validation_mode(value: object) -> SemanticLabelValidationMode:
+def _load_internal_binding_validation_mode(
+    value: object,
+) -> InternalBindingValidationMode:
     if value not in ("off", "warn", "error"):
         raise ValueError(
-            f"SEMANTIC_LABEL_VALIDATION_MODE must be off, warn, or error; got {value!r}"
+            f"INTERNAL_BINDING_VALIDATION_MODE must be off, warn, or error; got {value!r}"
         )
-    return cast(SemanticLabelValidationMode, value)
+    return cast(InternalBindingValidationMode, value)
 
 
-def _load_semantic_label_exempt_cells(value: object) -> frozenset[str]:
+def _load_internal_binding_exempt_cells(value: object) -> frozenset[str]:
     if value is None:
         return frozenset()
     if isinstance(value, frozenset):
@@ -92,7 +94,7 @@ def _load_semantic_label_exempt_cells(value: object) -> frozenset[str]:
     if isinstance(value, (set, list, tuple)):
         return frozenset(str(item) for item in value)
     raise TypeError(
-        "SEMANTIC_LABEL_EXEMPT_CELLS must be a frozenset, set, list, or tuple "
+        "INTERNAL_BINDING_EXEMPT_CELLS must be a frozenset, set, list, or tuple "
         f"of sheet-qualified addresses; got {type(value).__name__}"
     )
 
@@ -155,11 +157,11 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     )
     graph_output_dir = root / "artifacts" / "dependency-graph"
     graph_audit_cases = tuple(getattr(user_config, "GRAPH_AUDIT_CASES", ()))
-    semantic_label_validation_mode = _load_semantic_label_validation_mode(
-        getattr(user_config, "SEMANTIC_LABEL_VALIDATION_MODE", "warn")
+    internal_binding_validation_mode = _load_internal_binding_validation_mode(
+        getattr(user_config, "INTERNAL_BINDING_VALIDATION_MODE", "warn")
     )
-    semantic_label_exempt_cells = _load_semantic_label_exempt_cells(
-        getattr(user_config, "SEMANTIC_LABEL_EXEMPT_CELLS", frozenset())
+    internal_binding_exempt_cells = _load_internal_binding_exempt_cells(
+        getattr(user_config, "INTERNAL_BINDING_EXEMPT_CELLS", frozenset())
     )
 
     if not isinstance(dist_metadata, DistProjectMetadata):
@@ -190,8 +192,8 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         differential_graph_report_dir_rel=differential_graph_report_dir_rel,
         graph_output_dir=graph_output_dir,
         graph_audit_cases=graph_audit_cases,
-        semantic_label_validation_mode=semantic_label_validation_mode,
-        semantic_label_exempt_cells=semantic_label_exempt_cells,
+        internal_binding_validation_mode=internal_binding_validation_mode,
+        internal_binding_exempt_cells=internal_binding_exempt_cells,
     )
 
 
@@ -207,7 +209,7 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
     elif not any(config.bindings_path.glob("*.bindings.yaml")):
         missing.append(
             f"bindings YAML files under {config.bindings_path} "
-            "(expected inputs.bindings.yaml and outputs.bindings.yaml)"
+            "(expected inputs.bindings.yaml, outputs.bindings.yaml, and optionally internals.bindings.yaml)"
         )
     if not config.targets:
         missing.append("workbook_config.TARGETS (at least one extraction target)")

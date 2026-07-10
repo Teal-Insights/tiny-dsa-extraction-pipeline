@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from excel_grapher.grapher import DependencyGraph
@@ -18,12 +17,10 @@ from src.extraction_pipeline import (
     write_dependency_graph_artifacts,
 )
 from src.pipeline_config import PipelineConfig, load_pipeline_config
-from src.semantic_labeling import SemanticLabelingSummary
 from tests.fixtures.synthetic_pipeline import (
     build_synthetic_pipeline_graph,
     build_synthetic_projection,
     load_synthetic_series_bindings,
-    stub_semantic_labeling,
     synthetic_pipeline_config,
     write_synthetic_workbook,
 )
@@ -83,6 +80,7 @@ class SyntheticConfiguredPipeline:
     series_bindings: WorkbookSeriesBindings
     input_series: Sequence[Mapping[str, Any]]
     output_series: Sequence[Mapping[str, Any]]
+    internal_series: Sequence[Mapping[str, Any]]
     leaf_classification: dict[str, str]
     binding_validation_report: Mapping[str, Any]
 
@@ -90,34 +88,24 @@ class SyntheticConfiguredPipeline:
 @pytest.fixture(scope="session")
 def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
     config = load_pipeline_config()
-    stub_summary = SemanticLabelingSummary(
-        labeled_cell_count=0,
-        sheet_count=0,
-        candidate_cells_by_sheet={},
-    )
-    with patch(
-        "src.extraction_pipeline.label_internal_graph_cells",
-        return_value=stub_summary,
-    ):
-        graph, series_bindings, input_series, output_series, _graph_cache_key = (
-            build_pipeline_graph(config)
-        )
+    graph_result = build_pipeline_graph(config)
     leaf_classification = classify_leaves_from_constraints(
         config.constraints,
-        graph.leaf_keys(),
+        graph_result.graph.leaf_keys(),
     )
-    graph.leaf_classification = leaf_classification
+    graph_result.graph.leaf_classification = leaf_classification
     binding_validation_report = validate_series_bindings(
-        graph,
-        series_bindings,
+        graph_result.graph,
+        graph_result.series_bindings,
         workbook=config.workbook_path,
     )
     return SyntheticConfiguredPipeline(
         config=config,
-        graph=graph,
-        series_bindings=series_bindings,
-        input_series=input_series,
-        output_series=output_series,
+        graph=graph_result.graph,
+        series_bindings=graph_result.series_bindings,
+        input_series=graph_result.input_series,
+        output_series=graph_result.output_series,
+        internal_series=graph_result.internal_series,
         leaf_classification=leaf_classification,
         binding_validation_report=binding_validation_report,
     )
@@ -127,7 +115,7 @@ def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
 def synthetic_configured_pipeline(
     synthetic_pipeline_config_fixture: PipelineConfig,
 ) -> SyntheticConfiguredPipeline:
-    graph, series_bindings, input_series, output_series = (
+    graph, series_bindings, input_series, output_series, internal_series = (
         build_synthetic_pipeline_graph(synthetic_pipeline_config_fixture)
     )
     leaf_classification = classify_leaves_from_constraints(
@@ -146,6 +134,7 @@ def synthetic_configured_pipeline(
         series_bindings=series_bindings,
         input_series=input_series,
         output_series=output_series,
+        internal_series=internal_series,
         leaf_classification=leaf_classification,
         binding_validation_report=binding_validation_report,
     )
@@ -183,9 +172,8 @@ def synthetic_graph_extraction_artifacts(
         synthetic_pipeline_config_fixture,
         graph_output_dir=output_dir,
     )
-    with stub_semantic_labeling():
-        extraction = extract_dependency_graph_result(config)
-        summary = write_dependency_graph_artifacts(extraction, config)
+    extraction = extract_dependency_graph_result(config)
+    summary = write_dependency_graph_artifacts(extraction, config)
     return SyntheticGraphExtractionArtifacts(
         config=config,
         extraction=extraction,

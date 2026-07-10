@@ -25,6 +25,7 @@ from src.llm_json import DEFAULT_MAX_ATTEMPTS, generate_validated_json
 from src.llm_providers import build_client, model_from_env, provider_for_model
 from src.pipeline_context import projection_layout as active_projection_layout
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
+from src.internal_bindings import InternalBindingIndex, internal_binding_for_address
 from src.refactor_bindings import (
     BindingKeyValue,
     KeyConceptSpec,
@@ -38,11 +39,11 @@ from src.refactor_bindings import (
 from src.refactor_order import compute_cluster_refactor_order
 from src.runtime_symbols import allowed_runtime_symbols
 from src.semantic_naming import (
-    SemanticLabelHints,
-    cluster_naming_hints,
+    BindingRecordHints,
+    cluster_binding_naming_hints,
     collect_semantic_helper_names,
     semantic_helpers_available_for_calls,
-    semantic_label_hints_from_metadata,
+    binding_record_hints_from_cell,
     validate_semantic_identifier,
 )
 
@@ -171,9 +172,8 @@ class MemberContext:
     python_source: str
     dependency_addresses: tuple[str, ...]
     dependency_functions: tuple[str, ...]
-    table_labels: str | None = None
-    row_labels: str | None = None
-    column_labels: str | None = None
+    binding_keys: dict[str, BindingKeyValue] | None = None
+    binding_record: dict[str, BindingKeyValue] | None = None
 
 
 @dataclass(frozen=True)
@@ -462,22 +462,29 @@ def _default_bound_address_keys() -> dict[str, dict[str, BindingKeyValue]]:
     from src.extraction_pipeline import build_pipeline_graph
     from src.pipeline_context import require_pipeline_config
 
-    _graph, _series_bindings, input_series, output_series, _graph_cache_key = (
-        build_pipeline_graph(require_pipeline_config())
+    graph_result = build_pipeline_graph(require_pipeline_config())
+    return build_bound_address_keys(
+        graph_result.input_series,
+        graph_result.output_series,
+        graph_result.internal_series,
     )
-    return build_bound_address_keys(input_series, output_series)
 
 
-def _label_hints_for_address(
-    source_graph: DependencyGraph | None,
+def _binding_hints_for_address(
+    internal_binding_index: InternalBindingIndex | None,
     address: str,
-) -> SemanticLabelHints:
-    if source_graph is None:
-        return SemanticLabelHints()
-    node = source_graph.get_node(address)
-    if node is None:
-        return SemanticLabelHints()
-    return semantic_label_hints_from_metadata(node.metadata)
+) -> BindingRecordHints:
+    if internal_binding_index is None:
+        return BindingRecordHints()
+    binding = internal_binding_for_address(internal_binding_index, address)
+    if binding is None:
+        return BindingRecordHints()
+    return binding_record_hints_from_cell(
+        {
+            "key": binding.key,
+            "record": binding.record,
+        }
+    )
 
 
 def _default_source_graph() -> DependencyGraph | None:
@@ -498,14 +505,12 @@ def build_cluster_refactor_context(
     workbook_path: Path,
     bindings_path: Path,
     source_graph: DependencyGraph | None = None,
+    internal_binding_index: InternalBindingIndex | None = None,
     layout: ProjectionColumnLayout | None = None,
 ) -> ClusterRefactorContext | None:
     if len(cluster.members) < 2:
         return None
 
-    resolved_source_graph = (
-        source_graph if source_graph is not None else _default_source_graph()
-    )
     resolved_layout = _resolved_projection_layout(layout)
 
     source = internals_path.read_text(encoding="utf-8")
@@ -543,7 +548,7 @@ def build_cluster_refactor_context(
             )
         )
 
-        label_hints = _label_hints_for_address(resolved_source_graph, address)
+        binding_hints = _binding_hints_for_address(internal_binding_index, address)
 
         members.append(
             MemberContext(
@@ -554,9 +559,8 @@ def build_cluster_refactor_context(
                 python_source=extract_function_source(source, function_name),
                 dependency_addresses=dependency_addresses,
                 dependency_functions=dependency_functions,
-                table_labels=label_hints.table_labels,
-                row_labels=label_hints.row_labels,
-                column_labels=label_hints.column_labels,
+                binding_keys=binding_hints.binding_keys,
+                binding_record=binding_hints.binding_record,
             )
         )
 
@@ -615,12 +619,11 @@ def build_cluster_refactor_context(
         allowed_runtime_symbols=allowed_runtime_symbols(),
         key_vocabulary=resolved_vocabulary,
         expected_member_keys=expected_member_keys,
-        naming_hints=cluster_naming_hints(
+        naming_hints=cluster_binding_naming_hints(
             tuple(
-                SemanticLabelHints(
-                    table_labels=member.table_labels,
-                    row_labels=member.row_labels,
-                    column_labels=member.column_labels,
+                BindingRecordHints(
+                    binding_keys=member.binding_keys,
+                    binding_record=member.binding_record,
                 )
                 for member in members
             )
@@ -634,13 +637,10 @@ def build_singleton_refactor_context(
     internals_path: Path,
     *,
     source_graph: DependencyGraph | None = None,
+    internal_binding_index: InternalBindingIndex | None = None,
 ) -> SingletonRefactorContext | None:
     if len(cluster.members) != 1:
         return None
-
-    resolved_source_graph = (
-        source_graph if source_graph is not None else _default_source_graph()
-    )
 
     address = cluster.members[0]
 
@@ -684,8 +684,8 @@ def build_singleton_refactor_context(
             {function_name},
         ),
         allowed_runtime_symbols=allowed_runtime_symbols(),
-        naming_hints=_label_hints_for_address(
-            resolved_source_graph, address
+        naming_hints=_binding_hints_for_address(
+            internal_binding_index, address
         ).to_payload(),
     )
 
@@ -796,9 +796,8 @@ def prompt_payload(ctx: ClusterRefactorContext) -> dict[str, object]:
                 "python_source": member.python_source,
                 "dependency_addresses": member.dependency_addresses,
                 "dependency_functions": member.dependency_functions,
-                "table_labels": member.table_labels,
-                "row_labels": member.row_labels,
-                "column_labels": member.column_labels,
+                "binding_keys": member.binding_keys or {},
+                "binding_record": member.binding_record or {},
             }
             for member in ctx.members
         ],
@@ -1461,24 +1460,26 @@ def prepare_singleton_refactor_response(
     )
 
 
+def _format_binding_map_yaml(
+    label: str,
+    values: object,
+) -> list[str]:
+    if not isinstance(values, Mapping) or not values:
+        return [f"{label}: {{}}"]
+    lines = [f"{label}:"]
+    for concept, value in sorted(values.items(), key=lambda item: item[0]):
+        lines.append(f"  {concept}: {_yaml_scalar(value)}")
+    return lines
+
+
 def _format_cell_metadata_yaml(cell_metadata: Mapping[str, object]) -> str:
     lines = [f"address: {cell_metadata['address']}"]
-    for key in ("table_labels", "row_labels", "column_labels"):
-        labels = cell_metadata.get(key, [])
-        if not isinstance(labels, list) or not labels:
-            lines.append(f"{key}: []")
-            continue
-        lines.append(f"{key}:")
-        for item in labels:
-            if not isinstance(item, Mapping):
-                continue
-            label = item.get("label")
-            if label is None:
-                continue
-            lines.append(f"  - label: {label}")
-            concept = item.get("concept")
-            if concept is not None:
-                lines.append(f"    concept: {concept}")
+    lines.extend(
+        _format_binding_map_yaml("binding_keys", cell_metadata.get("binding_keys"))
+    )
+    lines.extend(
+        _format_binding_map_yaml("binding_record", cell_metadata.get("binding_record"))
+    )
     return "\n".join(lines)
 
 
@@ -1617,23 +1618,16 @@ def build_singleton_refactor_context_dump(
 
 def _cell_metadata_for_singleton_refactor(
     ctx: SingletonRefactorContext,
-    *,
-    source_graph: DependencyGraph | None = None,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {"address": ctx.address}
-    if source_graph is not None:
-        node = source_graph.get_node(ctx.address)
-        if node is not None and node.metadata is not None:
-            for key in ("table_labels", "row_labels", "column_labels"):
-                labels = node.metadata.get(key)
-                metadata[key] = labels if isinstance(labels, list) else []
-            return metadata
-    for key in ("table_labels", "row_labels", "column_labels"):
-        hint = ctx.naming_hints.get(key)
-        if isinstance(hint, str):
-            metadata[key] = [{"label": hint}]
-        else:
-            metadata[key] = []
+    binding_keys = ctx.naming_hints.get("binding_keys")
+    binding_record = ctx.naming_hints.get("binding_record")
+    metadata["binding_keys"] = (
+        dict(binding_keys) if isinstance(binding_keys, Mapping) else {}
+    )
+    metadata["binding_record"] = (
+        dict(binding_record) if isinstance(binding_record, Mapping) else {}
+    )
     return metadata
 
 
@@ -1642,7 +1636,6 @@ def build_singleton_refactor_prompt_context(
     *,
     internals_path: Path,
     runtime_path: Path | None = None,
-    source_graph: DependencyGraph | None = None,
 ) -> str:
     resolved_runtime_path = (
         runtime_path
@@ -1654,10 +1647,7 @@ def build_singleton_refactor_prompt_context(
         address=ctx.address,
         internals_source=internals_path.read_text(encoding="utf-8"),
         runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
-        cell_metadata=_cell_metadata_for_singleton_refactor(
-            ctx,
-            source_graph=source_graph,
-        ),
+        cell_metadata=_cell_metadata_for_singleton_refactor(ctx),
     )
 
 
@@ -1811,14 +1801,9 @@ def _format_member_metadata_yaml(
         if isinstance(expected_keys, Mapping):
             for concept, value in expected_keys.items():
                 lines.append(f"    {concept}: {value}")
-        for label_key in ("table_labels", "row_labels", "column_labels"):
-            label_lines = _format_label_group_yaml(entry.get(label_key, []))
-            if label_lines == ["[]"]:
-                lines.append(f"  {label_key}: []")
-                continue
-            lines.append(f"  {label_key}:")
-            for line in label_lines:
-                lines.append(f"  {line}")
+        for map_key in ("binding_keys", "binding_record"):
+            map_lines = _format_binding_map_yaml(map_key, entry.get(map_key))
+            lines.extend(f"  {line}" for line in map_lines)
         blocks.append("\n".join(lines))
     return "\n".join(blocks)
 
@@ -1912,8 +1897,6 @@ def build_cluster_refactor_context_dump(
 
 def _member_metadata_for_cluster_refactor(
     ctx: ClusterRefactorContext,
-    *,
-    source_graph: DependencyGraph | None = None,
 ) -> tuple[dict[str, object], ...]:
     entries: list[dict[str, object]] = []
     for member in ctx.members:
@@ -1921,23 +1904,9 @@ def _member_metadata_for_cluster_refactor(
             "address": member.address,
             "function_name": member.function_name,
             "expected_keys": ctx.expected_member_keys.get(member.address, {}),
+            "binding_keys": member.binding_keys or {},
+            "binding_record": member.binding_record or {},
         }
-        if source_graph is not None:
-            node = source_graph.get_node(member.address)
-            if node is not None and node.metadata is not None:
-                for key in ("table_labels", "row_labels", "column_labels"):
-                    labels = node.metadata.get(key)
-                    entry[key] = labels if isinstance(labels, list) else []
-            else:
-                for key in ("table_labels", "row_labels", "column_labels"):
-                    entry[key] = []
-        else:
-            for key, value in (
-                ("table_labels", member.table_labels),
-                ("row_labels", member.row_labels),
-                ("column_labels", member.column_labels),
-            ):
-                entry[key] = [{"label": value}] if value is not None else []
         entries.append(entry)
     return tuple(entries)
 
@@ -1947,7 +1916,6 @@ def build_cluster_refactor_prompt_context(
     *,
     internals_path: Path,
     runtime_path: Path | None = None,
-    source_graph: DependencyGraph | None = None,
 ) -> str:
     varying_concepts = frozenset(
         concept for keys in ctx.expected_member_keys.values() for concept in keys
@@ -1964,10 +1932,7 @@ def build_cluster_refactor_prompt_context(
         key_vocabulary=tuple(
             item for item in ctx.key_vocabulary if item.concept in varying_concepts
         ),
-        member_metadata=_member_metadata_for_cluster_refactor(
-            ctx,
-            source_graph=source_graph,
-        ),
+        member_metadata=_member_metadata_for_cluster_refactor(ctx),
     )
 
 
@@ -3056,6 +3021,7 @@ def refactor_internals_all_clusters(
     workbook_path: Path,
     dry_run: bool = False,
     source_graph: DependencyGraph | None = None,
+    internal_binding_index: InternalBindingIndex | None = None,
     parity_gate: bool = True,
     layout: ProjectionColumnLayout | None = None,
 ) -> tuple[ClusterRefactorApplyResult, ...]:
@@ -3084,6 +3050,7 @@ def refactor_internals_all_clusters(
                 cluster,
                 internals_path,
                 source_graph=source_graph,
+                internal_binding_index=internal_binding_index,
             )
             if ctx is None:
                 continue
@@ -3103,6 +3070,7 @@ def refactor_internals_all_clusters(
             cluster,
             internals_path,
             source_graph=source_graph,
+            internal_binding_index=internal_binding_index,
             bindings_path=bindings_path,
             workbook_path=workbook_path,
             layout=layout,
@@ -3236,7 +3204,6 @@ def llm_refactor_singleton(
     context_dump = build_singleton_refactor_prompt_context(
         ctx,
         internals_path=internals_path,
-        source_graph=source_graph,
     )
     user_prompt = _prompt_for_singleton_refactor(context_dump)
     last_attempt: dict[str, Any] = {}
@@ -3395,7 +3362,6 @@ def llm_refactor_cluster(
     context_dump = build_cluster_refactor_prompt_context(
         ctx,
         internals_path=internals_path,
-        source_graph=source_graph,
     )
     user_prompt = _prompt_for_refactor(context_dump)
     last_attempt: dict[str, Any] = {}

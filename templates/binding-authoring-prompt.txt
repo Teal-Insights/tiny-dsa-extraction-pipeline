@@ -17,16 +17,18 @@ Binding schema and conventions:
       .read_text(encoding="utf-8")
   )
 
-- Use schema_version: 1.5.0.
-- Create a bindings/ directory with two files:
+- Use schema_version: 1.7.0.
+- Create a bindings/ directory with three files:
   - inputs.bindings.yaml for public input setters.
   - outputs.bindings.yaml for public output compute functions.
-- Use one series[] entry per logical public input or output series.
+  - internals.bindings.yaml for internal formula-cell triangulation (`internal: {}`).
+- Use one series[] entry per logical public input, output, or internal formula series.
 - Use layout: scalar for one-cell inputs and layout: row_series for one-row time series.
 - Use structure.measure.concept: OBS_VALUE with bind.kind: data_cell.
 - Use key fields only for record matching. For row time series, use TIME_PERIOD from the column header row. For scalar parameters, use keyless bindings (`key: []`) and keep PARAMETER in series_context. For keyed tables, use the header that identifies each record as the key.
 - Add input.setter.name values matching set_[a-z][a-z0-9_]* for input series.
 - Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
+- Add internal series with `internal: {}` for formula cells that need concept-key triangulation during internals refactor. Internal series do not generate public setter or compute code.
 - Include useful series_context and UNIT_MEASURE attributes where they clarify records.
 - Do not include internal engine calculations or read-only lookup/profile data as public API bindings unless the guide says downstream users should set or read them directly.
 
@@ -34,10 +36,12 @@ Task:
 1. Read the guide's public API table and functional overview.
 2. Identify public input series that require user configuration.
 3. Identify public output series that downstream users should read.
-4. Cross-check each proposed series against the extracted graph:
+4. Identify internal formula cells that need concept-key triangulation for refactor.
+5. Cross-check each proposed series against the extracted graph:
    - input bindings should overlap graph leaves;
-   - output bindings should overlap graph target/output nodes.
-5. Write bindings/inputs.bindings.yaml and bindings/outputs.bindings.yaml.
-6. Validate by loading the binding directory with load_series_bindings("bindings"), then running validate_series_bindings(graph, bindings, workbook=workbook_path), derive_input_series(...), and derive_output_series(...).
+   - output bindings should overlap graph target/output nodes;
+   - internal bindings should overlap formula nodes.
+6. Write bindings/inputs.bindings.yaml, bindings/outputs.bindings.yaml, and bindings/internals.bindings.yaml.
+7. Validate by loading the binding directory with load_series_bindings("bindings"), then running validate_series_bindings(graph, bindings, workbook=workbook_path), derive_input_series(...), derive_output_series(...), and derive_internal_series(...).
 
-Return the two YAML files and a short validation summary. If any series is ambiguous, explain the ambiguity instead of guessing.
+Return the three YAML files and a short validation summary. If any series is ambiguous, explain the ambiguity instead of guessing.

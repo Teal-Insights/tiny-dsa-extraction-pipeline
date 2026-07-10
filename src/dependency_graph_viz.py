@@ -18,6 +18,8 @@ from excel_grapher.grapher.export import to_graphviz
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import NodeKey
 
+from src.internal_bindings import InternalBindingIndex, internal_binding_for_address
+
 from src.env_utils import env_int
 from src.cytoscape_explorer_html import build_cytoscape_explorer_html
 
@@ -343,6 +345,23 @@ def _node_role(
     return "internal"
 
 
+def _attach_internal_binding_fields(
+    data: dict[str, Any],
+    *,
+    address: str,
+    internal_binding_index: InternalBindingIndex | None,
+) -> None:
+    if internal_binding_index is None:
+        return
+    binding = internal_binding_for_address(internal_binding_index, address)
+    if binding is None:
+        return
+    if binding.key:
+        data["binding_keys"] = dict(binding.key)
+    if binding.record:
+        data["binding_record"] = dict(binding.record)
+
+
 def build_cytoscape_preset_payload(
     graph: DependencyGraph,
     graphviz_json: dict[str, Any],
@@ -351,6 +370,7 @@ def build_cytoscape_preset_payload(
     input_keys: set[NodeKey] | None = None,
     output_keys: set[NodeKey] | None = None,
     constant_keys: set[NodeKey] | None = None,
+    internal_binding_index: InternalBindingIndex | None = None,
 ) -> dict[str, Any]:
     objects = graphviz_json.get("objects", [])
     if not isinstance(objects, list):
@@ -466,10 +486,11 @@ def build_cytoscape_preset_payload(
             "is_leaf": node.is_leaf,
             "formula": node.formula,
         }
-        for metadata_key in ("table_labels", "row_labels", "column_labels"):
-            label_text = _semantic_label_group_text(node.metadata.get(metadata_key))
-            if label_text is not None:
-                data[metadata_key] = label_text
+        _attach_internal_binding_fields(
+            data,
+            address=key,
+            internal_binding_index=internal_binding_index,
+        )
         w_pt = _graphviz_size_inches_to_points(node_obj.get("width"))
         h_pt = _graphviz_size_inches_to_points(node_obj.get("height"))
         if w_pt is not None and h_pt is not None:
@@ -543,6 +564,7 @@ def build_cytoscape_structure_payload(
     output_keys: set[NodeKey] | None = None,
     constant_keys: set[NodeKey] | None = None,
     node_labels: Mapping[NodeKey, str] | None = None,
+    internal_binding_index: InternalBindingIndex | None = None,
 ) -> dict[str, Any]:
     """Build a worksheet-clustered Cytoscape payload without Graphviz coordinates."""
     targets = set(target_keys or ())
@@ -592,10 +614,11 @@ def build_cytoscape_structure_payload(
             "formula": node.formula,
             "parent": cluster_node_id_by_sheet[_node_sheet(key, graph)],
         }
-        for metadata_key in ("table_labels", "row_labels", "column_labels"):
-            label_text = _semantic_label_group_text(node.metadata.get(metadata_key))
-            if label_text is not None:
-                data[metadata_key] = label_text
+        _attach_internal_binding_fields(
+            data,
+            address=key,
+            internal_binding_index=internal_binding_index,
+        )
         elements_nodes.append({"data": data})
 
     seen_edges: set[tuple[str, str]] = set()
@@ -661,63 +684,6 @@ def build_structure_only_index_html(
     )
 
 
-def _semantic_label_text(value: Any) -> str | None:
-    if isinstance(value, Mapping):
-        label = value.get("label")
-        return str(label) if label is not None else None
-    if isinstance(value, str | int | float):
-        return str(value)
-    return None
-
-
-def _semantic_label_group_text(value: Any) -> str | None:
-    if not isinstance(value, list):
-        return None
-    labels = [
-        label_text
-        for item in value
-        if (label_text := _semantic_label_text(item)) is not None
-    ]
-    if not labels:
-        return None
-    return " | ".join(labels)
-
-
-def semantic_node_labels(
-    graph: DependencyGraph,
-    *,
-    keys: Iterable[NodeKey] | None = None,
-    include_formula_on_nodes: bool = True,
-    max_formula_length: int | None = 120,
-) -> dict[NodeKey, str]:
-    """Format semantic node metadata as concise Graphviz/Cytoscape labels."""
-    node_labels: dict[NodeKey, str] = {}
-    for key in keys or graph.keys(order="workbook"):
-        node = graph.get_node(key)
-        if node is None:
-            continue
-        table_labels = _semantic_label_group_text(node.metadata.get("table_labels"))
-        row_labels = _semantic_label_group_text(node.metadata.get("row_labels"))
-        column_labels = _semantic_label_group_text(node.metadata.get("column_labels"))
-        if table_labels is None and row_labels is None and column_labels is None:
-            continue
-
-        parts = [key]
-        if include_formula_on_nodes and node.formula:
-            formula = node.formula
-            if max_formula_length is not None and len(formula) > max_formula_length:
-                formula = f"{formula[:max_formula_length]}..."
-            parts.append(formula)
-        if table_labels is not None:
-            parts.append(f"table: {table_labels}")
-        if row_labels is not None:
-            parts.append(f"row: {row_labels}")
-        if column_labels is not None:
-            parts.append(f"column: {column_labels}")
-        node_labels[key] = "\n".join(parts)
-    return node_labels
-
-
 def series_cell_keys(series_items: Iterable[Mapping[str, Any]]) -> set[NodeKey]:
     keys: set[NodeKey] = set()
     for item in series_items:
@@ -744,6 +710,7 @@ def write_dependency_graph_site(
     input_keys: set[NodeKey] | None = None,
     output_keys: set[NodeKey] | None = None,
     constant_keys: set[NodeKey] | None = None,
+    internal_binding_index: InternalBindingIndex | None = None,
     rankdir: str = "TB",
     dot_bin: str | None = None,
     json_filename: str = DEFAULT_JSON_FILENAME,
@@ -778,6 +745,7 @@ def write_dependency_graph_site(
         "input_keys": input_keys,
         "output_keys": output_keys,
         "constant_keys": constant_keys,
+        "internal_binding_index": internal_binding_index,
     }
     if layout_enabled:
         layout_stage = (

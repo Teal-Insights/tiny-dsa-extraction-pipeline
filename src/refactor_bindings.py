@@ -67,9 +67,10 @@ def load_key_concept_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ..
 def build_bound_address_keys(
     input_series: Sequence[Mapping[str, Any]],
     output_series: Sequence[Mapping[str, Any]],
+    internal_series: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, dict[str, BindingKeyValue]]:
     index: dict[str, dict[str, BindingKeyValue]] = {}
-    for series_list in (input_series, output_series):
+    for series_list in (input_series, output_series, internal_series):
         for series in series_list:
             for cell in series["cells"]:
                 index[str(cell["address"])] = _coerce_binding_keys(cell["key"])

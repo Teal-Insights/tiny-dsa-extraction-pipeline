@@ -32,7 +32,7 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml` | Records-shaped public API surface |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
 | Projection layout | `workbook_config.py` → `PROJECTION_LAYOUT` | Optional Engine/Outputs column mapping for internals refactor (see below) |
-| Semantic label exemptions | `workbook_config.py` → `SEMANTIC_LABEL_EXEMPT_CELLS` | Reviewed internal cells allowed to remain unlabeled |
+| Internal binding exemptions | `workbook_config.py` → `INTERNAL_BINDING_EXEMPT_CELLS` | Reviewed formula cells allowed to remain unbound |
 | Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
 | Graph parity evidence | `data/differential/graph/` | Reference reports after passing pre-export graph-oracle sweeps (optional until configured) |
 | Exported-library parity evidence | `data/differential/exported_library/` | Reference reports after passing post-export parity sweeps (optional until configured) |
@@ -103,30 +103,28 @@ The extraction design is documented in [docs/extraction-pipeline.qmd](docs/extra
 
 After manual review (onboarding step 5), run graph-oracle differential parity (step 6) before export.
 
-During graph build the pipeline also runs **semantic labeling** and optional **label coverage validation** (see below). Both run on `--extract-graph` and on the full export path.
+During graph build the pipeline also runs **internal binding derivation** and optional **internal binding coverage validation** (see below). Both run on `--extract-graph` and on the full export path.
 
-#### Semantic labeling
+#### Internal series bindings
 
-After the dependency graph is extracted, bindings are validated, and leaves are classified, an LLM labels **internal graph cells** (every graph node except bound inputs, outputs, and extraction targets—including constant lookup leaves). Labels are stored on node metadata as structured `table_labels`, `row_labels`, and `column_labels`, optionally mapped to concepts from the binding `concept_scheme`.
+After the dependency graph is extracted and bindings are validated, the pipeline derives **internal series** for formula cells declared with `internal: {}` in `bindings/internals.bindings.yaml`. Each resolved cell carries `{address, key, record}` triangulation data used by the graph explorer and internals refactor. Concept keys live in binding manifests and derived series records, not on graph node metadata.
 
-Results cache under `.cache/semantic-labels.json`. Labels feed the graph explorer and internals refactor naming hints.
-
-#### Semantic label coverage validation
+#### Internal binding coverage validation
 
 Configure validation in [workbook_config.py](workbook_config.py):
 
-- `SEMANTIC_LABEL_VALIDATION_MODE` — `off`, `warn` (default), or `error`
-- `SEMANTIC_LABEL_EXEMPT_CELLS` — sheet-qualified addresses reviewed and intentionally allowed to remain unlabeled
+- `INTERNAL_BINDING_VALIDATION_MODE` — `off`, `warn` (default), or `error`
+- `INTERNAL_BINDING_EXEMPT_CELLS` — sheet-qualified formula addresses reviewed and intentionally allowed to remain unbound
 
-A cell counts as **labeled** when it has a non-empty **table** label and at least one non-empty **row** or **column** label.
+Coverage applies to **formula nodes** that are not already covered by public input or output bindings.
 
-| Mode | Pipeline | Pytest (`tests/test_semantic_label_coverage.py`) |
+| Mode | Pipeline | Pytest (`tests/test_internal_binding_coverage.py`) |
 |---|---|---|
 | `off` | Skipped | Skipped |
-| `warn` | Logs warnings for unlabeled required cells | Fails the test suite |
+| `warn` | Logs warnings for unbound required formula cells | Fails the test suite |
 | `error` | Raises before export/refactor | Fails the test suite |
 
-Use `warn` while iterating locally; treat pytest failures as the CI gate once exemptions are committed. Add reviewed bare cells to `SEMANTIC_LABEL_EXEMPT_CELLS` rather than weakening the mode.
+Use `warn` while iterating locally; treat pytest failures as the CI gate once exemptions are committed. Add reviewed formula cells to `INTERNAL_BINDING_EXEMPT_CELLS` rather than weakening the mode.
 
 ### 3. Verify graph
 
@@ -185,7 +183,7 @@ uv run python -m src.extraction_pipeline
 
 ### Prerequisites
 
-LLM steps (semantic labeling, docstrings, internals refactor, guide rewrites) cache results under `.cache/`. Dependency graph extraction and `OptimalCompression` projection also cache gzipped pickle payloads under `.cache/dependency-graph/` and `.cache/projection/` (keyed by workbook bytes, targets, constraints, bindings, and `excel-grapher` version). Pass `--no-cache` to bypass graph and projection caches for a single run. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
+LLM steps (docstrings, internals refactor, guide rewrites) cache results under `.cache/`. Dependency graph extraction and `OptimalCompression` projection also cache gzipped pickle payloads under `.cache/dependency-graph/` and `.cache/projection/` (keyed by workbook bytes, targets, constraints, bindings, and `excel-grapher` version). Pass `--no-cache` to bypass graph and projection caches for a single run. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
 
 ```bash
 # .env — logging verbosity for pipeline entry points (default: INFO)
@@ -198,7 +196,6 @@ DEEPSEEK_API_KEY=...
 
 # Per-stage model selection (optional; default gpt-5.5 when unset)
 # Name prefix selects the provider: gpt-*, glm-*, deepseek-*
-SEMANTIC_LABEL_MODEL=gpt-5.5
 DOCSTRING_MODEL=gpt-5.5
 REFACTOR_MODEL=gpt-5.5
 SECTION_REWRITE_MODEL=gpt-5.5
@@ -257,11 +254,12 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 - [ ] **Configure:** `bindings/inputs.bindings.yaml` + `outputs.bindings.yaml` validated
 - [ ] **Configure:** Dynamic-ref constraint candidates constrained
 - [ ] **Configure:** All leaves classified; mutable leaves bound
-- [ ] **Configure:** Semantic label exemptions reviewed (`SEMANTIC_LABEL_EXEMPT_CELLS`)
+- [ ] **Configure:** Internal binding exemptions reviewed (`INTERNAL_BINDING_EXEMPT_CELLS`)
+- [ ] **Configure:** `bindings/internals.bindings.yaml` covers internal formula cells
 - [ ] **Extract:** Graph extracts with provenance (`--extract-graph`)
 - [ ] **Review graph:** Manual completeness review done; optional LLM dependency audit passed (`pytest --run-skipped`)
 - [ ] **Verify graph:** Scenario matrix defined in `tests/differential/`; graph-oracle parity passes (`uv run python -m tests.differential.differential_test_graph`)
-- [ ] **Configure:** Semantic label coverage passes (`uv run pytest tests/test_semantic_label_coverage.py`)
+- [ ] **Configure:** Internal binding coverage passes (`uv run pytest tests/test_internal_binding_coverage.py`)
 - [ ] **Export:** `dist/` package builds; semantic API scenario runs
 - [ ] **Export:** Validation bundle exported; exported-library differential parity passes (Windows Excel sweep when available)
 - [ ] **Document / refactor:** Public API uses domain language; docstrings present

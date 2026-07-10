@@ -14,8 +14,10 @@ from excel_grapher.grapher import (
     DynamicRefConfig,
 )
 from excel_grapher.exporter import CodeGenerator
+from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.series_bindings import (
     derive_input_series,
+    derive_internal_series,
     derive_output_series,
     load_series_bindings,
     validate_series_bindings,
@@ -24,10 +26,11 @@ from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
 from src.dependency_graph_viz import (
     constant_keys_from_leaf_classification,
-    semantic_node_labels,
     series_cell_keys,
     write_dependency_graph_site,
 )
+from src.internal_bindings import binding_node_labels, build_internal_binding_index
+from src.internal_binding_coverage import enforce_internal_binding_coverage
 from src.docstring_callback import configure_docstring_callback
 from src.export_validation_assets import export_validation_assets
 from src.logging_config import configure_logging
@@ -50,15 +53,21 @@ from src.qmd_python_validation import (
     write_dist_readme,
 )
 from src.graph_cache import get_or_build_dependency_graph
-from src.semantic_labeling import (
-    enforce_semantic_label_coverage,
-    label_internal_graph_cells,
-)
 from src.subgraph_projection import build_refactor_projection
 
 SeriesResolutionList = Sequence[Mapping[str, Any]]
 
 EXTRACTION_SUMMARY_SCHEMA_VERSION = "1.0.0"
+
+
+@dataclass(frozen=True)
+class PipelineGraphResult:
+    graph: DependencyGraph
+    series_bindings: WorkbookSeriesBindings
+    input_series: SeriesResolutionList
+    output_series: SeriesResolutionList
+    internal_series: SeriesResolutionList
+    graph_cache_key: str
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,7 @@ class DependencyGraphExtraction:
     series_bindings: WorkbookSeriesBindings
     input_series: SeriesResolutionList
     output_series: SeriesResolutionList
+    internal_series: SeriesResolutionList
     timer: StageTimer
     elapsed_seconds: float
 
@@ -98,21 +108,26 @@ def extract_dependency_graph_result(
     stall_log_path = resolve_stall_log_path(config.graph_output_dir)
     started = time.perf_counter()
     with profile_if_enabled(config.graph_output_dir, basename="extract"):
-        graph, series_bindings, input_series, output_series, _graph_cache_key = (
-            build_pipeline_graph(
-                config,
-                timer=timer,
-                stall_log_path=stall_log_path,
-                no_cache=no_cache,
-                force_rebuild=force_rebuild,
-            )
+        graph_result = build_pipeline_graph(
+            config,
+            timer=timer,
+            stall_log_path=stall_log_path,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
         )
+        graph = graph_result.graph
+        series_bindings = graph_result.series_bindings
+        input_series = graph_result.input_series
+        output_series = graph_result.output_series
+        internal_series = graph_result.internal_series
+        _graph_cache_key = graph_result.graph_cache_key
     elapsed_seconds = time.perf_counter() - started
     return DependencyGraphExtraction(
         graph=graph,
         series_bindings=series_bindings,
         input_series=input_series,
         output_series=output_series,
+        internal_series=internal_series,
         timer=timer,
         elapsed_seconds=elapsed_seconds,
     )
@@ -135,13 +150,15 @@ def write_dependency_graph_artifacts(
     leaf_classification = graph.leaf_classification or {}
     output_dir = config.graph_output_dir
     artifact_started = time.perf_counter()
+    internal_binding_index = build_internal_binding_index(extraction.internal_series)
     write_dependency_graph_site(
         graph,
         output_dir,
-        node_labels=semantic_node_labels(graph),
+        node_labels=binding_node_labels(graph, internal_binding_index),
         target_keys=set(config.targets),
         input_keys=series_cell_keys(extraction.input_series),
         output_keys=series_cell_keys(extraction.output_series),
+        internal_binding_index=internal_binding_index,
         constant_keys=constant_keys_from_leaf_classification(leaf_classification),
         timer=extraction.timer,
     )
@@ -244,13 +261,7 @@ def build_pipeline_graph(
     stall_log_path: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
-) -> tuple[
-    DependencyGraph,
-    WorkbookSeriesBindings,
-    SeriesResolutionList,
-    SeriesResolutionList,
-    str,
-]:
+) -> PipelineGraphResult:
     def stage(name: str):
         if timer is None:
             return nullcontext()
@@ -304,6 +315,14 @@ def build_pipeline_graph(
             derive_output_series(graph, series_bindings, workbook=config.workbook_path),
         )
 
+    with stage("derive_internal_series"):
+        internal_series = cast(
+            SeriesResolutionList,
+            derive_internal_series(
+                graph, series_bindings, workbook=config.workbook_path
+            ),
+        )
+
     with stage("classify_leaves"):
         leaf_classification = classify_leaves_from_constraints(
             config.constraints, graph.leaf_keys()
@@ -313,26 +332,25 @@ def build_pipeline_graph(
     input_cell_keys = series_cell_keys(input_series)
     output_cell_keys = series_cell_keys(output_series)
 
-    with stage("label_internal_graph_cells"):
-        label_internal_graph_cells(
+    with stage("validate_internal_binding_coverage"):
+        enforce_internal_binding_coverage(
             graph=graph,
-            workbook_path=config.workbook_path,
+            internal_series=internal_series,
             input_cells=input_cell_keys,
-            target_cells=output_cell_keys,
-            concept_scheme=series_bindings["concept_scheme"],
-        )
-
-    with stage("validate_semantic_label_coverage"):
-        enforce_semantic_label_coverage(
-            graph=graph,
-            input_cells=input_cell_keys,
-            target_cells=output_cell_keys,
-            exempt_cells=config.semantic_label_exempt_cells,
-            mode=config.semantic_label_validation_mode,
+            output_cells=output_cell_keys,
+            exempt_cells=config.internal_binding_exempt_cells,
+            mode=config.internal_binding_validation_mode,
             context="pipeline",
         )
 
-    return graph, series_bindings, input_series, output_series, graph_cache_key
+    return PipelineGraphResult(
+        graph=graph,
+        series_bindings=series_bindings,
+        input_series=input_series,
+        output_series=output_series,
+        internal_series=internal_series,
+        graph_cache_key=graph_cache_key,
+    )
 
 
 def export_generated_package(
@@ -346,14 +364,18 @@ def export_generated_package(
     timer = StageTimer()
     stall_log_path = resolve_stall_log_path(config.graph_output_dir)
     with profile_if_enabled(config.graph_output_dir):
-        graph, series_bindings, _input_series, _output_series, graph_cache_key = (
-            build_pipeline_graph(
-                config,
-                timer=timer,
-                stall_log_path=stall_log_path,
-                no_cache=no_cache,
-                force_rebuild=force_rebuild,
-            )
+        graph_result = build_pipeline_graph(
+            config,
+            timer=timer,
+            stall_log_path=stall_log_path,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
+        )
+        graph = graph_result.graph
+        series_bindings = graph_result.series_bindings
+        graph_cache_key = graph_result.graph_cache_key
+        internal_binding_index = build_internal_binding_index(
+            graph_result.internal_series
         )
     timer.print_summary()
     if stall_log_path.is_file():
@@ -366,7 +388,7 @@ def export_generated_package(
     )
     callback_name = configure_docstring_callback(config)
 
-    with CodeGenerator(refactor_projection) as generator:
+    with CodeGenerator(cast(GraphLike, refactor_projection)) as generator:
         modules = generator.generate_modules(
             list(config.targets),
             series_bindings=series_bindings,
@@ -423,6 +445,7 @@ tests/results/local/
         formula_clusters,
         internals_path=package_root / "internals.py",
         source_graph=graph,
+        internal_binding_index=internal_binding_index,
         bindings_path=config.bindings_path,
         workbook_path=config.workbook_path,
     )

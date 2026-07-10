@@ -4,7 +4,10 @@ import importlib
 import sys
 from pathlib import Path
 
+from typing import cast
+
 from excel_grapher.exporter import BaseProjectionManifest, CodeGenerator
+from excel_grapher.exporter.codegen import GraphLike
 
 from src.subgraph_projection import build_refactor_projection
 
@@ -35,7 +38,7 @@ def test_projected_codegen_preserves_public_series_api(
     synthetic_workbook_path,
 ) -> None:
     projection = build_refactor_projection(synthetic_graph)
-    modules = CodeGenerator(projection).generate_modules(
+    modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
         list(synthetic_graph.target_keys()),
         series_bindings=synthetic_series_bindings,
         bindings_workbook=synthetic_workbook_path,

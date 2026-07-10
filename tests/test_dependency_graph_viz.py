@@ -14,10 +14,10 @@ from src.dependency_graph_viz import (
     build_dot_with_sheet_clusters,
     constant_keys_from_leaf_classification,
     parse_graphviz_json,
-    semantic_node_labels,
     series_cell_keys,
     write_dependency_graph_site,
 )
+from src.internal_bindings import binding_node_labels, build_internal_binding_index
 
 
 def test_build_dot_with_sheet_clusters_wraps_to_graphviz_nodes(
@@ -104,37 +104,23 @@ def test_build_dot_with_custom_clusters_and_node_labels(
     assert engine_c10["data"]["parent"].startswith("cluster::cluster_group_")
 
 
-def test_semantic_node_labels_include_row_and_column_metadata(
+def test_binding_node_labels_include_key_and_record_metadata(
     tiny_dsa_configured_pipeline,
 ) -> None:
     tiny_graph = tiny_dsa_configured_pipeline.graph
-    tiny_graph.set_node_metadata(
-        "Engine!C10",
-        {
-            "table_labels": [
-                {
-                    "label": "Baseline debt dynamics",
-                    "source_address": "Engine!B8",
-                }
-            ],
-            "row_labels": [
-                {
-                    "label": "Debt-to-GDP ratio",
-                    "concept": "INDICATOR",
-                    "source_address": "Engine!B10",
-                }
-            ],
-            "column_labels": [
-                {
-                    "label": "1",
-                    "concept": "TIME_PERIOD",
-                    "source_address": "Engine!C9",
-                }
-            ],
-        },
-    )
+    internal_binding_index = {
+        "Engine!C10": {
+            "address": "Engine!C10",
+            "key": {"TIME_PERIOD": 1, "INDICATOR": "debt_to_gdp"},
+            "record": {"OBS_VALUE": 0.0},
+        }
+    }
 
-    labels = semantic_node_labels(tiny_graph, keys=["Engine!C10"])
+    labels = binding_node_labels(
+        tiny_graph,
+        internal_binding_index,
+        keys=["Engine!C10"],
+    )
 
     formula = tiny_graph.get_node("Engine!C10").formula
     assert formula is not None
@@ -142,28 +128,36 @@ def test_semantic_node_labels_include_row_and_column_metadata(
         "Engine!C10": (
             "Engine!C10\n"
             f"{formula}\n"
-            "table: Baseline debt dynamics\n"
-            "row: Debt-to-GDP ratio\n"
-            "column: 1"
+            "keys: INDICATOR='debt_to_gdp', TIME_PERIOD=1\n"
+            "record: OBS_VALUE=0.0"
         )
     }
 
 
-def test_payload_node_data_includes_semantic_label_fields(
+def test_payload_node_data_includes_internal_binding_fields(
     tiny_dsa_configured_pipeline,
 ) -> None:
     tiny_graph = tiny_dsa_configured_pipeline.graph
-    tiny_graph.set_node_metadata(
-        "Engine!C10",
-        {
-            "table_labels": [{"label": "Baseline debt dynamics"}],
-            "row_labels": [{"label": "Debt-to-GDP ratio"}],
-            "column_labels": [{"label": "1"}],
-        },
+    internal_binding_index = build_internal_binding_index(
+        [
+            {
+                "cells": [
+                    {
+                        "address": "Engine!C10",
+                        "key": {"TIME_PERIOD": 1},
+                        "record": {"INDICATOR": "debt_to_gdp"},
+                    }
+                ]
+            }
+        ]
     )
     dot_text = build_dot_with_sheet_clusters(tiny_graph, max_formula_length=40)
     graphviz_json = parse_graphviz_json(dot_text)
-    payload = build_cytoscape_preset_payload(tiny_graph, graphviz_json)
+    payload = build_cytoscape_preset_payload(
+        tiny_graph,
+        graphviz_json,
+        internal_binding_index=internal_binding_index,
+    )
 
     engine_c10 = next(
         node
@@ -171,9 +165,8 @@ def test_payload_node_data_includes_semantic_label_fields(
         if node["data"].get("id") == "Engine!C10"
     )
 
-    assert engine_c10["data"]["table_labels"] == "Baseline debt dynamics"
-    assert engine_c10["data"]["row_labels"] == "Debt-to-GDP ratio"
-    assert engine_c10["data"]["column_labels"] == "1"
+    assert engine_c10["data"]["binding_keys"] == {"TIME_PERIOD": 1}
+    assert engine_c10["data"]["binding_record"] == {"INDICATOR": "debt_to_gdp"}
 
 
 def test_write_dependency_graph_site(

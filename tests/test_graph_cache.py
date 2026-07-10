@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 from unittest.mock import patch
 
 import pytest
 from excel_grapher.core.cell_types import RealBetween
 from excel_grapher.exporter import CodeGenerator
+from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import DynamicRefConfig
 
 from src.graph_cache import (
@@ -27,7 +28,6 @@ from src.projection_cache import (
 from src.subgraph_projection import build_refactor_projection
 from tests.fixtures.synthetic_pipeline import (
     CONSTRAINTS,
-    stub_semantic_labeling,
     synthetic_pipeline_config,
     write_synthetic_workbook,
 )
@@ -52,16 +52,15 @@ def synthetic_config(tmp_path: Path):
 
 def _build_graph(config, *, cache_dir: Path, **kwargs):
     dynamic_refs = DynamicRefConfig.from_constraints(config.constraints, {})
-    with stub_semantic_labeling():
-        return get_or_build_dependency_graph(
-            workbook_path=config.workbook_path,
-            targets=config.targets,
-            constraints=config.constraints,
-            bindings_path=config.bindings_path,
-            dynamic_refs=dynamic_refs,
-            cache_dir=cache_dir,
-            **kwargs,
-        )
+    return get_or_build_dependency_graph(
+        workbook_path=config.workbook_path,
+        targets=config.targets,
+        constraints=config.constraints,
+        bindings_path=config.bindings_path,
+        dynamic_refs=dynamic_refs,
+        cache_dir=cache_dir,
+        **kwargs,
+    )
 
 
 def test_dependency_graph_cache_roundtrip(
@@ -297,7 +296,7 @@ def test_rehydrated_projection_supports_codegen(
         graph_result.graph,
         graph_cache_key=graph_result.cache_key,
     )
-    modules = CodeGenerator(projection).generate_modules(
+    modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
         list(graph_result.graph.target_keys()),
         series_bindings=synthetic_series_bindings,
         bindings_workbook=synthetic_config.workbook_path,

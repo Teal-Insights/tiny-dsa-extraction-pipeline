@@ -1,51 +1,49 @@
 from __future__ import annotations
 
-import pytest
 from typing import cast
 
+import pytest
+
 from src.semantic_naming import (
-    SemanticLabelHints,
-    cluster_naming_hints,
+    BindingRecordHints,
+    cluster_binding_naming_hints,
     collect_semantic_helper_names,
     semantic_helpers_available_for_calls,
-    semantic_label_hints_from_metadata,
+    binding_record_hints_from_cell,
     validate_semantic_identifier,
 )
 
 
-def test_semantic_label_hints_from_metadata() -> None:
-    hints = semantic_label_hints_from_metadata(
+def test_binding_record_hints_from_cell() -> None:
+    hints = binding_record_hints_from_cell(
         {
-            "table_labels": [{"label": "Country profile", "concept": "TABLE"}],
-            "row_labels": [{"label": "Debt-to-GDP ratio", "concept": "INDICATOR"}],
-            "column_labels": [{"label": "Example Country", "concept": "COUNTRY"}],
+            "key": {"TIME_PERIOD": 1},
+            "record": {"OBS_VALUE": 1.0, "INDICATOR": "debt_ratio"},
         }
     )
-    assert hints.table_labels == "Country profile"
-    assert hints.row_labels == "Debt-to-GDP ratio"
-    assert hints.column_labels == "Example Country"
+    assert hints.binding_keys == {"TIME_PERIOD": 1}
+    assert hints.binding_record == {"OBS_VALUE": 1.0, "INDICATOR": "debt_ratio"}
 
 
-def test_cluster_naming_hints_includes_member_column_labels() -> None:
-    payload = cluster_naming_hints(
+def test_cluster_binding_naming_hints_includes_member_records() -> None:
+    payload = cluster_binding_naming_hints(
         (
-            SemanticLabelHints(
-                table_labels="Engine",
-                row_labels="Shock active",
-                column_labels="Year 1",
+            BindingRecordHints(
+                binding_keys={"TIME_PERIOD": 1},
+                binding_record={"INDICATOR": "shock_active"},
             ),
-            SemanticLabelHints(
-                table_labels="Engine",
-                row_labels="Shock active",
-                column_labels="Year 2",
+            BindingRecordHints(
+                binding_keys={"TIME_PERIOD": 2},
+                binding_record={"INDICATOR": "shock_active"},
             ),
         )
     )
-    assert payload["table_labels"] == "Engine"
-    assert payload["row_labels"] == "Shock active"
-    members = cast(list[dict[str, str]], payload["members"])
-    assert members[0]["column_labels"] == "Year 1"
-    assert members[1]["column_labels"] == "Year 2"
+    members = payload["members"]
+    assert isinstance(members, list)
+    first = cast(dict[str, object], members[0])
+    second = cast(dict[str, object], members[1])
+    assert first["binding_keys"] == {"TIME_PERIOD": 1}
+    assert second["binding_keys"] == {"TIME_PERIOD": 2}
 
 
 def test_validate_semantic_identifier_accepts_safe_unique_name() -> None:

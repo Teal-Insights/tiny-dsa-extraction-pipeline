@@ -77,9 +77,8 @@ def test_llm_judges_workbook_graph_is_correct() -> None:
     except FileNotFoundError as exc:
         pytest.skip(f"Pipeline configuration is incomplete: {exc}")
 
-    graph, _series_bindings, _input_series, _output_series, _graph_cache_key = (
-        build_pipeline_graph(config)
-    )
+    graph_result = build_pipeline_graph(config)
+    graph = graph_result.graph
     _run_llm_graph_dependency_audit(
         config=config,
         graph=graph,

@@ -1,14 +1,11 @@
 schema_version: 1.7.0
 workbook: workbook.xlsx
 series:
-  - id: result_a
-    sheet: Outputs
-    data_range: Outputs!B1
+  - id: engine_b2
+    sheet: Engine
+    data_range: Engine!B2
     layout: scalar
-    output:
-      compute:
-        name: compute_result_a
-        record_contract: records
+    internal: {}
     structure:
       measure:
         concept: OBS_VALUE
@@ -18,16 +15,13 @@ series:
           read: float
       dimensions: []
     key: []
-    notes: First parallel output column.
+    notes: First engine formula cell in the synthetic smoke workbook.
 
-  - id: result_b
-    sheet: Outputs
-    data_range: Outputs!C1
+  - id: engine_c2
+    sheet: Engine
+    data_range: Engine!C2
     layout: scalar
-    output:
-      compute:
-        name: compute_result_b
-        record_contract: records
+    internal: {}
     structure:
       measure:
         concept: OBS_VALUE
@@ -37,4 +31,4 @@ series:
           read: float
       dimensions: []
     key: []
-    notes: Second parallel output column.
+    notes: Second engine formula cell in the synthetic smoke workbook.

@@ -12,13 +12,10 @@ Cell metadata:
 
 ```yaml
 address: SomeSheet!Z22
-table_labels:
-  - label: United States Vital Statistics
-    concept: UNITED_STATES_VITAL_STATISTICS
-row_labels:
-  - label: Excess Deaths
-    concept: EXCESS_DEATHS
-column_labels: []
+binding_keys: {}
+binding_record:
+  INDICATOR: excess_deaths
+  TABLE: United States Vital Statistics
 ```
 
 Dependencies:

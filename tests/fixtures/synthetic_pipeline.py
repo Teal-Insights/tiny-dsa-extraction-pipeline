@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal, Mapping, Sequence
-from unittest.mock import patch
 
 import fastpyxl
 from excel_grapher.core.cell_types import RealBetween
@@ -16,7 +14,6 @@ from excel_grapher.series_bindings import WorkbookSeriesBindings, load_series_bi
 from src.extraction_pipeline import build_pipeline_graph
 from src.graph_dependency_audit import GraphAuditCase
 from src.pipeline_config import DistProjectMetadata, PipelineConfig
-from src.semantic_labeling import SemanticLabelingSummary
 from src.subgraph_projection import build_refactor_projection
 from src.workbook_addresses import ProjectionColumnLayout
 
@@ -38,7 +35,6 @@ PROJECTION_LAYOUT = ProjectionColumnLayout(
     time_period_to_engine_column={1: "B", 2: "C"},
 )
 
-# Synthetic audit catalog; wired into synthetic_pipeline_config as graph_audit_cases.
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = (
     GraphAuditCase(
         parent_key="Outputs!B1",
@@ -53,22 +49,6 @@ GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = (
     ),
 )
 
-STUB_SEMANTIC_LABELING_SUMMARY = SemanticLabelingSummary(
-    labeled_cell_count=0,
-    sheet_count=0,
-    candidate_cells_by_sheet={},
-)
-
-
-@contextmanager
-def stub_semantic_labeling():
-    """Patch semantic labeling during synthetic pipeline graph builds."""
-    with patch(
-        "src.extraction_pipeline.label_internal_graph_cells",
-        return_value=STUB_SEMANTIC_LABELING_SUMMARY,
-    ):
-        yield
-
 
 def build_synthetic_pipeline_graph(
     config: PipelineConfig,
@@ -77,13 +57,17 @@ def build_synthetic_pipeline_graph(
     WorkbookSeriesBindings,
     Sequence[Mapping[str, Any]],
     Sequence[Mapping[str, Any]],
+    Sequence[Mapping[str, Any]],
 ]:
     """Build the dependency graph through the same path as production export."""
-    with stub_semantic_labeling():
-        graph, series_bindings, input_series, output_series, _graph_cache_key = (
-            build_pipeline_graph(config)
-        )
-        return graph, series_bindings, input_series, output_series
+    graph_result = build_pipeline_graph(config)
+    return (
+        graph_result.graph,
+        graph_result.series_bindings,
+        graph_result.input_series,
+        graph_result.output_series,
+        graph_result.internal_series,
+    )
 
 
 def write_synthetic_workbook(path: Path) -> Path:
@@ -163,6 +147,6 @@ def synthetic_pipeline_config(
         differential_graph_report_dir_rel=Path("data/differential/graph"),
         graph_output_dir=root / "artifacts" / "dependency-graph",
         graph_audit_cases=GRAPH_AUDIT_CASES,
-        semantic_label_validation_mode="off",
-        semantic_label_exempt_cells=frozenset(),
+        internal_binding_validation_mode="off",
+        internal_binding_exempt_cells=frozenset(),
     )

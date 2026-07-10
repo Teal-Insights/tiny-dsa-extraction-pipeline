@@ -1,4 +1,4 @@
-"""Semantic label extraction and refactor identifier validation."""
+"""Semantic binding record hints and refactor identifier validation."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from src.refactor_bindings import BindingKeyValue
 
 _SNAKE_CASE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -23,86 +25,45 @@ RESERVED_HELPER_NAMES: frozenset[str] = frozenset(
 
 
 @dataclass(frozen=True)
-class SemanticLabelHints:
-    table_labels: str | None = None
-    row_labels: str | None = None
-    column_labels: str | None = None
+class BindingRecordHints:
+    binding_keys: dict[str, BindingKeyValue] | None = None
+    binding_record: dict[str, BindingKeyValue] | None = None
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {}
-        if self.table_labels is not None:
-            payload["table_labels"] = self.table_labels
-        if self.row_labels is not None:
-            payload["row_labels"] = self.row_labels
-        if self.column_labels is not None:
-            payload["column_labels"] = self.column_labels
+        if self.binding_keys:
+            payload["binding_keys"] = dict(self.binding_keys)
+        if self.binding_record:
+            payload["binding_record"] = dict(self.binding_record)
         return payload
 
-    def has_labels(self) -> bool:
+    def has_hints(self) -> bool:
         return bool(self.to_payload())
 
 
-def _semantic_label_text(value: Any) -> str | None:
-    if isinstance(value, Mapping):
-        label = value.get("label")
-        return str(label) if label is not None else None
-    if isinstance(value, str | int | float):
-        return str(value)
-    return None
-
-
-def semantic_label_group_text(value: Any) -> str | None:
-    if not isinstance(value, list):
-        return None
-    labels = [
-        label_text
-        for item in value
-        if (label_text := _semantic_label_text(item)) is not None
-    ]
-    if not labels:
-        return None
-    return " | ".join(labels)
-
-
-def semantic_label_hints_from_metadata(
-    metadata: Mapping[str, Any] | None,
-) -> SemanticLabelHints:
-    if metadata is None:
-        return SemanticLabelHints()
-    return SemanticLabelHints(
-        table_labels=semantic_label_group_text(metadata.get("table_labels")),
-        row_labels=semantic_label_group_text(metadata.get("row_labels")),
-        column_labels=semantic_label_group_text(metadata.get("column_labels")),
+def binding_record_hints_from_cell(
+    cell: Mapping[str, Any] | None,
+) -> BindingRecordHints:
+    if cell is None:
+        return BindingRecordHints()
+    key = cell.get("key")
+    record = cell.get("record")
+    binding_keys = dict(key) if isinstance(key, Mapping) and key else None
+    binding_record = dict(record) if isinstance(record, Mapping) and record else None
+    return BindingRecordHints(
+        binding_keys=binding_keys,
+        binding_record=binding_record,
     )
 
 
-def cluster_naming_hints(
-    member_hints: tuple[SemanticLabelHints, ...],
+def cluster_binding_naming_hints(
+    member_hints: tuple[BindingRecordHints, ...],
 ) -> dict[str, object]:
-    table_labels = _consensus_label(
-        hint.table_labels for hint in member_hints if hint.table_labels
-    )
-    row_labels = _consensus_label(
-        hint.row_labels for hint in member_hints if hint.row_labels
-    )
     cluster_payload: dict[str, object] = {}
-    if table_labels is not None:
-        cluster_payload["table_labels"] = table_labels
-    if row_labels is not None:
-        cluster_payload["row_labels"] = row_labels
-    member_payloads = [hint.to_payload() for hint in member_hints]
-    if any(member_payloads):
+    member_payloads = [hint.to_payload() for hint in member_hints if hint.has_hints()]
+    if member_payloads:
         cluster_payload["members"] = member_payloads
     return cluster_payload
-
-
-def _consensus_label(labels: Any) -> str | None:
-    unique = sorted({label for label in labels if label})
-    if not unique:
-        return None
-    if len(unique) == 1:
-        return unique[0]
-    return " | ".join(unique)
 
 
 def validate_semantic_identifier(

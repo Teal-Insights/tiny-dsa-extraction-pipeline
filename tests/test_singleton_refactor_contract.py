@@ -67,19 +67,11 @@ EXCESS_DEATHS_FUNCTION_SOURCE = dedent(
 
 EXCESS_DEATHS_CELL_METADATA: dict[str, object] = {
     "address": "SomeSheet!Z22",
-    "table_labels": [
-        {
-            "label": "United States Vital Statistics",
-            "concept": "UNITED_STATES_VITAL_STATISTICS",
-        }
-    ],
-    "row_labels": [
-        {
-            "label": "Excess Deaths",
-            "concept": "EXCESS_DEATHS",
-        }
-    ],
-    "column_labels": [],
+    "binding_keys": {},
+    "binding_record": {
+        "TABLE": "United States Vital Statistics",
+        "INDICATOR": "excess_deaths",
+    },
 }
 
 EXCESS_DEATHS_DEPENDENCY_STUBS = dedent(
@@ -227,9 +219,8 @@ MINIMAL_PROMPT_PAYLOAD: dict[str, object] = {
     "address": "Engine!C20",
     "function_name": "cell_engine_c20",
     "naming_hints": {
-        "table_labels": "SHOCKED PATH",
-        "row_labels": "Debt-to-GDP (%)",
-        "column_labels": "1",
+        "binding_record": {"TABLE": "SHOCKED PATH", "INDICATOR": "debt_to_gdp"},
+        "binding_keys": {"TIME_PERIOD": 1},
     },
 }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from excel_grapher.series_bindings import (
     derive_input_series,
+    derive_internal_series,
     derive_output_series,
     validate_series_bindings,
 )
@@ -18,7 +19,9 @@ def test_build_pipeline_graph_on_synthetic_workbook(
     input_series = synthetic_configured_pipeline.input_series
     output_series = synthetic_configured_pipeline.output_series
 
-    assert series_bindings["schema_version"] == "1.5.0"
+    internal_series = synthetic_configured_pipeline.internal_series
+
+    assert series_bindings["schema_version"] == "1.7.0"
     validation = validate_series_bindings(
         graph,
         series_bindings,
@@ -28,5 +31,7 @@ def test_build_pipeline_graph_on_synthetic_workbook(
     assert len(list(graph)) >= 5
     assert derive_input_series(graph, series_bindings, workbook=config.workbook_path)
     assert derive_output_series(graph, series_bindings, workbook=config.workbook_path)
+    assert derive_internal_series(graph, series_bindings, workbook=config.workbook_path)
     assert len(input_series) == 1
     assert len(output_series) == 2
+    assert len(internal_series) == 2

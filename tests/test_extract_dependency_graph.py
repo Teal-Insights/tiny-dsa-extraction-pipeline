@@ -11,7 +11,6 @@ from src.extraction_pipeline import (
     main,
 )
 from src.pipeline_config import load_pipeline_config
-from tests.fixtures.synthetic_pipeline import stub_semantic_labeling
 
 
 def test_count_provenance_edges_on_synthetic_graph(synthetic_graph) -> None:
@@ -28,8 +27,7 @@ def test_extract_dependency_graph_writes_artifacts(
         graph_output_dir=output_dir,
     )
 
-    with stub_semantic_labeling():
-        summary = extract_dependency_graph(config)
+    summary = extract_dependency_graph(config)
 
     assert (output_dir / "index.html").is_file()
     assert (output_dir / "dependency-graph.json").is_file()
@@ -64,8 +62,7 @@ def test_extract_graph_cli_exits_zero_on_synthetic_workbook(
     with patch("src.extraction_pipeline.load_pipeline_config", return_value=config):
         with patch("src.extraction_pipeline.validate_pipeline_config"):
             with patch("src.extraction_pipeline.activate_pipeline_config"):
-                with stub_semantic_labeling():
-                    main(["--extract-graph"])
+                main(["--extract-graph"])
 
     assert (output_dir / "extraction-summary.json").is_file()
 
