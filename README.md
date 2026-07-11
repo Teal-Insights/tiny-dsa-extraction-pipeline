@@ -29,7 +29,7 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Human guide | `data/tiny-dsa-guide.md` | Domain usage, public I/O catalog, scenario narrative |
 | Targets | `workbook_config.py` → `TARGETS` | Named ranges or addresses driving graph extraction |
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
-| Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml` | Records-shaped public API surface |
+| Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml` | Records-shaped public API surface and internal formula-cell triangulation |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
 | Projection layout | `workbook_config.py` → `PROJECTION_LAYOUT` | Optional Engine/Outputs column mapping for internals refactor (see below) |
 | Internal binding exemptions | `workbook_config.py` → `INTERNAL_BINDING_EXEMPT_CELLS` | Reviewed formula cells allowed to remain unbound |
@@ -68,14 +68,15 @@ flowchart LR
 ### 1. Configure
 
 1. Edit [workbook_config.py](workbook_config.py): paths, `TARGETS`, `CONSTRAINTS`, and `DIST_METADATA`.
-2. Author `bindings/*.bindings.yaml` (schema version `1.5.0`, one logical series per public API function).
+2. Author `bindings/*.bindings.yaml` (schema version `1.7.0`, one logical series per public API function or internal formula group).
 3. Constrain cells that control `OFFSET` / `INDEX` / `MATCH` / `CHOOSE` so dynamic refs resolve completely.
 4. Classify every leaf as `input` or `constant`; every mutable input leaf must appear in `inputs.bindings.yaml`.
+5. Bind every internal formula cell in `internals.bindings.yaml` (see [Authoring internals](#authoring-internals) below).
 
 Validation checks:
 
 - `validate_series_bindings(...)` reports `ok`
-- `derive_input_series` / `derive_output_series` resolve every binding
+- `derive_input_series` / `derive_output_series` / `derive_internal_series` resolve every binding
 - No unbound mutable input leaves
 - Run the pre-extraction workbook audit and review blocking automation before graph work:
 
@@ -108,6 +109,19 @@ During graph build the pipeline also runs **internal binding derivation** and op
 #### Internal series bindings
 
 After the dependency graph is extracted and bindings are validated, the pipeline derives **internal series** for formula cells declared with `internal: {}` in `bindings/internals.bindings.yaml`. Each resolved cell carries `{address, key, record}` triangulation data used by the graph explorer and internals refactor. Concept keys live in binding manifests and derived series records, not on graph node metadata.
+
+#### Authoring internals
+
+Author `internals.bindings.yaml` after `--extract-graph`, when you can see which formula cells still need triangulation. Coverage requires **every formula node** not already bound in `inputs.bindings.yaml` or `outputs.bindings.yaml`.
+
+- **One series per logical group** — a single lookup/anchor cell or one formula row/range (e.g. `Engine!C10:G10`), not one entry per cell.
+- **Same YAML shape as public bindings** — use `internal: {}` instead of `input` / `output`. Scalar examples are in [tests/fixtures/synthetic/internals.bindings.yaml](tests/fixtures/synthetic/internals.bindings.yaml).
+- **Scalars vs row series** — lookup and anchor formulas usually use `layout: scalar` with `key: []`. Parallel time-series rows use `layout: row_series` with a `TIME_PERIOD` (or other) key dimension bound from the **header row that labels that row**; different tables often use different header rows.
+- **Reuse public concepts** — prefer concept IDs already in your bindings / `concept_scheme` (`TIME_PERIOD`, `INDICATOR`, `PARAMETER`, etc.) so refactor prompts get meaningful `key` / `record` hints.
+- **Validate** — `validate_series_bindings(...)`, then `derive_internal_series(...)`. Run `uv run pytest tests/test_internal_binding_coverage.py` once `INTERNAL_BINDING_VALIDATION_MODE` is enabled.
+- **Review** — re-run `--extract-graph` and confirm bound formula nodes show `keys:` / `record:` labels in the graph explorer.
+
+Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction, schema 1.7.0+). Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt) for agent-assisted drafting.
 
 #### Internal binding coverage validation
 
@@ -218,20 +232,23 @@ The `--extract-graph` stage writes an interactive Cytoscape site under `artifact
 
 ```python
 from pathlib import Path
+
 from src.dependency_graph_viz import (
     constant_keys_from_leaf_classification,
-    semantic_node_labels,
     series_cell_keys,
     write_dependency_graph_site,
 )
+from src.internal_bindings import binding_node_labels, build_internal_binding_index
 
 output_dir = Path("artifacts/dependency-graph")
+internal_binding_index = build_internal_binding_index(internal_series)
 write_dependency_graph_site(
     graph,
     output_dir,
-    node_labels=semantic_node_labels(graph),
+    node_labels=binding_node_labels(graph, internal_binding_index),
     input_keys=series_cell_keys(input_series),
     output_keys=series_cell_keys(output_series),
+    internal_binding_index=internal_binding_index,
     constant_keys=constant_keys_from_leaf_classification(leaf_classification),
 )
 ```

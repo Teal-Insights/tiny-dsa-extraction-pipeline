@@ -142,7 +142,7 @@ Return only JSON matching the response schema:
 
 Refactor will mostly consist of generalizing parallel cell functions into one helper and unpacking nested calls for readability. For example, suppose you are assigned to refactor a cluster covering `Forecast!B12:F12` with canonical template `=IF(Forecast!{col}4>=Assumptions!$C$2,1,0)` and `REPORTING_PERIOD` as the only varying binding key. Each member currently reads its period column from a hard-coded address.
 
-In this case, you could map `reporting_period` to workbook columns with a lookup table, assign `observed_value` and `threshold` from `xl_cell`, and return `1.0` or `0.0` from a readable comparison. With `table_labels` containing "Quarterly Forecast" and `row_labels` containing "Growth Threshold Met", you might name the helper `growth_threshold_met`.
+In this case, you could map `reporting_period` to workbook columns with a lookup table, assign `observed_value` and `threshold` from `xl_cell`, and return `1.0` or `0.0` from a readable comparison. With each member's `binding_record` carrying `TABLE: Quarterly Forecast` and `INDICATOR: growth_threshold_met`, you might name the helper `growth_threshold_met`.
 
 ```json
 {
@@ -187,4 +187,4 @@ In this case, you could map `reporting_period` to workbook columns with a lookup
 }
 ```
 
-To support function naming, docstring generation, and parameterization, you will be provided cluster member sources, `key_vocabulary`, `expected_keys` per member, semantic dependency `call_form` strings, and label metadata. Use `expected_keys` verbatim for `member_keys` and `key_vocabulary` for `parameters`.
+To support function naming, docstring generation, and parameterization, you will be provided cluster member sources, `key_vocabulary`, `expected_keys` per member, semantic dependency `call_form` strings, and per-member `binding_keys` and `binding_record` naming hints. Use `expected_keys` verbatim for `member_keys` and `key_vocabulary` for `parameters`.

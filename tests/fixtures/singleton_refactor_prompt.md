@@ -65,7 +65,7 @@ def cell_some_sheet_z22(ctx):
 
 In this case, to reduce line length, you could assign `total_deaths = xl_number(united_states_total_deaths(ctx))` and `expected_deaths = xl_number(united_states_expected_deaths(ctx))` and then return `total_deaths - expected_deaths`.
 
-To support function naming and docstring generation, you will be provided label metadata about the current cell and signatures and docstrings for all dependencies. This cell might have "United States Vital Statistics" in `table_labels` and "Excess Deaths" in `row_labels`, with empty `column_labels`. You might then naturally name the function `united_states_excess_deaths` and document it as "Excess deaths for the United States: total deaths less expected deaths".
+To support function naming and docstring generation, you will be provided a cell metadata block with `binding_keys` and `binding_record` naming hints for the current cell, plus signatures and docstrings for all dependencies. This cell might have a `binding_record` carrying `TABLE: United States Vital Statistics` and `INDICATOR: excess_deaths`, with empty `binding_keys`. You might then naturally name the function `united_states_excess_deaths` and document it as "Excess deaths for the United States: total deaths less expected deaths".
 
 ```json
 {
