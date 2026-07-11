@@ -13,6 +13,7 @@ from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import DynamicRefConfig
 
 from src.graph_cache import (
+    DEFAULT_GRAPH_CACHE_DIR,
     bindings_fingerprint,
     clear_dependency_graph_cache,
     dependency_graph_cache_key,
@@ -20,6 +21,7 @@ from src.graph_cache import (
     load_dependency_graph,
 )
 from src.projection_cache import (
+    DEFAULT_PROJECTION_CACHE_DIR,
     clear_projection_cache,
     get_or_build_refactor_projection,
     projection_cache_key,
@@ -31,6 +33,12 @@ from tests.fixtures.synthetic_pipeline import (
     synthetic_pipeline_config,
     write_synthetic_workbook,
 )
+from tests.fixtures.test_state import REPO_GRAPH_CACHE_DIR, REPO_PROJECTION_CACHE_DIR
+
+
+def test_pytest_uses_isolated_pipeline_disk_cache() -> None:
+    assert DEFAULT_GRAPH_CACHE_DIR != REPO_GRAPH_CACHE_DIR
+    assert DEFAULT_PROJECTION_CACHE_DIR != REPO_PROJECTION_CACHE_DIR
 
 
 @pytest.fixture

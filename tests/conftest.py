@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -24,7 +26,21 @@ from tests.fixtures.synthetic_pipeline import (
     synthetic_pipeline_config,
     write_synthetic_workbook,
 )
-from tests.fixtures.test_state import reset_pipeline_test_state
+from tests.fixtures.test_state import (
+    reset_pipeline_test_state,
+    restore_pipeline_disk_cache,
+    redirect_pipeline_disk_cache,
+)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    redirect_pipeline_disk_cache(
+        Path(tempfile.mkdtemp(prefix="pytest_pipeline_cache_"))
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    restore_pipeline_disk_cache()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
