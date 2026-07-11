@@ -52,7 +52,7 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 20
+REFACTOR_PROMPT_VERSION = 21
 
 
 def refactor_model() -> str:

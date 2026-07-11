@@ -48,10 +48,11 @@ Return only JSON matching the response schema:
 ## Body
 
 - Emit `symbol_body` for one self-contained function; no nested helpers or imports.
+- Name local temporaries with domain-meaningful `snake_case` informed by naming hints.
 - Call only runtime symbols from the original translation and, if necessary, Python stdlib functions/operators.
 - Preserve dependency function names and signatures.
-- Call dependencies using pass-through parameter names, e.g. `shock_active(ctx, time_period=time_period)`.
-- Rename local temporaries to domain-meaningful `snake_case` informed by naming hints.
+- Where appropriate, call dependencies using pass-through parameters, e.g. `shock_active(ctx, time_period=time_period)`.
+- Leave `xl_cell(ctx, 'Sheet!Address')` calls unchanged; this helper reads input/constant values. (Assigning return values to semantic local temporaries is okay!)
 
 ## Example:
 

@@ -116,11 +116,10 @@ Return only JSON matching the response schema:
 - Emit `symbol_body` for one self-contained function; no nested helpers or imports.
 - Call only runtime symbols from the member translations and, if necessary, Python stdlib functions/operators.
 - Preserve dependency function names and signatures.
-- For every semantic dependency, use the provided `call_form` with pass-through parameter names, e.g. `prior_period_total(ctx, reporting_period=reporting_period)`.
-- Map economic parameters to workbook columns internally when reading `xl_cell` addresses; prefer a lookup table, not an `if`/`elif` ladder.
-- Keep `xl_eval` only for leaf inputs read with `xl_cell`; never for refactored cells.
-- Do not reference `cell_*` helpers anywhere in the body.
+- Where appropriate, directly pass through parameters in function calls; e.g. `prior_period_total(ctx, reporting_period=reporting_period)`.
 - Rename local temporaries to domain-meaningful `snake_case` informed by naming hints.
+- Leave `xl_cell(ctx, 'Sheet!Address')` calls unchanged; this helper reads input/constant values. (Assigning the return value to a semantic local temporary is okay!)
+- Prefer consise lookup tables over verbose `if`/`elif` ladders.
 
 ## Parameters
 
