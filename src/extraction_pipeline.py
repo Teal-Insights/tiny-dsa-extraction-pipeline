@@ -438,8 +438,19 @@ tests/results/local/
 
     from src.formula_clustering import cluster_graph_formulas
     from src.internals_refactor import refactor_internals_all_clusters
+    from src.refactor_bindings import build_bound_address_keys
 
-    formula_clusters = cluster_graph_formulas(refactor_projection)
+    bound_address_keys = build_bound_address_keys(
+        graph_result.input_series,
+        graph_result.output_series,
+        graph_result.internal_series,
+    )
+    formula_clusters = cluster_graph_formulas(
+        refactor_projection,
+        bound_address_keys=bound_address_keys,
+        workbook_path=config.workbook_path,
+        layout=config.projection_layout,
+    )
     refactor_internals_all_clusters(
         refactor_projection,
         formula_clusters,

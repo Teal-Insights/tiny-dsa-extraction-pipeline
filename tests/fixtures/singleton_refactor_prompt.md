@@ -9,7 +9,7 @@ Return only JSON matching the response schema:
   "additionalProperties": false,
   "properties": {
     "symbol_signature": {
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and return type hint.",
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types.",
       "title": "Symbol Signature",
       "type": "string"
     },
@@ -38,7 +38,7 @@ Return only JSON matching the response schema:
 
 - `symbol_signature` should take only one argument: `(ctx: EvalContext)`. Do not add parameters.
 - Choose function name as a clear `snake_case` semantic identifier informed by naming hints.
-- Return type should be documented with a type hint, e.g., `-> float`.
+- Return type must be one of `bool`, `float`, `int`, or `str`, or a `|` union composed only of those types, e.g., `-> float | str`.
 
 ## Docstring
 

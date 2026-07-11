@@ -264,7 +264,6 @@ GROWTH_THRESHOLD_LLM_RESPONSE = ClusterRefactorLLMResponse(
         )
         for entry in GROWTH_THRESHOLD_MEMBER_METADATA
     ),
-    uses_first_year_branch=False,
 )
 
 INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT = dedent(
@@ -412,7 +411,6 @@ def test_prepare_cluster_refactor_response_assembles_and_appends_note() -> None:
     assert prepared.helper_docstring in prepared.helper_source
     assert prepared.parameters == GROWTH_THRESHOLD_LLM_RESPONSE.parameters
     assert prepared.member_keys == GROWTH_THRESHOLD_LLM_RESPONSE.member_keys
-    assert prepared.uses_first_year_branch is False
 
 
 def test_format_cluster_refactor_context_dump_matches_fixture() -> None:

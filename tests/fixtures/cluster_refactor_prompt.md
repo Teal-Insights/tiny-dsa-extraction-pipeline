@@ -9,7 +9,7 @@ Return only JSON matching the response schema:
   "additionalProperties": false,
   "properties": {
     "symbol_signature": {
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and return type hint.",
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types.",
       "title": "Helper Signature",
       "type": "string"
     },
@@ -47,7 +47,7 @@ Return only JSON matching the response schema:
       "type": "array"
     },
     "member_keys": {
-      "description": "One entry per cluster member with a unique combination of binding key values for triangulating that address.",
+      "description": "One entry per cluster member with the unique combination of varying binding key values used to route that address to the parameterized helper.",
       "items": {
         "additionalProperties": false,
         "properties": {
@@ -81,10 +81,6 @@ Return only JSON matching the response schema:
         "type": "object"
       },
       "type": "array"
-    },
-    "uses_first_year_branch": {
-      "description": "True when the helper branches on first-year logic (e.g. time_period == 1 or prior-period recursion).",
-      "type": "boolean"
     }
   },
   "required": [
@@ -92,8 +88,7 @@ Return only JSON matching the response schema:
     "symbol_docstring",
     "symbol_body",
     "parameters",
-    "member_keys",
-    "uses_first_year_branch"
+    "member_keys"
   ],
   "title": "ClusterRefactorLLMResponse",
   "type": "object"
@@ -106,8 +101,9 @@ Return only JSON matching the response schema:
 - Each cell in the cluster must have a unique combination of binding key values for triangulating that address.
 - Use `suggested_param_name` from `key_vocabulary` as each parameter's Python name.
 - Choose the function name as a clear `snake_case` semantic identifier informed by naming hints.
-- Return type should be documented with a type hint, e.g. `-> float`.
+- Return type must be one of `bool`, `float`, `int`, or `str`, or a `|` union composed only of those types, e.g. `-> float | str`.
 - Series-constant binding keys (`scope: series`) are not parameters; bake them into the helper.
+- The cluster has already been qualified by formula structure and binding-key shape at each reference position. Do not reinterpret its membership or add parameters for individual reference positions.
 
 ## Docstring
 
@@ -131,12 +127,15 @@ Return only JSON matching the response schema:
 - Declare `parameters[]` using binding key concepts from `key_vocabulary`; do not use column letters.
 - `parameters[].concept` must use binding concept names (e.g. `TIME_PERIOD`), not parameter names.
 - `parameters[].name` must match `suggested_param_name` from `key_vocabulary`.
+- Parameters represent varying keys of the cluster member cells. Do not introduce additional parameters such as `counterpart_ref_area` or `reference_time_period` solely because multiple operands use the same concept.
+- Derive a reference period inside the helper when it follows from a member parameter. Arbitrary independently varying operand values are not supported by this response contract.
 
 ## Member keys
 
 - Emit one `member_keys[]` entry per cluster member.
 - Copy `keys[]` from the provided `expected_keys` for each member.
 - `member_keys[].keys[].concept` must use binding concept names (e.g. `TIME_PERIOD`), not parameter names.
+- The key combination for each entry must be unique across the cluster so callers can route each address to the correct parameterized helper evaluation.
 
 ## Example 1: Unpacking nested calls
 
@@ -182,14 +181,15 @@ In this case, you could map `reporting_period` to workbook columns with a lookup
       "function_name": "cell_forecast_f12",
       "keys": [{"concept": "REPORTING_PERIOD", "value": 5}]
     }
-  ],
-  "uses_first_year_branch": false
+  ]
 }
 ```
 
-## Example 2: representing lagged reference periods
+## Example 2: representing supported lagged reference periods
 
 Some formulas read the same indicator at more than one period, e.g. a change computed as current minus prior period. Both operands vary along `TIME_PERIOD` semantically, but `parameters` and `member_keys` may only carry the cell's own sweep key. Instead of using a second `TIME_PERIOD`-like parameter for the lagged operand, derive the reference period inside the body from `time_period` (e.g. `reference_period = time_period - 1`) and map it to a column with the same lookup table used for the current period.
+
+This example applies only when the reference period can be derived or selected from the member parameters. It does not generalize to arbitrary independent operand values.
 
 When the lag itself differs across row groups, the rows will be keyed by another varying binding concept (e.g. `REF_AREA`); select the lag with a lookup table keyed by that parameter, exactly like any other row-dependent constant.
 
@@ -253,8 +253,7 @@ For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Dat
       "function_name": "cell_data_h24",
       "keys": [{"concept": "TIME_PERIOD", "value": 7}, {"concept": "REF_AREA", "value": "FRA"}]
     }
-  ],
-  "uses_first_year_branch": false
+  ]
 }
 ```
 

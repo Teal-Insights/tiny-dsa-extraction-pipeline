@@ -185,7 +185,6 @@ def _cluster_response(helper_source: str) -> ClusterRefactorResponse:
     return ClusterRefactorResponse(
         helper_name="combined_input_passthrough",
         helper_docstring=CLUSTER_DOCSTRING,
-        uses_first_year_branch=False,
         parameters=CLUSTER_PARAMETERS,
         helper_source=helper_source,
         member_keys=CLUSTER_MEMBER_KEYS,
@@ -437,6 +436,52 @@ def test_load_candidate_surfaces_compile_errors_as_parity_error() -> None:
     assert "SyntaxError" in message
 
 
+def test_sample_input_vectors_includes_numeric_boundaries_and_zero() -> None:
+    constraints = {
+        "Inputs!C16": Annotated[float, RealBetween(-10.0, 15.0)],
+        "Inputs!D17": Annotated[float, RealBetween(0.0, 20.0)],
+        "Inputs!B21": Annotated[int, Between(1, 5)],
+    }
+    default_inputs = {
+        "Inputs!C16": 3.5,
+        "Inputs!D17": 4.0,
+        "Inputs!B21": 2,
+    }
+
+    vectors = sample_input_vectors(
+        constraints=constraints,
+        default_inputs=default_inputs,
+        constants={},
+        count=0,
+        seed=0,
+    )
+
+    assert vectors[0] == default_inputs
+    probe_vectors = vectors[1:]
+    assert len(probe_vectors) == 7
+
+    c16_probes = [
+        vector["Inputs!C16"]
+        for vector in probe_vectors
+        if vector["Inputs!D17"] == 4.0 and vector["Inputs!B21"] == 2
+    ]
+    assert c16_probes == [-10.0, 15.0, 0.0]
+
+    d17_probes = [
+        vector["Inputs!D17"]
+        for vector in probe_vectors
+        if vector["Inputs!C16"] == 3.5 and vector["Inputs!B21"] == 2
+    ]
+    assert d17_probes == [0.0, 20.0]
+
+    b21_probes = [
+        vector["Inputs!B21"]
+        for vector in probe_vectors
+        if vector["Inputs!C16"] == 3.5 and vector["Inputs!D17"] == 4.0
+    ]
+    assert b21_probes == [1, 5]
+
+
 def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:
     constraints = {
         "Inputs!B5": Literal["Borvelia", "Litellia", "Aurelium"],
@@ -457,7 +502,7 @@ def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:
     )
 
     assert vectors[0] == {**default_inputs, **constants}
-    assert len(vectors) == 6
+    assert len(vectors) == 11
 
     for vector in vectors:
         assert vector["Inputs!B5"] in {"Borvelia", "Litellia", "Aurelium"}
