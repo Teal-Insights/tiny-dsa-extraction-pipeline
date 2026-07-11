@@ -138,7 +138,7 @@ Return only JSON matching the response schema:
 - Copy `keys[]` from the provided `expected_keys` for each member.
 - `member_keys[].keys[].concept` must use binding concept names (e.g. `TIME_PERIOD`), not parameter names.
 
-## Example
+## Example 1: Unpacking nested calls
 
 Refactor will mostly consist of generalizing parallel cell functions into one helper and unpacking nested calls for readability. For example, suppose you are assigned to refactor a cluster covering `Forecast!B12:F12` with canonical template `=IF(Forecast!{col}4>=Assumptions!$C$2,1,0)` and `REPORTING_PERIOD` as the only varying binding key. Each member currently reads its period column from a hard-coded address.
 
@@ -186,5 +186,78 @@ In this case, you could map `reporting_period` to workbook columns with a lookup
   "uses_first_year_branch": false
 }
 ```
+
+## Example 2: representing lagged reference periods
+
+Some formulas read the same indicator at more than one period, e.g. a change computed as current minus prior period. Both operands vary along `TIME_PERIOD` semantically, but `parameters` and `member_keys` may only carry the cell's own sweep key. Instead of using a second `TIME_PERIOD`-like parameter for the lagged operand, derive the reference period inside the body from `time_period` (e.g. `reference_period = time_period - 1`) and map it to a column with the same lookup table used for the current period.
+
+When the lag itself differs across row groups, the rows will be keyed by another varying binding concept (e.g. `REF_AREA`); select the lag with a lookup table keyed by that parameter, exactly like any other row-dependent constant.
+
+For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Data!E24:H24`, with varying binding keys `TIME_PERIOD` (columns E–H, periods 4–7) and `REF_AREA` (row 20 is `USA`, row 24 is `FRA`). Source values sit in row 4 (`USA`) and row 8 (`FRA`) across columns B–H (periods 1–7). Each `USA` member computes `=E4-D4`-style differences against the previous period (lag 1), while each `FRA` member computes `=E8-B8`-style differences against three periods earlier (lag 3). Neither lag becomes a parameter: both are baked into the body and switched on `ref_area`.
+
+```json
+{
+  "symbol_signature": "def indicator_change_from_reference_period(ctx: EvalContext, time_period: int, ref_area: str) -> float:",
+  "symbol_docstring": "Return the change in the observed indicator relative to its area-specific reference period.\n\nArgs:\n    ctx: Workbook evaluation context.\n    time_period: Period index (4 through 7).\n    ref_area: Reference area code ('USA' or 'FRA').\n\nReturns:\n    Current-period value minus the lagged value (lag 1 for USA, lag 3 for FRA).",
+  "symbol_body": "source_row_by_area = {'USA': 4, 'FRA': 8}\nlag_by_area = {'USA': 1, 'FRA': 3}\ncolumn_by_period = {1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H'}\nsource_row = source_row_by_area[ref_area]\ncurrent_value = xl_number(xl_cell(ctx, f'Data!{column_by_period[time_period]}{source_row}'))\nreference_period = time_period - lag_by_area[ref_area]\nreference_value = xl_number(xl_cell(ctx, f'Data!{column_by_period[reference_period]}{source_row}'))\nreturn current_value - reference_value",
+  "parameters": [
+    {
+      "name": "time_period",
+      "concept": "TIME_PERIOD",
+      "dtype": "int"
+    },
+    {
+      "name": "ref_area",
+      "concept": "REF_AREA",
+      "dtype": "str"
+    }
+  ],
+  "member_keys": [
+    {
+      "address": "Data!E20",
+      "function_name": "cell_data_e20",
+      "keys": [{"concept": "TIME_PERIOD", "value": 4}, {"concept": "REF_AREA", "value": "USA"}]
+    },
+    {
+      "address": "Data!F20",
+      "function_name": "cell_data_f20",
+      "keys": [{"concept": "TIME_PERIOD", "value": 5}, {"concept": "REF_AREA", "value": "USA"}]
+    },
+    {
+      "address": "Data!G20",
+      "function_name": "cell_data_g20",
+      "keys": [{"concept": "TIME_PERIOD", "value": 6}, {"concept": "REF_AREA", "value": "USA"}]
+    },
+    {
+      "address": "Data!H20",
+      "function_name": "cell_data_h20",
+      "keys": [{"concept": "TIME_PERIOD", "value": 7}, {"concept": "REF_AREA", "value": "USA"}]
+    },
+    {
+      "address": "Data!E24",
+      "function_name": "cell_data_e24",
+      "keys": [{"concept": "TIME_PERIOD", "value": 4}, {"concept": "REF_AREA", "value": "FRA"}]
+    },
+    {
+      "address": "Data!F24",
+      "function_name": "cell_data_f24",
+      "keys": [{"concept": "TIME_PERIOD", "value": 5}, {"concept": "REF_AREA", "value": "FRA"}]
+    },
+    {
+      "address": "Data!G24",
+      "function_name": "cell_data_g24",
+      "keys": [{"concept": "TIME_PERIOD", "value": 6}, {"concept": "REF_AREA", "value": "FRA"}]
+    },
+    {
+      "address": "Data!H24",
+      "function_name": "cell_data_h24",
+      "keys": [{"concept": "TIME_PERIOD", "value": 7}, {"concept": "REF_AREA", "value": "FRA"}]
+    }
+  ],
+  "uses_first_year_branch": false
+}
+```
+
+## Naming conventions
 
 To support function naming, docstring generation, and parameterization, you will be provided cluster member sources, `key_vocabulary`, `expected_keys` per member, semantic dependency `call_form` strings, and per-member `binding_keys` and `binding_record` naming hints. Use `expected_keys` verbatim for `member_keys` and `key_vocabulary` for `parameters`.
