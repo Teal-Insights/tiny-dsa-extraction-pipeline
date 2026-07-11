@@ -1,4 +1,4 @@
-schema_version: 1.2.0
+schema_version: 1.8.0
 workbook: data/tiny-dsa.xlsx
 concept_scheme:
   id: tiny_dsa
@@ -72,7 +72,8 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: COUNTRY
+        - id: COUNTRY
+          concept: COUNTRY
           role: key
           scope: cell
           bind:
@@ -80,7 +81,8 @@ series:
             label_column: A
             read: string
             normalize: strip
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
@@ -114,14 +116,16 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 15
             read: int
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
@@ -155,14 +159,16 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 15
             read: int
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
@@ -196,14 +202,16 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 15
             read: int
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
@@ -291,7 +299,8 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: SHOCK_PARAMETER
+        - id: SHOCK_PARAMETER
+          concept: SHOCK_PARAMETER
           role: key
           scope: cell
           bind:
@@ -299,7 +308,8 @@ series:
             header_row: 25
             read: string
             normalize: strip_trailing_unit
-        - concept: PARAMETER
+        - id: PARAMETER
+          concept: PARAMETER
           role: key
           scope: series
           bind:

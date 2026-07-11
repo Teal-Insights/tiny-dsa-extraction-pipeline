@@ -1,4 +1,4 @@
-schema_version: 1.2.0
+schema_version: 1.8.0
 workbook: data/tiny-dsa.xlsx
 series:
   - id: initial_debt_resolved
@@ -132,14 +132,16 @@ series:
           kind: data_cell
           read: int
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 5
             read: int
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
@@ -165,21 +167,24 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 13
             read: int
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
             kind: constant
             value: real_gdp_growth
           include_in_record: false
-        - concept: SCENARIO
+        - id: SCENARIO
+          concept: SCENARIO
           role: key
           scope: series
           bind:
@@ -210,21 +215,24 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 13
             read: int
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
             kind: constant
             value: real_interest_rate
           include_in_record: false
-        - concept: SCENARIO
+        - id: SCENARIO
+          concept: SCENARIO
           role: key
           scope: series
           bind:
@@ -255,21 +263,24 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 13
             read: int
-        - concept: INDICATOR
+        - id: INDICATOR
+          concept: INDICATOR
           role: key
           scope: series
           bind:
             kind: constant
             value: primary_balance
           include_in_record: false
-        - concept: SCENARIO
+        - id: SCENARIO
+          concept: SCENARIO
           role: key
           scope: series
           bind:
@@ -300,14 +311,16 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 5
             read: int
-        - concept: SCENARIO
+        - id: SCENARIO
+          concept: SCENARIO
           role: key
           scope: series
           bind:
@@ -336,14 +349,16 @@ series:
           kind: data_cell
           read: float
       dimensions:
-        - concept: TIME_PERIOD
+        - id: TIME_PERIOD
+          concept: TIME_PERIOD
           role: key
           scope: cell
           bind:
             kind: column_header
             header_row: 19
             read: int
-        - concept: SCENARIO
+        - id: SCENARIO
+          concept: SCENARIO
           role: key
           scope: series
           bind:

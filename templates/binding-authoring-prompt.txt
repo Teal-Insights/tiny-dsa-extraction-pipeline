@@ -17,7 +17,7 @@ Binding schema and conventions:
       .read_text(encoding="utf-8")
   )
 
-- Use schema_version: 1.7.0.
+- Use schema_version: 1.8.0.
 - Create a bindings/ directory with three files:
   - inputs.bindings.yaml for public input setters.
   - outputs.bindings.yaml for public output compute functions.
@@ -26,6 +26,7 @@ Binding schema and conventions:
 - Use layout: scalar for one-cell inputs and layout: row_series for one-row time series.
 - Use structure.measure.concept: OBS_VALUE with bind.kind: data_cell.
 - Use key fields only for record matching. For row time series, use TIME_PERIOD from the column header row. For scalar parameters, use keyless bindings (`key: []`) and keep PARAMETER in series_context. For keyed tables, use the header that identifies each record as the key.
+- Give every dimension an explicit id. The id names the dimension itself; concept names the SDMX-style meaning category it references. They match unless two dimensions in one series share a concept (e.g. a projection axis and a reference period both on TIME_PERIOD), in which case give each dimension a distinct id. Record fields, key entries, and series_context use the effective id.
 - Add input.setter.name values matching set_[a-z][a-z0-9_]* for input series.
 - Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
 - Add internal series with `internal: {}` for formula cells that need concept-key triangulation during internals refactor. Internal series do not generate public setter or compute code.

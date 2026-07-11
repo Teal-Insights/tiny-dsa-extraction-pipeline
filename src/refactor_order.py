@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from excel_grapher.exporter import ProjectionResult
-
-from src.formula_clustering import FormulaCluster
+from src.formula_clustering import ClusterableGraph, FormulaCluster
 
 
 def assert_valid_cluster_refactor_order(
-    projection: ProjectionResult,
+    projection: ClusterableGraph,
     ordered: tuple[FormulaCluster, ...],
 ) -> None:
     """Raise ``AssertionError`` when a dependency cluster appears after its dependents."""
@@ -25,7 +23,7 @@ def _cluster_member_set(cluster: FormulaCluster) -> frozenset[str]:
 
 
 def _external_dependency_addresses(
-    projection: ProjectionResult,
+    projection: ClusterableGraph,
     cluster: FormulaCluster,
 ) -> frozenset[str]:
     members = _cluster_member_set(cluster)
@@ -48,7 +46,7 @@ def _address_owner_clusters(
 
 
 def compute_cluster_refactor_order(
-    projection: ProjectionResult,
+    projection: ClusterableGraph,
     clusters: tuple[FormulaCluster, ...],
 ) -> tuple[FormulaCluster, ...]:
     """Return refactorable clusters in dependency order (dependencies first).

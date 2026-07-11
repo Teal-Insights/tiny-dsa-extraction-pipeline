@@ -49,7 +49,7 @@ def test_binding_shards_merge_into_expected_series(tiny_dsa_configured_pipeline)
         "shocked_path_internal",
     }
 
-    assert series_bindings["schema_version"] == "1.2.0"
+    assert series_bindings["schema_version"] == "1.8.0"
     series_ids = {series["id"] for series in series_bindings["series"]}
     assert series_ids == expected_public_ids | expected_internal_ids
 
