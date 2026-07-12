@@ -124,10 +124,10 @@ Return only JSON matching the response schema:
 
 ## Aborting
 
-- If the cluster cannot be safely refactored (for example, unsupported independent operand variation, missing binding keys, or contradictory membership), set `error` to `true` and provide a concise non-empty `error_reason`.
+- If the cluster is unrefactorable or unrepresentable (for example missing binding keys or contradictory membership), set `error` to `true` and provide a concise non-empty `error_reason`.
 - When `error` is `true`, set every success field (`symbol_signature`, `symbol_docstring`, `symbol_body`, `parameters`, `member_keys`) to `null`. Do not omit keys.
-- Do not invent a best-effort refactor when the correct outcome is to stop. Declaring an error ends the pipeline for human review.
 - On success, set `error` to `null` or `false`, set `error_reason` to `null`, and populate every success field.
+- Declaring an error stops the pipeline run for human review.
 
 ## Signature
 
@@ -225,8 +225,6 @@ In this case, you could map `reporting_period` to workbook columns with a lookup
 
 Some formulas read the same indicator at more than one period, e.g. a change computed as current minus prior period. Both operands vary along `TIME_PERIOD` semantically, but `parameters` and `member_keys` may only carry the cell's own sweep key. Instead of using a second period-like parameter for the lagged operand, derive the reference period inside the body from `time_period` (e.g. `reference_period = time_period - 1`) and map it to a column with the same lookup table used for the current period.
 
-This example applies only when the reference period can be derived or selected from the member parameters. It does not generalize to arbitrary independent operand values.
-
 When the lag itself differs across row groups, the rows will be keyed by another varying binding dimension (e.g. `REF_AREA`); select the lag with a lookup table keyed by that parameter, exactly like any other row-dependent constant.
 
 For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Data!E24:H24`, with varying binding keys `TIME_PERIOD` (columns E–H, periods 4–7) and `REF_AREA` (row 20 is `USA`, row 24 is `FRA`). Source values sit in row 4 (`USA`) and row 8 (`FRA`) across columns B–H (periods 1–7). Each `USA` member computes `=E4-D4`-style differences against the previous period (lag 1), while each `FRA` member computes `=E8-B8`-style differences against three periods earlier (lag 3). Neither lag becomes a parameter: both are baked into the body and switched on `ref_area`.
@@ -294,6 +292,8 @@ For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Dat
   "error_reason": null
 }
 ```
+
+Similar conditional selection or switching logic can be applied to solve other common cases, such as piecewise time series or first/last-period anchor cell special casing.
 
 ## Naming conventions
 

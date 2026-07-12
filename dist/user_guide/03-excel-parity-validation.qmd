@@ -10,14 +10,14 @@ through the package's public `set_*` functions, and compares the public
 
 ## Current reference result
 
-The current reference run is **FAIL**: **1,740 / 1,770**
+The current reference run is **PASS**: **1,770 / 1,770**
 cell-level comparisons passed at `atol = 1e-06`.
 
-- Result: **FAIL**
-- Generated: `2026-07-11T20:29:05+00:00`
-- Passed: **1,740**
-- Failed: **30**
-- Pass rate: **98.31%**
+- Result: **PASS**
+- Generated: `2026-07-11T21:39:06+00:00`
+- Passed: **1,770**
+- Failed: **0**
+- Pass rate: **100.00%**
 - Acceptance bar: **100.00%**
 
 The sweep covers **1,770** cell-level comparisons against Excel.

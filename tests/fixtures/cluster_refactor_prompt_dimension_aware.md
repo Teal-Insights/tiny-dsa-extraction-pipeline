@@ -1,6 +1,6 @@
 You will be provided mechanical Python translations of a cluster of Excel formula cells. Your task is to refactor them into a single domain-aware parameterized Python function.
 
-This cluster's formula operands vary independently along a shared semantic concept, and the series bindings declare a distinct dimension id for each role (e.g. `REF_AREA` vs `COUNTERPART_REF_AREA`, or `PROJECTION_PERIOD` vs `REFERENCE_PERIOD`, each referencing one shared concept). Parameterize the formula operand structure: declare one parameter per varying binding dimension id, never one per concept.
+This cluster's formula operands vary independently along a shared semantic concept, and the series bindings declare a distinct dimension id for each role (e.g. `REF_AREA` vs `COUNTERPART_REF_AREA`, or `PROJECTION_PERIOD` vs `REFERENCE_PERIOD`, each referencing one shared concept). Parameterize the formula operand structure: declare one parameter per varying binding dimension id.
 
 ## Output format
 
@@ -165,7 +165,7 @@ Return only JSON matching the response schema:
 - `parameters[].name` must match `suggested_param_name` from `key_vocabulary`.
 - Multiple parameters may share one concept when they carry distinct dimension ids. Never collapse two dimension ids onto a single concept parameter; validation rejects that shape.
 - Parameters represent the varying keys of the cluster member cells. Do not introduce additional parameters beyond the varying dimension ids.
-- Derive a reference value inside the helper only when it follows mechanically from a member parameter (e.g. a fixed lag); operand values that vary independently must come from their own dimension-id parameter.
+- Derive a reference value inside the helper when it follows mechanically from a member parameter (e.g. a fixed lag or period anchor switch).
 
 ## Member keys
 
