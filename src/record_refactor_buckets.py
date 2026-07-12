@@ -10,7 +10,7 @@ import argparse
 import ast
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -59,6 +59,7 @@ DEFAULT_JSON_OUTPUT_UNCOMPRESSED = Path("artifacts/refactor-buckets-uncompressed
 DEFAULT_MARKDOWN_OUTPUT_UNCOMPRESSED = Path(
     "artifacts/refactor-buckets-uncompressed.md"
 )
+DEFAULT_CODEGEN_DIST_ROOT = Path("artifacts/refactor-bucket-codegen")
 
 RefactorKind = Literal["singleton", "cluster"]
 CompressionMode = Literal["optimal", "none"]
@@ -451,6 +452,7 @@ def run_record_refactor_buckets(
     markdown_output: Path,
     no_cache: bool = False,
     compression: CompressionMode = "optimal",
+    codegen_dist_root: Path | None = None,
 ) -> dict[str, Any]:
     graph_result = build_pipeline_graph(config, no_cache=no_cache)
     projection = build_refactor_projection(
@@ -466,8 +468,14 @@ def run_record_refactor_buckets(
     internal_binding_index: InternalBindingIndex | None = None
 
     if compression == "optimal":
+        codegen_root = (
+            codegen_dist_root
+            if codegen_dist_root is not None
+            else config.repo_root / DEFAULT_CODEGEN_DIST_ROOT
+        )
+        codegen_config = replace(config, dist_root=codegen_root)
         internals_path = export_generated_modules(
-            config,
+            codegen_config,
             graph=graph_result.graph,
             graph_cache_key=graph_result.graph_cache_key,
             series_bindings=graph_result.series_bindings,

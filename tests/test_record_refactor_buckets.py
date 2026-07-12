@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,11 @@ from src.pipeline_config import (
     validate_pipeline_config,
 )
 from src.pipeline_context import activate_pipeline_config
-from src.record_refactor_buckets import run_record_refactor_buckets
+from src.record_refactor_buckets import (
+    DEFAULT_CODEGEN_DIST_ROOT,
+    main as record_refactor_buckets_main,
+    run_record_refactor_buckets,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _REPO_INTERNALS = _REPO_ROOT / "dist" / "tiny_dsa" / "internals.py"
@@ -46,13 +49,8 @@ def _stub_configure_docstring_callback(config: PipelineConfig) -> str:
     return config.docstring_callback_name
 
 
-def _isolated_pipeline_config(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> PipelineConfig:
-    config = replace(
-        load_pipeline_config(),
-        dist_root=tmp_path_factory.mktemp("record_refactor_dist"),
-    )
+def _load_validated_pipeline_config() -> PipelineConfig:
+    config = load_pipeline_config()
     try:
         validate_pipeline_config(config)
     except FileNotFoundError as exc:
@@ -72,22 +70,20 @@ def stub_docstring_callback() -> Iterator[None]:
 
 
 @pytest.fixture(scope="module")
-def refactor_buckets_config(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> PipelineConfig:
-    return _isolated_pipeline_config(tmp_path_factory)
+def pipeline_config() -> PipelineConfig:
+    return _load_validated_pipeline_config()
 
 
 @pytest.fixture(scope="module")
 def refactor_buckets_report(
-    refactor_buckets_config: PipelineConfig,
+    pipeline_config: PipelineConfig,
     tmp_path_factory: pytest.TempPathFactory,
     stub_docstring_callback: None,
 ) -> dict[str, Any]:
     output_dir = tmp_path_factory.mktemp("refactor_buckets")
-    activate_pipeline_config(refactor_buckets_config)
+    activate_pipeline_config(pipeline_config)
     return run_record_refactor_buckets(
-        refactor_buckets_config,
+        pipeline_config,
         json_output=output_dir / "refactor-buckets.json",
         markdown_output=output_dir / "refactor-buckets.md",
         compression="optimal",
@@ -101,13 +97,8 @@ def test_run_record_refactor_buckets_leaves_repo_dist_unchanged(
     if not _REPO_INTERNALS.is_file():
         pytest.skip("dist/tiny_dsa/internals.py is not present")
 
+    config = _load_validated_pipeline_config()
     before = _REPO_INTERNALS.read_bytes()
-    isolated_dist = tmp_path / "isolated_dist"
-    config = replace(load_pipeline_config(), dist_root=isolated_dist)
-    try:
-        validate_pipeline_config(config)
-    except FileNotFoundError as exc:
-        pytest.skip(f"Pipeline configuration is incomplete: {exc}")
 
     monkeypatch.setattr(
         "src.record_refactor_buckets.configure_docstring_callback",
@@ -122,7 +113,46 @@ def test_run_record_refactor_buckets_leaves_repo_dist_unchanged(
     )
 
     assert _REPO_INTERNALS.read_bytes() == before
-    assert (isolated_dist / "tiny_dsa" / "internals.py").is_file()
+    codegen_internals = (
+        config.repo_root
+        / DEFAULT_CODEGEN_DIST_ROOT
+        / config.dist_metadata.package_name
+        / "internals.py"
+    )
+    assert codegen_internals.is_file()
+
+
+def test_record_refactor_buckets_main_leaves_repo_dist_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not _REPO_INTERNALS.is_file():
+        pytest.skip("dist/tiny_dsa/internals.py is not present")
+
+    config = _load_validated_pipeline_config()
+    before = _REPO_INTERNALS.read_bytes()
+
+    monkeypatch.setattr(
+        "src.record_refactor_buckets.configure_docstring_callback",
+        _stub_configure_docstring_callback,
+    )
+    record_refactor_buckets_main(
+        [
+            "--json-output",
+            str(tmp_path / "refactor-buckets.json"),
+            "--markdown-output",
+            str(tmp_path / "refactor-buckets.md"),
+        ]
+    )
+
+    assert _REPO_INTERNALS.read_bytes() == before
+    codegen_internals = (
+        config.repo_root
+        / DEFAULT_CODEGEN_DIST_ROOT
+        / config.dist_metadata.package_name
+        / "internals.py"
+    )
+    assert codegen_internals.is_file()
 
 
 def test_refactor_buckets_cover_all_eligible_targets(
@@ -163,11 +193,7 @@ def test_refactor_buckets_include_expected_singleton_and_cluster_members(
 def test_uncompressed_refactor_buckets_include_shocked_parameter_rows(
     tmp_path: Path,
 ) -> None:
-    config = replace(load_pipeline_config(), dist_root=tmp_path / "isolated_dist")
-    try:
-        validate_pipeline_config(config)
-    except FileNotFoundError as exc:
-        pytest.skip(f"Pipeline configuration is incomplete: {exc}")
+    config = _load_validated_pipeline_config()
 
     activate_pipeline_config(config)
     report = run_record_refactor_buckets(
