@@ -29,6 +29,13 @@ jobs:
           sudo apt-get install -y -qq git-lfs
 
       - name: Run export pipeline (with cached results)
+        env:
+          # Match local .env model routing so LLM cache keys hit without API keys.
+          DOCSTRING_MODEL: deepseek-v4-pro
+          SECTION_REWRITE_MODEL: gpt-5.5
+          REFACTOR_MODEL: deepseek-v4-pro
+          SEMANTIC_LABEL_MODEL: deepseek-v4-pro
+          DEEPSEEK_THINKING: "1"
         run: uv run python -m src.extraction_pipeline
 
       - name: Checkout target repository
