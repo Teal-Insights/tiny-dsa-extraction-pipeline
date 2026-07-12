@@ -1,0 +1,8 @@
+{
+  "cache_key": "2f60a8536377949f4c2c18238dce07f8a9c93d21331b28e4e7a9826ce68dc3af",
+  "cache_schema_version": "1.0.0",
+  "excel_grapher_version": "3.4.0",
+  "graph_cache_key": "486977b73c6f35a59fc5839563ca9506b2693b1f3fbce6b07d9601de7bc53579",
+  "projected_node_count": 59,
+  "strategy": "optimal_compression"
+}
