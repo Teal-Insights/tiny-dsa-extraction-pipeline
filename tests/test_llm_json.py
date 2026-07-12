@@ -138,6 +138,28 @@ def test_post_validate_failure_triggers_retry() -> None:
     assert len(fake.chat.completions.calls) == 2
 
 
+def test_post_validate_runtime_error_does_not_retry() -> None:
+    valid = '{"title": "T", "body": "B"}'
+    client, fake = _make([valid, valid])
+
+    def abort(_parsed: _Sample) -> _Sample:
+        raise RuntimeError("declared abort")
+
+    with pytest.raises(RuntimeError, match="declared abort"):
+        generate_validated_json(
+            client=client,
+            model="m",
+            provider=JSON_OBJECT_PROVIDER,
+            system_prompt="sys",
+            user_prompt="usr",
+            response_model=_Sample,
+            post_validate=abort,
+            max_attempts=3,
+        )
+
+    assert len(fake.chat.completions.calls) == 1
+
+
 def test_post_validate_can_transform_result() -> None:
     valid = '{"title": "T", "body": "B"}'
     client, _ = _make([valid])

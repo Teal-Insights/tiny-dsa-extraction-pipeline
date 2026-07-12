@@ -171,6 +171,19 @@ def synthetic_series_bindings():
     return load_synthetic_series_bindings()
 
 
+@pytest.fixture(scope="session")
+def synthetic_bound_address_keys(
+    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
+):
+    from src.refactor_bindings import build_bound_address_keys
+
+    return build_bound_address_keys(
+        synthetic_configured_pipeline.input_series,
+        synthetic_configured_pipeline.output_series,
+        synthetic_configured_pipeline.internal_series,
+    )
+
+
 @dataclass(frozen=True)
 class SyntheticGraphExtractionArtifacts:
     config: PipelineConfig

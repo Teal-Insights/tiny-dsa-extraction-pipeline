@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
 from src.graph_dependency_audit import GraphAuditCase
 from src.internal_binding_coverage import InternalBindingValidationMode
+from src.refactor_types import (
+    VARIATION_MODE_CLI_HELP,
+    VariationMode,
+    parse_variation_mode,
+    variation_mode_choices,
+)
 from src.workbook_addresses import ProjectionColumnLayout
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +64,7 @@ class PipelineConfig:
     graph_audit_cases: tuple[GraphAuditCase, ...] = ()
     internal_binding_validation_mode: InternalBindingValidationMode = "warn"
     internal_binding_exempt_cells: frozenset[str] = frozenset()
+    variation_mode: VariationMode = "independent"
 
     @property
     def package_root(self) -> Path:
@@ -100,6 +108,23 @@ def _load_internal_binding_exempt_cells(value: object) -> frozenset[str]:
         "INTERNAL_BINDING_EXEMPT_CELLS must be a frozenset, set, list, or tuple "
         f"of sheet-qualified addresses; got {type(value).__name__}"
     )
+
+
+def add_variation_mode_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--variation-mode",
+        choices=variation_mode_choices(),
+        help=VARIATION_MODE_CLI_HELP,
+    )
+
+
+def apply_variation_mode_cli_override(
+    config: PipelineConfig,
+    variation_mode: str | None,
+) -> PipelineConfig:
+    if variation_mode is None:
+        return config
+    return replace(config, variation_mode=cast(VariationMode, variation_mode))
 
 
 def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
@@ -166,6 +191,9 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     internal_binding_exempt_cells = _load_internal_binding_exempt_cells(
         getattr(user_config, "INTERNAL_BINDING_EXEMPT_CELLS", frozenset())
     )
+    variation_mode = parse_variation_mode(
+        getattr(user_config, "VARIATION_MODE", "independent")
+    )
 
     if not isinstance(dist_metadata, DistProjectMetadata):
         raise TypeError("workbook_config.DIST_METADATA must be a DistProjectMetadata")
@@ -197,6 +225,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         graph_audit_cases=graph_audit_cases,
         internal_binding_validation_mode=internal_binding_validation_mode,
         internal_binding_exempt_cells=internal_binding_exempt_cells,
+        variation_mode=variation_mode,
     )
 
 

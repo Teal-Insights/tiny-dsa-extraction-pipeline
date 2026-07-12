@@ -137,18 +137,18 @@ def cell_inputs_b6(ctx):
 )
 
 CLUSTER_PARAMETERS = (
-    HelperParameter(name="time_period", concept="TIME_PERIOD", dtype="int"),
+    HelperParameter(name="time_period", dimension_id="TIME_PERIOD", dtype="int"),
 )
 CLUSTER_MEMBER_KEYS = (
     MemberKeys(
         address="Engine!C6",
         function_name="cell_engine_c6",
-        keys=(MemberKeyEntry(concept="TIME_PERIOD", value=1),),
+        keys=(MemberKeyEntry(dimension_id="TIME_PERIOD", value=1),),
     ),
     MemberKeys(
         address="Engine!D6",
         function_name="cell_engine_d6",
-        keys=(MemberKeyEntry(concept="TIME_PERIOD", value=2),),
+        keys=(MemberKeyEntry(dimension_id="TIME_PERIOD", value=2),),
     ),
 )
 

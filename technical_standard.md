@@ -29,7 +29,7 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 | Criterion | Pass condition |
 |---|---|
 | **Targets declared** | Every published output is a named target (range name or sheet-qualified address) driving target-driven graph extraction. |
-| **Series bindings authored** | `bindings/inputs.bindings.yaml` and `bindings/outputs.bindings.yaml` exist, use `schema_version: 1.5.0`, and declare one logical scalar/series/table per public I/O function. |
+| **Series bindings authored** | `bindings/inputs.bindings.yaml` and `bindings/outputs.bindings.yaml` exist, use `schema_version: 1.8.0`, and declare one logical scalar/series/table per public I/O function. Every dimension should have an explicit `id`; record/key fields and refactor parameters use the effective dimension id, with concept as semantic metadata and unambiguous fallback. |
 | **Bindings validated against graph** | `validate_series_bindings(...)` reports `ok`; input bindings overlap graph leaves, output bindings overlap target nodes. |
 | **Dynamic refs resolved** | All `OFFSET` / `INDEX` / `MATCH` / `CHOOSE` dependencies are resolved via `DynamicRefConfig.from_constraints(...)` without `DynamicRefError`. |
 | **Every mutable leaf is bound** | Each leaf classified as `input` appears in `inputs.bindings.yaml`; unbound mutable leaves fail the pipeline. |
@@ -72,7 +72,7 @@ Configure checklist (workbook-neutral):
 | **Records-shaped public API** | Codegen emits `make_context()`, `set_*` input setters, and `compute_*` output functions from series bindings—not raw cell writers. |
 | **Inputs validated at runtime** | Setters validate record shape and key matching; domain/units prose belongs in docstrings, not implied runtime validation beyond what codegen emits. |
 | **Domain-language identifiers** | Public functions **and** internal functions use macrofinance vocabulary (`growth_baseline`, `output_delta`), not workbook coordinates (`U24`, `OFFSET_RANGE_3`). |
-| **Concise/readable code** | Internal formula cell groups are collapsed to functions, rewritten with macrofinance semantics, parameterized by economic concepts, and reused to reduce code duplication. |
+| **Concise/readable code** | Internal formula cell groups are collapsed to functions, rewritten with macrofinance semantics, parameterized by binding dimension ids (with concept as semantic metadata), and reused to reduce code duplication. |
 | **Pandas/Polars compatible** | Public functions can accept (and ideally return) pandas or polars `DataFrame`s as inputs as well as scalars, sequences, and `Records` lists. |
 | **Docstrings on public API** | Every `set_*` and `compute_*` has a docstring: deterministic fields from the binding contract, LLM-authored prose from a registered docstring callback grounded in the human guide. |
 | **Distributable package** | Export writes `dist/<package>/` with `api.py`, runtime modules, `pyproject.toml`, and README; package imports without the extraction repo on `PYTHONPATH`. |

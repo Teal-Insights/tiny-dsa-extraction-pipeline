@@ -44,12 +44,20 @@ class GrowthThresholdMemberMetadata(TypedDict):
 FIXTURE_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "cluster_refactor_prompt.md"
 )
+DIMENSION_AWARE_FIXTURE_PATH = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "cluster_refactor_prompt_dimension_aware.md"
+)
 CONTEXT_DUMP_FIXTURE_PATH = (
     Path(__file__).resolve().parent
     / "fixtures"
     / "cluster_refactor_context_growth_threshold.md"
 )
 EXPECTED_FIXED_PORTION = FIXTURE_PATH.read_text(encoding="utf-8").strip()
+EXPECTED_DIMENSION_AWARE_FIXED_PORTION = DIMENSION_AWARE_FIXTURE_PATH.read_text(
+    encoding="utf-8"
+).strip()
 EXPECTED_CONTEXT_DUMP = CONTEXT_DUMP_FIXTURE_PATH.read_text(encoding="utf-8").strip()
 
 GROWTH_THRESHOLD_MEMBER_SOURCES = dedent(
@@ -97,6 +105,7 @@ GROWTH_THRESHOLD_MEMBER_SOURCES = dedent(
 
 GROWTH_THRESHOLD_KEY_VOCABULARY = (
     KeyConceptSpec(
+        dimension_id="REPORTING_PERIOD",
         concept="REPORTING_PERIOD",
         dtype="int",
         suggested_param_name="reporting_period",
@@ -189,6 +198,7 @@ MINIMAL_PROMPT_PAYLOAD: dict[str, object] = {
     "canonical_template": "=IF(Forecast!{{col}}4>=Assumptions!$C$2,1,0)",
     "key_vocabulary": [
         {
+            "dimension_id": "REPORTING_PERIOD",
             "concept": "REPORTING_PERIOD",
             "dtype": "int",
             "suggested_param_name": "reporting_period",
@@ -247,7 +257,7 @@ GROWTH_THRESHOLD_LLM_RESPONSE = ClusterRefactorLLMResponse(
     parameters=(
         HelperParameter(
             name="reporting_period",
-            concept="REPORTING_PERIOD",
+            dimension_id="REPORTING_PERIOD",
             dtype="int",
         ),
     ),
@@ -257,13 +267,15 @@ GROWTH_THRESHOLD_LLM_RESPONSE = ClusterRefactorLLMResponse(
             function_name=entry["function_name"],
             keys=(
                 MemberKeyEntry(
-                    concept="REPORTING_PERIOD",
+                    dimension_id="REPORTING_PERIOD",
                     value=entry["expected_keys"]["REPORTING_PERIOD"],
                 ),
             ),
         )
         for entry in GROWTH_THRESHOLD_MEMBER_METADATA
     ),
+    error=None,
+    error_reason=None,
 )
 
 INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT = dedent(
@@ -333,6 +345,44 @@ def test_load_cluster_refactor_prompt_fixed_portion_matches_fixture() -> None:
     )
 
 
+def test_load_dimension_aware_prompt_fixed_portion_matches_fixture() -> None:
+    assert (
+        load_cluster_refactor_prompt_fixed_portion("dimension_aware").strip()
+        == EXPECTED_DIMENSION_AWARE_FIXED_PORTION
+    )
+
+
+def test_prompt_for_refactor_selects_dimension_aware_fixture() -> None:
+    prompt = _prompt_for_refactor("context dump", contract="dimension_aware")
+    assert prompt.startswith(EXPECTED_DIMENSION_AWARE_FIXED_PORTION)
+    assert prompt.endswith("context dump")
+
+    default_prompt = _prompt_for_refactor("context dump")
+    assert default_prompt.startswith(EXPECTED_FIXED_PORTION)
+
+
+def test_cluster_prompts_carry_rules_but_not_selection_criteria() -> None:
+    """Contract selection is mechanical; prompts state rules, not applicability."""
+    member_sweep = load_cluster_refactor_prompt_fixed_portion()
+    dimension_aware = load_cluster_refactor_prompt_fixed_portion("dimension_aware")
+    assert "When this contract applies" not in member_sweep
+    assert "When this contract applies" not in dimension_aware
+    assert "COUNTERPART_REF_AREA" in dimension_aware
+    assert "one parameter per varying binding dimension id" in dimension_aware
+    assert "Never collapse two dimension ids" in dimension_aware
+
+
+def test_dimension_aware_prompt_documents_error_escape_hatch() -> None:
+    prompt = load_cluster_refactor_prompt_fixed_portion("dimension_aware")
+    assert "## Aborting" in prompt
+    assert '"error"' in prompt
+    assert '"error_reason"' in prompt
+    assert "stop the pipeline" in prompt
+    assert "set every success field" in prompt
+    assert "to `null`" in prompt
+    assert '"symbol_signature"' in prompt
+
+
 def test_prompt_for_cluster_refactor_starts_with_fixed_portion() -> None:
     prompt = _prompt_for_refactor(
         MINIMAL_PROMPT_PAYLOAD,
@@ -353,6 +403,25 @@ def test_prompt_for_cluster_refactor_does_not_require_llm_note_section() -> None
     assert '"symbol_signature"' in prompt
     assert '"symbol_body"' in prompt
     assert '"helper_source"' not in prompt.split("Cluster context:", maxsplit=1)[0]
+
+
+def test_cluster_prompt_documents_error_escape_hatch() -> None:
+    prompt = load_cluster_refactor_prompt_fixed_portion()
+    assert "## Aborting" in prompt
+    assert '"error"' in prompt
+    assert '"error_reason"' in prompt
+    assert "stop the pipeline" in prompt
+    assert "set every success field" in prompt
+    assert "to `null`" in prompt
+
+    schema = ClusterRefactorLLMResponse.model_json_schema()
+    properties = schema["properties"]
+    assert "error" in properties
+    assert "error_reason" in properties
+    required = schema.get("required", [])
+    assert "symbol_signature" in required
+    assert "error" in required
+    assert "error_reason" in required
 
 
 def test_append_cluster_refactor_note_section_covers_address_range() -> None:

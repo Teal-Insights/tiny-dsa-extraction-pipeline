@@ -253,6 +253,25 @@ def test_prompt_for_singleton_refactor_does_not_require_llm_note_section() -> No
     assert '"symbol_source"' not in prompt.split("Singleton context:", maxsplit=1)[0]
 
 
+def test_singleton_prompt_documents_error_escape_hatch() -> None:
+    prompt = load_singleton_refactor_prompt_fixed_portion()
+    assert "## Aborting" in prompt
+    assert '"error"' in prompt
+    assert '"error_reason"' in prompt
+    assert "stop the pipeline" in prompt
+    assert "set every success field" in prompt
+    assert "to `null`" in prompt
+
+    schema = SingletonRefactorLLMResponse.model_json_schema()
+    properties = schema["properties"]
+    assert "error" in properties
+    assert "error_reason" in properties
+    required = schema.get("required", [])
+    assert "symbol_signature" in required
+    assert "error" in required
+    assert "error_reason" in required
+
+
 def test_strip_python_string_delimiters_removes_triple_quotes() -> None:
     raw = '''"""
 Summary line.
@@ -352,6 +371,8 @@ def test_validate_singleton_refactor_response_accepts_eval_context_type_hint() -
                     '"""'
                 ),
                 symbol_body="return xl_number(united_states_total_deaths(ctx))",
+                error=None,
+                error_reason=None,
             ),
             ctx,
         ),
@@ -396,6 +417,8 @@ def test_prepare_singleton_refactor_response_assembles_and_appends_note() -> Non
             '"""'
         ),
         symbol_body="return shock_active(ctx, time_period=1)",
+        error=None,
+        error_reason=None,
     )
 
     prepared = prepare_singleton_refactor_response(llm_response, ctx)

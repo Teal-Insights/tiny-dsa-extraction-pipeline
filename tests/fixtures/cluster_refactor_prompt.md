@@ -9,78 +9,103 @@ Return only JSON matching the response schema:
   "additionalProperties": false,
   "properties": {
     "symbol_signature": {
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types.",
-      "title": "Helper Signature",
-      "type": "string"
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types. Null when error is true.",
+      "title": "Helper Signature"
     },
     "symbol_docstring": {
-      "description": "Google-style docstring. Include Args and Returns sections.",
-      "title": "Helper Docstring",
-      "type": "string"
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Google-style docstring. Include Args and Returns sections. Null when error is true.",
+      "title": "Helper Docstring"
     },
     "symbol_body": {
-      "description": "Python function body.",
-      "title": "Helper Body",
-      "type": "string"
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Python function body. Null when error is true.",
+      "title": "Helper Body"
     },
     "parameters": {
-      "description": "Economic parameters the helper varies along, tied to binding key concepts.",
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "description": "Python parameter name, e.g. time_period.",
-            "type": "string"
+      "anyOf": [
+        {
+          "description": "Economic parameters the helper varies along, tied to binding dimension ids.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "description": "Python parameter name, e.g. projection_period or time_period.",
+                "type": "string"
+              },
+              "dimension_id": {
+                "description": "Effective binding dimension id, e.g. PROJECTION_PERIOD or TIME_PERIOD.",
+                "type": "string"
+              },
+              "dtype": {
+                "description": "Expected Python dtype for the parameter.",
+                "type": "string"
+              },
+              "concept": {
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "description": "Optional SDMX-style concept referenced by the dimension, e.g. TIME_PERIOD."
+              }
+            },
+            "required": ["name", "dimension_id", "dtype"],
+            "type": "object"
           },
-          "concept": {
-            "description": "Binding key concept, e.g. TIME_PERIOD.",
-            "type": "string"
-          },
-          "dtype": {
-            "description": "Expected Python dtype for the parameter.",
-            "type": "string"
-          }
+          "type": "array"
         },
-        "required": ["name", "concept", "dtype"],
-        "type": "object"
-      },
-      "type": "array"
+        {"type": "null"}
+      ],
+      "description": "Economic parameters the helper varies along, tied to binding dimension ids. Null when error is true."
     },
     "member_keys": {
-      "description": "One entry per cluster member with the unique combination of varying binding key values used to route that address to the parameterized helper.",
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "address": {
-            "description": "Workbook address this entry covers.",
-            "type": "string"
-          },
-          "function_name": {
-            "description": "Existing cell_* function being replaced.",
-            "type": "string"
-          },
-          "keys": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "concept": {
-                  "description": "Binding key concept name, e.g. TIME_PERIOD.",
-                  "type": "string"
-                },
-                "value": {
-                  "description": "Literal binding key value for this concept."
-                }
+      "anyOf": [
+        {
+          "description": "One entry per cluster member with the unique combination of varying binding key values used to route that address to the parameterized helper.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "description": "Workbook address this entry covers.",
+                "type": "string"
               },
-              "required": ["concept", "value"],
-              "type": "object"
+              "function_name": {
+                "description": "Existing cell_* function being replaced.",
+                "type": "string"
+              },
+              "keys": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "dimension_id": {
+                      "description": "Effective binding dimension id, e.g. PROJECTION_PERIOD or TIME_PERIOD."
+                    },
+                    "value": {
+                      "description": "Literal binding key value for this dimension."
+                    }
+                  },
+                  "required": ["dimension_id", "value"],
+                  "type": "object"
+                },
+                "type": "array"
+              }
             },
-            "type": "array"
-          }
+            "required": ["address", "function_name", "keys"],
+            "type": "object"
+          },
+          "type": "array"
         },
-        "required": ["address", "function_name", "keys"],
-        "type": "object"
-      },
-      "type": "array"
+        {"type": "null"}
+      ],
+      "description": "One entry per cluster member with the unique combination of varying binding key values used to route that address to the parameterized helper. Null when error is true."
+    },
+    "error": {
+      "anyOf": [{"type": "boolean"}, {"type": "null"}],
+      "description": "Set to true to abort this refactor and stop the pipeline when the cluster cannot be safely refactored. Null or false on success.",
+      "title": "Error"
+    },
+    "error_reason": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Human-readable explanation of why refactoring must abort. Non-empty when error is true; null otherwise.",
+      "title": "Error Reason"
     }
   },
   "required": [
@@ -88,16 +113,25 @@ Return only JSON matching the response schema:
     "symbol_docstring",
     "symbol_body",
     "parameters",
-    "member_keys"
+    "member_keys",
+    "error",
+    "error_reason"
   ],
   "title": "ClusterRefactorLLMResponse",
   "type": "object"
 }
 ```
 
+## Aborting
+
+- If the cluster cannot be safely refactored (for example, unsupported independent operand variation, missing binding keys, or contradictory membership), set `error` to `true` and provide a concise non-empty `error_reason`.
+- When `error` is `true`, set every success field (`symbol_signature`, `symbol_docstring`, `symbol_body`, `parameters`, `member_keys`) to `null`. Do not omit keys.
+- Do not invent a best-effort refactor when the correct outcome is to stop. Declaring an error ends the pipeline for human review.
+- On success, set `error` to `null` or `false`, set `error_reason` to `null`, and populate every success field.
+
 ## Signature
 
-- `symbol_signature` must take `ctx: EvalContext` plus one typed parameter per varying binding concept from `key_vocabulary`.
+- `symbol_signature` must take `ctx: EvalContext` plus one typed parameter per varying binding dimension from `key_vocabulary`.
 - Each cell in the cluster must have a unique combination of binding key values for triangulating that address.
 - Use `suggested_param_name` from `key_vocabulary` as each parameter's Python name.
 - Choose the function name as a clear `snake_case` semantic identifier informed by naming hints.
@@ -108,7 +142,7 @@ Return only JSON matching the response schema:
 ## Docstring
 
 - `symbol_docstring` must include a Google-style docstring with a semantic description and `Args` and `Returns` sections.
-- Document each economic parameter in `Args`, not binding concept names.
+- Document each `snake_case` Python parameter in `Args` (not all-caps dimension id or concept).
 - You may omit Python string delimiters.
 
 ## Body
@@ -123,17 +157,18 @@ Return only JSON matching the response schema:
 
 ## Parameters
 
-- Declare `parameters[]` using binding key concepts from `key_vocabulary`; do not use column letters.
-- `parameters[].concept` must use binding concept names (e.g. `TIME_PERIOD`), not parameter names.
+- Declare `parameters[]` using effective binding dimension ids from `key_vocabulary`.
+- `parameters[].dimension_id` must use effective dimension ids (e.g. `PROJECTION_PERIOD` or `TIME_PERIOD`), not Python parameter names.
 - `parameters[].name` must match `suggested_param_name` from `key_vocabulary`.
-- Parameters represent varying keys of the cluster member cells. Do not introduce additional parameters such as `counterpart_ref_area` or `reference_time_period` solely because multiple operands use the same concept.
-- Derive a reference period inside the helper when it follows from a member parameter. Arbitrary independently varying operand values are not supported by this response contract.
+- Parameters represent varying keys of the cluster member cells. Do not introduce additional parameters; this is not supported.
+- Derive a reference period inside the helper when it follows from a member parameter.
+- Independently varying operand values for the same dimension are currently unsupported; distinct dimension ids prevent identity collisions for member keys and parameters but do not lift the operand-level variation restriction.
 
 ## Member keys
 
 - Emit one `member_keys[]` entry per cluster member.
 - Copy `keys[]` from the provided `expected_keys` for each member.
-- `member_keys[].keys[].concept` must use binding concept names (e.g. `TIME_PERIOD`), not parameter names.
+- `member_keys[].keys[].dimension_id` must use effective dimension ids (e.g. `PROJECTION_PERIOD` or `TIME_PERIOD`), not parameter names.
 - The key combination for each entry must be unique across the cluster so callers can route each address to the correct parameterized helper evaluation.
 
 ## Example 1: Unpacking nested calls
@@ -150,7 +185,7 @@ In this case, you could map `reporting_period` to workbook columns with a lookup
   "parameters": [
     {
       "name": "reporting_period",
-      "concept": "REPORTING_PERIOD",
+      "dimension_id": "REPORTING_PERIOD",
       "dtype": "int"
     }
   ],
@@ -158,39 +193,41 @@ In this case, you could map `reporting_period` to workbook columns with a lookup
     {
       "address": "Forecast!B12",
       "function_name": "cell_forecast_b12",
-      "keys": [{"concept": "REPORTING_PERIOD", "value": 1}]
+      "keys": [{"dimension_id": "REPORTING_PERIOD", "value": 1}]
     },
     {
       "address": "Forecast!C12",
       "function_name": "cell_forecast_c12",
-      "keys": [{"concept": "REPORTING_PERIOD", "value": 2}]
+      "keys": [{"dimension_id": "REPORTING_PERIOD", "value": 2}]
     },
     {
       "address": "Forecast!D12",
       "function_name": "cell_forecast_d12",
-      "keys": [{"concept": "REPORTING_PERIOD", "value": 3}]
+      "keys": [{"dimension_id": "REPORTING_PERIOD", "value": 3}]
     },
     {
       "address": "Forecast!E12",
       "function_name": "cell_forecast_e12",
-      "keys": [{"concept": "REPORTING_PERIOD", "value": 4}]
+      "keys": [{"dimension_id": "REPORTING_PERIOD", "value": 4}]
     },
     {
       "address": "Forecast!F12",
       "function_name": "cell_forecast_f12",
-      "keys": [{"concept": "REPORTING_PERIOD", "value": 5}]
+      "keys": [{"dimension_id": "REPORTING_PERIOD", "value": 5}]
     }
-  ]
+  ],
+  "error": null,
+  "error_reason": null
 }
 ```
 
 ## Example 2: representing supported lagged reference periods
 
-Some formulas read the same indicator at more than one period, e.g. a change computed as current minus prior period. Both operands vary along `TIME_PERIOD` semantically, but `parameters` and `member_keys` may only carry the cell's own sweep key. Instead of using a second `TIME_PERIOD`-like parameter for the lagged operand, derive the reference period inside the body from `time_period` (e.g. `reference_period = time_period - 1`) and map it to a column with the same lookup table used for the current period.
+Some formulas read the same indicator at more than one period, e.g. a change computed as current minus prior period. Both operands vary along `TIME_PERIOD` semantically, but `parameters` and `member_keys` may only carry the cell's own sweep key. Instead of using a second period-like parameter for the lagged operand, derive the reference period inside the body from `time_period` (e.g. `reference_period = time_period - 1`) and map it to a column with the same lookup table used for the current period.
 
 This example applies only when the reference period can be derived or selected from the member parameters. It does not generalize to arbitrary independent operand values.
 
-When the lag itself differs across row groups, the rows will be keyed by another varying binding concept (e.g. `REF_AREA`); select the lag with a lookup table keyed by that parameter, exactly like any other row-dependent constant.
+When the lag itself differs across row groups, the rows will be keyed by another varying binding dimension (e.g. `REF_AREA`); select the lag with a lookup table keyed by that parameter, exactly like any other row-dependent constant.
 
 For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Data!E24:H24`, with varying binding keys `TIME_PERIOD` (columns E–H, periods 4–7) and `REF_AREA` (row 20 is `USA`, row 24 is `FRA`). Source values sit in row 4 (`USA`) and row 8 (`FRA`) across columns B–H (periods 1–7). Each `USA` member computes `=E4-D4`-style differences against the previous period (lag 1), while each `FRA` member computes `=E8-B8`-style differences against three periods earlier (lag 3). Neither lag becomes a parameter: both are baked into the body and switched on `ref_area`.
 
@@ -202,12 +239,12 @@ For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Dat
   "parameters": [
     {
       "name": "time_period",
-      "concept": "TIME_PERIOD",
+      "dimension_id": "TIME_PERIOD",
       "dtype": "int"
     },
     {
       "name": "ref_area",
-      "concept": "REF_AREA",
+      "dimension_id": "REF_AREA",
       "dtype": "str"
     }
   ],
@@ -215,44 +252,46 @@ For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Dat
     {
       "address": "Data!E20",
       "function_name": "cell_data_e20",
-      "keys": [{"concept": "TIME_PERIOD", "value": 4}, {"concept": "REF_AREA", "value": "USA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 4}, {"dimension_id": "REF_AREA", "value": "USA"}]
     },
     {
       "address": "Data!F20",
       "function_name": "cell_data_f20",
-      "keys": [{"concept": "TIME_PERIOD", "value": 5}, {"concept": "REF_AREA", "value": "USA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 5}, {"dimension_id": "REF_AREA", "value": "USA"}]
     },
     {
       "address": "Data!G20",
       "function_name": "cell_data_g20",
-      "keys": [{"concept": "TIME_PERIOD", "value": 6}, {"concept": "REF_AREA", "value": "USA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 6}, {"dimension_id": "REF_AREA", "value": "USA"}]
     },
     {
       "address": "Data!H20",
       "function_name": "cell_data_h20",
-      "keys": [{"concept": "TIME_PERIOD", "value": 7}, {"concept": "REF_AREA", "value": "USA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 7}, {"dimension_id": "REF_AREA", "value": "USA"}]
     },
     {
       "address": "Data!E24",
       "function_name": "cell_data_e24",
-      "keys": [{"concept": "TIME_PERIOD", "value": 4}, {"concept": "REF_AREA", "value": "FRA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 4}, {"dimension_id": "REF_AREA", "value": "FRA"}]
     },
     {
       "address": "Data!F24",
       "function_name": "cell_data_f24",
-      "keys": [{"concept": "TIME_PERIOD", "value": 5}, {"concept": "REF_AREA", "value": "FRA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 5}, {"dimension_id": "REF_AREA", "value": "FRA"}]
     },
     {
       "address": "Data!G24",
       "function_name": "cell_data_g24",
-      "keys": [{"concept": "TIME_PERIOD", "value": 6}, {"concept": "REF_AREA", "value": "FRA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 6}, {"dimension_id": "REF_AREA", "value": "FRA"}]
     },
     {
       "address": "Data!H24",
       "function_name": "cell_data_h24",
-      "keys": [{"concept": "TIME_PERIOD", "value": 7}, {"concept": "REF_AREA", "value": "FRA"}]
+      "keys": [{"dimension_id": "TIME_PERIOD", "value": 7}, {"dimension_id": "REF_AREA", "value": "FRA"}]
     }
-  ]
+  ],
+  "error": null,
+  "error_reason": null
 }
 ```
 

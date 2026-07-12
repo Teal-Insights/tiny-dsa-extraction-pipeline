@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from excel_grapher.exporter import (
@@ -21,12 +23,11 @@ from src.pipeline_config import (
 from src.pipeline_context import activate_pipeline_config
 from src.record_refactor_buckets import (
     DEFAULT_CODEGEN_DIST_ROOT,
-    main as record_refactor_buckets_main,
+    main,
+    record_refactor_buckets,
     run_record_refactor_buckets,
 )
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_REPO_INTERNALS = _REPO_ROOT / "dist" / "tiny_dsa" / "internals.py"
+from tests.fixtures.synthetic_pipeline import synthetic_pipeline_config
 
 
 def _stub_configure_docstring_callback(config: PipelineConfig) -> str:
@@ -87,6 +88,50 @@ def refactor_buckets_report(
         json_output=output_dir / "refactor-buckets.json",
         markdown_output=output_dir / "refactor-buckets.md",
         compression="optimal",
+        codegen_dist_root=output_dir / "codegen",
+    )
+
+
+def test_run_record_refactor_buckets_writes_codegen_outside_dist(
+    synthetic_workbook_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dist_root = tmp_path / "dist"
+    codegen_root = tmp_path / "codegen"
+    config = replace(
+        synthetic_pipeline_config(workbook_path=synthetic_workbook_path),
+        dist_root=dist_root,
+    )
+    package_internals = config.package_root / "internals.py"
+    package_internals.parent.mkdir(parents=True, exist_ok=True)
+    package_internals.write_text("# sentinel\n", encoding="utf-8")
+    before = package_internals.read_bytes()
+
+    monkeypatch.setattr(
+        "src.record_refactor_buckets.configure_docstring_callback",
+        _stub_configure_docstring_callback,
+    )
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_symbols",
+        lambda: ("xl_cell", "xl_compare"),
+    )
+    activate_pipeline_config(config)
+    report = run_record_refactor_buckets(
+        config,
+        json_output=tmp_path / "refactor-buckets.json",
+        markdown_output=tmp_path / "refactor-buckets.md",
+        compression="optimal",
+        codegen_dist_root=codegen_root,
+    )
+
+    assert package_internals.read_bytes() == before
+    codegen_internals = (
+        codegen_root / config.dist_metadata.package_name / "internals.py"
+    )
+    assert codegen_internals.is_file()
+    assert report["internals_path"] == config.repo_relative_posix_path(
+        codegen_internals
     )
 
 
@@ -94,11 +139,12 @@ def test_run_record_refactor_buckets_leaves_repo_dist_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if not _REPO_INTERNALS.is_file():
-        pytest.skip("dist/tiny_dsa/internals.py is not present")
-
     config = _load_validated_pipeline_config()
-    before = _REPO_INTERNALS.read_bytes()
+    repo_internals = config.package_root / "internals.py"
+    if not repo_internals.is_file():
+        pytest.skip(f"{repo_internals.as_posix()} is not present")
+
+    before = repo_internals.read_bytes()
 
     monkeypatch.setattr(
         "src.record_refactor_buckets.configure_docstring_callback",
@@ -112,7 +158,7 @@ def test_run_record_refactor_buckets_leaves_repo_dist_unchanged(
         compression="optimal",
     )
 
-    assert _REPO_INTERNALS.read_bytes() == before
+    assert repo_internals.read_bytes() == before
     codegen_internals = (
         config.repo_root
         / DEFAULT_CODEGEN_DIST_ROOT
@@ -126,17 +172,18 @@ def test_record_refactor_buckets_main_leaves_repo_dist_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if not _REPO_INTERNALS.is_file():
-        pytest.skip("dist/tiny_dsa/internals.py is not present")
-
     config = _load_validated_pipeline_config()
-    before = _REPO_INTERNALS.read_bytes()
+    repo_internals = config.package_root / "internals.py"
+    if not repo_internals.is_file():
+        pytest.skip(f"{repo_internals.as_posix()} is not present")
+
+    before = repo_internals.read_bytes()
 
     monkeypatch.setattr(
         "src.record_refactor_buckets.configure_docstring_callback",
         _stub_configure_docstring_callback,
     )
-    record_refactor_buckets_main(
+    main(
         [
             "--json-output",
             str(tmp_path / "refactor-buckets.json"),
@@ -145,7 +192,7 @@ def test_record_refactor_buckets_main_leaves_repo_dist_unchanged(
         ]
     )
 
-    assert _REPO_INTERNALS.read_bytes() == before
+    assert repo_internals.read_bytes() == before
     codegen_internals = (
         config.repo_root
         / DEFAULT_CODEGEN_DIST_ROOT
@@ -190,6 +237,21 @@ def test_refactor_buckets_include_expected_singleton_and_cluster_members(
     ]
 
 
+def test_refactor_buckets_record_contract_for_cluster_targets(
+    refactor_buckets_report: dict[str, Any],
+) -> None:
+    buckets = refactor_buckets_report["buckets"]
+    cluster_buckets = [
+        bucket
+        for bucket in buckets
+        if bucket["kind"] == "cluster" and bucket["eligible"]
+    ]
+    assert cluster_buckets
+    assert all(bucket["contract"] == "member_sweep" for bucket in cluster_buckets)
+    singleton_buckets = [bucket for bucket in buckets if bucket["kind"] == "singleton"]
+    assert all(bucket["contract"] is None for bucket in singleton_buckets)
+
+
 def test_uncompressed_refactor_buckets_include_shocked_parameter_rows(
     tmp_path: Path,
 ) -> None:
@@ -208,3 +270,53 @@ def test_uncompressed_refactor_buckets_include_shocked_parameter_rows(
     members = {address for bucket in report["buckets"] for address in bucket["members"]}
     assert "Engine!C14" in members
     assert "Engine!C15" in members
+
+
+def test_main_passes_cli_variation_mode_to_bucket_recording(
+    synthetic_pipeline_config_fixture,
+    tmp_path: Path,
+) -> None:
+    with patch(
+        "src.record_refactor_buckets.load_pipeline_config",
+        return_value=synthetic_pipeline_config_fixture,
+    ):
+        with patch("src.record_refactor_buckets.validate_pipeline_config"):
+            with patch("src.record_refactor_buckets.activate_pipeline_config"):
+                with patch(
+                    "src.record_refactor_buckets.run_record_refactor_buckets"
+                ) as run_buckets:
+                    run_buckets.return_value = {
+                        "cluster_count": 0,
+                        "refactor_target_count": 0,
+                        "skipped_target_count": 0,
+                        "buckets": [],
+                    }
+                    main(
+                        [
+                            "--variation-mode",
+                            "dominant_key_only",
+                            "--json-output",
+                            str(tmp_path / "buckets.json"),
+                            "--markdown-output",
+                            str(tmp_path / "buckets.md"),
+                        ]
+                    )
+
+    run_buckets.assert_called_once()
+    assert run_buckets.call_args.args[0].variation_mode == "dominant_key_only"
+
+
+def test_record_refactor_buckets_requires_bound_address_keys(
+    synthetic_pipeline_config_fixture,
+    synthetic_projection,
+) -> None:
+    with pytest.raises(ValueError, match="bound_address_keys is required"):
+        record_refactor_buckets(
+            synthetic_pipeline_config_fixture,
+            graph=synthetic_projection,
+            internals_path=None,
+            internal_binding_index=None,
+            layout=None,
+            compression="none",
+            bound_address_keys=None,
+        )

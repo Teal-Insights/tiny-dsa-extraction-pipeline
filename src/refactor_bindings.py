@@ -9,6 +9,7 @@ from typing import Any
 
 import fastpyxl
 from excel_grapher.series_bindings import load_series_bindings
+from excel_grapher.series_bindings.normalize import effective_dimension_id
 from excel_grapher.series_bindings.types import Scalar
 
 from src.workbook_addresses import ProjectionColumnLayout
@@ -18,13 +19,50 @@ BindingKeyValue = str | int | float | bool
 
 @dataclass(frozen=True)
 class KeyConceptSpec:
+    """Vocabulary entry for one cell-scoped key dimension.
+
+    ``dimension_id`` is the effective binding key used for parameter naming,
+    member keys, clustering, and dispatch. ``concept`` is the SDMX-style
+    semantic category the dimension references.
+    """
+
+    dimension_id: str
     concept: str
     dtype: str
     suggested_param_name: str
 
 
+def dimension_id_to_param_name(dimension_id: str) -> str:
+    return dimension_id.lower()
+
+
 def concept_to_param_name(concept: str) -> str:
-    return concept.lower()
+    """Backward-compatible alias; prefer ``dimension_id_to_param_name``."""
+    return dimension_id_to_param_name(concept)
+
+
+def resolve_dimension_key(
+    name: str,
+    vocabulary: Sequence[KeyConceptSpec],
+) -> str:
+    """Resolve a binding key name to an effective dimension id.
+
+    Prefers an exact ``dimension_id`` match. Falls back to ``concept`` only when
+    exactly one vocabulary entry uses that concept.
+    """
+    by_id = {item.dimension_id: item for item in vocabulary}
+    if name in by_id:
+        return name
+    concept_matches = [item for item in vocabulary if item.concept == name]
+    if len(concept_matches) == 1:
+        return concept_matches[0].dimension_id
+    if len(concept_matches) > 1:
+        ids = sorted(item.dimension_id for item in concept_matches)
+        raise ValueError(
+            f"ambiguous binding key {name!r}: matches dimension ids {ids}; "
+            "use an explicit dimension id"
+        )
+    raise ValueError(f"unknown binding key: {name!r}")
 
 
 def load_key_concept_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ...]:
@@ -53,15 +91,19 @@ def load_key_concept_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ..
             if dimension.get("scope") == "series":
                 continue
             concept = dimension.get("concept")
-            if not isinstance(concept, str) or concept in seen:
+            if not isinstance(concept, str):
+                continue
+            dimension_id = effective_dimension_id(dimension)
+            if not dimension_id or dimension_id in seen:
                 continue
             dtype = concept_dtypes.get(concept) or dimension.get("dtype") or "string"
-            seen[concept] = KeyConceptSpec(
+            seen[dimension_id] = KeyConceptSpec(
+                dimension_id=dimension_id,
                 concept=concept,
                 dtype=str(dtype),
-                suggested_param_name=concept_to_param_name(concept),
+                suggested_param_name=dimension_id_to_param_name(dimension_id),
             )
-    return tuple(sorted(seen.values(), key=lambda item: item.concept))
+    return tuple(sorted(seen.values(), key=lambda item: item.dimension_id))
 
 
 def build_bound_address_keys(
@@ -120,16 +162,16 @@ def expected_keys_for_address(
     time_period = _read_engine_time_period(column, workbook_path, layout=layout)
     if time_period is None:
         return {}
-    return {"TIME_PERIOD": time_period}
+    return {layout.projection_dimension_id: time_period}
 
 
 def _coerce_binding_keys(keys: Mapping[str, Scalar]) -> dict[str, BindingKeyValue]:
     coerced: dict[str, BindingKeyValue] = {}
-    for concept, value in keys.items():
+    for key, value in keys.items():
         if isinstance(value, bool):
-            coerced[concept] = value
+            coerced[key] = value
         elif isinstance(value, (str, int, float)):
-            coerced[concept] = value
+            coerced[key] = value
     return coerced
 
 
@@ -149,11 +191,11 @@ def varying_key_concepts(
         )
         for address in addresses
     ]
-    concepts = {concept for keys in keys_by_address for concept in keys}
+    dimension_ids = {key for keys in keys_by_address for key in keys}
     return frozenset(
-        concept
-        for concept in concepts
-        if len({keys.get(concept) for keys in keys_by_address}) > 1
+        dimension_id
+        for dimension_id in dimension_ids
+        if len({keys.get(dimension_id) for keys in keys_by_address}) > 1
     )
 
 
@@ -172,16 +214,28 @@ def expected_member_keys_for_cluster(
     )
     return {
         address: {
-            concept: expected_keys_for_address(
+            dimension_id: expected_keys_for_address(
                 address,
                 bound_address_keys=bound_address_keys,
                 workbook_path=workbook_path,
                 layout=layout,
-            )[concept]
-            for concept in varying
+            )[dimension_id]
+            for dimension_id in varying
         }
         for address in addresses
     }
+
+
+def _projection_period_from_keys(
+    keys: Mapping[str, BindingKeyValue],
+    *,
+    layout: ProjectionColumnLayout,
+) -> BindingKeyValue | None:
+    if layout.projection_dimension_id in keys:
+        return keys[layout.projection_dimension_id]
+    if layout.projection_dimension_id != "TIME_PERIOD":
+        return keys.get("TIME_PERIOD")
+    return None
 
 
 def engine_column_from_member_keys(
@@ -190,11 +244,12 @@ def engine_column_from_member_keys(
     address: str,
     layout: ProjectionColumnLayout | None = None,
 ) -> str | None:
-    time_period = keys.get("TIME_PERIOD")
-    if isinstance(time_period, int) and layout is not None:
-        column = layout.time_period_to_engine_column.get(time_period)
-        if column is not None:
-            return column
+    if layout is not None:
+        time_period = _projection_period_from_keys(keys, layout=layout)
+        if isinstance(time_period, int):
+            column = layout.time_period_to_engine_column.get(time_period)
+            if column is not None:
+                return column
     if layout is None:
         return None
     return layout.logical_engine_column(address)
@@ -215,20 +270,22 @@ def render_literal_helper_call(
 ) -> str:
     """Render ``helper(ctx, param=literal, ...)`` for one collapsed cell address."""
     kwargs = ", ".join(
-        f"{name}={format_binding_key_literal(keys[concept])}"
-        for name, concept in parameters
+        f"{name}={format_binding_key_literal(keys[dimension_id])}"
+        for name, dimension_id in parameters
     )
     return f"{helper_name}(ctx, {kwargs})"
 
 
 def helper_parameters_for_varying_keys(
-    varying_concepts: frozenset[str],
+    varying_dimension_ids: frozenset[str],
     vocabulary: Sequence[KeyConceptSpec],
 ) -> tuple[KeyConceptSpec, ...]:
-    by_concept = {item.concept: item for item in vocabulary}
+    by_id = {item.dimension_id: item for item in vocabulary}
     missing = sorted(
-        concept for concept in varying_concepts if concept not in by_concept
+        dimension_id
+        for dimension_id in varying_dimension_ids
+        if dimension_id not in by_id
     )
     if missing:
-        raise ValueError(f"unknown varying key concepts: {missing}")
-    return tuple(by_concept[concept] for concept in sorted(varying_concepts))
+        raise ValueError(f"unknown varying key dimensions: {missing}")
+    return tuple(by_id[dimension_id] for dimension_id in sorted(varying_dimension_ids))

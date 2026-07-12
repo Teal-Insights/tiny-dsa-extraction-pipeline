@@ -95,6 +95,9 @@ PROJECTION_LAYOUT = ProjectionColumnLayout(
         4: "F",
         5: "G",
     },
+    # Effective dimension id for the projection axis (defaults to TIME_PERIOD).
+    # Use an explicit id when bindings distinguish projection from other
+    # TIME_PERIOD dimensions, e.g. projection_dimension_id="PROJECTION_PERIOD".
 )
 
 DIFFERENTIAL_WORKBOOK_REL = Path("data/tiny-dsa.xlsx")
@@ -113,6 +116,10 @@ GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = ()
 INTERNAL_BINDING_VALIDATION_MODE: InternalBindingValidationMode = "warn"
 # Sheet-qualified formula addresses reviewed and intentionally allowed to remain unbound.
 INTERNAL_BINDING_EXEMPT_CELLS: frozenset[str] = frozenset()
+
+# Formula-cluster variation mode for internals refactor (independent or dominant_key_only).
+# Override per run with ``--variation-mode`` on ``src.extraction_pipeline``.
+VARIATION_MODE = "independent"
 
 # Optional hooks for ``uv run python -m src.workbook_audit`` (pre-extraction audit).
 AUDIT_TITLE = "Tiny DSA Workbook Audit"

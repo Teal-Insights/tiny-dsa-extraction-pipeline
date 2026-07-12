@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -6,6 +7,7 @@ from excel_grapher.grapher.node import Node
 
 from src.formula_clustering import (
     FormulaCluster,
+    address_only_structural_fingerprint,
     cluster_graph_formulas,
     cluster_has_independent_operand_variation,
     formulas_are_parameterizable,
@@ -29,7 +31,11 @@ def _formula_node(sheet: str, column: str, row: int, formula: str) -> Node:
 
 
 def _debt_to_gdp_anchor_recurrence_graph() -> DependencyGraph:
-    """Graph where period-1 anchor differs structurally from the recurrence chain."""
+    """Graph where the period-1 anchor uses different cell refs than the recurrence chain.
+
+    Under binding-aware fingerprints the formulas still share the same skeleton
+    because every operand varies only on ``TIME_PERIOD``.
+    """
     graph = DependencyGraph()
     formulas = {
         "Engine!C20": ("=Inputs!B6*(1+Inputs!C17/100)/(1+Inputs!C16/100)-Engine!C16"),
@@ -42,6 +48,20 @@ def _debt_to_gdp_anchor_recurrence_graph() -> DependencyGraph:
         sheet, column, row = parse_workbook_address(address)
         graph.add_node(_formula_node(sheet, column, row, formula))
     return graph
+
+
+def _debt_to_gdp_bindings() -> dict[str, dict[str, int]]:
+    bindings: dict[str, dict[str, int]] = {}
+    for col, time_period in zip("BCDEFG", range(1, 7), strict=True):
+        bindings[f"Inputs!{col}6"] = {"TIME_PERIOD": time_period}
+        bindings[f"Inputs!{col}16"] = {"TIME_PERIOD": time_period}
+        bindings[f"Inputs!{col}17"] = {"TIME_PERIOD": time_period}
+    for col, time_period in zip("CDEFG", range(2, 7), strict=True):
+        bindings[f"Engine!{col}16"] = {"TIME_PERIOD": time_period}
+        bindings[f"Engine!{col}20"] = {"TIME_PERIOD": time_period}
+    bindings["Engine!C16"] = {"TIME_PERIOD": 1}
+    bindings["Engine!C20"] = {"TIME_PERIOD": 1}
+    return bindings
 
 
 def _trade_balance_graph() -> DependencyGraph:
@@ -106,12 +126,20 @@ ENGINE_REF_LAYOUT = ProjectionColumnLayout(
 
 
 def test_structural_fingerprint_abstracts_cell_addresses_and_scalars() -> None:
-    left = structural_fingerprint("=Paris!B13+1")
-    right_address = structural_fingerprint("=Paris!B14+2")
+    left = address_only_structural_fingerprint("=Paris!B13+1")
+    right_address = address_only_structural_fingerprint("=Paris!B14+2")
     assert left is not None
     assert right_address is not None
     assert left[0] == right_address[0]
     assert left[1] != right_address[1]
+
+
+def test_structural_fingerprint_requires_bound_address_keys() -> None:
+    with pytest.raises(ValueError, match="bound_address_keys is required"):
+        structural_fingerprint(
+            "=Paris!B13+1",
+            bound_address_keys=None,
+        )
 
 
 def test_binding_aware_fingerprint_includes_sorted_key_concepts() -> None:
@@ -130,10 +158,37 @@ def test_binding_aware_fingerprint_includes_sorted_key_concepts() -> None:
     )
 
 
-def test_formulas_are_parameterizable_for_column_sweep() -> None:
-    left = "=Paris!B13+Inputs!C16"
-    right = "=Paris!C13+Inputs!D16"
-    assert formulas_are_parameterizable(left, right)
+def test_binding_aware_fingerprint_uses_distinct_dimension_ids() -> None:
+    bindings = {
+        "Engine!C10": {"PROJECTION_PERIOD": 1, "REFERENCE_PERIOD": 0},
+        "Engine!D10": {"PROJECTION_PERIOD": 2, "REFERENCE_PERIOD": 0},
+    }
+    fingerprint = structural_fingerprint(
+        "=Engine!C10",
+        bound_address_keys=bindings,
+    )
+    assert fingerprint is not None
+    skeleton, refs = fingerprint
+    assert refs == ("Engine!C10",)
+    assert skeleton == (
+        "ref",
+        0,
+        ("PROJECTION_PERIOD", "REFERENCE_PERIOD"),
+    )
+    assert formulas_are_parameterizable(
+        "=Engine!C10",
+        "=Engine!D10",
+        bound_address_keys=bindings,
+    )
+
+
+def test_formulas_are_parameterizable_requires_bound_address_keys() -> None:
+    with pytest.raises(ValueError, match="bound_address_keys is required"):
+        formulas_are_parameterizable(
+            "=Paris!B13+Inputs!C16",
+            "=Paris!C13+Inputs!D16",
+            bound_address_keys=None,
+        )
 
 
 def test_formulas_are_parameterizable_with_binding_keys_for_column_sweep() -> None:
@@ -149,7 +204,11 @@ def test_formulas_are_parameterizable_with_binding_keys_for_column_sweep() -> No
 def test_formulas_are_parameterizable_with_binding_keys_for_both_axes() -> None:
     left = "=Paris!B13+Inputs!C16"
     right = "=Paris!C14+Inputs!D16"
-    assert not formulas_are_parameterizable(left, right)
+    assert not formulas_are_parameterizable(
+        left,
+        right,
+        bound_address_keys=COLUMN_SWEEP_BINDINGS,
+    )
     assert formulas_are_parameterizable(
         left,
         right,
@@ -160,13 +219,21 @@ def test_formulas_are_parameterizable_with_binding_keys_for_both_axes() -> None:
 def test_formulas_are_not_parameterizable_for_different_structure() -> None:
     left = "=Paris!B13+1"
     right = "=Paris!B13*2"
-    assert not formulas_are_parameterizable(left, right)
+    assert not formulas_are_parameterizable(
+        left,
+        right,
+        bound_address_keys={"Paris!B13": {"TIME_PERIOD": 1}},
+    )
 
 
 def test_formulas_are_not_parameterizable_when_refs_vary_on_both_axes() -> None:
     left = "=Paris!B13+Inputs!C16"
     right = "=Paris!C14+Inputs!D16"
-    assert not formulas_are_parameterizable(left, right)
+    assert not formulas_are_parameterizable(
+        left,
+        right,
+        bound_address_keys=COLUMN_SWEEP_BINDINGS,
+    )
 
 
 def test_formulas_are_not_parameterizable_when_ref_key_sets_differ() -> None:
@@ -189,16 +256,38 @@ def test_formulas_are_not_parameterizable_when_binding_metadata_missing() -> Non
     )
 
 
-def test_formulas_are_not_parameterizable_for_anchor_vs_recurrence() -> None:
+def test_formulas_are_parameterizable_for_matching_anchor_and_recurrence_shapes() -> (
+    None
+):
     left = "=Inputs!B6*(1+Inputs!C17/100)"
     right = "=Engine!C6*(1+Inputs!D17/100)"
-    assert not formulas_are_parameterizable(left, right)
+    bindings = {
+        "Inputs!B6": {"TIME_PERIOD": 1},
+        "Inputs!C17": {"TIME_PERIOD": 1},
+        "Engine!C6": {"TIME_PERIOD": 1},
+        "Inputs!D17": {"TIME_PERIOD": 2},
+    }
+    assert formulas_are_parameterizable(left, right, bound_address_keys=bindings)
+
+
+def test_cluster_graph_formulas_requires_bound_address_keys(
+    synthetic_projection,
+) -> None:
+    with pytest.raises(ValueError, match="bound_address_keys is required"):
+        cluster_graph_formulas(synthetic_projection, bound_address_keys=None)
 
 
 def test_cluster_graph_formulas_groups_parallel_row_on_synthetic_projection(
     synthetic_projection,
+    synthetic_bound_address_keys,
+    synthetic_pipeline_config_fixture,
 ) -> None:
-    clusters = cluster_graph_formulas(synthetic_projection)
+    clusters = cluster_graph_formulas(
+        synthetic_projection,
+        bound_address_keys=synthetic_bound_address_keys,
+        workbook_path=synthetic_pipeline_config_fixture.workbook_path,
+        layout=synthetic_pipeline_config_fixture.projection_layout,
+    )
     engine_cluster = next(
         cluster
         for cluster in clusters
@@ -279,23 +368,26 @@ def test_dominant_key_only_variation_mode_splits_cluster() -> None:
     assert ("Engine!D5",) in member_sets
 
 
-def test_cluster_graph_formulas_splits_anchor_from_recurrence_chain() -> None:
-    clusters = cluster_graph_formulas(_debt_to_gdp_anchor_recurrence_graph())
+def test_cluster_graph_formulas_groups_debt_recurrence_chain_with_binding_keys() -> (
+    None
+):
+    clusters = cluster_graph_formulas(
+        _debt_to_gdp_anchor_recurrence_graph(),
+        bound_address_keys=_debt_to_gdp_bindings(),
+    )
     debt_clusters = [
         cluster
         for cluster in clusters
         if any(member.endswith("20") for member in cluster.members)
-        and len(cluster.members) >= 2
     ]
     assert len(debt_clusters) == 1
-    assert debt_clusters[0].members == (
+    assert set(debt_clusters[0].members) == {
+        "Engine!C20",
         "Engine!D20",
         "Engine!E20",
         "Engine!F20",
         "Engine!G20",
-    )
-    singletons = [cluster for cluster in clusters if cluster.members == ("Engine!C20",)]
-    assert len(singletons) == 1
+    }
 
 
 def test_dominant_key_only_split_passes_layout_to_ref_key_resolution(

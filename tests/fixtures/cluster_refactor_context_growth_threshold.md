@@ -44,7 +44,8 @@ def cell_forecast_f12(ctx):
 Key vocabulary:
 
 ```yaml
-- concept: REPORTING_PERIOD
+- dimension_id: REPORTING_PERIOD
+  concept: REPORTING_PERIOD
   dtype: int
   suggested_param_name: reporting_period
 ```

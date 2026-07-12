@@ -174,7 +174,7 @@ def output_delta(ctx, time_period: int):
 
 
 TIME_PERIOD_PARAMETER = (
-    HelperParameter(name="time_period", concept="TIME_PERIOD", dtype="int"),
+    HelperParameter(name="time_period", dimension_id="TIME_PERIOD", dtype="int"),
 )
 
 
@@ -186,8 +186,8 @@ def _member_keys(
             address=address,
             function_name=function_name,
             keys=tuple(
-                MemberKeyEntry(concept=concept, value=value)
-                for concept, value in keys.items()
+                MemberKeyEntry(dimension_id=dimension_id, value=value)
+                for dimension_id, value in keys.items()
             ),
         )
         for address, function_name, keys in addresses

@@ -9,30 +9,49 @@ Return only JSON matching the response schema:
   "additionalProperties": false,
   "properties": {
     "symbol_signature": {
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types.",
-      "title": "Symbol Signature",
-      "type": "string"
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types. Null when error is true.",
+      "title": "Symbol Signature"
     },
     "symbol_docstring": {
-      "description": "Google-style docstring. Include Args and Returns sections.",
-      "title": "Symbol Docstring",
-      "type": "string"
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Google-style docstring. Include Args and Returns sections. Null when error is true.",
+      "title": "Symbol Docstring"
     },
     "symbol_body": {
-      "description": "Python function body.",
-      "title": "Symbol Body",
-      "type": "string"
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Python function body. Null when error is true.",
+      "title": "Symbol Body"
+    },
+    "error": {
+      "anyOf": [{"type": "boolean"}, {"type": "null"}],
+      "description": "Set to true to abort this refactor and stop the pipeline when the cell cannot be safely refactored. Null or false on success.",
+      "title": "Error"
+    },
+    "error_reason": {
+      "anyOf": [{"type": "string"}, {"type": "null"}],
+      "description": "Human-readable explanation of why refactoring must abort. Non-empty when error is true; null otherwise.",
+      "title": "Error Reason"
     }
   },
   "required": [
     "symbol_signature",
     "symbol_docstring",
-    "symbol_body"
+    "symbol_body",
+    "error",
+    "error_reason"
   ],
-  "title": "SingletonRefactorResponse",
+  "title": "SingletonRefactorLLMResponse",
   "type": "object"
 }
 ```
+
+## Aborting
+
+- If the cell cannot be safely refactored, set `error` to `true` and provide a concise non-empty `error_reason`.
+- When `error` is `true`, set every success field (`symbol_signature`, `symbol_docstring`, `symbol_body`) to `null`. Do not omit keys.
+- Do not invent a best-effort refactor when the correct outcome is to stop. Declaring an error ends the pipeline for human review.
+- On success, set `error` to `null` or `false`, set `error_reason` to `null`, and populate every success field.
 
 ## Signature
 
@@ -72,6 +91,8 @@ To support function naming and docstring generation, you will be provided a cell
 {
   "symbol_signature": "def united_states_excess_deaths(ctx: EvalContext) -> float:",
   "symbol_docstring": "Excess deaths for the United States: total deaths less expected deaths.\n\nArgs:\n    ctx: Workbook evaluation context.\n\nReturns:\n    Excess deaths for the United States.",
-  "symbol_body": "total_deaths = xl_number(united_states_total_deaths(ctx))\nexpected_deaths = xl_number(united_states_expected_deaths(ctx))\nreturn total_deaths - expected_deaths"
+  "symbol_body": "total_deaths = xl_number(united_states_total_deaths(ctx))\nexpected_deaths = xl_number(united_states_expected_deaths(ctx))\nreturn total_deaths - expected_deaths",
+  "error": null,
+  "error_reason": null
 }
 ```

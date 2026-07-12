@@ -36,6 +36,8 @@ from src.export_validation_assets import export_validation_assets
 from src.logging_config import configure_logging
 from src.pipeline_config import (
     PipelineConfig,
+    add_variation_mode_argument,
+    apply_variation_mode_cli_override,
     load_pipeline_config,
     validate_pipeline_config,
 )
@@ -448,6 +450,7 @@ tests/results/local/
     formula_clusters = cluster_graph_formulas(
         refactor_projection,
         bound_address_keys=bound_address_keys,
+        variation_mode=config.variation_mode,
         workbook_path=config.workbook_path,
         layout=config.projection_layout,
     )
@@ -475,9 +478,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="Bypass on-disk graph and projection caches for this run.",
     )
+    add_variation_mode_argument(parser)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    config = load_pipeline_config()
+    config = apply_variation_mode_cli_override(
+        load_pipeline_config(), args.variation_mode
+    )
     validate_pipeline_config(config)
     activate_pipeline_config(config)
     if args.extract_graph:

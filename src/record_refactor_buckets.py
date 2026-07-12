@@ -21,17 +21,31 @@ from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
 from src.docstring_callback import configure_docstring_callback
 from src.extraction_pipeline import build_pipeline_graph
+from src.pipeline_config import (
+    PipelineConfig,
+    add_variation_mode_argument,
+    apply_variation_mode_cli_override,
+    load_pipeline_config,
+    validate_pipeline_config,
+)
+from src.pipeline_context import activate_pipeline_config
 from src.formula_clustering import (
     BoundAddressKeys,
     ClusterableGraph,
     FormulaCluster,
+    _require_bound_address_keys,
     cluster_graph_formulas,
-    cluster_has_independent_operand_variation,
     formula_nodes_for_clustering,
 )
 from src.refactor_bindings import (
+    KeyConceptSpec,
     build_bound_address_keys,
+    load_key_concept_vocabulary,
     varying_key_concepts,
+)
+from src.refactor_contracts import (
+    ClusterRefactorContract,
+    select_cluster_refactor_contract,
 )
 from src.internal_bindings import InternalBindingIndex, build_internal_binding_index
 from src.internals_refactor import (
@@ -42,17 +56,11 @@ from src.internals_refactor import (
     build_singleton_refactor_context,
 )
 from src.logging_config import configure_logging
-from src.pipeline_config import (
-    PipelineConfig,
-    load_pipeline_config,
-    validate_pipeline_config,
-)
-from src.pipeline_context import activate_pipeline_config
 from src.refactor_order import compute_cluster_refactor_order
 from src.subgraph_projection import build_refactor_projection
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
-REFACTOR_BUCKETS_SCHEMA_VERSION = "1.0.0"
+REFACTOR_BUCKETS_SCHEMA_VERSION = "1.1.0"
 DEFAULT_JSON_OUTPUT = Path("artifacts/refactor-buckets.json")
 DEFAULT_MARKDOWN_OUTPUT = Path("artifacts/refactor-buckets.md")
 DEFAULT_JSON_OUTPUT_UNCOMPRESSED = Path("artifacts/refactor-buckets-uncompressed.json")
@@ -72,6 +80,7 @@ class RefactorBucketRecord:
     kind: RefactorKind
     eligible: bool
     skip_reason: str | None
+    contract: ClusterRefactorContract | None
     row: int | None
     member_count: int
     members: tuple[str, ...]
@@ -86,6 +95,7 @@ class RefactorBucketRecord:
             "kind": self.kind,
             "eligible": self.eligible,
             "skip_reason": self.skip_reason,
+            "contract": self.contract,
             "row": self.row,
             "member_count": self.member_count,
             "members": list(self.members),
@@ -126,17 +136,18 @@ def _singleton_skip_reason(
     return None
 
 
-def _cluster_skip_reason(
+def _cluster_contract_and_skip_reason(
     graph: ClusterableGraph,
     cluster: FormulaCluster,
     internals_source: str,
     *,
     layout: ProjectionColumnLayout | None,
-    bound_address_keys: BoundAddressKeys | None = None,
+    bound_address_keys: BoundAddressKeys,
+    key_vocabulary: tuple[KeyConceptSpec, ...],
     workbook_path: Path | None = None,
-) -> str | None:
+) -> tuple[ClusterRefactorContract | None, str | None]:
     if len(cluster.members) < 2:
-        return "cluster_has_fewer_than_two_members"
+        return None, "cluster_has_fewer_than_two_members"
 
     defined_functions = _defined_function_names(internals_source)
     eligible_members = 0
@@ -152,29 +163,28 @@ def _cluster_skip_reason(
         eligible_members += 1
 
     if eligible_members < 2:
-        return "cluster_has_fewer_than_two_graph_formula_members"
+        return None, "cluster_has_fewer_than_two_graph_formula_members"
 
-    if (
-        bound_address_keys is not None
-        and workbook_path is not None
-        and layout is not None
-    ):
+    if workbook_path is not None and layout is not None:
         varying = varying_key_concepts(
             cluster.members,
             bound_address_keys=bound_address_keys,
             workbook_path=workbook_path,
             layout=layout,
         )
-        if cluster_has_independent_operand_variation(
+        contract = select_cluster_refactor_contract(
             cluster,
             formula_nodes_for_clustering(graph),
             bound_address_keys,
             varying,
+            key_vocabulary=key_vocabulary,
             workbook_path=workbook_path,
             layout=layout,
-        ):
-            return "operand_level_variation_unsupported"
-    return None
+        )
+        if contract is None:
+            return None, "operand_level_variation_unsupported"
+        return contract, None
+    return None, None
 
 
 def _external_dependencies(
@@ -229,12 +239,15 @@ def record_refactor_buckets(
     layout: ProjectionColumnLayout | None,
     compression: CompressionMode = "optimal",
     refactor_graph: ProjectionResult | None = None,
-    bound_address_keys: BoundAddressKeys | None = None,
+    bound_address_keys: BoundAddressKeys | None,
 ) -> tuple[RefactorBucketRecord, ...]:
     """Classify formula clusters into singleton and cluster refactor target buckets."""
+    resolved_bound_keys = _require_bound_address_keys(bound_address_keys)
+    key_vocabulary = load_key_concept_vocabulary(config.bindings_path)
     clusters = cluster_graph_formulas(
         graph,
-        bound_address_keys=bound_address_keys,
+        bound_address_keys=resolved_bound_keys,
+        variation_mode=config.variation_mode,
         workbook_path=config.workbook_path,
         layout=layout,
     )
@@ -252,6 +265,7 @@ def record_refactor_buckets(
     records: list[RefactorBucketRecord] = []
     for refactor_order, cluster in enumerate(ordered_clusters):
         kind: RefactorKind = "singleton" if len(cluster.members) == 1 else "cluster"
+        contract: ClusterRefactorContract | None = None
         if compression == "none":
             skip_reason = None
             ctx = None
@@ -268,12 +282,13 @@ def record_refactor_buckets(
                 )
             )
         else:
-            skip_reason = _cluster_skip_reason(
+            contract, skip_reason = _cluster_contract_and_skip_reason(
                 graph,
                 cluster,
                 internals_source,
                 layout=layout,
-                bound_address_keys=bound_address_keys,
+                bound_address_keys=resolved_bound_keys,
+                key_vocabulary=key_vocabulary,
                 workbook_path=config.workbook_path,
             )
             ctx = (
@@ -301,6 +316,7 @@ def record_refactor_buckets(
                 kind=kind,
                 eligible=eligible,
                 skip_reason=skip_reason,
+                contract=contract,
                 row=cluster.row,
                 member_count=len(cluster.members),
                 members=cluster.members,
@@ -427,6 +443,8 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
             f"Cluster {bucket['cluster_id']} ({bucket['kind']}, {status})"
         )
         lines.append("")
+        if bucket["contract"] is not None:
+            lines.append(f"- Contract: {bucket['contract']}")
         if bucket["row"] is not None:
             lines.append(f"- Representative row: {bucket['row']}")
         lines.append(
@@ -553,6 +571,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         action="store_true",
         help="Bypass on-disk graph and projection caches for this run.",
     )
+    add_variation_mode_argument(parser)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     json_output = (
@@ -566,7 +585,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         else args.markdown_output
     )
 
-    config = load_pipeline_config()
+    config = apply_variation_mode_cli_override(
+        load_pipeline_config(), args.variation_mode
+    )
     validate_pipeline_config(config)
     activate_pipeline_config(config)
 

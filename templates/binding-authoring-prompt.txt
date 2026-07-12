@@ -26,7 +26,22 @@ Binding schema and conventions:
 - Use layout: scalar for one-cell inputs and layout: row_series for one-row time series.
 - Use structure.measure.concept: OBS_VALUE with bind.kind: data_cell.
 - Use key fields only for record matching. For row time series, use TIME_PERIOD from the column header row. For scalar parameters, use keyless bindings (`key: []`) and keep PARAMETER in series_context. For keyed tables, use the header that identifies each record as the key.
-- Give every dimension an explicit id. The id names the dimension itself; concept names the SDMX-style meaning category it references. They match unless two dimensions in one series share a concept (e.g. a projection axis and a reference period both on TIME_PERIOD), in which case give each dimension a distinct id. Record fields, key entries, and series_context use the effective id.
+- Give every dimension an explicit id. The id names the dimension itself; concept names the SDMX-style meaning category it references. They match unless two dimensions in one series share a concept (e.g. a projection axis and a reference period both on TIME_PERIOD), in which case give each dimension a distinct id. Record fields, key entries, series_context, and internals-refactor parameters use the effective id. Parameter names are derived from the effective id (e.g. PROJECTION_PERIOD → projection_period). Concept-only keys are a legacy fallback only when the concept uniquely identifies one dimension.
+- Example when two dimensions share TIME_PERIOD:
+
+  dimensions:
+    - id: PROJECTION_PERIOD
+      concept: TIME_PERIOD
+      role: key
+      scope: cell
+      bind: {kind: column_header, header_row: 5, read: int}
+    - id: REFERENCE_PERIOD
+      concept: TIME_PERIOD
+      role: key
+      scope: cell
+      bind: {kind: value_map, values: {0: C:G}, read: int}
+  key: [PROJECTION_PERIOD, REFERENCE_PERIOD]
+- When an internal formula's operands vary independently along one concept (e.g. bilateral flows reading a reporter series and a counterpart series), declare a distinct dimension id for each role on the internal series that binds the formula cells (e.g. REF_AREA plus COUNTERPART_REF_AREA, both concept REF_AREA). Without distinct ids such clusters are skipped as operand_level_variation_unsupported; with them the refactor uses the dimension-aware contract (see bindings/README.md).
 - Add input.setter.name values matching set_[a-z][a-z0-9_]* for input series.
 - Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
 - Add internal series with `internal: {}` for formula cells that need concept-key triangulation during internals refactor. Internal series do not generate public setter or compute code.

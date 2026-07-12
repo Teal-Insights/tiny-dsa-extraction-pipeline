@@ -20,8 +20,17 @@ def test_refactor_projection_uses_optimal_compression(synthetic_graph) -> None:
     assert len(projection) <= len(synthetic_graph)
 
 
-def test_cluster_graph_formulas_finds_parallel_engine_row(synthetic_projection) -> None:
-    clusters = cluster_graph_formulas(synthetic_projection)
+def test_cluster_graph_formulas_finds_parallel_engine_row(
+    synthetic_projection,
+    synthetic_bound_address_keys,
+    synthetic_pipeline_config_fixture,
+) -> None:
+    clusters = cluster_graph_formulas(
+        synthetic_projection,
+        bound_address_keys=synthetic_bound_address_keys,
+        workbook_path=synthetic_pipeline_config_fixture.workbook_path,
+        layout=synthetic_pipeline_config_fixture.projection_layout,
+    )
     parallel = next(
         cluster for cluster in clusters if cluster.members == ("Engine!B2", "Engine!C2")
     )
@@ -30,8 +39,15 @@ def test_cluster_graph_formulas_finds_parallel_engine_row(synthetic_projection) 
 
 def test_compute_cluster_refactor_order_respects_dependencies(
     synthetic_projection,
+    synthetic_bound_address_keys,
+    synthetic_pipeline_config_fixture,
 ) -> None:
-    clusters = cluster_graph_formulas(synthetic_projection)
+    clusters = cluster_graph_formulas(
+        synthetic_projection,
+        bound_address_keys=synthetic_bound_address_keys,
+        workbook_path=synthetic_pipeline_config_fixture.workbook_path,
+        layout=synthetic_pipeline_config_fixture.projection_layout,
+    )
     ordered = compute_cluster_refactor_order(synthetic_projection, clusters)
 
     assert len(ordered) == 2
@@ -76,8 +92,15 @@ def test_compute_cluster_refactor_order_interleaves_singleton_and_multi_member()
 
 def test_compute_cluster_refactor_order_includes_all_eligible_clusters(
     synthetic_projection,
+    synthetic_bound_address_keys,
+    synthetic_pipeline_config_fixture,
 ) -> None:
-    clusters = cluster_graph_formulas(synthetic_projection)
+    clusters = cluster_graph_formulas(
+        synthetic_projection,
+        bound_address_keys=synthetic_bound_address_keys,
+        workbook_path=synthetic_pipeline_config_fixture.workbook_path,
+        layout=synthetic_pipeline_config_fixture.projection_layout,
+    )
     eligible = [cluster for cluster in clusters if cluster.members]
     ordered = compute_cluster_refactor_order(synthetic_projection, clusters)
     assert len(ordered) == len(eligible)

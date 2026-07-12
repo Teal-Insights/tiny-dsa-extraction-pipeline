@@ -6,4 +6,5 @@ __pycache__/
 .env
 docs/dependency-graph/
 artifacts/dependency-graph/
+artifacts/refactor-bucket-codegen/
 docs/human-hypothesis-graph/

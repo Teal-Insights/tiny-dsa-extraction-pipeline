@@ -1,4 +1,4 @@
-"""Compare Tiny DSA formula clustering across variation_mode settings."""
+"""Compare formula clustering across variation_mode settings."""
 
 from __future__ import annotations
 
@@ -114,10 +114,8 @@ def _print_differences(
     print()
 
     left_groups: dict[int, list[str]] = defaultdict(list)
-    right_groups: dict[int, list[str]] = defaultdict(list)
     for member in changed:
         left_groups[left_map[member]].append(member)
-        right_groups[right_map[member]].append(member)
 
     print("Merged/split summary:")
     for left_id, members in sorted(left_groups.items()):
@@ -144,8 +142,8 @@ def _print_differences(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare Tiny DSA formula buckets for independent vs dominant_key_only "
-            "variation_mode."
+            "Compare formula buckets for independent vs dominant_key_only "
+            "variation_mode on the configured workbook."
         )
     )
     parser.add_argument(

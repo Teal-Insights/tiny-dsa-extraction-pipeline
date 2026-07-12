@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.extraction_pipeline import (
     count_provenance_edges,
+    export_generated_package,
     extract_dependency_graph,
     main,
 )
@@ -92,3 +93,69 @@ def test_load_pipeline_config_default_graph_output_dir() -> None:
     config = load_pipeline_config()
     assert config.graph_output_dir.name == "dependency-graph"
     assert config.graph_output_dir.parent.name == "artifacts"
+
+
+def test_export_generated_package_passes_variation_mode_to_cluster_graph_formulas(
+    synthetic_pipeline_config_fixture,
+) -> None:
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        variation_mode="dominant_key_only",
+    )
+    cluster_graph_formulas = MagicMock(return_value=())
+
+    with patch(
+        "src.extraction_pipeline.build_pipeline_graph",
+        return_value=MagicMock(
+            graph=MagicMock(),
+            series_bindings=MagicMock(),
+            input_series=(),
+            output_series=(),
+            internal_series=(),
+            graph_cache_key="cache-key",
+        ),
+    ):
+        with patch(
+            "src.extraction_pipeline.build_refactor_projection",
+            return_value=MagicMock(),
+        ):
+            with patch(
+                "src.extraction_pipeline.configure_docstring_callback",
+                return_value="series_docs",
+            ):
+                with patch("src.extraction_pipeline.CodeGenerator") as generator_cls:
+                    generator = generator_cls.return_value.__enter__.return_value
+                    generator.generate_modules.return_value = {"internals.py": "pass\n"}
+                    with patch("src.extraction_pipeline.export_validation_assets"):
+                        with patch(
+                            "src.formula_clustering.cluster_graph_formulas",
+                            cluster_graph_formulas,
+                        ):
+                            with patch(
+                                "src.internals_refactor.refactor_internals_all_clusters"
+                            ):
+                                export_generated_package(config)
+
+    cluster_graph_formulas.assert_called_once()
+    assert (
+        cluster_graph_formulas.call_args.kwargs["variation_mode"] == "dominant_key_only"
+    )
+
+
+def test_main_passes_cli_variation_mode_to_export(
+    synthetic_pipeline_config_fixture,
+) -> None:
+    with patch(
+        "src.extraction_pipeline.load_pipeline_config",
+        return_value=synthetic_pipeline_config_fixture,
+    ):
+        with patch("src.extraction_pipeline.validate_pipeline_config"):
+            with patch("src.extraction_pipeline.activate_pipeline_config"):
+                with patch(
+                    "src.extraction_pipeline.export_generated_package"
+                ) as export:
+                    with patch("src.documentation_pipeline.run_documentation_pipeline"):
+                        main(["--variation-mode", "dominant_key_only"])
+
+    export.assert_called_once()
+    assert export.call_args.args[0].variation_mode == "dominant_key_only"

@@ -22,6 +22,7 @@ class ProjectionColumnLayout:
     outputs_column_to_engine: dict[str, str]
     time_period_to_engine_column: dict[int, str]
     time_period_header_row: int = 5
+    projection_dimension_id: str = "TIME_PERIOD"
 
     def logical_engine_column(self, address: str) -> str | None:
         sheet, column, _row = parse_workbook_address(address)

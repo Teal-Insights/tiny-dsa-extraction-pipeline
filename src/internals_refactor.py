@@ -10,7 +10,7 @@ import re
 import textwrap
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -18,7 +18,7 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.formula_clustering import FormulaCluster
 from src.llm_json import DEFAULT_MAX_ATTEMPTS, generate_validated_json
@@ -35,6 +35,12 @@ from src.refactor_bindings import (
     format_binding_key_literal,
     load_key_concept_vocabulary,
     render_literal_helper_call,
+    resolve_dimension_key,
+)
+from src.refactor_contracts import (
+    ClusterRefactorContract,
+    concepts_with_multiple_dimensions,
+    select_cluster_refactor_contract,
 )
 from src.refactor_order import compute_cluster_refactor_order
 from src.runtime_symbols import allowed_runtime_symbols
@@ -52,7 +58,7 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 21
+REFACTOR_PROMPT_VERSION = 25
 
 
 def refactor_model() -> str:
@@ -201,6 +207,7 @@ class ClusterRefactorContext:
     key_vocabulary: tuple[KeyConceptSpec, ...]
     expected_member_keys: dict[str, dict[str, BindingKeyValue]]
     naming_hints: dict[str, object]
+    contract: ClusterRefactorContract = "member_sweep"
 
 
 class HelperParameter(BaseModel):
@@ -209,19 +216,54 @@ class HelperParameter(BaseModel):
     name: str = Field(
         description="Python parameter name for the helper, e.g. time_period."
     )
-    concept: str = Field(
-        description="Binding key concept this parameter varies along, e.g. TIME_PERIOD."
+    dimension_id: str = Field(
+        description=(
+            "Effective binding dimension id this parameter varies along, "
+            "e.g. PROJECTION_PERIOD or TIME_PERIOD."
+        )
     )
     dtype: str = Field(description="Expected Python dtype for the parameter.")
+    concept: str | None = Field(
+        default=None,
+        description=(
+            "SDMX-style concept referenced by the dimension, e.g. TIME_PERIOD. "
+            "Optional; filled from key_vocabulary when omitted."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_concept_as_dimension_id(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if payload.get("dimension_id") is None and payload.get("concept") is not None:
+            payload["dimension_id"] = payload["concept"]
+        return payload
 
 
 class MemberKeyEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    concept: str = Field(description="Binding key concept name, e.g. TIME_PERIOD.")
-    value: str | int | float | bool = Field(
-        description="Literal binding key value for this concept."
+    dimension_id: str = Field(
+        description=(
+            "Effective binding dimension id, e.g. PROJECTION_PERIOD or TIME_PERIOD."
+        )
     )
+    value: str | int | float | bool = Field(
+        description="Literal binding key value for this dimension."
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_concept_as_dimension_id(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if payload.get("dimension_id") is None and payload.get("concept") is not None:
+            payload["dimension_id"] = payload["concept"]
+        payload.pop("concept", None)
+        return payload
 
 
 class MemberKeys(BaseModel):
@@ -231,13 +273,13 @@ class MemberKeys(BaseModel):
     function_name: str = Field(description="Existing cell_* function being replaced.")
     keys: tuple[MemberKeyEntry, ...] = Field(
         description=(
-            "Literal binding key values for this address; one entry per concept, "
-            "excluding series-constant concepts."
+            "Literal binding key values for this address; one entry per dimension, "
+            "excluding series-constant dimensions."
         )
     )
 
     def keys_dict(self) -> dict[str, BindingKeyValue]:
-        return {entry.concept: entry.value for entry in self.keys}
+        return {entry.dimension_id: entry.value for entry in self.keys}
 
 
 class ClusterRefactorResponse(BaseModel):
@@ -254,7 +296,8 @@ class ClusterRefactorResponse(BaseModel):
     )
     parameters: tuple[HelperParameter, ...] = Field(
         description=(
-            "Economic parameters the helper varies along, tied to binding key concepts."
+            "Economic parameters the helper varies along, tied to binding "
+            "dimension ids."
         )
     )
     helper_source: str = Field(
@@ -271,35 +314,143 @@ class ClusterRefactorResponse(BaseModel):
     )
 
 
+class RefactorDeclaredError(RuntimeError):
+    """Raised when the LLM declares that a refactor cannot proceed safely."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        kind: Literal["singleton", "cluster"],
+        target: str,
+    ) -> None:
+        self.reason = reason
+        self.kind = kind
+        self.target = target
+        super().__init__(reason)
+
+
+def _validate_llm_response_error_or_success[T: BaseModel](
+    response: T,
+    *,
+    success_fields: tuple[str, ...],
+) -> T:
+    error = getattr(response, "error")
+    error_reason = getattr(response, "error_reason")
+    if error is True:
+        reason = error_reason.strip() if isinstance(error_reason, str) else ""
+        if not reason:
+            raise ValueError(
+                "error_reason must be a non-empty string when error is true"
+            )
+        populated = [
+            name for name in success_fields if getattr(response, name) is not None
+        ]
+        if populated:
+            raise ValueError(
+                "success fields must be null when error is true: "
+                + ", ".join(populated)
+            )
+        return response
+    if error_reason is not None:
+        raise ValueError("error_reason must be null unless error is true")
+    missing = [
+        name
+        for name in success_fields
+        if getattr(response, name) is None
+        or (
+            isinstance(getattr(response, name), str)
+            and not getattr(response, name).strip()
+        )
+    ]
+    if missing:
+        raise ValueError(
+            "missing required fields for successful refactor: " + ", ".join(missing)
+        )
+    return response
+
+
+def raise_if_llm_declared_error(
+    response: BaseModel,
+    *,
+    kind: Literal["singleton", "cluster"],
+    target: str,
+) -> None:
+    """Abort immediately when the LLM sets ``error`` to true."""
+    if getattr(response, "error") is not True:
+        return
+    error_reason = getattr(response, "error_reason")
+    reason = error_reason.strip() if isinstance(error_reason, str) else ""
+    if not reason:
+        raise ValueError("error_reason must be a non-empty string when error is true")
+    raise RefactorDeclaredError(reason, kind=kind, target=target)
+
+
 class ClusterRefactorLLMResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    symbol_signature: str = Field(
+    symbol_signature: str | None = Field(
         description=(
             "Python function signature, including `def` keyword, `snake_case` "
             "semantic name, `ctx: EvalContext`, typed economic parameters from "
-            "`key_vocabulary`, and return type hint."
-        )
+            "`key_vocabulary`, and return type hint. Null when error is true."
+        ),
     )
-    symbol_docstring: str = Field(
-        description="Google-style docstring. Include Args and Returns sections."
-    )
-    symbol_body: str = Field(description="Python function body.")
-    parameters: tuple[HelperParameter, ...] = Field(
+    symbol_docstring: str | None = Field(
         description=(
-            "Economic parameters the helper varies along, tied to binding key concepts."
-        )
+            "Google-style docstring. Include Args and Returns sections. "
+            "Null when error is true."
+        ),
     )
-    member_keys: tuple[MemberKeys, ...] = Field(
+    symbol_body: str | None = Field(
+        description="Python function body. Null when error is true.",
+    )
+    parameters: tuple[HelperParameter, ...] | None = Field(
         description=(
-            "One entry per cluster member with literal key values for that address."
-        )
+            "Economic parameters the helper varies along, tied to binding "
+            "dimension ids. Null when error is true."
+        ),
+    )
+    member_keys: tuple[MemberKeys, ...] | None = Field(
+        description=(
+            "One entry per cluster member with literal key values for that address. "
+            "Null when error is true."
+        ),
+    )
+    error: bool | None = Field(
+        description=(
+            "Set to true to abort this refactor and stop the pipeline when the "
+            "cluster cannot be safely refactored. Null or false on success."
+        ),
+    )
+    error_reason: str | None = Field(
+        description=(
+            "Human-readable explanation of why refactoring must abort. "
+            "Non-empty when error is true; null otherwise."
+        ),
     )
 
+    @model_validator(mode="after")
+    def _require_success_fields_or_declared_error(self) -> ClusterRefactorLLMResponse:
+        return _validate_llm_response_error_or_success(
+            self,
+            success_fields=(
+                "symbol_signature",
+                "symbol_docstring",
+                "symbol_body",
+                "parameters",
+                "member_keys",
+            ),
+        )
 
-CLUSTER_REFACTOR_PROMPT_FIXTURE = (
-    repo_root / "tests" / "fixtures" / "cluster_refactor_prompt.md"
-)
+
+CLUSTER_REFACTOR_PROMPT_FIXTURES: dict[ClusterRefactorContract, Path] = {
+    "member_sweep": repo_root / "tests" / "fixtures" / "cluster_refactor_prompt.md",
+    "dimension_aware": (
+        repo_root / "tests" / "fixtures" / "cluster_refactor_prompt_dimension_aware.md"
+    ),
+}
+CLUSTER_REFACTOR_PROMPT_FIXTURE = CLUSTER_REFACTOR_PROMPT_FIXTURES["member_sweep"]
 
 
 @dataclass(frozen=True)
@@ -340,16 +491,45 @@ class SingletonRefactorResponse(BaseModel):
 class SingletonRefactorLLMResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    symbol_signature: str = Field(
+    symbol_signature: str | None = Field(
         description=(
             "Python function signature, including `def` keyword, `snake_case` "
-            "semantic name, a single `ctx: EvalContext` argument, and return type hint."
+            "semantic name, a single `ctx: EvalContext` argument, and return type hint. "
+            "Null when error is true."
+        ),
+    )
+    symbol_docstring: str | None = Field(
+        description=(
+            "Google-style docstring. Include Args and Returns sections. "
+            "Null when error is true."
+        ),
+    )
+    symbol_body: str | None = Field(
+        description="Python function body. Null when error is true.",
+    )
+    error: bool | None = Field(
+        description=(
+            "Set to true to abort this refactor and stop the pipeline when the "
+            "cell cannot be safely refactored. Null or false on success."
+        ),
+    )
+    error_reason: str | None = Field(
+        description=(
+            "Human-readable explanation of why refactoring must abort. "
+            "Non-empty when error is true; null otherwise."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_success_fields_or_declared_error(self) -> SingletonRefactorLLMResponse:
+        return _validate_llm_response_error_or_success(
+            self,
+            success_fields=(
+                "symbol_signature",
+                "symbol_docstring",
+                "symbol_body",
+            ),
         )
-    )
-    symbol_docstring: str = Field(
-        description="Google-style docstring. Include Args and Returns sections."
-    )
-    symbol_body: str = Field(description="Python function body.")
 
 
 ALLOWED_SINGLETON_RETURN_TYPE_HINTS = frozenset({"bool", "float", "int", "str"})
@@ -575,6 +755,25 @@ def build_cluster_refactor_context(
         workbook_path=workbook_path,
         layout=resolved_layout,
     )
+    varying_dimension_ids = frozenset(
+        dimension_id for keys in expected_member_keys.values() for dimension_id in keys
+    )
+    contract = select_cluster_refactor_contract(
+        replace(cluster, members=member_address_list),
+        {member.address: member.normalized_formula for member in members},
+        resolved_bound_keys,
+        varying_dimension_ids,
+        key_vocabulary=resolved_vocabulary,
+        workbook_path=workbook_path,
+        layout=resolved_layout,
+    )
+    if contract is None:
+        logger.warning(
+            "cluster %s skipped: operand-level variation is not routable by the "
+            "declared binding dimension ids (operand_level_variation_unsupported)",
+            cluster.cluster_id,
+        )
+        return None
 
     external_dependency_addresses = sorted(
         {
@@ -619,6 +818,7 @@ def build_cluster_refactor_context(
                 for member in members
             )
         ),
+        contract=contract,
     )
 
 
@@ -730,6 +930,7 @@ def refactor_cache_key(
     payload = {
         "model": refactor_model(),
         "prompt_version": REFACTOR_PROMPT_VERSION,
+        "contract": ctx.contract,
         "cluster_id": ctx.cluster_id,
         "canonical_template": ctx.canonical_template,
         "members": [
@@ -756,13 +957,15 @@ def refactor_cache_key(
 
 
 def prompt_payload(ctx: ClusterRefactorContext) -> dict[str, object]:
-    varying_concepts = frozenset(
-        concept for keys in ctx.expected_member_keys.values() for concept in keys
+    varying_dimension_ids = frozenset(
+        dimension_id
+        for keys in ctx.expected_member_keys.values()
+        for dimension_id in keys
     )
     parameter_names = [
         item.suggested_param_name
         for item in ctx.key_vocabulary
-        if item.concept in varying_concepts
+        if item.dimension_id in varying_dimension_ids
     ]
     return {
         "cluster_id": ctx.cluster_id,
@@ -771,6 +974,7 @@ def prompt_payload(ctx: ClusterRefactorContext) -> dict[str, object]:
         "first_year_column": ctx.first_year_column,
         "key_vocabulary": [
             {
+                "dimension_id": item.dimension_id,
                 "concept": item.concept,
                 "dtype": item.dtype,
                 "suggested_param_name": item.suggested_param_name,
@@ -995,30 +1199,61 @@ def _align_singleton_response_docstring(
 
 def _normalize_member_key_concepts(
     response: ClusterRefactorResponse,
+    *,
+    key_vocabulary: tuple[KeyConceptSpec, ...],
 ) -> ClusterRefactorResponse:
-    concept_by_name = {
-        parameter.name: parameter.concept for parameter in response.parameters
+    normalized_parameters: list[HelperParameter] = []
+    for parameter in response.parameters:
+        dimension_id = resolve_dimension_key(parameter.dimension_id, key_vocabulary)
+        vocab_entry = next(
+            item for item in key_vocabulary if item.dimension_id == dimension_id
+        )
+        if parameter.concept is not None and parameter.concept != vocab_entry.concept:
+            raise ValueError(
+                f"parameter {parameter.name!r} concept {parameter.concept!r} "
+                f"does not match vocabulary concept {vocab_entry.concept!r} "
+                f"for dimension_id {dimension_id!r}"
+            )
+        normalized_parameters.append(
+            parameter.model_copy(
+                update={
+                    "dimension_id": dimension_id,
+                    "concept": vocab_entry.concept,
+                }
+            )
+        )
+    dimension_id_by_name = {
+        parameter.name: parameter.dimension_id for parameter in normalized_parameters
     }
     normalized_entries: list[MemberKeys] = []
     for entry in response.member_keys:
         normalized_entries_list: list[MemberKeyEntry] = []
         for key_entry in entry.keys:
-            concept = concept_by_name.get(key_entry.concept, key_entry.concept)
+            raw_key = dimension_id_by_name.get(
+                key_entry.dimension_id, key_entry.dimension_id
+            )
+            dimension_id = resolve_dimension_key(raw_key, key_vocabulary)
             normalized_entries_list.append(
-                MemberKeyEntry(concept=concept, value=key_entry.value)
+                MemberKeyEntry(dimension_id=dimension_id, value=key_entry.value)
             )
         normalized_entries.append(
             entry.model_copy(update={"keys": tuple(normalized_entries_list)})
         )
-    return response.model_copy(update={"member_keys": tuple(normalized_entries)})
+    return response.model_copy(
+        update={
+            "parameters": tuple(normalized_parameters),
+            "member_keys": tuple(normalized_entries),
+        }
+    )
 
 
 def _prepare_cluster_refactor_response(
     response: ClusterRefactorResponse,
     ctx: ClusterRefactorContext,
 ) -> ClusterRefactorResponse:
-    _ = ctx
-    response = _normalize_member_key_concepts(response)
+    response = _normalize_member_key_concepts(
+        response, key_vocabulary=ctx.key_vocabulary
+    )
     response = _align_cluster_response_docstring(response)
     return _normalize_cluster_response_docstring(response)
 
@@ -1108,24 +1343,25 @@ def validate_no_cell_function_references(function_def: ast.FunctionDef) -> None:
         )
 
 
-def _suggested_param_name_by_concept(
+def _suggested_param_name_by_dimension_id(
     key_vocabulary: tuple[KeyConceptSpec, ...],
 ) -> dict[str, str]:
-    return {item.concept: item.suggested_param_name for item in key_vocabulary}
+    return {item.dimension_id: item.suggested_param_name for item in key_vocabulary}
 
 
 def validate_parameter_names_match_vocabulary(
     ctx: ClusterRefactorContext,
     response: ClusterRefactorResponse,
 ) -> None:
-    suggested = _suggested_param_name_by_concept(ctx.key_vocabulary)
+    suggested = _suggested_param_name_by_dimension_id(ctx.key_vocabulary)
     mismatches = sorted(
         {
-            f"{parameter.concept!r}: expected {suggested[parameter.concept]!r}, "
+            f"{parameter.dimension_id!r}: expected "
+            f"{suggested[parameter.dimension_id]!r}, "
             f"got {parameter.name!r}"
             for parameter in response.parameters
-            if parameter.concept in suggested
-            and parameter.name != suggested[parameter.concept]
+            if parameter.dimension_id in suggested
+            and parameter.name != suggested[parameter.dimension_id]
         }
     )
     if mismatches:
@@ -1185,12 +1421,14 @@ def validate_cluster_refactor_response(
             f"expected {sorted(member_addresses)}, got {sorted(member_key_addresses)}"
         )
 
-    parameter_concepts = {parameter.concept for parameter in response.parameters}
-    vocabulary_concepts = {item.concept for item in ctx.key_vocabulary}
-    unknown_parameters = sorted(parameter_concepts - vocabulary_concepts)
+    parameter_dimension_ids = {
+        parameter.dimension_id for parameter in response.parameters
+    }
+    vocabulary_dimension_ids = {item.dimension_id for item in ctx.key_vocabulary}
+    unknown_parameters = sorted(parameter_dimension_ids - vocabulary_dimension_ids)
     if unknown_parameters:
         raise ValueError(
-            f"parameters reference unknown binding concepts: {unknown_parameters}"
+            f"parameters reference unknown binding dimensions: {unknown_parameters}"
         )
 
     parameter_names = [parameter.name for parameter in response.parameters]
@@ -1202,17 +1440,34 @@ def validate_cluster_refactor_response(
                 f"parameter name is not a valid identifier: {parameter.name!r}"
             )
 
-    concept_sets = [
+    dimension_sets = [
         frozenset(ctx.expected_member_keys[member.address].keys())
         for member in ctx.members
     ]
-    if len(set(concept_sets)) != 1:
-        raise ValueError("cluster members must share one varying key concept set")
-    varying_concepts = concept_sets[0]
-    if parameter_concepts != varying_concepts:
+    if len(set(dimension_sets)) != 1:
+        raise ValueError("cluster members must share one varying key dimension set")
+    varying_dimension_ids = dimension_sets[0]
+    if ctx.contract == "dimension_aware":
+        collapsed = [
+            f"concept {concept!r} requires one parameter per dimension id "
+            f"{sorted(dimension_ids)}"
+            for concept, dimension_ids in sorted(
+                concepts_with_multiple_dimensions(
+                    varying_dimension_ids, ctx.key_vocabulary
+                ).items()
+            )
+            if not set(dimension_ids) <= parameter_dimension_ids
+        ]
+        if collapsed:
+            raise ValueError(
+                "dimension-aware response collapses distinct dimensions onto one "
+                "concept parameter: " + "; ".join(collapsed)
+            )
+    if parameter_dimension_ids != varying_dimension_ids:
         raise ValueError(
-            "parameters must match varying binding key concepts for the cluster: "
-            f"expected {sorted(varying_concepts)}, got {sorted(parameter_concepts)}"
+            "parameters must match varying binding key dimensions for the cluster: "
+            f"expected {sorted(varying_dimension_ids)}, "
+            f"got {sorted(parameter_dimension_ids)}"
         )
 
     seen_member_key_combinations: set[tuple[tuple[str, BindingKeyValue], ...]] = set()
@@ -1224,17 +1479,17 @@ def validate_cluster_refactor_response(
                 f"{entry.function_name!r}, expected {member.function_name!r}"
             )
         entry_keys = entry.keys_dict()
-        extra_concepts = set(entry_keys) - parameter_concepts
-        if extra_concepts:
+        extra_dimensions = set(entry_keys) - parameter_dimension_ids
+        if extra_dimensions:
             raise ValueError(
                 f"member_keys for {entry.address} must not include "
-                f"series-constant concepts: {sorted(extra_concepts)}"
+                f"series-constant dimensions: {sorted(extra_dimensions)}"
             )
-        missing_concepts = parameter_concepts - set(entry_keys)
-        if missing_concepts:
+        missing_dimensions = parameter_dimension_ids - set(entry_keys)
+        if missing_dimensions:
             raise ValueError(
-                f"member_keys for {entry.address} missing parameter concepts: "
-                f"{sorted(missing_concepts)}"
+                f"member_keys for {entry.address} missing parameter dimensions: "
+                f"{sorted(missing_dimensions)}"
             )
         key_combination = tuple(sorted(entry_keys.items()))
         # Possibly this expectation should be changed.
@@ -1247,11 +1502,12 @@ def validate_cluster_refactor_response(
             )
         seen_member_key_combinations.add(key_combination)
         expected_keys = ctx.expected_member_keys[entry.address]
-        for concept, expected_value in expected_keys.items():
-            actual_value = entry_keys.get(concept)
+        for dimension_id, expected_value in expected_keys.items():
+            actual_value = entry_keys.get(dimension_id)
             if actual_value != expected_value:
                 raise ValueError(
-                    f"member_keys for {entry.address} has {concept}={actual_value!r}, "
+                    f"member_keys for {entry.address} has "
+                    f"{dimension_id}={actual_value!r}, "
                     f"expected {expected_value!r}"
                 )
         engine_column = engine_column_from_member_keys(
@@ -1424,6 +1680,14 @@ def prepare_singleton_refactor_response(
     llm_response: SingletonRefactorLLMResponse,
     ctx: SingletonRefactorContext,
 ) -> SingletonRefactorResponse:
+    if (
+        llm_response.symbol_signature is None
+        or llm_response.symbol_docstring is None
+        or llm_response.symbol_body is None
+    ):
+        raise ValueError(
+            "singleton refactor response is missing required success fields"
+        )
     validate_singleton_return_type_hint(
         parse_singleton_return_type_hint(llm_response.symbol_signature)
     )
@@ -1636,8 +1900,10 @@ def build_singleton_refactor_prompt_context(
     )
 
 
-def load_cluster_refactor_prompt_fixed_portion() -> str:
-    return CLUSTER_REFACTOR_PROMPT_FIXTURE.read_text(encoding="utf-8")
+def load_cluster_refactor_prompt_fixed_portion(
+    contract: ClusterRefactorContract = "member_sweep",
+) -> str:
+    return CLUSTER_REFACTOR_PROMPT_FIXTURES[contract].read_text(encoding="utf-8")
 
 
 def append_cluster_refactor_note_section(
@@ -1702,6 +1968,14 @@ def prepare_cluster_refactor_response(
     llm_response: ClusterRefactorLLMResponse,
     ctx: ClusterRefactorContext,
 ) -> ClusterRefactorResponse:
+    if (
+        llm_response.symbol_signature is None
+        or llm_response.symbol_docstring is None
+        or llm_response.symbol_body is None
+        or llm_response.parameters is None
+        or llm_response.member_keys is None
+    ):
+        raise ValueError("cluster refactor response is missing required success fields")
     validate_singleton_return_type_hint(
         parse_cluster_return_type_hint(llm_response.symbol_signature)
     )
@@ -1765,7 +2039,8 @@ def _format_key_vocabulary_yaml(
 ) -> str:
     lines: list[str] = []
     for item in key_vocabulary:
-        lines.append(f"- concept: {item.concept}")
+        lines.append(f"- dimension_id: {item.dimension_id}")
+        lines.append(f"  concept: {item.concept}")
         lines.append(f"  dtype: {item.dtype}")
         lines.append(f"  suggested_param_name: {item.suggested_param_name}")
     return "\n".join(lines)
@@ -1901,8 +2176,10 @@ def build_cluster_refactor_prompt_context(
     internals_path: Path,
     runtime_path: Path | None = None,
 ) -> str:
-    varying_concepts = frozenset(
-        concept for keys in ctx.expected_member_keys.values() for concept in keys
+    varying_dimension_ids = frozenset(
+        dimension_id
+        for keys in ctx.expected_member_keys.values()
+        for dimension_id in keys
     )
     resolved_runtime_path = (
         runtime_path
@@ -1914,7 +2191,9 @@ def build_cluster_refactor_prompt_context(
         internals_source=internals_path.read_text(encoding="utf-8"),
         runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
         key_vocabulary=tuple(
-            item for item in ctx.key_vocabulary if item.concept in varying_concepts
+            item
+            for item in ctx.key_vocabulary
+            if item.dimension_id in varying_dimension_ids
         ),
         member_metadata=_member_metadata_for_cluster_refactor(ctx),
     )
@@ -2150,7 +2429,7 @@ def collapse_bindings_for_response(
     response: ClusterRefactorResponse,
 ) -> tuple[CollapseBinding, ...]:
     parameter_pairs = tuple(
-        (parameter.name, parameter.concept) for parameter in response.parameters
+        (parameter.name, parameter.dimension_id) for parameter in response.parameters
     )
     return tuple(
         CollapseBinding(
@@ -2197,7 +2476,7 @@ def _parameter_literals(
     parameters: tuple[HelperParameter, ...],
     keys: dict[str, BindingKeyValue],
 ) -> dict[str, BindingKeyValue]:
-    return {parameter.name: keys[parameter.concept] for parameter in parameters}
+    return {parameter.name: keys[parameter.dimension_id] for parameter in parameters}
 
 
 def _dispatch_entries_for_collapse(
@@ -3197,8 +3476,13 @@ def llm_refactor_singleton(
         parsed: SingletonRefactorLLMResponse,
     ) -> SingletonRefactorLLMResponse:
         nonlocal validated_prepared
-        prepared = prepare_singleton_refactor_response(parsed, ctx)
         last_attempt["llm_response"] = parsed.model_dump()
+        raise_if_llm_declared_error(
+            parsed,
+            kind="singleton",
+            target=ctx.address,
+        )
+        prepared = prepare_singleton_refactor_response(parsed, ctx)
         last_attempt["prepared_response"] = prepared.model_dump()
         validated_prepared = _apply_singleton_refactor_validation(prepared)
         return parsed
@@ -3223,6 +3507,24 @@ def llm_refactor_singleton(
             post_validate=_post_validate_singleton_llm,
             max_attempts=DEFAULT_MAX_ATTEMPTS,
         )
+    except RefactorDeclaredError as error:
+        dump_dir = write_refactor_failure_diagnostic(
+            kind="singleton",
+            target=ctx.address,
+            error=error,
+            user_prompt=user_prompt,
+            llm_response=last_attempt.get("llm_response"),
+            prepared_response=last_attempt.get("prepared_response"),
+            source="llm",
+            model=model,
+        )
+        logger.error(
+            "singleton refactor aborted by LLM address=%s reason=%s diagnostic=%s",
+            ctx.address,
+            error.reason,
+            dump_dir,
+        )
+        raise
     except RuntimeError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="singleton",
@@ -3347,7 +3649,7 @@ def llm_refactor_cluster(
         ctx,
         internals_path=internals_path,
     )
-    user_prompt = _prompt_for_refactor(context_dump)
+    user_prompt = _prompt_for_refactor(context_dump, contract=ctx.contract)
     last_attempt: dict[str, Any] = {}
     validated_prepared: ClusterRefactorResponse | None = None
 
@@ -3355,8 +3657,13 @@ def llm_refactor_cluster(
         parsed: ClusterRefactorLLMResponse,
     ) -> ClusterRefactorLLMResponse:
         nonlocal validated_prepared
-        prepared = prepare_cluster_refactor_response(parsed, ctx)
         last_attempt["llm_response"] = parsed.model_dump()
+        raise_if_llm_declared_error(
+            parsed,
+            kind="cluster",
+            target=f"cluster_{ctx.cluster_id}",
+        )
+        prepared = prepare_cluster_refactor_response(parsed, ctx)
         last_attempt["prepared_response"] = prepared.model_dump()
         validated_prepared = _apply_cluster_refactor_validation(prepared)
         return parsed
@@ -3382,6 +3689,24 @@ def llm_refactor_cluster(
             post_validate=_post_validate_cluster_llm,
             max_attempts=DEFAULT_MAX_ATTEMPTS,
         )
+    except RefactorDeclaredError as error:
+        dump_dir = write_refactor_failure_diagnostic(
+            kind="cluster",
+            target=f"cluster_{ctx.cluster_id}",
+            error=error,
+            user_prompt=user_prompt,
+            llm_response=last_attempt.get("llm_response"),
+            prepared_response=last_attempt.get("prepared_response"),
+            source="llm",
+            model=model,
+        )
+        logger.error(
+            "cluster refactor aborted by LLM cluster_id=%s reason=%s diagnostic=%s",
+            ctx.cluster_id,
+            error.reason,
+            dump_dir,
+        )
+        raise
     except RuntimeError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="cluster",
@@ -3427,9 +3752,11 @@ def _prompt_for_singleton_refactor(
 def _prompt_for_refactor(
     payload_or_context: dict[str, object] | str,
     response_schema: dict[str, object] | None = None,
+    *,
+    contract: ClusterRefactorContract = "member_sweep",
 ) -> str:
     _ = response_schema
-    fixed = load_cluster_refactor_prompt_fixed_portion().strip()
+    fixed = load_cluster_refactor_prompt_fixed_portion(contract).strip()
     if isinstance(payload_or_context, str):
         return f"{fixed}\n\n{payload_or_context.strip()}"
     payload_json = json.dumps(payload_or_context, indent=2, default=str)

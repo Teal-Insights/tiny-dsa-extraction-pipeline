@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from src.pipeline_config import (
     DistProjectMetadata,
     load_pipeline_config,
@@ -19,11 +23,39 @@ def test_load_pipeline_config_reads_workbook_config() -> None:
         "output_delta",
     )
     assert config.graph_audit_cases == ()
+    assert config.variation_mode == "independent"
     assert config.canonical_api_example_path.name == "canonical-api-usage.md"
     assert (
         config.repo_relative_posix_path(config.canonical_api_example_path)
         == "templates/canonical-api-usage.md"
     )
+
+
+def test_load_pipeline_config_reads_variation_mode_from_workbook_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    monkeypatch.setattr(workbook_config, "VARIATION_MODE", "dominant_key_only")
+    config = load_pipeline_config()
+    assert config.variation_mode == "dominant_key_only"
+
+
+def test_load_pipeline_config_rejects_invalid_variation_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    monkeypatch.setattr(workbook_config, "VARIATION_MODE", "all_keys")
+    with pytest.raises(ValueError, match="VARIATION_MODE"):
+        load_pipeline_config()
+
+
+def test_repo_relative_posix_path_falls_back_outside_repo(tmp_path: Path) -> None:
+    config = load_pipeline_config()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x", encoding="utf-8")
+    assert config.repo_relative_posix_path(outside) == outside.resolve().as_posix()
 
 
 def test_validate_pipeline_config_passes_for_tiny_dsa() -> None:
