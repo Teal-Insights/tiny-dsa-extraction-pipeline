@@ -73,7 +73,10 @@ class PipelineConfig:
     def repo_relative_posix_path(self, path: Path) -> str:
         """Return ``path`` relative to ``repo_root`` with forward slashes."""
         resolved = path if path.is_absolute() else self.repo_root / path
-        return resolved.relative_to(self.repo_root).as_posix()
+        try:
+            return resolved.relative_to(self.repo_root).as_posix()
+        except ValueError:
+            return resolved.as_posix()
 
 
 def _load_internal_binding_validation_mode(

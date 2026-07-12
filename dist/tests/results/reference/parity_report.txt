@@ -1,12 +1,20 @@
-Parity report: exported tiny_dsa standalone library vs Excel
-Generated: 2026-07-03T18:21:23+00:00
+Parity report: exported Tiny DSA standalone library vs Excel
+Generated: 2026-07-11T20:29:05+00:00
 Workbook:  C:\Users\chris\Software\tiny-dsa-extraction-pipeline\data\tiny-dsa.xlsx
 Package:   C:\Users\chris\Software\tiny-dsa-extraction-pipeline\dist\tiny_dsa (imported as dist.tiny_dsa.api)
 Tolerance: atol = 1e-06
 
 Total comparisons: 1770
-Passed:            1770
-Failed:            0
-Pass rate:         100.00%
+Passed:            1740
+Failed:            30
+Pass rate:         98.31%
 Acceptance bar:    100.00%
-Result:            PASS
+Result:            FAIL
+
+First divergence:
+  scenario:  single_axis:growth[year=3]=+0.0
+  cell:      Outputs!B12  (output_baseline[year=1])
+  excel:     '<exception: XlErrorException: #DIV/0!>'
+  mvp:       '<exception: XlErrorException: #DIV/0!>'
+  abs_diff:  None
+  rel_diff:  None

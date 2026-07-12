@@ -248,7 +248,6 @@ GOLDEN_CLUSTER_REFACTOR_RESPONSES: dict[int, ClusterRefactorResponse] = {
     10: ClusterRefactorResponse(
         helper_name="shock_active",
         helper_docstring=SHOCK_ACTIVE_DOCSTRING,
-        uses_first_year_branch=False,
         parameters=TIME_PERIOD_PARAMETER,
         helper_source=SHOCK_ACTIVE_HELPER,
         member_keys=ENGINE_ROW_MEMBER_KEYS[10],
@@ -256,7 +255,6 @@ GOLDEN_CLUSTER_REFACTOR_RESPONSES: dict[int, ClusterRefactorResponse] = {
     16: ClusterRefactorResponse(
         helper_name="primary_balance_shocked",
         helper_docstring=PRIMARY_BALANCE_SHOCKED_DOCSTRING,
-        uses_first_year_branch=False,
         parameters=TIME_PERIOD_PARAMETER,
         helper_source=PRIMARY_BALANCE_SHOCKED_HELPER,
         member_keys=ENGINE_ROW_MEMBER_KEYS[16],
@@ -264,7 +262,6 @@ GOLDEN_CLUSTER_REFACTOR_RESPONSES: dict[int, ClusterRefactorResponse] = {
     6: ClusterRefactorResponse(
         helper_name="baseline_debt",
         helper_docstring=BASELINE_DEBT_DOCSTRING,
-        uses_first_year_branch=True,
         parameters=TIME_PERIOD_PARAMETER,
         helper_source=BASELINE_DEBT_HELPER,
         member_keys=ENGINE_ROW_MEMBER_KEYS[6],
@@ -272,7 +269,6 @@ GOLDEN_CLUSTER_REFACTOR_RESPONSES: dict[int, ClusterRefactorResponse] = {
     20: ClusterRefactorResponse(
         helper_name="debt_to_gdp",
         helper_docstring=DEBT_TO_GDP_DOCSTRING,
-        uses_first_year_branch=True,
         parameters=TIME_PERIOD_PARAMETER,
         helper_source=DEBT_TO_GDP_HELPER,
         member_keys=ENGINE_ROW_MEMBER_KEYS[20],
@@ -280,7 +276,6 @@ GOLDEN_CLUSTER_REFACTOR_RESPONSES: dict[int, ClusterRefactorResponse] = {
     14: ClusterRefactorResponse(
         helper_name="output_delta",
         helper_docstring=OUTPUT_DELTA_DOCSTRING,
-        uses_first_year_branch=False,
         parameters=TIME_PERIOD_PARAMETER,
         helper_source=OUTPUT_DELTA_HELPER,
         member_keys=OUTPUT_ROW_MEMBER_KEYS,

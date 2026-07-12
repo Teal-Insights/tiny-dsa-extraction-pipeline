@@ -389,6 +389,25 @@ def build_default_input_vectors(
     )
 
 
+def _numeric_constraint_probe_values(annotation: object) -> tuple[object, ...]:
+    """Return min, max, and 0 when in range for numeric constraint annotations."""
+    metadata = getattr(annotation, "__metadata__", None)
+    if metadata is None:
+        return ()
+    for meta in metadata:
+        if isinstance(meta, RealBetween):
+            probes: list[object] = [meta.min, meta.max]
+            if meta.min < 0.0 < meta.max:
+                probes.append(0.0)
+            return tuple(dict.fromkeys(probes))
+        if isinstance(meta, Between):
+            probes = [meta.min, meta.max]
+            if meta.min <= 0 <= meta.max:
+                probes.append(0)
+            return tuple(dict.fromkeys(probes))
+    return ()
+
+
 def _sample_constraint(
     annotation: object, default: object, rng: random.Random
 ) -> object:
@@ -417,19 +436,26 @@ def sample_input_vectors(
     count: int = DEFAULT_SAMPLE_COUNT,
     seed: int = DEFAULT_SAMPLE_SEED,
 ) -> list[dict[str, object]]:
-    """Build input vectors: the canonical default plus seeded random draws.
+    """Build input vectors: default, numeric boundary probes, then random draws.
 
-    The first vector is ``default_inputs`` merged with ``constants``. Each
-    additional vector keeps the constants fixed and perturbs every default input
-    within its declared constraint domain. Sampling is deterministic for a given
-    seed so the gate is reproducible.
+    The first vector is ``default_inputs`` merged with ``constants``. For each
+    default input with a numeric ``RealBetween`` or ``Between`` constraint, one
+    vector is added per probe value (minimum, maximum, and 0 when in range)
+    while other inputs stay at their defaults. Additional vectors keep constants
+    fixed and perturb every default input within its declared constraint domain.
+    Sampling is deterministic for a given seed so the gate is reproducible.
     """
     base = {**default_inputs, **constants}
     vectors: list[dict[str, object]] = [dict(base)]
-    rng = random.Random(seed)
     sampled_addresses = [
         address for address in default_inputs if address in constraints
     ]
+    for address in sampled_addresses:
+        for probe in _numeric_constraint_probe_values(constraints[address]):
+            vector = dict(base)
+            vector[address] = probe
+            vectors.append(vector)
+    rng = random.Random(seed)
     for _ in range(count):
         vector = dict(base)
         for address in sampled_addresses:

@@ -26,6 +26,12 @@ DEFAULT_PROJECTION_CACHE_DIR = (
 )
 
 
+def _projection_cache_dir(cache_dir: Path | None) -> Path:
+    if cache_dir is None:
+        return DEFAULT_PROJECTION_CACHE_DIR
+    return cache_dir
+
+
 def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -76,9 +82,10 @@ def save_projection_payload(
     *,
     cache_key: str,
     graph_cache_key: str,
-    cache_dir: Path = DEFAULT_PROJECTION_CACHE_DIR,
+    cache_dir: Path | None = None,
 ) -> None:
-    payload_path, meta_path = _cache_paths(cache_dir, cache_key)
+    resolved_cache_dir = _projection_cache_dir(cache_dir)
+    payload_path, meta_path = _cache_paths(resolved_cache_dir, cache_key)
     with gzip.open(payload_path, "wb", compresslevel=1) as handle:
         pickle.dump(
             (projected_graph, manifest), handle, protocol=pickle.HIGHEST_PROTOCOL
@@ -94,9 +101,9 @@ def save_projection_payload(
 def load_projection_payload(
     cache_key: str,
     *,
-    cache_dir: Path = DEFAULT_PROJECTION_CACHE_DIR,
+    cache_dir: Path | None = None,
 ) -> tuple[DependencyGraph, ProjectionManifest] | None:
-    payload_path, _meta_path = _cache_paths(cache_dir, cache_key)
+    payload_path, _meta_path = _cache_paths(_projection_cache_dir(cache_dir), cache_key)
     if not payload_path.is_file():
         return None
     try:
@@ -140,14 +147,15 @@ def get_or_build_refactor_projection(
     graph: DependencyGraph,
     *,
     graph_cache_key: str,
-    cache_dir: Path = DEFAULT_PROJECTION_CACHE_DIR,
+    cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
 ) -> ProjectionCacheResult:
+    resolved_cache_dir = _projection_cache_dir(cache_dir)
     cache_key = projection_cache_key(graph_cache_key=graph_cache_key)
     started = time.perf_counter()
     if not no_cache and not force_rebuild:
-        loaded = load_projection_payload(cache_key, cache_dir=cache_dir)
+        loaded = load_projection_payload(cache_key, cache_dir=resolved_cache_dir)
         if loaded is not None:
             projected_graph, manifest = loaded
             projection = rehydrate_projection_result(
@@ -177,7 +185,7 @@ def get_or_build_refactor_projection(
             projection.manifest,
             cache_key=cache_key,
             graph_cache_key=graph_cache_key,
-            cache_dir=cache_dir,
+            cache_dir=resolved_cache_dir,
         )
         save_elapsed = time.perf_counter() - save_started
         print(
@@ -200,8 +208,9 @@ def get_or_build_refactor_projection(
 
 def clear_projection_cache(
     *,
-    cache_dir: Path = DEFAULT_PROJECTION_CACHE_DIR,
+    cache_dir: Path | None = None,
 ) -> None:
+    cache_dir = _projection_cache_dir(cache_dir)
     if not cache_dir.is_dir():
         return
     for path in cache_dir.iterdir():

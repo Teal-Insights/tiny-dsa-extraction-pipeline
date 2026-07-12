@@ -10,7 +10,7 @@ import argparse
 import ast
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -22,9 +22,16 @@ from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 from src.docstring_callback import configure_docstring_callback
 from src.extraction_pipeline import build_pipeline_graph
 from src.formula_clustering import (
+    BoundAddressKeys,
     ClusterableGraph,
     FormulaCluster,
     cluster_graph_formulas,
+    cluster_has_independent_operand_variation,
+    formula_nodes_for_clustering,
+)
+from src.refactor_bindings import (
+    build_bound_address_keys,
+    varying_key_concepts,
 )
 from src.internal_bindings import InternalBindingIndex, build_internal_binding_index
 from src.internals_refactor import (
@@ -52,6 +59,7 @@ DEFAULT_JSON_OUTPUT_UNCOMPRESSED = Path("artifacts/refactor-buckets-uncompressed
 DEFAULT_MARKDOWN_OUTPUT_UNCOMPRESSED = Path(
     "artifacts/refactor-buckets-uncompressed.md"
 )
+DEFAULT_CODEGEN_DIST_ROOT = Path("artifacts/refactor-bucket-codegen")
 
 RefactorKind = Literal["singleton", "cluster"]
 CompressionMode = Literal["optimal", "none"]
@@ -124,6 +132,8 @@ def _cluster_skip_reason(
     internals_source: str,
     *,
     layout: ProjectionColumnLayout | None,
+    bound_address_keys: BoundAddressKeys | None = None,
+    workbook_path: Path | None = None,
 ) -> str | None:
     if len(cluster.members) < 2:
         return "cluster_has_fewer_than_two_members"
@@ -143,6 +153,27 @@ def _cluster_skip_reason(
 
     if eligible_members < 2:
         return "cluster_has_fewer_than_two_graph_formula_members"
+
+    if (
+        bound_address_keys is not None
+        and workbook_path is not None
+        and layout is not None
+    ):
+        varying = varying_key_concepts(
+            cluster.members,
+            bound_address_keys=bound_address_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+        )
+        if cluster_has_independent_operand_variation(
+            cluster,
+            formula_nodes_for_clustering(graph),
+            bound_address_keys,
+            varying,
+            workbook_path=workbook_path,
+            layout=layout,
+        ):
+            return "operand_level_variation_unsupported"
     return None
 
 
@@ -198,9 +229,15 @@ def record_refactor_buckets(
     layout: ProjectionColumnLayout | None,
     compression: CompressionMode = "optimal",
     refactor_graph: ProjectionResult | None = None,
+    bound_address_keys: BoundAddressKeys | None = None,
 ) -> tuple[RefactorBucketRecord, ...]:
     """Classify formula clusters into singleton and cluster refactor target buckets."""
-    clusters = cluster_graph_formulas(graph)
+    clusters = cluster_graph_formulas(
+        graph,
+        bound_address_keys=bound_address_keys,
+        workbook_path=config.workbook_path,
+        layout=layout,
+    )
     ordered_clusters = compute_cluster_refactor_order(graph, clusters)
 
     internals_source = (
@@ -236,6 +273,8 @@ def record_refactor_buckets(
                 cluster,
                 internals_source,
                 layout=layout,
+                bound_address_keys=bound_address_keys,
+                workbook_path=config.workbook_path,
             )
             ctx = (
                 None
@@ -413,6 +452,7 @@ def run_record_refactor_buckets(
     markdown_output: Path,
     no_cache: bool = False,
     compression: CompressionMode = "optimal",
+    codegen_dist_root: Path | None = None,
 ) -> dict[str, Any]:
     graph_result = build_pipeline_graph(config, no_cache=no_cache)
     projection = build_refactor_projection(
@@ -428,8 +468,14 @@ def run_record_refactor_buckets(
     internal_binding_index: InternalBindingIndex | None = None
 
     if compression == "optimal":
+        codegen_root = (
+            codegen_dist_root
+            if codegen_dist_root is not None
+            else config.repo_root / DEFAULT_CODEGEN_DIST_ROOT
+        )
+        codegen_config = replace(config, dist_root=codegen_root)
         internals_path = export_generated_modules(
-            config,
+            codegen_config,
             graph=graph_result.graph,
             graph_cache_key=graph_result.graph_cache_key,
             series_bindings=graph_result.series_bindings,
@@ -442,6 +488,11 @@ def run_record_refactor_buckets(
     else:
         cluster_graph = graph_result.graph
 
+    bound_address_keys = build_bound_address_keys(
+        graph_result.input_series,
+        graph_result.output_series,
+        graph_result.internal_series,
+    )
     records = record_refactor_buckets(
         config,
         graph=cluster_graph,
@@ -450,6 +501,7 @@ def run_record_refactor_buckets(
         layout=layout,
         compression=compression,
         refactor_graph=projection if compression == "optimal" else None,
+        bound_address_keys=bound_address_keys,
     )
     report = build_refactor_buckets_report(
         config,

@@ -24,6 +24,12 @@ DEFAULT_GRAPH_CACHE_DIR = (
 )
 
 
+def _graph_cache_dir(cache_dir: Path | None) -> Path:
+    if cache_dir is None:
+        return DEFAULT_GRAPH_CACHE_DIR
+    return cache_dir
+
+
 def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -108,9 +114,10 @@ def save_dependency_graph(
     cache_key: str,
     workbook_path: Path,
     targets: Sequence[str],
-    cache_dir: Path = DEFAULT_GRAPH_CACHE_DIR,
+    cache_dir: Path | None = None,
 ) -> None:
-    payload_path, meta_path = _cache_paths(cache_dir, cache_key)
+    resolved_cache_dir = _graph_cache_dir(cache_dir)
+    payload_path, meta_path = _cache_paths(resolved_cache_dir, cache_key)
     with gzip.open(payload_path, "wb", compresslevel=1) as handle:
         pickle.dump(graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
     _write_graph_meta(
@@ -125,9 +132,9 @@ def save_dependency_graph(
 def load_dependency_graph(
     cache_key: str,
     *,
-    cache_dir: Path = DEFAULT_GRAPH_CACHE_DIR,
+    cache_dir: Path | None = None,
 ) -> DependencyGraph | None:
-    payload_path, _meta_path = _cache_paths(cache_dir, cache_key)
+    payload_path, _meta_path = _cache_paths(_graph_cache_dir(cache_dir), cache_key)
     if not payload_path.is_file():
         return None
     try:
@@ -159,11 +166,12 @@ def get_or_build_dependency_graph(
     dynamic_refs: DynamicRefConfig,
     load_values: bool = True,
     capture_dependency_provenance: bool = True,
-    cache_dir: Path = DEFAULT_GRAPH_CACHE_DIR,
+    cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
     build: Callable[[], DependencyGraph] | None = None,
 ) -> DependencyGraphCacheResult:
+    resolved_cache_dir = _graph_cache_dir(cache_dir)
     cache_key = dependency_graph_cache_key(
         workbook_path=workbook_path,
         targets=targets,
@@ -174,7 +182,7 @@ def get_or_build_dependency_graph(
     )
     started = time.perf_counter()
     if not no_cache and not force_rebuild:
-        cached = load_dependency_graph(cache_key, cache_dir=cache_dir)
+        cached = load_dependency_graph(cache_key, cache_dir=resolved_cache_dir)
         if cached is not None:
             elapsed = time.perf_counter() - started
             print(
@@ -207,7 +215,7 @@ def get_or_build_dependency_graph(
             cache_key=cache_key,
             workbook_path=workbook_path,
             targets=targets,
-            cache_dir=cache_dir,
+            cache_dir=resolved_cache_dir,
         )
         save_elapsed = time.perf_counter() - save_started
         print(
@@ -230,8 +238,9 @@ def get_or_build_dependency_graph(
 
 def clear_dependency_graph_cache(
     *,
-    cache_dir: Path = DEFAULT_GRAPH_CACHE_DIR,
+    cache_dir: Path | None = None,
 ) -> None:
+    cache_dir = _graph_cache_dir(cache_dir)
     if not cache_dir.is_dir():
         return
     for path in cache_dir.iterdir():

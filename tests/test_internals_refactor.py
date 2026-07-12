@@ -37,7 +37,6 @@ from src.internals_refactor import (
     validate_cluster_refactor_response,
     validate_parameter_names_match_vocabulary,
     validate_semantic_local_names,
-    validate_uses_first_year_branch_flag,
     write_refactor_failure_diagnostic,
     _prompt_for_refactor,
     _prompt_for_singleton_refactor,
@@ -185,15 +184,14 @@ def _cluster_response(
     *,
     helper_source: str = VALID_CLUSTER_SOURCE,
     parameters: tuple[HelperParameter, ...] = CLUSTER_PARAMETERS,
-    uses_first_year_branch: bool = False,
+    member_keys: tuple[MemberKeys, ...] = CLUSTER_MEMBER_KEYS,
 ) -> ClusterRefactorResponse:
     return ClusterRefactorResponse(
         helper_name="combined_input_passthrough",
         helper_docstring=CLUSTER_DOCSTRING,
-        uses_first_year_branch=uses_first_year_branch,
         parameters=parameters,
         helper_source=helper_source,
-        member_keys=CLUSTER_MEMBER_KEYS,
+        member_keys=member_keys,
     )
 
 
@@ -270,7 +268,10 @@ def test_prompt_for_refactor_lists_allowed_runtime_symbols() -> None:
     prompt = _prompt_for_refactor(payload, schema)
     assert "xl_cell" in prompt
     assert "suggested_param_name" in prompt
-    assert "uses_first_year_branch" in prompt
+    assert "uses_first_year_branch" not in prompt
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    assert "uses_first_year_branch" not in properties
 
 
 def test_validate_cluster_accepts_well_formed_response() -> None:
@@ -284,6 +285,28 @@ def test_validate_cluster_accepts_well_formed_response() -> None:
             existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
             internals_source=PRISTINE_CLUSTER,
         )
+
+
+def test_validate_cluster_rejects_duplicate_member_key_combinations() -> None:
+    duplicate_member_keys = (
+        CLUSTER_MEMBER_KEYS[0],
+        MemberKeys(
+            address="Engine!D6",
+            function_name="cell_engine_d6",
+            keys=(MemberKeyEntry(concept="TIME_PERIOD", value=1),),
+        ),
+    )
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        with pytest.raises(ValueError, match="unique key combination"):
+            validate_cluster_refactor_response(
+                CLUSTER_CONTEXT,
+                _cluster_response(member_keys=duplicate_member_keys),
+                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+                internals_source=PRISTINE_CLUSTER,
+            )
 
 
 def test_validate_cluster_accepts_eval_context_type_hint() -> None:
@@ -340,28 +363,6 @@ def test_validate_cluster_rejects_disallowed_global_reference() -> None:
             helper_def,
             allowed_names={"xl_cell", "ctx", "time_period"},
         )
-
-
-def test_validate_uses_first_year_branch_requires_branching_source() -> None:
-    with pytest.raises(ValueError, match="uses_first_year_branch is True"):
-        validate_uses_first_year_branch_flag(
-            _cluster_response(uses_first_year_branch=True),
-        )
-
-
-def test_validate_uses_first_year_branch_accepts_matching_source() -> None:
-    branch_source = f'''def combined_input_passthrough(ctx, time_period):
-    """{CLUSTER_DOCSTRING}"""
-    if time_period == 1:
-        return xl_cell(ctx, 'Inputs!C1')
-    return xl_cell(ctx, 'Inputs!D1')
-'''
-    validate_uses_first_year_branch_flag(
-        _cluster_response(
-            helper_source=branch_source,
-            uses_first_year_branch=True,
-        )
-    )
 
 
 def test_collapse_bindings_for_response_renders_literal_calls() -> None:

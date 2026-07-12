@@ -52,7 +52,7 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 19
+REFACTOR_PROMPT_VERSION = 21
 
 
 def refactor_model() -> str:
@@ -252,9 +252,6 @@ class ClusterRefactorResponse(BaseModel):
             "embedded in helper_source exactly. Include Args and Returns sections."
         )
     )
-    uses_first_year_branch: bool = Field(
-        description="True when helper branches on engine_column == first_year_column."
-    )
     parameters: tuple[HelperParameter, ...] = Field(
         description=(
             "Economic parameters the helper varies along, tied to binding key concepts."
@@ -296,12 +293,6 @@ class ClusterRefactorLLMResponse(BaseModel):
     member_keys: tuple[MemberKeys, ...] = Field(
         description=(
             "One entry per cluster member with literal key values for that address."
-        )
-    )
-    uses_first_year_branch: bool = Field(
-        description=(
-            "True when the helper branches on first-year logic "
-            "(e.g. time_period == 1 or prior-period recursion)."
         )
     )
 
@@ -1144,22 +1135,6 @@ def validate_parameter_names_match_vocabulary(
         )
 
 
-_FIRST_YEAR_BRANCH_PATTERN = re.compile(
-    r"(first_year_column|time_period\s*==\s*1|time_period\s*<=\s*1)"
-)
-
-
-def validate_uses_first_year_branch_flag(
-    response: ClusterRefactorResponse,
-) -> None:
-    references = _FIRST_YEAR_BRANCH_PATTERN.search(response.helper_source) is not None
-    if response.uses_first_year_branch and not references:
-        raise ValueError(
-            "uses_first_year_branch is True but helper_source does not reference "
-            "first-year branching (first_year_column or time_period == 1)"
-        )
-
-
 def validate_allowed_global_references(
     function_def: ast.FunctionDef,
     *,
@@ -1240,6 +1215,7 @@ def validate_cluster_refactor_response(
             f"expected {sorted(varying_concepts)}, got {sorted(parameter_concepts)}"
         )
 
+    seen_member_key_combinations: set[tuple[tuple[str, BindingKeyValue], ...]] = set()
     for entry in response.member_keys:
         member = next(item for item in ctx.members if item.address == entry.address)
         if entry.function_name != member.function_name:
@@ -1260,6 +1236,16 @@ def validate_cluster_refactor_response(
                 f"member_keys for {entry.address} missing parameter concepts: "
                 f"{sorted(missing_concepts)}"
             )
+        key_combination = tuple(sorted(entry_keys.items()))
+        # Possibly this expectation should be changed.
+        # There may be times when two cell formulas are functionally identical
+        # or can be represented with identical semantics, so unique cell-wise
+        # triangulation is not required to route to the correct semantics.
+        if key_combination in seen_member_key_combinations:
+            raise ValueError(
+                "member_keys must have a unique key combination for each member"
+            )
+        seen_member_key_combinations.add(key_combination)
         expected_keys = ctx.expected_member_keys[entry.address]
         for concept, expected_value in expected_keys.items():
             actual_value = entry_keys.get(concept)
@@ -1313,7 +1299,6 @@ def validate_cluster_refactor_response(
     validate_semantic_local_names(helper_def)
     validate_no_cell_function_references(helper_def)
     validate_parameter_names_match_vocabulary(ctx, response)
-    validate_uses_first_year_branch_flag(response)
 
     arg_names = [arg.arg for arg in helper_def.args.args]
     expected_args = ["ctx", *[parameter.name for parameter in response.parameters]]
@@ -1740,7 +1725,6 @@ def prepare_cluster_refactor_response(
         helper_source=helper_source,
         parameters=llm_response.parameters,
         member_keys=llm_response.member_keys,
-        uses_first_year_branch=llm_response.uses_first_year_branch,
     )
 
 

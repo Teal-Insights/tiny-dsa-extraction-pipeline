@@ -9,7 +9,7 @@ Return only JSON matching the response schema:
   "additionalProperties": false,
   "properties": {
     "symbol_signature": {
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and return type hint.",
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types.",
       "title": "Symbol Signature",
       "type": "string"
     },
@@ -38,7 +38,7 @@ Return only JSON matching the response schema:
 
 - `symbol_signature` should take only one argument: `(ctx: EvalContext)`. Do not add parameters.
 - Choose function name as a clear `snake_case` semantic identifier informed by naming hints.
-- Return type should be documented with a type hint, e.g., `-> float`.
+- Return type must be one of `bool`, `float`, `int`, or `str`, or a `|` union composed only of those types, e.g., `-> float | str`.
 
 ## Docstring
 
@@ -48,10 +48,11 @@ Return only JSON matching the response schema:
 ## Body
 
 - Emit `symbol_body` for one self-contained function; no nested helpers or imports.
+- Name local temporaries with domain-meaningful `snake_case` informed by naming hints.
 - Call only runtime symbols from the original translation and, if necessary, Python stdlib functions/operators.
 - Preserve dependency function names and signatures.
-- Call dependencies using pass-through parameter names, e.g. `shock_active(ctx, time_period=time_period)`.
-- Rename local temporaries to domain-meaningful `snake_case` informed by naming hints.
+- Where appropriate, call dependencies using pass-through parameters, e.g. `shock_active(ctx, time_period=time_period)`.
+- Leave `xl_cell(ctx, 'Sheet!Address')` calls unchanged; this helper reads input/constant values. (Assigning return values to semantic local temporaries is okay!)
 
 ## Example:
 
