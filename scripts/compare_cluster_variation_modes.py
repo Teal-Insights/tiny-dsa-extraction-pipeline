@@ -1,4 +1,7 @@
-"""Compare formula clustering across variation_mode settings."""
+"""Compare formula clustering across variation_mode settings.
+
+Run: uv run -m scripts.compare_cluster_variation_modes
+"""
 
 from __future__ import annotations
 

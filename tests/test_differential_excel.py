@@ -35,3 +35,28 @@ def test_matched_error_values() -> None:
 def test_coerce_excel_error_normalizes_error_strings() -> None:
     assert coerce_excel_error("#VALUE!") is XlError.VALUE
     assert coerce_excel_error(1.0) == 1.0
+
+
+def test_parity_exit_code_fails_on_unexpected_matched_errors() -> None:
+    from tests.differential.differential_excel import parity_exit_code
+
+    assert (
+        parity_exit_code(failed=0, flagged_matched_errors=0, allow_matched_errors=False)
+        == 0
+    )
+    assert (
+        parity_exit_code(failed=1, flagged_matched_errors=0, allow_matched_errors=False)
+        == 1
+    )
+    assert (
+        parity_exit_code(failed=0, flagged_matched_errors=2, allow_matched_errors=False)
+        == 1
+    )
+    assert (
+        parity_exit_code(failed=0, flagged_matched_errors=2, allow_matched_errors=True)
+        == 0
+    )
+    assert (
+        parity_exit_code(failed=1, flagged_matched_errors=2, allow_matched_errors=True)
+        == 1
+    )

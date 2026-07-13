@@ -77,10 +77,12 @@ At the harness boundary:
    graph `set_inputs()` using [`workbook_labels.py`](workbook_labels.py).
 4. Write the **raw workbook string** — do not strip trailing spaces or suffixes.
 
-Pass `--warn-on-error-values` to flag matched `#VALUE!` / `#N/A` comparisons.
-These still count as passes, but a matched error on a long-horizon output often
-signals a label mismatch rather than an intentional error-boundary scenario.
-Set `expects_error_values=True` on scenarios that deliberately exercise error paths.
+Matched `#VALUE!` / `#N/A` comparisons **fail the run by default**: a matched
+error on a long-horizon output often signals a label mismatch rather than an
+intentional error-boundary scenario, and a comparison where both oracles error
+identically is not evidence of parity. Set `expects_error_values=True` on
+scenarios that deliberately exercise error paths, or pass
+`--allow-matched-errors` to triage without failing.
 
 ### Graph harness hooks
 
@@ -125,8 +127,8 @@ Microsoft Excel must be installed locally — `xlwings` drives it through COM au
 # Graph oracle (extraction repo — run before export)
 uv run python -m tests.differential.differential_test_graph
 
-# With matched-error audit (passing error cells listed for scenario review)
-uv run python -m tests.differential.differential_test_graph --warn-on-error-values
+# Triage run: matched error cells listed but not treated as failures
+uv run python -m tests.differential.differential_test_graph --allow-matched-errors
 
 # Exported library (extraction repo, after export)
 uv run python -m tests.differential.differential_test_exported_library
@@ -135,12 +137,12 @@ uv run python -m tests.differential.differential_test_exported_library
 uv run --project dist --group validation python -m tests.differential.differential_test_exported_library --layout exported
 ```
 
-Pass `--warn-on-error-values` on either harness to list comparisons where both
-oracles returned the same Excel error code. These still count as passes, but may
-indicate unintended scenario setup unless the scenario sets
-`expects_error_values=True`.
+Comparisons where both oracles return the same Excel error code are always
+listed in the report and **fail the run** unless the scenario sets
+`expects_error_values=True`. Pass `--allow-matched-errors` on either harness to
+downgrade them to warnings during triage.
 
-Exit codes: **`0`** all comparisons pass, **`1`** any failure, **`2`** prerequisite missing or scenarios not configured.
+Exit codes: **`0`** all comparisons pass and no unexpected matched errors, **`1`** any failure or unexpected matched error, **`2`** prerequisite missing or scenarios not configured.
 
 ## Golden-master conformance
 

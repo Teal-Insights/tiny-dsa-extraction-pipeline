@@ -104,7 +104,6 @@ Golden-master parity (100% pass rate, precision policy, first-divergence reporti
 - **Error handling is insufficiently Pythonic**: Our Python runtime replicates Excel error-handling semantics. In Excel, errors in "internals" are made visible via error codes like `#N/A` and `#VALUE!` appearing in user-visible cells. In Python, internals are hidden from the user, so we should raise Python exceptions instead.
 - **Excel runtime still uses ugly helpers for simple mathematical operations**: Where possible, we should use Python's built-in mathematical operators. This should be doable for adding, subtracting, and multiplying, but may not be possible for division (because Excel division coerces datatypes differently). (Perhaps we could implement division by wrapping operands in coercion functions like `float` or `int`.)
 - **Public API takes pandas/polars inputs but does not return pandas/polars outputs**: We should provide a way to return outputs as pandas/polars DataFrames if that's what the user specifies.
-- **Matched errors are not healthy by default:** A passing parity run where both oracles return the same `#VALUE!` or `#N/A` is not evidence of a healthy scenario unless the case explicitly sets `expects_error_values=True`. Dropdown label mismatches (logical `"High"` vs workbook `"High "`) are a common cause of silent matched errors on long-horizon outputs only.
 - **Dynamic ref resolution is not fully implemented for hard cases yet:** We don't yet fully support nested dynamic refs in `excel-grapher`, and constraint resolution can take a long time for wide domains due to combinatorial blowup.
 - **Similarity-aware graph packing should be explored as a better compression strategy:** Export uses `OptimalCompression` as the compression strategy; this seemed to work well on Tiny DSA, but similarity-aware compression might be better for larger workbooks (to maximize deduplication potential).
 
@@ -220,6 +219,16 @@ accident on the pilot tool, where the error sentinel happened to be a string sub
 whose members spelled the Excel errors exactly. A new tool should make the error
 comparison explicit from day one and, per §5, actually exercise it.)
 
+**Matched errors fail the run unless declared.** Two cells that agree on the same error
+class pass the *comparison*, but that comparison exercised nothing — both oracles
+errored identically, so it contributes no evidence of computational parity. (Dropdown
+label mismatches, e.g. logical `"High"` vs workbook `"High "`, are a common cause of
+silent matched errors on long-horizon outputs only.) A matched error on a scenario that
+does not declare `expects_error_values=True` MUST fail the *run* (exit code `1`) and be
+listed in the report. Harnesses MAY offer a triage escape hatch
+(`--allow-matched-errors`) that downgrades these to warnings; it MUST NOT be the
+default, and CI MUST NOT pass it.
+
 #### 1.4 Blank and `NaN` rules
 
 - **Blank (`None`) rules:** both blank → pass; one blank against a value → fail. A
@@ -282,8 +291,9 @@ The bar is **100%**: any single mismatch fails the run. This MUST be asserted in
 places, and all three MUST agree:
 
 - printed in the TXT (`Acceptance bar: 100.00%`);
-- the process **exit code** — `0` iff every comparison passes, `1` if any fail, `2` if a
-  prerequisite is missing (no workbook, no Excel, package not generated);
+- the process **exit code** — `0` iff every comparison passes and no undeclared matched
+  errors remain (§1.3), `1` if any fail, `2` if a prerequisite is missing (no workbook,
+  no Excel, package not generated);
 - CI (`.github/workflows/test.yml` on pull requests) and reviewers treat any non-`PASS` report as a blocking failure.
 
 #### 2.4 Reports are versioned artifacts, not scratch output
@@ -455,6 +465,9 @@ the section it enforces. Any unchecked box = not conformant.
   tolerance, first-match-wins, with `None`/non-finite checked before the arithmetic (§1.2).
 - [ ] Errors compare by **typed class** (`#DIV/0!` ≠ `#N/A`), via normalized typed error values
   rather than incidental string identity (§1.3).
+- [ ] A matched error on a scenario without `expects_error_values=True` fails the run and is
+  listed in the report; any `--allow-matched-errors` escape hatch is opt-in and absent from
+  CI (§1.3).
 - [ ] Blank rules hold: both blank → pass; exactly one side blank → fail (§1.4).
 - [ ] NaN/non-finite are handled before the arithmetic: two `NaN` → equal, `±inf` matches only
   its exact counterpart (§1.4).

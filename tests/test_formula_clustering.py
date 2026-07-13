@@ -2,6 +2,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+from excel_grapher.core.formula_ast import parse
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import Node
 
@@ -86,6 +87,16 @@ TRADE_BALANCE_BINDINGS = {
     "Inputs!C12": {"REF_AREA": "CN", "TIME_PERIOD": 3},
 }
 
+DOMINANT_KEY_SPLIT_BINDINGS = {
+    **TRADE_BALANCE_BINDINGS,
+    "Inputs!C12": {"REF_AREA": "DE", "TIME_PERIOD": 3},
+}
+
+
+def _dominant_key_split_graph() -> DependencyGraph:
+    return _trade_balance_graph()
+
+
 COLUMN_SWEEP_BINDINGS = {
     "Paris!B13": {"TIME_PERIOD": 1},
     "Inputs!C16": {"REF_AREA": "US"},
@@ -125,13 +136,58 @@ ENGINE_REF_LAYOUT = ProjectionColumnLayout(
 )
 
 
-def test_structural_fingerprint_abstracts_cell_addresses_and_scalars() -> None:
+def test_structural_fingerprint_abstracts_cell_addresses_but_preserves_literals() -> (
+    None
+):
     left = address_only_structural_fingerprint("=Paris!B13+1")
     right_address = address_only_structural_fingerprint("=Paris!B14+2")
     assert left is not None
     assert right_address is not None
-    assert left[0] == right_address[0]
+    assert left[0] != right_address[0]
     assert left[1] != right_address[1]
+    assert left[0] == (
+        "bin",
+        "+",
+        ("ref", 0),
+        ("num", 1.0),
+    )
+    assert right_address[0] == (
+        "bin",
+        "+",
+        ("ref", 0),
+        ("num", 2.0),
+    )
+
+
+def test_formulas_are_not_parameterizable_for_different_literal_values() -> None:
+    left = "=Paris!B13+1"
+    right = "=Paris!C13+1"
+    bindings = {
+        "Paris!B13": {"TIME_PERIOD": 1},
+        "Paris!C13": {"TIME_PERIOD": 2},
+    }
+    assert formulas_are_parameterizable(left, right, bound_address_keys=bindings)
+
+    assert not formulas_are_parameterizable(
+        "=Paris!B13+1",
+        "=Paris!B13+2",
+        bound_address_keys={"Paris!B13": {"TIME_PERIOD": 1}},
+    )
+    assert not formulas_are_parameterizable(
+        '="US"+Inputs!C16',
+        '="DE"+Inputs!C16',
+        bound_address_keys={
+            "Inputs!C16": {"REF_AREA": "US"},
+        },
+    )
+    assert not formulas_are_parameterizable(
+        "=IF(TRUE,Paris!B13,Paris!C13)",
+        "=IF(FALSE,Paris!B13,Paris!C13)",
+        bound_address_keys={
+            "Paris!B13": {"TIME_PERIOD": 1},
+            "Paris!C13": {"TIME_PERIOD": 2},
+        },
+    )
 
 
 def test_structural_fingerprint_requires_bound_address_keys() -> None:
@@ -331,35 +387,60 @@ def test_cluster_has_independent_operand_variation_detects_trade_balance_pattern
     )
 
 
+def test_dominant_key_only_split_resolves_each_member_once() -> None:
+    """dominant_key_only splitting should materialize each member's ref keys once."""
+    import src.formula_clustering as formula_clustering
+
+    graph = _dominant_key_split_graph()
+    call_counts: dict[str, int] = {}
+    original = formula_clustering._ref_position_key_values
+
+    def spy(
+        member_address: str,
+        formula: str,
+        bound_address_keys,
+        *,
+        workbook_path: Path | None = None,
+        layout: ProjectionColumnLayout | None = None,
+        key_cache=None,
+    ):
+        call_counts[member_address] = call_counts.get(member_address, 0) + 1
+        return original(
+            member_address,
+            formula,
+            bound_address_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+            key_cache=key_cache,
+        )
+
+    with patch.object(formula_clustering, "_ref_position_key_values", spy):
+        cluster_graph_formulas(
+            graph,
+            bound_address_keys=DOMINANT_KEY_SPLIT_BINDINGS,
+            variation_mode="dominant_key_only",
+        )
+
+    assert call_counts == {
+        "Engine!B5": 1,
+        "Engine!C5": 1,
+        "Engine!D5": 1,
+    }
+
+
 def test_dominant_key_only_variation_mode_splits_cluster() -> None:
-    bindings = {
-        "Inputs!B10": {"REF_AREA": "US", "TIME_PERIOD": 1},
-        "Inputs!C10": {"REF_AREA": "CN", "TIME_PERIOD": 1},
-        "Inputs!B11": {"REF_AREA": "US", "TIME_PERIOD": 2},
-        "Inputs!C11": {"REF_AREA": "CN", "TIME_PERIOD": 2},
-        "Inputs!B12": {"REF_AREA": "US", "TIME_PERIOD": 3},
-        "Inputs!C12": {"REF_AREA": "DE", "TIME_PERIOD": 3},
-    }
-    graph = DependencyGraph()
-    formulas = {
-        "Engine!B5": "=Inputs!B10-Inputs!C10",
-        "Engine!C5": "=Inputs!B11-Inputs!C11",
-        "Engine!D5": "=Inputs!B12-Inputs!C12",
-    }
-    for address, formula in formulas.items():
-        sheet, column, row = parse_workbook_address(address)
-        graph.add_node(_formula_node(sheet, column, row, formula))
+    graph = _dominant_key_split_graph()
 
     independent_clusters = cluster_graph_formulas(
         graph,
-        bound_address_keys=bindings,
+        bound_address_keys=DOMINANT_KEY_SPLIT_BINDINGS,
         variation_mode="independent",
     )
     assert len(independent_clusters) == 1
 
     constrained_clusters = cluster_graph_formulas(
         graph,
-        bound_address_keys=bindings,
+        bound_address_keys=DOMINANT_KEY_SPLIT_BINDINGS,
         variation_mode="dominant_key_only",
     )
     assert len(constrained_clusters) == 2
@@ -488,6 +569,41 @@ def test_cluster_graph_formulas_caches_resolved_binding_keys(
         )
 
     assert resolver.call_count <= max_expected_resolutions
+
+
+def test_cluster_graph_formulas_parses_each_formula_once(
+    synthetic_workbook_path: Path,
+) -> None:
+    """Clustering should bucket by per-formula fingerprint, not re-parse pairwise."""
+    graph = DependencyGraph()
+    formulas = {
+        "Engine!B5": "=Inputs!B10-Inputs!C10",
+        "Engine!C5": "=Inputs!B11-Inputs!C11",
+        "Engine!D5": "=Inputs!B12-Inputs!C12",
+        "Engine!E5": "=Inputs!B13-Inputs!C13",
+        "Engine!F5": "=Inputs!B14-Inputs!C14",
+    }
+    for address, formula in formulas.items():
+        sheet, column, row = parse_workbook_address(address)
+        graph.add_node(_formula_node(sheet, column, row, formula))
+
+    bound_address_keys = {
+        **TRADE_BALANCE_BINDINGS,
+        "Inputs!B13": {"REF_AREA": "US", "TIME_PERIOD": 4},
+        "Inputs!C13": {"REF_AREA": "CN", "TIME_PERIOD": 4},
+        "Inputs!B14": {"REF_AREA": "US", "TIME_PERIOD": 5},
+        "Inputs!C14": {"REF_AREA": "CN", "TIME_PERIOD": 5},
+    }
+
+    with patch("src.formula_clustering.parse", wraps=parse) as parser:
+        cluster_graph_formulas(
+            graph,
+            bound_address_keys=bound_address_keys,
+            workbook_path=synthetic_workbook_path,
+            layout=ENGINE_REF_LAYOUT,
+        )
+
+    assert parser.call_count <= len(formulas)
 
 
 def test_cluster_has_independent_operand_variation_detects_variable_country_pairs() -> (

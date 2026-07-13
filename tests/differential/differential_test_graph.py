@@ -40,6 +40,7 @@ from typing import Any, Literal
 from .differential_excel import (
     coerce_excel_error,
     matched_error_values,
+    parity_exit_code,
     read_cell_value,
 )
 from .differential_scenario_inputs import collect_scenario_input_addresses
@@ -70,7 +71,7 @@ class GraphDifferentialConfig:
     constraints: dict[str, object]
     library_name: str
     atol: float = ATOL
-    warn_on_error_values: bool = False
+    allow_matched_errors: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ CSV_COLUMNS: tuple[str, ...] = (
     "rel_diff",
     "note",
     "matched_error",
+    "flagged_matched_error",
 )
 
 
@@ -131,11 +133,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory for differential_report.{csv,txt} output.",
     )
     parser.add_argument(
-        "--warn-on-error-values",
+        "--allow-matched-errors",
         action="store_true",
         help=(
-            "List passing comparisons where both sides are the same Excel error "
-            "code, for scenario-setup review."
+            "Triage escape hatch: do not fail the run when both oracles return "
+            "the same Excel error on a scenario without expects_error_values=True. "
+            "Flagged comparisons are still listed in the report."
         ),
     )
     return parser.parse_args(argv)
@@ -152,7 +155,7 @@ def resolve_config(
     layout: LayoutName,
     workbook_path: Path | None = None,
     report_dir: Path | None = None,
-    warn_on_error_values: bool = False,
+    allow_matched_errors: bool = False,
 ) -> GraphDifferentialConfig:
     """Resolve paths from ``workbook_config.py`` and the selected layout."""
     module_path = module_path.resolve()
@@ -184,7 +187,7 @@ def resolve_config(
         constraints=defaults.constraints,
         library_name=defaults.library_name,
         atol=ATOL,
-        warn_on_error_values=warn_on_error_values,
+        allow_matched_errors=allow_matched_errors,
     )
 
 
@@ -196,7 +199,7 @@ def config_from_args(
         layout=args.layout,
         workbook_path=args.workbook_path,
         report_dir=args.report_dir,
-        warn_on_error_values=args.warn_on_error_values,
+        allow_matched_errors=args.allow_matched_errors,
     )
 
 
@@ -409,6 +412,7 @@ def write_csv_report(trials: list[Trial], path: Path) -> None:
                     "" if trial.rel_diff is None else f"{trial.rel_diff:.3e}",
                     trial.note,
                     trial.matched_error,
+                    trial.flagged_matched_error,
                 ]
             )
 
@@ -425,7 +429,9 @@ def write_txt_summary(
     passed = sum(1 for trial in trials if trial.match)
     failed = total - passed
     pass_rate = (100.0 * passed / total) if total else 0.0
-    result = "PASS" if failed == 0 else "FAIL"
+    flagged = [trial for trial in trials if trial.flagged_matched_error]
+    failing_run = bool(failed) or bool(flagged and not config.allow_matched_errors)
+    result = "FAIL" if failing_run else "PASS"
     first = next((trial for trial in trials if not trial.match), None)
 
     by_axis: dict[str, tuple[int, int]] = {}
@@ -462,6 +468,13 @@ def write_txt_summary(
     lines.append(f"Total comparisons: {total}")
     lines.append(f"Passed:            {passed}")
     lines.append(f"Failed:            {failed}")
+    if flagged:
+        allowed_note = (
+            " (allowed by --allow-matched-errors)"
+            if (config.allow_matched_errors)
+            else " (fails the run)"
+        )
+        lines.append(f"Matched errors:    {len(flagged)} flagged{allowed_note}")
     lines.append(f"Pass rate:         {pass_rate:.2f}%")
     lines.append("Acceptance bar:    100.00%")
     lines.append(f"Result:            {result}")
@@ -480,23 +493,22 @@ def write_txt_summary(
         if first.note:
             lines.append(f"  note:      {first.note}")
 
-    if config.warn_on_error_values:
-        flagged = [trial for trial in trials if trial.flagged_matched_error]
-        if flagged:
-            lines.append("")
+    if flagged:
+        lines.append("")
+        lines.append(
+            "MATCHED ERROR VALUES (both oracles returned the same Excel error; "
+            "fails the run unless the scenario sets expects_error_values=True "
+            "or --allow-matched-errors is passed)"
+        )
+        lines.append("-" * 78)
+        for trial in flagged:
             lines.append(
-                "MATCHED ERROR VALUES (passed, but review scenario setup; "
-                "set Scenario.expects_error_values=True when intentional)"
+                f"  {trial.scenario_id} :: {trial.cell} ({trial.output_label})"
             )
-            lines.append("-" * 78)
-            for trial in flagged:
-                lines.append(
-                    f"  {trial.scenario_id} :: {trial.cell} ({trial.output_label})"
-                )
-                lines.append(f"    golden = {_format_value(trial.golden)}")
-                lines.append(f"    mvp    = {_format_value(trial.mvp)}")
-                if trial.note:
-                    lines.append(f"    note   = {trial.note}")
+            lines.append(f"    golden = {_format_value(trial.golden)}")
+            lines.append(f"    mvp    = {_format_value(trial.mvp)}")
+            if trial.note:
+                lines.append(f"    note   = {trial.note}")
 
     if missing_inputs_in_graph:
         lines.append("")
@@ -658,13 +670,19 @@ def run_differential_test(config: GraphDifferentialConfig) -> int:
     failed = sum(1 for trial in trials if not trial.match)
     flagged = sum(1 for trial in trials if trial.flagged_matched_error)
     logger.info("Done. Failures: %d / %d", failed, len(trials))
-    if config.warn_on_error_values and flagged:
-        logger.warning(
-            "Matched error values in %d comparison(s); see MATCHED ERROR VALUES in %s",
+    if flagged:
+        log = logger.warning if config.allow_matched_errors else logger.error
+        log(
+            "Matched error values in %d comparison(s); see MATCHED ERROR VALUES in %s "
+            "(set Scenario.expects_error_values=True when intentional)",
             flagged,
             config.report_dir / "differential_report.txt",
         )
-    return 0 if failed == 0 else 1
+    return parity_exit_code(
+        failed=failed,
+        flagged_matched_errors=flagged,
+        allow_matched_errors=config.allow_matched_errors,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

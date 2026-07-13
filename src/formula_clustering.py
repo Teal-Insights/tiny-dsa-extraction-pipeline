@@ -60,16 +60,26 @@ class _ClusteringKeyCache:
     _value_cache: dict[str, dict[str, BindingKeyValue] | None] = field(
         default_factory=dict, repr=False
     )
+    _fingerprint_cache: dict[str, StructuralFingerprint | None] = field(
+        default_factory=dict, repr=False
+    )
 
-    def warm_from_formulas(self, formulas: Mapping[str, str]) -> None:
-        for formula in formulas.values():
-            _structural_fingerprint(
+    def warm_from_formula_nodes(self, formula_nodes: Mapping[str, str]) -> None:
+        for address, formula in formula_nodes.items():
+            self.fingerprint_for_formula(address, formula)
+
+    def fingerprint_for_formula(
+        self, address: str, formula: str
+    ) -> StructuralFingerprint | None:
+        if address not in self._fingerprint_cache:
+            self._fingerprint_cache[address] = _structural_fingerprint(
                 formula,
                 bound_address_keys=self.bound_address_keys,
                 workbook_path=self.workbook_path,
                 layout=self.layout,
                 key_cache=self,
             )
+        return self._fingerprint_cache[address]
 
     def concepts_for_address(self, address: str) -> tuple[str, ...] | None:
         if address not in self._concept_cache:
@@ -171,11 +181,11 @@ def _binding_key_concepts_for_address(
 def _address_only_structural_tuple(node: AstNode, refs: list[str]) -> tuple:
     """Build a binding-agnostic skeleton for tests and diagnostics."""
     if isinstance(node, NumberNode):
-        return ("num",)
+        return ("num", node.value)
     if isinstance(node, StringNode):
-        return ("str",)
+        return ("str", node.value)
     if isinstance(node, BoolNode):
-        return ("bool",)
+        return ("bool", node.value)
     if isinstance(node, ErrorNode):
         return ("err", str(node.error))
     if isinstance(node, CellRefNode):
@@ -228,11 +238,11 @@ def _structural_tuple(
     key_cache: _ClusteringKeyCache | None = None,
 ) -> tuple:
     if isinstance(node, NumberNode):
-        return ("num",)
+        return ("num", node.value)
     if isinstance(node, StringNode):
-        return ("str",)
+        return ("str", node.value)
     if isinstance(node, BoolNode):
-        return ("bool",)
+        return ("bool", node.value)
     if isinstance(node, ErrorNode):
         return ("err", str(node.error))
     if isinstance(node, CellRefNode):
@@ -498,6 +508,20 @@ def _should_cluster(
     )
 
 
+def _clustering_bucket_key(
+    fingerprint: StructuralFingerprint | None,
+    *,
+    address: str,
+) -> tuple[object, ...]:
+    """Return the bucket key for one formula's structural fingerprint."""
+    if fingerprint is None:
+        return ("singleton", address)
+    if not _binding_aware_fingerprint_complete(fingerprint):
+        return ("singleton", address)
+    skeleton, refs = fingerprint
+    return ("cluster", skeleton, len(refs))
+
+
 def _ref_position_key_values(
     member_address: str,
     formula: str,
@@ -507,13 +531,16 @@ def _ref_position_key_values(
     layout: ProjectionColumnLayout | None = None,
     key_cache: _ClusteringKeyCache | None = None,
 ) -> list[dict[str, BindingKeyValue]] | None:
-    fingerprint = _structural_fingerprint(
-        formula,
-        bound_address_keys=bound_address_keys,
-        workbook_path=workbook_path,
-        layout=layout,
-        key_cache=key_cache,
-    )
+    if key_cache is not None:
+        fingerprint = key_cache.fingerprint_for_formula(member_address, formula)
+    else:
+        fingerprint = _structural_fingerprint(
+            formula,
+            bound_address_keys=bound_address_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+            key_cache=None,
+        )
     if fingerprint is None or not _binding_aware_fingerprint_complete(fingerprint):
         return None
     _skeleton, refs = fingerprint
@@ -541,6 +568,59 @@ def _ref_position_key_values(
     return values_by_ref
 
 
+def _varying_concepts_at_ref_from_matrix(
+    member_matrices: Mapping[str, list[dict[str, BindingKeyValue]] | None],
+    members: tuple[str, ...],
+    ref_index: int,
+) -> frozenset[str]:
+    concept_values: dict[str, set[BindingKeyValue]] = {}
+    for member in members:
+        ref_values = member_matrices[member]
+        if ref_values is None or ref_index >= len(ref_values):
+            return frozenset()
+        for concept, value in ref_values[ref_index].items():
+            concept_values.setdefault(concept, set()).add(value)
+    return frozenset(
+        concept for concept, values in concept_values.items() if len(values) > 1
+    )
+
+
+def _dominant_key_at_ref_from_matrix(
+    member_matrices: Mapping[str, list[dict[str, BindingKeyValue]] | None],
+    members: tuple[str, ...],
+    ref_index: int,
+    varying_concepts: frozenset[str],
+) -> str | None:
+    if not varying_concepts:
+        return None
+    counts: dict[str, int] = {}
+    for concept in varying_concepts:
+        values: set[BindingKeyValue] = set()
+        for member in members:
+            ref_values = member_matrices[member]
+            if ref_values is None or ref_index >= len(ref_values):
+                continue
+            if concept in ref_values[ref_index]:
+                values.add(ref_values[ref_index][concept])
+        counts[concept] = len(values)
+    return max(counts, key=lambda concept: (counts[concept], concept))
+
+
+def _split_signature_from_ref_keys(
+    keys_at_ref: dict[str, BindingKeyValue],
+    dominant_key: str,
+    varying_concepts: frozenset[str],
+) -> tuple[BindingKeyValue, ...] | None:
+    signature: list[BindingKeyValue] = []
+    for concept in sorted(varying_concepts):
+        if concept == dominant_key:
+            continue
+        if concept not in keys_at_ref:
+            return None
+        signature.append(keys_at_ref[concept])
+    return tuple(signature)
+
+
 def _dominant_varying_concepts_at_ref(
     members: tuple[str, ...],
     formula_nodes: Mapping[str, str],
@@ -551,9 +631,8 @@ def _dominant_varying_concepts_at_ref(
     layout: ProjectionColumnLayout | None = None,
     key_cache: _ClusteringKeyCache | None = None,
 ) -> frozenset[str]:
-    concept_values: dict[str, set[BindingKeyValue]] = {}
-    for member in members:
-        ref_values = _ref_position_key_values(
+    member_matrices = {
+        member: _ref_position_key_values(
             member,
             formula_nodes[member],
             bound_address_keys,
@@ -561,13 +640,9 @@ def _dominant_varying_concepts_at_ref(
             layout=layout,
             key_cache=key_cache,
         )
-        if ref_values is None or ref_index >= len(ref_values):
-            return frozenset()
-        for concept, value in ref_values[ref_index].items():
-            concept_values.setdefault(concept, set()).add(value)
-    return frozenset(
-        concept for concept, values in concept_values.items() if len(values) > 1
-    )
+        for member in members
+    }
+    return _varying_concepts_at_ref_from_matrix(member_matrices, members, ref_index)
 
 
 def _dominant_key_for_ref(
@@ -581,26 +656,20 @@ def _dominant_key_for_ref(
     layout: ProjectionColumnLayout | None = None,
     key_cache: _ClusteringKeyCache | None = None,
 ) -> str | None:
-    if not varying_concepts:
-        return None
-    counts: dict[str, int] = {}
-    for concept in varying_concepts:
-        values: set[BindingKeyValue] = set()
-        for member in members:
-            ref_values = _ref_position_key_values(
-                member,
-                formula_nodes[member],
-                bound_address_keys,
-                workbook_path=workbook_path,
-                layout=layout,
-                key_cache=key_cache,
-            )
-            if ref_values is None or ref_index >= len(ref_values):
-                continue
-            if concept in ref_values[ref_index]:
-                values.add(ref_values[ref_index][concept])
-        counts[concept] = len(values)
-    return max(counts, key=lambda concept: (counts[concept], concept))
+    member_matrices = {
+        member: _ref_position_key_values(
+            member,
+            formula_nodes[member],
+            bound_address_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+            key_cache=key_cache,
+        )
+        for member in members
+    }
+    return _dominant_key_at_ref_from_matrix(
+        member_matrices, members, ref_index, varying_concepts
+    )
 
 
 def _dominant_key_split_signature(
@@ -625,15 +694,9 @@ def _dominant_key_split_signature(
     )
     if ref_values is None or ref_index >= len(ref_values):
         return None
-    keys_at_ref = ref_values[ref_index]
-    signature: list[BindingKeyValue] = []
-    for concept in sorted(varying_concepts):
-        if concept == dominant_key:
-            continue
-        if concept not in keys_at_ref:
-            return None
-        signature.append(keys_at_ref[concept])
-    return tuple(signature)
+    return _split_signature_from_ref_keys(
+        ref_values[ref_index], dominant_key, varying_concepts
+    )
 
 
 def _split_cluster_by_dominant_keys(
@@ -649,55 +712,56 @@ def _split_cluster_by_dominant_keys(
         return (members,)
 
     canonical_formula = formula_nodes[members[0]]
-    fingerprint = _structural_fingerprint(
-        canonical_formula,
-        bound_address_keys=bound_address_keys,
-        workbook_path=workbook_path,
-        layout=layout,
-        key_cache=key_cache,
-    )
+    if key_cache is not None:
+        fingerprint = key_cache.fingerprint_for_formula(members[0], canonical_formula)
+    else:
+        fingerprint = _structural_fingerprint(
+            canonical_formula,
+            bound_address_keys=bound_address_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+            key_cache=None,
+        )
     if fingerprint is None:
         return (members,)
     _skeleton, refs = fingerprint
     if not refs:
         return (members,)
 
+    member_matrices = {
+        member: _ref_position_key_values(
+            member,
+            formula_nodes[member],
+            bound_address_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+            key_cache=key_cache,
+        )
+        for member in members
+    }
+
+    ref_dominance: list[tuple[frozenset[str], str | None]] = []
+    for ref_index in range(len(refs)):
+        varying = _varying_concepts_at_ref_from_matrix(
+            member_matrices, members, ref_index
+        )
+        dominant = _dominant_key_at_ref_from_matrix(
+            member_matrices, members, ref_index, varying
+        )
+        ref_dominance.append((varying, dominant))
+
     groups: dict[tuple[tuple[BindingKeyValue, ...], ...], list[str]] = {}
     for member in members:
+        ref_values = member_matrices[member]
         signatures: list[tuple[BindingKeyValue, ...]] = []
-        for ref_index in range(len(refs)):
-            varying = _dominant_varying_concepts_at_ref(
-                members,
-                formula_nodes,
-                bound_address_keys,
-                ref_index,
-                workbook_path=workbook_path,
-                layout=layout,
-                key_cache=key_cache,
-            )
-            dominant = _dominant_key_for_ref(
-                members,
-                formula_nodes,
-                bound_address_keys,
-                ref_index,
-                varying,
-                workbook_path=workbook_path,
-                layout=layout,
-                key_cache=key_cache,
-            )
-            if dominant is None:
+        for ref_index, (varying, dominant) in enumerate(ref_dominance):
+            if dominant is None or ref_values is None or ref_index >= len(ref_values):
                 signatures.append(())
                 continue
-            signature = _dominant_key_split_signature(
-                member,
-                formula_nodes,
-                bound_address_keys,
-                ref_index,
+            signature = _split_signature_from_ref_keys(
+                ref_values[ref_index],
                 dominant,
                 varying,
-                workbook_path=workbook_path,
-                layout=layout,
-                key_cache=key_cache,
             )
             if signature is None:
                 signatures.append(())
@@ -787,40 +851,16 @@ def cluster_graph_formulas(
         workbook_path=workbook_path,
         layout=layout,
     )
-    key_cache.warm_from_formulas(formula_nodes)
+    key_cache.warm_from_formula_nodes(formula_nodes)
 
-    parent = {address: address for address in addresses}
-
-    def find(address: str) -> str:
-        while parent[address] != address:
-            parent[address] = parent[parent[address]]
-            address = parent[address]
-        return address
-
-    def union(left: str, right: str) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root != right_root:
-            parent[right_root] = left_root
-
-    for left_index, left_address in enumerate(addresses):
-        for right_address in addresses[left_index + 1 :]:
-            if _should_cluster(
-                formula_nodes[left_address],
-                formula_nodes[right_address],
-                bound_address_keys=resolved_bound_keys,
-                workbook_path=workbook_path,
-                layout=layout,
-                key_cache=key_cache,
-            ):
-                union(left_address, right_address)
-
-    grouped: dict[str, list[str]] = {}
+    grouped: dict[tuple[object, ...], list[str]] = {}
     for address in addresses:
-        grouped.setdefault(find(address), []).append(address)
+        fingerprint = key_cache.fingerprint_for_formula(address, formula_nodes[address])
+        bucket_key = _clustering_bucket_key(fingerprint, address=address)
+        grouped.setdefault(bucket_key, []).append(address)
 
     raw_clusters: list[tuple[str, ...]] = []
-    for _root, members in sorted(grouped.items(), key=lambda item: item[1]):
+    for _bucket_key, members in sorted(grouped.items(), key=lambda item: item[1]):
         ordered_members = tuple(sorted(members))
         if variation_mode == "dominant_key_only" and len(ordered_members) >= 2:
             raw_clusters.extend(

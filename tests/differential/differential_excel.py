@@ -33,3 +33,23 @@ def matched_error_values(golden: Any, mvp: Any) -> bool:
     golden = coerce_excel_error(golden)
     mvp = coerce_excel_error(mvp)
     return isinstance(golden, XlError) and isinstance(mvp, XlError) and golden == mvp
+
+
+def parity_exit_code(
+    *,
+    failed: int,
+    flagged_matched_errors: int,
+    allow_matched_errors: bool,
+) -> int:
+    """Map sweep outcomes to the harness exit code.
+
+    A matched Excel error on a scenario without ``expects_error_values=True`` is
+    not evidence of parity — both oracles errored identically, so the comparison
+    exercised nothing. Such flagged comparisons fail the run unless the operator
+    explicitly passes ``--allow-matched-errors`` for triage.
+    """
+    if failed:
+        return 1
+    if flagged_matched_errors and not allow_matched_errors:
+        return 1
+    return 0

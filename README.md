@@ -194,8 +194,10 @@ Set `VARIATION_MODE` in [workbook_config.py](workbook_config.py) to control how 
 
 | Mode | Behavior |
 |---|---|
-| `independent` (default) | Keep one refactor cluster when formulas share the same AST shape, even if operand binding keys vary along multiple dimensions. |
+| `independent` (default) | Keep one refactor cluster when formulas share the same AST shape and scalar literals, even if operand binding keys vary along multiple dimensions. |
 | `dominant_key_only` | After AST clustering, split clusters where operand keys vary along more than one dimension, keeping only the dimension with the widest value spread as a refactor parameter. Use when a row of parallel formulas mixes, for example, country and time-period variation but you want helpers parameterized only by time period. |
+
+Structural fingerprints include literal numbers, strings, and booleans. Formulas that differ only by cell addresses or binding-key concepts can still share a cluster.
 
 Override per run on either entry point:
 

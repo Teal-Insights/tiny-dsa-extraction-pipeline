@@ -172,6 +172,58 @@ def test_compare_cell_suppresses_flag_when_scenario_expects_errors() -> None:
     assert comparison.flagged_matched_error is False
 
 
+def _matched_error_comparison(harness):
+    return harness.compare_cell(
+        "scenario:a",
+        "Outputs!B1",
+        "result[year=1]",
+        "#N/A",
+        "#N/A",
+        atol=ATOL,
+    )
+
+
+def test_write_txt_summary_fails_on_flagged_matched_errors(tmp_path: Path) -> None:
+    harness = _load_harness_module()
+    config = _sample_config(tmp_path)
+    comparisons = [_matched_error_comparison(harness)]
+    report_path = tmp_path / "parity_report.txt"
+
+    harness.write_txt_summary(comparisons, report_path, config=config)
+
+    text = report_path.read_text(encoding="utf-8")
+    assert "Result:            FAIL" in text
+    assert "MATCHED ERROR VALUES" in text
+
+
+def test_write_txt_summary_passes_when_matched_errors_allowed(tmp_path: Path) -> None:
+    import dataclasses
+
+    harness = _load_harness_module()
+    config = dataclasses.replace(_sample_config(tmp_path), allow_matched_errors=True)
+    comparisons = [_matched_error_comparison(harness)]
+    report_path = tmp_path / "parity_report.txt"
+
+    harness.write_txt_summary(comparisons, report_path, config=config)
+
+    text = report_path.read_text(encoding="utf-8")
+    assert "Result:            PASS" in text
+    assert "MATCHED ERROR VALUES" in text
+
+
+def test_parse_args_accepts_allow_matched_errors() -> None:
+    harness = _load_harness_module()
+    args = harness.parse_args(["--allow-matched-errors"])
+    assert args.allow_matched_errors is True
+    assert harness.parse_args([]).allow_matched_errors is False
+
+
+def test_parse_args_rejects_removed_warn_flag() -> None:
+    harness = _load_harness_module()
+    with pytest.raises(SystemExit):
+        harness.parse_args(["--warn-on-error-values"])
+
+
 def test_crash_comparisons_marks_every_output_cell_failed() -> None:
     harness = _load_harness_module()
     scenario = Scenario(id="scenario:crash", inputs={})
