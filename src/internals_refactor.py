@@ -42,7 +42,7 @@ from src.refactor_contracts import (
     concepts_with_multiple_dimensions,
     select_cluster_refactor_contract,
 )
-from src.refactor_order import compute_cluster_refactor_order
+from src.refactor_order import compute_refactor_schedule, refactor_failure_target
 from src.runtime_symbols import allowed_runtime_symbols
 from src.semantic_naming import (
     BindingRecordHints,
@@ -78,7 +78,7 @@ RESOLVER_SECTION_MARKER = "# --- Formula resolver ---"
 AddressDispatch = dict[str, tuple[str, dict[str, BindingKeyValue]]]
 
 REFACTOR_ROW_ORDER: tuple[int, ...] = ()
-"""Optional legacy row order hint; prefer ``compute_cluster_refactor_order``."""
+"""Optional legacy row order hint; prefer ``compute_refactor_schedule``."""
 
 
 def _refactor_failure_target_slug(
@@ -3205,6 +3205,7 @@ def refactor_internals_singleton(
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
+    diagnostic_target: str | None = None,
 ) -> SingletonRefactorApplyResult:
     source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(source)
@@ -3215,6 +3216,7 @@ def refactor_internals_singleton(
             pristine_source=pristine_source,
             input_vectors=input_vectors,
             source_graph=source_graph,
+            diagnostic_target=diagnostic_target,
         )
     validate_singleton_refactor_response(
         ctx,
@@ -3245,6 +3247,7 @@ def refactor_internals_cluster(
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
+    diagnostic_target: str | None = None,
 ) -> ClusterRefactorApplyResult:
     source = internals_path.read_text(encoding="utf-8")
     existing_names = _function_names(source)
@@ -3255,6 +3258,7 @@ def refactor_internals_cluster(
             pristine_source=pristine_source,
             input_vectors=input_vectors,
             source_graph=source_graph,
+            diagnostic_target=diagnostic_target,
         )
     validate_cluster_refactor_response(
         ctx,
@@ -3302,11 +3306,13 @@ def refactor_internals_all_clusters(
         pristine_source = internals_path.read_text(encoding="utf-8")
         input_vectors = build_default_input_vectors()
 
-    ordered_clusters = compute_cluster_refactor_order(projection, clusters)
+    ordered_units = compute_refactor_schedule(projection, clusters)
     results: list[ClusterRefactorApplyResult] = []
     responses: list[ClusterRefactorResponse] = []
     refactored_any = False
-    for cluster in ordered_clusters:
+    for unit in ordered_units:
+        cluster = unit.as_formula_cluster()
+        diagnostic_target = refactor_failure_target(unit)
         if len(cluster.members) == 1:
             ctx = build_singleton_refactor_context(
                 projection,
@@ -3324,6 +3330,7 @@ def refactor_internals_all_clusters(
                 pristine_source=pristine_source,
                 input_vectors=input_vectors,
                 source_graph=source_graph,
+                diagnostic_target=diagnostic_target,
             )
             refactored_any = True
             continue
@@ -3347,6 +3354,7 @@ def refactor_internals_all_clusters(
             pristine_source=pristine_source,
             input_vectors=input_vectors,
             source_graph=source_graph,
+            diagnostic_target=diagnostic_target,
         )
         results.append(result)
         responses.append(result.response)
@@ -3381,6 +3389,7 @@ def llm_refactor_singleton(
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
+    diagnostic_target: str | None = None,
 ) -> SingletonRefactorResponse:
     llm_schema = SingletonRefactorLLMResponse.model_json_schema()
     internals_bytes = internals_path.read_bytes()
@@ -3388,6 +3397,7 @@ def llm_refactor_singleton(
     existing_names = _function_names(internals_source)
     cache = load_refactor_cache()
     cache_key = singleton_refactor_cache_key(ctx, internals_bytes, llm_schema)
+    failure_target = diagnostic_target or ctx.address
 
     def _apply_singleton_refactor_validation(
         prepared: SingletonRefactorResponse,
@@ -3425,7 +3435,7 @@ def llm_refactor_singleton(
         except Exception as error:
             dump_dir = write_refactor_failure_diagnostic(
                 kind="singleton",
-                target=ctx.address,
+                target=failure_target,
                 error=error,
                 llm_response=cached_response.model_dump(),
                 prepared_response=cached_response.model_dump(),
@@ -3480,7 +3490,7 @@ def llm_refactor_singleton(
         raise_if_llm_declared_error(
             parsed,
             kind="singleton",
-            target=ctx.address,
+            target=failure_target,
         )
         prepared = prepare_singleton_refactor_response(parsed, ctx)
         last_attempt["prepared_response"] = prepared.model_dump()
@@ -3510,7 +3520,7 @@ def llm_refactor_singleton(
     except RefactorDeclaredError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="singleton",
-            target=ctx.address,
+            target=failure_target,
             error=error,
             user_prompt=user_prompt,
             llm_response=last_attempt.get("llm_response"),
@@ -3528,7 +3538,7 @@ def llm_refactor_singleton(
     except RuntimeError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="singleton",
-            target=ctx.address,
+            target=failure_target,
             error=error,
             user_prompt=user_prompt,
             llm_response=last_attempt.get("llm_response"),
@@ -3562,6 +3572,7 @@ def llm_refactor_cluster(
     pristine_source: str | None = None,
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
+    diagnostic_target: str | None = None,
 ) -> ClusterRefactorResponse:
     llm_schema = ClusterRefactorLLMResponse.model_json_schema()
     internals_bytes = internals_path.read_bytes()
@@ -3569,6 +3580,7 @@ def llm_refactor_cluster(
     existing_names = _function_names(internals_source)
     cache = load_refactor_cache()
     cache_key = refactor_cache_key(ctx, internals_bytes, llm_schema)
+    failure_target = diagnostic_target or f"cluster_{ctx.cluster_id}"
 
     def _apply_cluster_refactor_validation(
         prepared: ClusterRefactorResponse,
@@ -3606,7 +3618,7 @@ def llm_refactor_cluster(
         except Exception as error:
             dump_dir = write_refactor_failure_diagnostic(
                 kind="cluster",
-                target=f"cluster_{ctx.cluster_id}",
+                target=failure_target,
                 error=error,
                 llm_response=cached_response.model_dump(),
                 prepared_response=cached_response.model_dump(),
@@ -3661,7 +3673,7 @@ def llm_refactor_cluster(
         raise_if_llm_declared_error(
             parsed,
             kind="cluster",
-            target=f"cluster_{ctx.cluster_id}",
+            target=failure_target,
         )
         prepared = prepare_cluster_refactor_response(parsed, ctx)
         last_attempt["prepared_response"] = prepared.model_dump()
@@ -3692,7 +3704,7 @@ def llm_refactor_cluster(
     except RefactorDeclaredError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="cluster",
-            target=f"cluster_{ctx.cluster_id}",
+            target=failure_target,
             error=error,
             user_prompt=user_prompt,
             llm_response=last_attempt.get("llm_response"),
@@ -3710,7 +3722,7 @@ def llm_refactor_cluster(
     except RuntimeError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="cluster",
-            target=f"cluster_{ctx.cluster_id}",
+            target=failure_target,
             error=error,
             user_prompt=user_prompt,
             llm_response=last_attempt.get("llm_response"),

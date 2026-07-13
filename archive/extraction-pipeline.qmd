@@ -2174,10 +2174,12 @@ next LLM-authored helper, not in the mechanical rewriter.
 
 #### Apply all clusters
 
-`refactor_internals_all_clusters()` refactors singletons first, then orders
-multi-member clusters with `compute_multi_member_cluster_refactor_order()` from
-`src/refactor_order.py`. It re-extracts context after each collapse so later LLM
-calls see already-collapsed upstream helpers.
+`refactor_internals_all_clusters()` walks refactor units from
+`compute_refactor_schedule()` in `src/refactor_order.py`. When the inter-family
+cluster graph is acyclic, each fingerprint family is one unit; otherwise members
+are scheduled in ready subsets that respect the cell-level dependency graph. It
+re-extracts context after each collapse so later LLM calls see already-collapsed
+upstream helpers.
 
 ```{python}
 from src.internals_refactor import (

@@ -111,6 +111,10 @@ DIFFERENTIAL_GRAPH_REPORT_DIR_REL = Path("data/differential/graph")
 # ``LLM_GRAPH_AUDIT_MODEL`` (see ``.env.example``).
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = ()
 
+# Optional extra target bundles for ``scripts/regenerate_graph_cache.py``.
+# Each entry is ``(label, targets)``. The primary bundle always uses TARGETS.
+GRAPH_CACHE_TARGET_BUNDLES: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
 # Internal binding coverage validation for formula graph cells (see README.md).
 # off: disabled; warn: pipeline logs warnings; error: pipeline raises before export.
 INTERNAL_BINDING_VALIDATION_MODE: InternalBindingValidationMode = "warn"

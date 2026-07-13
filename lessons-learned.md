@@ -30,6 +30,8 @@ The reusable pattern:
 - Treat LLM output as draft code/docs/config, then validate it with deterministic checks and Excel parity.
 - Keep LLM refactoring tasks bounded to small subgraphs identified algorithmically, and perform incremental rewriting in reverse topological order from leaf to root. Keep each pass behind a parity gate and retry if it fails correctness testing. This makes the process scalable to workbooks of any size.
 
+Fingerprint formula clusters group cells by AST shape only; they are not always valid atomic refactor nodes. When cross-period lag edges create inter-cluster cycles on an acyclic cell graph, the refactor pipeline schedules **refactor units** (member subsets of fingerprint families) via `compute_refactor_schedule` instead of hard-failing cluster ordering.
+
 The cookie-cutter for tool #3 should make these defaults hard to skip. The best automation is "make the next missing decision visible."
 
 ## Approach For DDT/Q-CRAFT v2

@@ -1664,3 +1664,78 @@ def test_llm_refactor_cluster_uses_dimension_aware_prompt(
         load_cluster_refactor_prompt_fixed_portion("dimension_aware").strip()
     )
     assert "Never collapse two dimension ids" in user_prompt
+
+
+def test_refactor_internals_all_clusters_consumes_refactor_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import src.internals_refactor as module
+    from types import SimpleNamespace
+
+    from src.formula_clustering import cluster_graph_formulas
+    from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
+
+    graph, bindings = inter_cluster_cycle_graph()
+    clusters = cluster_graph_formulas(graph, bound_address_keys=bindings)
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(
+        "def cell_engine_b2(ctx):\n    return 1.0\n", encoding="utf-8"
+    )
+
+    scheduled_members: list[tuple[str, ...]] = []
+    diagnostic_targets: list[str] = []
+
+    def fake_build_singleton(
+        _projection: object,
+        cluster: FormulaCluster,
+        _internals_path: Path,
+        **_kwargs: object,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(address=cluster.members[0])
+
+    def fake_singleton(
+        ctx: SimpleNamespace,
+        *,
+        internals_path: Path,
+        dry_run: bool = False,
+        pristine_source: str | None = None,
+        input_vectors: object | None = None,
+        source_graph: object | None = None,
+        diagnostic_target: str | None = None,
+    ) -> object:
+        scheduled_members.append((ctx.address,))
+        if diagnostic_target is not None:
+            diagnostic_targets.append(diagnostic_target)
+        return object()
+
+    monkeypatch.setattr(
+        module, "build_singleton_refactor_context", fake_build_singleton
+    )
+    monkeypatch.setattr(module, "refactor_internals_singleton", fake_singleton)
+    monkeypatch.setattr(
+        module, "build_cluster_refactor_context", lambda *_a, **_k: None
+    )
+
+    module.refactor_internals_all_clusters(
+        cast(ProjectionResult, graph),
+        clusters,
+        internals_path=internals_path,
+        bindings_path=tmp_path / "bindings",
+        workbook_path=tmp_path / "workbook.xlsx",
+        dry_run=True,
+        parity_gate=False,
+    )
+
+    assert scheduled_members == [
+        ("Engine!B2",),
+        ("Engine!C2",),
+        ("Engine!B3",),
+        ("Engine!C3",),
+    ]
+    assert diagnostic_targets == [
+        "cluster_0_g0",
+        "cluster_1_g1",
+        "cluster_0_g2",
+        "cluster_1_g3",
+    ]

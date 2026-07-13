@@ -1,0 +1,108 @@
+schema_version: 1.8.0
+workbook: workbook.xlsx
+
+concept_scheme:
+  id: synthetic_model
+  concepts:
+    - id: OBS_VALUE
+      name: Observation value
+      dtype: number
+    - id: TIME_PERIOD
+      name: Time period
+      dtype: int
+
+inputs:
+  series:
+    - id: input_rate
+      sheet: Inputs
+      data_range: Inputs!A1
+      layout: scalar
+      input:
+        setter:
+          name: set_input_rate
+          record_contract: records
+          strict: true
+      structure:
+        measure:
+          concept: OBS_VALUE
+          dtype: float
+          bind:
+            kind: data_cell
+            read: float
+        dimensions: []
+      key: []
+      notes: Scalar input rate for the synthetic smoke workbook.
+
+outputs:
+  series:
+    - id: result_a
+      sheet: Outputs
+      data_range: Outputs!B1
+      layout: scalar
+      output:
+        compute:
+          name: compute_result_a
+          record_contract: records
+      structure:
+        measure:
+          concept: OBS_VALUE
+          dtype: float
+          bind:
+            kind: data_cell
+            read: float
+        dimensions: []
+      key: []
+      notes: First parallel output column.
+
+    - id: result_b
+      sheet: Outputs
+      data_range: Outputs!C1
+      layout: scalar
+      output:
+        compute:
+          name: compute_result_b
+          record_contract: records
+      structure:
+        measure:
+          concept: OBS_VALUE
+          dtype: float
+          bind:
+            kind: data_cell
+            read: float
+        dimensions: []
+      key: []
+      notes: Second parallel output column.
+
+internals:
+  series:
+    - id: engine_b2
+      sheet: Engine
+      data_range: Engine!B2
+      layout: scalar
+      internal: {}
+      structure:
+        measure:
+          concept: OBS_VALUE
+          dtype: float
+          bind:
+            kind: data_cell
+            read: float
+        dimensions: []
+      key: []
+      notes: First engine formula cell in the synthetic smoke workbook.
+
+    - id: engine_c2
+      sheet: Engine
+      data_range: Engine!C2
+      layout: scalar
+      internal: {}
+      structure:
+        measure:
+          concept: OBS_VALUE
+          dtype: float
+          bind:
+            kind: data_cell
+            read: float
+        dimensions: []
+      key: []
+      notes: Second engine formula cell in the synthetic smoke workbook.

@@ -56,11 +56,11 @@ from src.internals_refactor import (
     build_singleton_refactor_context,
 )
 from src.logging_config import configure_logging
-from src.refactor_order import compute_cluster_refactor_order
+from src.refactor_order import compute_refactor_schedule
 from src.subgraph_projection import build_refactor_projection
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
-REFACTOR_BUCKETS_SCHEMA_VERSION = "1.1.0"
+REFACTOR_BUCKETS_SCHEMA_VERSION = "1.2.0"
 DEFAULT_JSON_OUTPUT = Path("artifacts/refactor-buckets.json")
 DEFAULT_MARKDOWN_OUTPUT = Path("artifacts/refactor-buckets.md")
 DEFAULT_JSON_OUTPUT_UNCOMPRESSED = Path("artifacts/refactor-buckets-uncompressed.json")
@@ -76,6 +76,7 @@ CompressionMode = Literal["optimal", "none"]
 @dataclass(frozen=True)
 class RefactorBucketRecord:
     refactor_order: int
+    refactor_group_id: int
     cluster_id: int
     kind: RefactorKind
     eligible: bool
@@ -91,6 +92,7 @@ class RefactorBucketRecord:
     def to_dict(self) -> dict[str, Any]:
         return {
             "refactor_order": self.refactor_order,
+            "refactor_group_id": self.refactor_group_id,
             "cluster_id": self.cluster_id,
             "kind": self.kind,
             "eligible": self.eligible,
@@ -251,7 +253,7 @@ def record_refactor_buckets(
         workbook_path=config.workbook_path,
         layout=layout,
     )
-    ordered_clusters = compute_cluster_refactor_order(graph, clusters)
+    ordered_units = compute_refactor_schedule(graph, clusters)
 
     internals_source = (
         internals_path.read_text(encoding="utf-8") if internals_path is not None else ""
@@ -263,7 +265,8 @@ def record_refactor_buckets(
     )
 
     records: list[RefactorBucketRecord] = []
-    for refactor_order, cluster in enumerate(ordered_clusters):
+    for refactor_order, unit in enumerate(ordered_units):
+        cluster = unit.as_formula_cluster()
         kind: RefactorKind = "singleton" if len(cluster.members) == 1 else "cluster"
         contract: ClusterRefactorContract | None = None
         if compression == "none":
@@ -312,7 +315,8 @@ def record_refactor_buckets(
         records.append(
             RefactorBucketRecord(
                 refactor_order=refactor_order,
-                cluster_id=cluster.cluster_id,
+                refactor_group_id=unit.refactor_group_id,
+                cluster_id=unit.parent_cluster_id,
                 kind=kind,
                 eligible=eligible,
                 skip_reason=skip_reason,
@@ -366,6 +370,8 @@ def build_refactor_buckets_report(
     compression: CompressionMode,
 ) -> dict[str, Any]:
     eligible_records = [record for record in records if record.eligible]
+    formula_cluster_count = len({record.cluster_id for record in records})
+    refactor_unit_count = len(records)
     return {
         "schema_version": REFACTOR_BUCKETS_SCHEMA_VERSION,
         "compression": compression,
@@ -376,7 +382,9 @@ def build_refactor_buckets_report(
             if internals_path is not None
             else None
         ),
-        "cluster_count": len(records),
+        "formula_cluster_count": formula_cluster_count,
+        "refactor_unit_count": refactor_unit_count,
+        "cluster_count": refactor_unit_count,
         "refactor_target_count": len(eligible_records),
         "skipped_target_count": len(records) - len(eligible_records),
         "buckets": [record.to_dict() for record in records],
@@ -404,7 +412,8 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Summary",
             "",
-            f"- Formula clusters: **{report['cluster_count']}**",
+            f"- Fingerprint formula clusters: **{report['formula_cluster_count']}**",
+            f"- Refactor schedule units: **{report['refactor_unit_count']}**",
             f"- Eligible refactor targets: **{report['refactor_target_count']}**",
             f"- Skipped refactor targets: **{report['skipped_target_count']}**",
             "",
@@ -440,7 +449,8 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
         )
         lines.append(
             f"### {bucket['refactor_order'] + 1}. "
-            f"Cluster {bucket['cluster_id']} ({bucket['kind']}, {status})"
+            f"Group {bucket['refactor_group_id']} / cluster {bucket['cluster_id']} "
+            f"({bucket['kind']}, {status})"
         )
         lines.append("")
         if bucket["contract"] is not None:
@@ -607,14 +617,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(
         "Refactor targets: "
         f"{report['refactor_target_count']} eligible / "
-        f"{report['cluster_count']} clusters"
+        f"{report['refactor_unit_count']} schedule units "
+        f"({report['formula_cluster_count']} fingerprint clusters)"
     )
     for bucket in report["buckets"]:
         status = (
             "eligible" if bucket["eligible"] else f"skipped ({bucket['skip_reason']})"
         )
         print(
-            f"  [{bucket['refactor_order']}] cluster {bucket['cluster_id']} "
+            f"  [{bucket['refactor_order']}] group {bucket['refactor_group_id']} "
+            f"cluster {bucket['cluster_id']} "
             f"{bucket['kind']} {status}: {', '.join(bucket['members'])}"
         )
 

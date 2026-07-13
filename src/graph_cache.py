@@ -22,6 +22,7 @@ GRAPH_CACHE_SCHEMA_VERSION = "1.0.0"
 DEFAULT_GRAPH_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "dependency-graph"
 )
+COMMITTED_GRAPH_CACHE_DIR = DEFAULT_GRAPH_CACHE_DIR
 
 
 def _graph_cache_dir(cache_dir: Path | None) -> Path:
@@ -246,3 +247,44 @@ def clear_dependency_graph_cache(
     for path in cache_dir.iterdir():
         if path.is_file():
             path.unlink()
+
+
+def load_newest_cached_dependency_graph(
+    *,
+    cache_dir: Path | None = None,
+) -> tuple[DependencyGraph, str] | None:
+    """Return the newest cached graph and its cache key, if any pickle exists."""
+    resolved_cache_dir = _graph_cache_dir(cache_dir)
+    cached_paths = sorted(
+        resolved_cache_dir.glob("*.pkl.gz"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not cached_paths:
+        return None
+    cache_key = cached_paths[0].name.removesuffix(".pkl.gz")
+    graph = load_dependency_graph(cache_key, cache_dir=resolved_cache_dir)
+    if graph is None:
+        return None
+    return graph, cache_key
+
+
+def prune_stale_graph_cache_entries(
+    current_keys: set[str],
+    *,
+    cache_dir: Path | None = None,
+) -> list[str]:
+    """Delete cache files whose keys are not in ``current_keys``."""
+    resolved_cache_dir = _graph_cache_dir(cache_dir)
+    if not resolved_cache_dir.is_dir():
+        return []
+    pruned: list[str] = []
+    for path in sorted(resolved_cache_dir.iterdir()):
+        if not path.is_file():
+            continue
+        cache_key = path.name.split(".", 1)[0]
+        if cache_key in current_keys:
+            continue
+        path.unlink()
+        pruned.append(path.name)
+    return pruned

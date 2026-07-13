@@ -27,6 +27,7 @@ from src.record_refactor_buckets import (
     record_refactor_buckets,
     run_record_refactor_buckets,
 )
+from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 from tests.fixtures.synthetic_pipeline import synthetic_pipeline_config
 
 
@@ -205,6 +206,8 @@ def test_record_refactor_buckets_main_leaves_repo_dist_unchanged(
 def test_refactor_buckets_cover_all_eligible_targets(
     refactor_buckets_report: dict[str, Any],
 ) -> None:
+    assert refactor_buckets_report["formula_cluster_count"] == 9
+    assert refactor_buckets_report["refactor_unit_count"] == 9
     assert refactor_buckets_report["cluster_count"] == 9
     assert refactor_buckets_report["refactor_target_count"] == 9
     assert refactor_buckets_report["skipped_target_count"] == 0
@@ -266,6 +269,8 @@ def test_uncompressed_refactor_buckets_include_shocked_parameter_rows(
     )
 
     assert report["compression"] == "none"
+    assert report["formula_cluster_count"] == 11
+    assert report["refactor_unit_count"] == 11
     assert report["cluster_count"] == 11
     members = {address for bucket in report["buckets"] for address in bucket["members"]}
     assert "Engine!C14" in members
@@ -286,6 +291,8 @@ def test_main_passes_cli_variation_mode_to_bucket_recording(
                     "src.record_refactor_buckets.run_record_refactor_buckets"
                 ) as run_buckets:
                     run_buckets.return_value = {
+                        "formula_cluster_count": 0,
+                        "refactor_unit_count": 0,
                         "cluster_count": 0,
                         "refactor_target_count": 0,
                         "skipped_target_count": 0,
@@ -320,3 +327,28 @@ def test_record_refactor_buckets_requires_bound_address_keys(
             compression="none",
             bound_address_keys=None,
         )
+
+
+def test_record_refactor_buckets_schedules_inter_cluster_cycle_mcve(
+    synthetic_pipeline_config_fixture,
+) -> None:
+    graph, bindings = inter_cluster_cycle_graph()
+    records = record_refactor_buckets(
+        synthetic_pipeline_config_fixture,
+        graph=graph,
+        internals_path=None,
+        internal_binding_index=None,
+        layout=None,
+        compression="none",
+        bound_address_keys=bindings,
+    )
+
+    assert len(records) == 4
+    assert len({record.refactor_group_id for record in records}) == 4
+    assert len({record.cluster_id for record in records}) == 2
+    assert [record.members for record in records] == [
+        ("Engine!B2",),
+        ("Engine!C2",),
+        ("Engine!B3",),
+        ("Engine!C3",),
+    ]

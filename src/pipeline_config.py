@@ -62,6 +62,7 @@ class PipelineConfig:
     differential_graph_report_dir_rel: Path
     graph_output_dir: Path
     graph_audit_cases: tuple[GraphAuditCase, ...] = ()
+    graph_cache_target_bundles: tuple[tuple[str, tuple[str, ...]], ...] = ()
     internal_binding_validation_mode: InternalBindingValidationMode = "warn"
     internal_binding_exempt_cells: frozenset[str] = frozenset()
     variation_mode: VariationMode = "independent"
@@ -85,6 +86,36 @@ class PipelineConfig:
             return resolved.relative_to(self.repo_root).as_posix()
         except ValueError:
             return resolved.as_posix()
+
+
+def _load_graph_cache_target_bundles(
+    value: object,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (tuple, list)):
+        raise TypeError(
+            "GRAPH_CACHE_TARGET_BUNDLES must be a tuple or list of "
+            "(label, targets) pairs"
+        )
+    bundles: list[tuple[str, tuple[str, ...]]] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            raise ValueError(
+                "GRAPH_CACHE_TARGET_BUNDLES entries must be (label, targets) pairs; "
+                f"got {entry!r} at index {index}"
+            )
+        label, targets = entry
+        if not isinstance(label, str) or not label:
+            raise ValueError(
+                f"GRAPH_CACHE_TARGET_BUNDLES label at index {index} must be a non-empty string"
+            )
+        if not isinstance(targets, (tuple, list)) or not targets:
+            raise ValueError(
+                f"GRAPH_CACHE_TARGET_BUNDLES targets at index {index} must be a non-empty sequence"
+            )
+        bundles.append((label, tuple(str(target) for target in targets)))
+    return tuple(bundles)
 
 
 def _load_internal_binding_validation_mode(
@@ -185,6 +216,9 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     )
     graph_output_dir = root / "artifacts" / "dependency-graph"
     graph_audit_cases = tuple(getattr(user_config, "GRAPH_AUDIT_CASES", ()))
+    graph_cache_target_bundles = _load_graph_cache_target_bundles(
+        getattr(user_config, "GRAPH_CACHE_TARGET_BUNDLES", ())
+    )
     internal_binding_validation_mode = _load_internal_binding_validation_mode(
         getattr(user_config, "INTERNAL_BINDING_VALIDATION_MODE", "warn")
     )
@@ -223,6 +257,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         differential_graph_report_dir_rel=differential_graph_report_dir_rel,
         graph_output_dir=graph_output_dir,
         graph_audit_cases=graph_audit_cases,
+        graph_cache_target_bundles=graph_cache_target_bundles,
         internal_binding_validation_mode=internal_binding_validation_mode,
         internal_binding_exempt_cells=internal_binding_exempt_cells,
         variation_mode=variation_mode,
