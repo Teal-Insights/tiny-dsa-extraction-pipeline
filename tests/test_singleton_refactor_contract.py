@@ -20,13 +20,18 @@ from src.internals_refactor import (
     build_singleton_refactor_context_dump,
     ensure_singleton_refactor_imports,
     format_singleton_refactor_context_dump,
+    inject_signature_return_type_hint,
     load_singleton_refactor_prompt_fixed_portion,
-    parse_singleton_return_type_hint,
     prepare_singleton_refactor_response,
     strip_python_string_delimiters,
     validate_singleton_refactor_response,
-    validate_singleton_return_type_hint,
 )
+from src.refactor_return_types import (
+    ALLOWED_REFACTOR_RETURN_TYPE_HINTS,
+    validate_scalar_return_type_hint,
+)
+
+ALLOWED_SINGLETON_RETURN_TYPE_HINTS = ALLOWED_REFACTOR_RETURN_TYPE_HINTS
 
 FIXTURE_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "singleton_refactor_prompt.md"
@@ -44,15 +49,6 @@ ALLOWED_RUNTIME_SYMBOLS = (
     "xl_cell",
     "xl_eval",
     "xl_number",
-)
-
-ALLOWED_SINGLETON_RETURN_TYPE_HINTS = frozenset(
-    {
-        "bool",
-        "float",
-        "int",
-        "str",
-    }
 )
 
 EXCESS_DEATHS_FUNCTION_SOURCE = dedent(
@@ -159,6 +155,11 @@ EXCESS_DEATHS_RUNTIME_STUB = dedent(
         ...
     '''
 ).strip()
+
+SINGLETON_PREPARE_KWARGS = {
+    "runtime_source": EXCESS_DEATHS_RUNTIME_STUB,
+    "internals_source": EXCESS_DEATHS_INTERNALS,
+}
 
 INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT = dedent(
     """
@@ -375,6 +376,7 @@ def test_validate_singleton_refactor_response_accepts_eval_context_type_hint() -
                 error_reason=None,
             ),
             ctx,
+            **SINGLETON_PREPARE_KWARGS,
         ),
         ctx,
     )
@@ -421,7 +423,9 @@ def test_prepare_singleton_refactor_response_assembles_and_appends_note() -> Non
         error_reason=None,
     )
 
-    prepared = prepare_singleton_refactor_response(llm_response, ctx)
+    prepared = prepare_singleton_refactor_response(
+        llm_response, ctx, **SINGLETON_PREPARE_KWARGS
+    )
 
     assert isinstance(prepared, SingletonRefactorResponse)
     assert prepared.symbol_name == "projected_debt_to_gdp"
@@ -485,45 +489,182 @@ def test_prompt_for_singleton_refactor_appends_context_dump() -> None:
     assert "Dependencies:" in prompt
 
 
-def test_parse_singleton_return_type_hint_from_signature() -> None:
-    assert (
-        parse_singleton_return_type_hint(
-            "def united_states_excess_deaths(ctx: EvalContext) -> float:"
-        )
-        == "float"
-    )
-
-    assert (
-        parse_singleton_return_type_hint(
-            "def mixed_result(ctx: EvalContext) -> float | str:"
-        )
-        == "float | str"
-    )
-
-
-def test_validate_singleton_return_type_hint_accepts_allowlisted_types() -> None:
+def test_validate_scalar_return_type_hint_accepts_allowlisted_types() -> None:
     for hint in ALLOWED_SINGLETON_RETURN_TYPE_HINTS:
-        validate_singleton_return_type_hint(hint)
+        validate_scalar_return_type_hint(hint)
 
 
-def test_validate_singleton_return_type_hint_accepts_union_of_allowlisted_scalars() -> (
+def test_validate_scalar_return_type_hint_accepts_cellvalue_union() -> None:
+    validate_scalar_return_type_hint("bool | CellValue")
+
+
+def test_validate_scalar_return_type_hint_accepts_union_of_allowlisted_scalars() -> (
     None
 ):
-    validate_singleton_return_type_hint("float | str")
-    validate_singleton_return_type_hint("int | float")
+    validate_scalar_return_type_hint("float | str")
+    validate_scalar_return_type_hint("int | float")
 
 
-def test_validate_singleton_return_type_hint_rejects_xlerror_sentinel() -> None:
+def test_validate_scalar_return_type_hint_rejects_xlerror_sentinel() -> None:
     with pytest.raises(ValueError, match="unsupported return type hint"):
-        validate_singleton_return_type_hint("XlError")
+        validate_scalar_return_type_hint("XlError")
 
     with pytest.raises(ValueError, match="unsupported return type hint"):
-        validate_singleton_return_type_hint("float | XlError")
+        validate_scalar_return_type_hint("float | XlError")
 
 
-def test_validate_singleton_return_type_hint_rejects_unknown_type() -> None:
-    with pytest.raises(ValueError, match="unsupported return type hint"):
-        validate_singleton_return_type_hint("dict[str, float]")
+def test_inject_signature_return_type_hint_replaces_existing() -> None:
+    assert (
+        inject_signature_return_type_hint(
+            "def helper(ctx: EvalContext) -> CellValue:",
+            "float",
+        )
+        == "def helper(ctx: EvalContext) -> float:"
+    )
+    assert (
+        inject_signature_return_type_hint("def helper(ctx: EvalContext):", "float")
+        == "def helper(ctx: EvalContext) -> float:"
+    )
+
+
+def test_prepare_singleton_refactor_response_ignores_llm_return_type_hint() -> None:
+    ctx = SingletonRefactorContext(
+        address="SomeSheet!Z22",
+        function_name="cell_some_sheet_z22",
+        canonical_template="=1",
+        normalized_formula="=SomeSheet!A1-SomeSheet!A2",
+        python_source=EXCESS_DEATHS_FUNCTION_SOURCE,
+        dependency_addresses=(),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints=EXCESS_DEATHS_CELL_METADATA,
+    )
+    prepared = prepare_singleton_refactor_response(
+        SingletonRefactorLLMResponse(
+            symbol_signature="def united_states_excess_deaths(ctx: EvalContext) -> str:",
+            symbol_docstring=(
+                '"""\n'
+                "Excess deaths for the United States.\n\n"
+                "Args:\n    ctx: Workbook evaluation context.\n\n"
+                "Returns:\n    Excess deaths for the United States.\n"
+                '"""'
+            ),
+            symbol_body="return xl_number(united_states_total_deaths(ctx))",
+            error=None,
+            error_reason=None,
+        ),
+        ctx,
+        **SINGLETON_PREPARE_KWARGS,
+    )
+    assert "-> float:" in prepared.symbol_source
+    assert "-> str:" not in prepared.symbol_source
+
+
+def test_prepare_singleton_refactor_response_injects_return_type_when_llm_uses_cellvalue() -> (
+    None
+):
+    ctx = SingletonRefactorContext(
+        address="SomeSheet!Z22",
+        function_name="cell_some_sheet_z22",
+        canonical_template="=1",
+        normalized_formula="=SomeSheet!A1-SomeSheet!A2",
+        python_source=EXCESS_DEATHS_FUNCTION_SOURCE,
+        dependency_addresses=(),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints=EXCESS_DEATHS_CELL_METADATA,
+    )
+    prepared = prepare_singleton_refactor_response(
+        SingletonRefactorLLMResponse(
+            symbol_signature="def united_states_excess_deaths(ctx: EvalContext) -> CellValue:",
+            symbol_docstring=(
+                '"""\n'
+                "Excess deaths for the United States.\n\n"
+                "Args:\n    ctx: Workbook evaluation context.\n\n"
+                "Returns:\n    Excess deaths for the United States.\n"
+                '"""'
+            ),
+            symbol_body="return xl_number(united_states_total_deaths(ctx))",
+            error=None,
+            error_reason=None,
+        ),
+        ctx,
+        **SINGLETON_PREPARE_KWARGS,
+    )
+    assert "-> float:" in prepared.symbol_source
+    assert "CellValue" not in prepared.symbol_source.split('"""', maxsplit=1)[0]
+
+
+def test_prepare_singleton_refactor_response_propagates_cellvalue_for_opaque_passthrough() -> (
+    None
+):
+    runtime_source = dedent(
+        """
+        def xl_cell(ctx, address: str) -> CellValue:
+            ...
+        """
+    ).strip()
+    python_source = dedent(
+        """
+        def cell_inputs_c1(ctx):
+            return xl_cell(ctx, "Inputs!C1")
+        """
+    ).strip()
+    ctx = SingletonRefactorContext(
+        address="Inputs!C1",
+        function_name="cell_inputs_c1",
+        canonical_template="=1",
+        normalized_formula="=Inputs!C1",
+        python_source=python_source,
+        dependency_addresses=(),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints={"address": "Inputs!C1"},
+    )
+    prepared = prepare_singleton_refactor_response(
+        SingletonRefactorLLMResponse(
+            symbol_signature="def inputs_c1(ctx: EvalContext):",
+            symbol_docstring='"""\nInputs cell C1.\n"""',
+            symbol_body='return xl_cell(ctx, "Inputs!C1")',
+            error=None,
+            error_reason=None,
+        ),
+        ctx,
+        runtime_source=runtime_source,
+        internals_source="",
+    )
+    assert "-> CellValue:" in prepared.symbol_source
+
+
+def test_build_singleton_refactor_context_dump_includes_cellvalue_return_on_xl_cell() -> (
+    None
+):
+    runtime_source = dedent(
+        """
+        def xl_cell(ctx, address):
+            return None
+        """
+    ).strip()
+    internals_source = dedent(
+        """
+        def cell_x(ctx):
+            return xl_cell(ctx, "Sheet!A1")
+        """
+    ).strip()
+    dump = build_singleton_refactor_context_dump(
+        function_name="cell_x",
+        address="Sheet!A1",
+        internals_source=internals_source,
+        runtime_source=runtime_source,
+        cell_metadata={"address": "Sheet!A1"},
+    )
+    assert "def xl_cell(ctx, address) -> CellValue:" in dump
 
 
 def test_ensure_singleton_refactor_imports_handles_parenthesized_runtime_import() -> (

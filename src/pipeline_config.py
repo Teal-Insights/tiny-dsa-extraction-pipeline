@@ -11,9 +11,13 @@ from typing import cast
 from src.graph_dependency_audit import GraphAuditCase
 from src.internal_binding_coverage import InternalBindingValidationMode
 from src.refactor_types import (
+    CLUSTERING_MODE_CLI_HELP,
     VARIATION_MODE_CLI_HELP,
+    ClusteringMode,
     VariationMode,
+    parse_clustering_mode,
     parse_variation_mode,
+    clustering_mode_choices,
     variation_mode_choices,
 )
 from src.workbook_addresses import ProjectionColumnLayout
@@ -66,6 +70,7 @@ class PipelineConfig:
     internal_binding_validation_mode: InternalBindingValidationMode = "warn"
     internal_binding_exempt_cells: frozenset[str] = frozenset()
     variation_mode: VariationMode = "independent"
+    clustering_mode: ClusteringMode = "series_ast"
 
     @property
     def package_root(self) -> Path:
@@ -149,6 +154,14 @@ def add_variation_mode_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_clustering_mode_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--clustering-mode",
+        choices=clustering_mode_choices(),
+        help=CLUSTERING_MODE_CLI_HELP,
+    )
+
+
 def apply_variation_mode_cli_override(
     config: PipelineConfig,
     variation_mode: str | None,
@@ -156,6 +169,15 @@ def apply_variation_mode_cli_override(
     if variation_mode is None:
         return config
     return replace(config, variation_mode=cast(VariationMode, variation_mode))
+
+
+def apply_clustering_mode_cli_override(
+    config: PipelineConfig,
+    clustering_mode: str | None,
+) -> PipelineConfig:
+    if clustering_mode is None:
+        return config
+    return replace(config, clustering_mode=cast(ClusteringMode, clustering_mode))
 
 
 def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
@@ -228,6 +250,9 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     variation_mode = parse_variation_mode(
         getattr(user_config, "VARIATION_MODE", "independent")
     )
+    clustering_mode = parse_clustering_mode(
+        getattr(user_config, "CLUSTERING_MODE", "series_ast")
+    )
 
     if not isinstance(dist_metadata, DistProjectMetadata):
         raise TypeError("workbook_config.DIST_METADATA must be a DistProjectMetadata")
@@ -261,6 +286,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         internal_binding_validation_mode=internal_binding_validation_mode,
         internal_binding_exempt_cells=internal_binding_exempt_cells,
         variation_mode=variation_mode,
+        clustering_mode=clustering_mode,
     )
 
 

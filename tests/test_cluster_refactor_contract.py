@@ -7,8 +7,6 @@ from pathlib import Path
 from textwrap import dedent
 from typing import TypedDict
 
-import pytest
-
 from src.internals_refactor import (
     ClusterRefactorContext,
     ClusterRefactorLLMResponse,
@@ -25,10 +23,8 @@ from src.internals_refactor import (
     ensure_cluster_refactor_imports,
     format_cluster_refactor_context_dump,
     load_cluster_refactor_prompt_fixed_portion,
-    parse_cluster_return_type_hint,
     prepare_cluster_refactor_response,
     strip_python_string_delimiters,
-    validate_singleton_return_type_hint,
 )
 from src.refactor_bindings import KeyConceptSpec
 
@@ -192,6 +188,11 @@ GROWTH_THRESHOLD_RUNTIME_STUB = dedent(
         ...
     '''
 ).strip()
+
+CLUSTER_PREPARE_KWARGS = {
+    "runtime_source": GROWTH_THRESHOLD_RUNTIME_STUB,
+    "internals_source": GROWTH_THRESHOLD_INTERNALS,
+}
 
 MINIMAL_PROMPT_PAYLOAD: dict[str, object] = {
     "cluster_id": 6,
@@ -469,6 +470,7 @@ def test_prepare_cluster_refactor_response_assembles_and_appends_note() -> None:
     prepared = prepare_cluster_refactor_response(
         GROWTH_THRESHOLD_LLM_RESPONSE,
         GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+        **CLUSTER_PREPARE_KWARGS,
     )
 
     assert isinstance(prepared, ClusterRefactorResponse)
@@ -480,6 +482,44 @@ def test_prepare_cluster_refactor_response_assembles_and_appends_note() -> None:
     assert prepared.helper_docstring in prepared.helper_source
     assert prepared.parameters == GROWTH_THRESHOLD_LLM_RESPONSE.parameters
     assert prepared.member_keys == GROWTH_THRESHOLD_LLM_RESPONSE.member_keys
+
+
+def test_prepare_cluster_refactor_response_ignores_llm_return_type_hint() -> None:
+    llm_response = GROWTH_THRESHOLD_LLM_RESPONSE.model_copy(
+        update={
+            "symbol_signature": (
+                "def growth_threshold_met(ctx: EvalContext, reporting_period: int) "
+                "-> str:"
+            )
+        }
+    )
+    prepared = prepare_cluster_refactor_response(
+        llm_response,
+        GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+        **CLUSTER_PREPARE_KWARGS,
+    )
+    assert "-> float:" in prepared.helper_source
+    assert "-> str:" not in prepared.helper_source.split('"""', maxsplit=1)[0]
+
+
+def test_prepare_cluster_refactor_response_injects_return_type_when_llm_uses_cellvalue() -> (
+    None
+):
+    llm_response = GROWTH_THRESHOLD_LLM_RESPONSE.model_copy(
+        update={
+            "symbol_signature": (
+                "def growth_threshold_met(ctx: EvalContext, reporting_period: int) "
+                "-> CellValue:"
+            )
+        }
+    )
+    prepared = prepare_cluster_refactor_response(
+        llm_response,
+        GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+        **CLUSTER_PREPARE_KWARGS,
+    )
+    assert "-> float:" in prepared.helper_source
+    assert "CellValue" not in prepared.helper_source.split('"""', maxsplit=1)[0]
 
 
 def test_format_cluster_refactor_context_dump_matches_fixture() -> None:
@@ -542,24 +582,11 @@ def test_prompt_for_cluster_refactor_appends_context_dump() -> None:
     assert "Dependencies:" in prompt
 
 
-def test_parse_cluster_return_type_hint_from_signature() -> None:
-    assert (
-        parse_cluster_return_type_hint(
-            "def growth_threshold_met(ctx: EvalContext, reporting_period: int) -> float:"
-        )
-        == "float"
-    )
-
-
-def test_validate_cluster_return_type_hint_rejects_xlerror_sentinel() -> None:
-    with pytest.raises(ValueError, match="unsupported return type hint"):
-        validate_singleton_return_type_hint("XlError")
-
-
 def test_ensure_cluster_refactor_imports_handles_parenthesized_runtime_import() -> None:
     response = prepare_cluster_refactor_response(
         GROWTH_THRESHOLD_LLM_RESPONSE,
         GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+        **CLUSTER_PREPARE_KWARGS,
     )
     updated = ensure_cluster_refactor_imports(
         INTERNALS_WITH_PAREN_RUNTIME_IMPORT,
@@ -573,6 +600,7 @@ def test_ensure_cluster_refactor_imports_injects_eval_context() -> None:
     response = prepare_cluster_refactor_response(
         GROWTH_THRESHOLD_LLM_RESPONSE,
         GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+        **CLUSTER_PREPARE_KWARGS,
     )
     updated = ensure_cluster_refactor_imports(
         INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,

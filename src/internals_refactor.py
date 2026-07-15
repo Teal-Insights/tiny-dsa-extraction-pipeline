@@ -43,11 +43,18 @@ from src.refactor_contracts import (
     select_cluster_refactor_contract,
 )
 from src.refactor_order import compute_refactor_schedule, refactor_failure_target
+from src.refactor_return_types import (
+    ALLOWED_REFACTOR_RETURN_TYPE_HINTS,
+    KNOWN_RUNTIME_RETURN_HINTS,
+    infer_refactor_return_type_hint,
+    normalize_return_type_hint_for_allowlist,
+    validate_scalar_return_type_hint,
+)
 from src.runtime_symbols import allowed_runtime_symbols
 from src.semantic_naming import (
     BindingRecordHints,
+    _is_semantic_helper_def,
     cluster_binding_naming_hints,
-    collect_semantic_helper_names,
     semantic_helpers_available_for_calls,
     binding_record_hints_from_cell,
     validate_semantic_identifier,
@@ -58,7 +65,7 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 25
+REFACTOR_PROMPT_VERSION = 26
 
 
 def refactor_model() -> str:
@@ -393,7 +400,8 @@ class ClusterRefactorLLMResponse(BaseModel):
         description=(
             "Python function signature, including `def` keyword, `snake_case` "
             "semantic name, `ctx: EvalContext`, typed economic parameters from "
-            "`key_vocabulary`, and return type hint. Null when error is true."
+            "`key_vocabulary`, and parameter type hints. Do not include a return "
+            "type hint; the pipeline injects it mechanically. Null when error is true."
         ),
     )
     symbol_docstring: str | None = Field(
@@ -494,8 +502,9 @@ class SingletonRefactorLLMResponse(BaseModel):
     symbol_signature: str | None = Field(
         description=(
             "Python function signature, including `def` keyword, `snake_case` "
-            "semantic name, a single `ctx: EvalContext` argument, and return type hint. "
-            "Null when error is true."
+            "semantic name, a single `ctx: EvalContext` argument, and parameter "
+            "type hints. Do not include a return type hint; the pipeline injects "
+            "it mechanically. Null when error is true."
         ),
     )
     symbol_docstring: str | None = Field(
@@ -532,7 +541,7 @@ class SingletonRefactorLLMResponse(BaseModel):
         )
 
 
-ALLOWED_SINGLETON_RETURN_TYPE_HINTS = frozenset({"bool", "float", "int", "str"})
+ALLOWED_SINGLETON_RETURN_TYPE_HINTS = ALLOWED_REFACTOR_RETURN_TYPE_HINTS
 ALLOWED_REFACTOR_TYPE_HINT_NAMES = frozenset({"CellValue", "EvalContext"})
 
 SINGLETON_REFACTOR_PROMPT_FIXTURE = (
@@ -678,17 +687,16 @@ def build_cluster_refactor_context(
     source_graph: DependencyGraph | None = None,
     internal_binding_index: InternalBindingIndex | None = None,
     layout: ProjectionColumnLayout | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> ClusterRefactorContext | None:
     if len(cluster.members) < 2:
         return None
 
     resolved_layout = _resolved_projection_layout(layout)
 
-    source = internals_path.read_text(encoding="utf-8")
-    module = ast.parse(source)
-    defined_functions = {
-        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
-    }
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    source = index.source
+    defined_functions = index.functions
 
     member_addresses = frozenset(cluster.members)
     member_functions = {
@@ -727,7 +735,7 @@ def build_cluster_refactor_context(
                 function_name=function_name,
                 engine_column=engine_column,
                 normalized_formula=node.normalized_formula,
-                python_source=extract_function_source(source, function_name),
+                python_source=index.function_source(function_name),
                 dependency_addresses=dependency_addresses,
                 dependency_functions=dependency_functions,
                 binding_keys=binding_hints.binding_keys,
@@ -784,7 +792,7 @@ def build_cluster_refactor_context(
         }
     )
     semantic_dependencies, unresolved = resolve_semantic_dependencies(
-        source, external_dependency_addresses
+        source, external_dependency_addresses, index=index
     )
     external_dependencies = tuple(
         sorted(
@@ -800,7 +808,9 @@ def build_cluster_refactor_context(
         members=tuple(members),
         external_dependencies=external_dependencies,
         semantic_dependencies=semantic_dependencies,
-        call_sites=scan_call_sites(source, member_addresses, member_functions),
+        call_sites=scan_call_sites(
+            source, member_addresses, member_functions, index=index
+        ),
         first_year_column=(
             resolved_layout.engine_columns[0]
             if resolved_layout is not None and resolved_layout.engine_columns
@@ -829,17 +839,16 @@ def build_singleton_refactor_context(
     *,
     source_graph: DependencyGraph | None = None,
     internal_binding_index: InternalBindingIndex | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> SingletonRefactorContext | None:
     if len(cluster.members) != 1:
         return None
 
     address = cluster.members[0]
 
-    source = internals_path.read_text(encoding="utf-8")
-    module = ast.parse(source)
-    defined_functions = {
-        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
-    }
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    source = index.source
+    defined_functions = index.functions
 
     function_name = address_to_function_name(address)
     if function_name not in defined_functions:
@@ -851,7 +860,7 @@ def build_singleton_refactor_context(
 
     dependency_addresses = tuple(sorted(projection.get_dependencies(address)))
     semantic_dependencies, unresolved = resolve_semantic_dependencies(
-        source, dependency_addresses
+        source, dependency_addresses, index=index
     )
     external_dependencies = tuple(
         sorted(
@@ -865,7 +874,7 @@ def build_singleton_refactor_context(
         function_name=function_name,
         canonical_template=cluster.canonical_template,
         normalized_formula=node.normalized_formula,
-        python_source=extract_function_source(source, function_name),
+        python_source=index.function_source(function_name),
         dependency_addresses=dependency_addresses,
         external_dependencies=external_dependencies,
         semantic_dependencies=semantic_dependencies,
@@ -873,6 +882,7 @@ def build_singleton_refactor_context(
             source,
             frozenset({address}),
             {function_name},
+            index=index,
         ),
         allowed_runtime_symbols=allowed_runtime_symbols(),
         naming_hints=_binding_hints_for_address(
@@ -881,25 +891,73 @@ def build_singleton_refactor_context(
     )
 
 
+@dataclass(frozen=True)
+class InternalsSourceIndex:
+    """Parse-once view of ``internals.py`` for refactor context construction."""
+
+    source: str
+    module: ast.Module
+    lines_keepends: tuple[str, ...]
+    lines: tuple[str, ...]
+    functions: Mapping[str, ast.FunctionDef]
+    semantic_helper_names: frozenset[str]
+    address_dispatch: AddressDispatch
+    symbol_dispatch: Mapping[str, str]
+
+    @classmethod
+    def from_source(cls, source: str) -> InternalsSourceIndex:
+        module = ast.parse(source)
+        functions = {
+            node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
+        }
+        return cls(
+            source=source,
+            module=module,
+            lines_keepends=tuple(source.splitlines(keepends=True)),
+            lines=tuple(source.splitlines()),
+            functions=functions,
+            semantic_helper_names=frozenset(
+                name
+                for name, node in functions.items()
+                if _is_semantic_helper_def(node)
+            ),
+            address_dispatch=_parse_address_dispatch(source, module=module) or {},
+            symbol_dispatch=_parse_symbol_dispatch(source, module=module),
+        )
+
+    def function_source(self, function_name: str) -> str:
+        node = self.functions.get(function_name)
+        if node is None:
+            raise KeyError(f"Function {function_name!r} not found in internals source")
+        return "".join(self.lines_keepends[node.lineno - 1 : node.end_lineno])
+
+
 def extract_function_source(source: str, function_name: str) -> str:
-    module = ast.parse(source)
-    lines = source.splitlines(keepends=True)
-    for node in module.body:
-        if isinstance(node, ast.FunctionDef) and node.name == function_name:
-            return "".join(lines[node.lineno - 1 : node.end_lineno])
-    raise KeyError(f"Function {function_name!r} not found in internals source")
+    return InternalsSourceIndex.from_source(source).function_source(function_name)
+
+
+def _resolve_internals_index(
+    internals_path: Path,
+    *,
+    internals_index: InternalsSourceIndex | None = None,
+) -> InternalsSourceIndex:
+    if internals_index is not None:
+        return internals_index
+    return InternalsSourceIndex.from_source(internals_path.read_text(encoding="utf-8"))
 
 
 def scan_call_sites(
     source: str,
     member_addresses: frozenset[str],
     member_functions: set[str],
+    *,
+    index: InternalsSourceIndex | None = None,
 ) -> tuple[CallSite, ...]:
-    module = ast.parse(source)
-    lines = source.splitlines()
+    resolved = index if index is not None else InternalsSourceIndex.from_source(source)
     sites: list[CallSite] = []
+    lines = list(resolved.lines)
 
-    for top_level in module.body:
+    for top_level in resolved.module.body:
         if not isinstance(top_level, ast.FunctionDef):
             continue
         caller_function = top_level.name
@@ -1655,18 +1713,15 @@ def assemble_singleton_symbol_source(
     return f'{signature}\n    """{normalized}\n    """\n{body_block}'
 
 
-def parse_singleton_return_type_hint(signature: str) -> str:
-    match = re.search(r"->\s*(.+?)\s*:?\s*$", signature.strip())
-    if match is None:
-        raise ValueError(f"no return type hint in signature: {signature!r}")
-    return match.group(1).strip().removesuffix(":")
+def inject_signature_return_type_hint(signature: str, return_hint: str) -> str:
+    """Replace or append an allowlisted return hint on a function signature line."""
+    stripped = signature.strip()
+    without_return = re.sub(r"\s*->\s*.+$", "", stripped).rstrip(":").rstrip()
+    return f"{without_return} -> {return_hint}:"
 
 
 def validate_singleton_return_type_hint(hint: str) -> None:
-    parts = [part.strip() for part in hint.split("|")]
-    for part in parts:
-        if part not in ALLOWED_SINGLETON_RETURN_TYPE_HINTS:
-            raise ValueError(f"unsupported return type hint: {hint!r}")
+    validate_scalar_return_type_hint(hint)
 
 
 def _parse_symbol_name_from_signature(signature: str) -> str:
@@ -1679,6 +1734,9 @@ def _parse_symbol_name_from_signature(signature: str) -> str:
 def prepare_singleton_refactor_response(
     llm_response: SingletonRefactorLLMResponse,
     ctx: SingletonRefactorContext,
+    *,
+    runtime_source: str,
+    internals_source: str,
 ) -> SingletonRefactorResponse:
     if (
         llm_response.symbol_signature is None
@@ -1688,8 +1746,15 @@ def prepare_singleton_refactor_response(
         raise ValueError(
             "singleton refactor response is missing required success fields"
         )
-    validate_singleton_return_type_hint(
-        parse_singleton_return_type_hint(llm_response.symbol_signature)
+    return_hint = infer_refactor_return_type_hint(
+        python_sources=(ctx.python_source,),
+        runtime_source=runtime_source,
+        internals_source=internals_source,
+        naming_hints=ctx.naming_hints,
+    )
+    signature = inject_signature_return_type_hint(
+        llm_response.symbol_signature,
+        return_hint,
     )
     docstring = strip_python_string_delimiters(llm_response.symbol_docstring)
     docstring = append_refactor_note_section(
@@ -1698,12 +1763,12 @@ def prepare_singleton_refactor_response(
         formula=ctx.normalized_formula,
     )
     symbol_source = assemble_singleton_symbol_source(
-        signature=llm_response.symbol_signature,
+        signature=signature,
         docstring=docstring,
         body=llm_response.symbol_body,
     )
     return SingletonRefactorResponse(
-        symbol_name=_parse_symbol_name_from_signature(llm_response.symbol_signature),
+        symbol_name=_parse_symbol_name_from_signature(signature),
         symbol_docstring=docstring,
         symbol_source=symbol_source,
     )
@@ -1749,7 +1814,13 @@ def format_singleton_refactor_context_dump(
     )
 
 
-def _function_defs_by_name(source: str) -> dict[str, ast.FunctionDef]:
+def _function_defs_by_name(
+    source: str,
+    *,
+    index: InternalsSourceIndex | None = None,
+) -> dict[str, ast.FunctionDef]:
+    if index is not None:
+        return dict(index.functions)
     module = ast.parse(source)
     return {
         node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
@@ -1769,16 +1840,6 @@ def _called_function_names(function_source: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
-def _function_signature_line(function_def: ast.FunctionDef) -> str:
-    args = ast.unparse(function_def.args)
-    returns = (
-        f" -> {ast.unparse(function_def.returns)}"
-        if function_def.returns is not None
-        else ""
-    )
-    return f"def {function_def.name}({args}){returns}:"
-
-
 def _strip_note_section(docstring: str) -> str:
     dedented = textwrap.dedent(docstring).strip()
     for pattern in (r"\n\nNote:\n.*\Z", r"\nNote:\n.*\Z"):
@@ -1788,9 +1849,28 @@ def _strip_note_section(docstring: str) -> str:
     return dedented
 
 
+def _llm_dependency_return_suffix(function_def: ast.FunctionDef) -> str:
+    known = KNOWN_RUNTIME_RETURN_HINTS.get(function_def.name)
+    if known is not None:
+        return f" -> {known}"
+    if function_def.returns is None:
+        return ""
+    hint = ast.unparse(function_def.returns).strip()
+    normalized = normalize_return_type_hint_for_allowlist(hint)
+    if normalized is not None:
+        return f" -> {normalized}"
+    return ""
+
+
+def _llm_dependency_signature_line(function_def: ast.FunctionDef) -> str:
+    args = ast.unparse(function_def.args)
+    return_suffix = _llm_dependency_return_suffix(function_def)
+    return f"def {function_def.name}({args}){return_suffix}:"
+
+
 def _format_runtime_dependency_stub(function_def: ast.FunctionDef) -> str:
     docstring = _function_docstring(function_def)
-    lines = [_function_signature_line(function_def)]
+    lines = [_llm_dependency_signature_line(function_def)]
     if docstring is not None:
         if "\n" in docstring:
             compact = " ".join(docstring.split())
@@ -1819,10 +1899,11 @@ def _build_dependency_stubs(
     function_source: str,
     internals_source: str,
     runtime_source: str,
+    index: InternalsSourceIndex | None = None,
 ) -> str:
     called = _called_function_names(function_source)
     runtime_defs = _function_defs_by_name(runtime_source)
-    internals_defs = _function_defs_by_name(internals_source)
+    internals_defs = _function_defs_by_name(internals_source, index=index)
     runtime_names = sorted(name for name in called if name in runtime_defs)
     semantic_names = sorted(
         name
@@ -1849,17 +1930,29 @@ def build_singleton_refactor_context_dump(
     internals_source: str,
     runtime_source: str,
     cell_metadata: Mapping[str, object],
+    index: InternalsSourceIndex | None = None,
+    function_source: str | None = None,
 ) -> str:
-    function_source = extract_function_source(internals_source, function_name)
+    resolved = (
+        index
+        if index is not None
+        else InternalsSourceIndex.from_source(internals_source)
+    )
+    resolved_function_source = (
+        function_source
+        if function_source is not None
+        else resolved.function_source(function_name)
+    )
     metadata = dict(cell_metadata)
     metadata["address"] = address
     dependency_stubs = _build_dependency_stubs(
-        function_source=function_source,
+        function_source=resolved_function_source,
         internals_source=internals_source,
         runtime_source=runtime_source,
+        index=resolved,
     )
     return format_singleton_refactor_context_dump(
-        function_source=function_source,
+        function_source=resolved_function_source,
         cell_metadata=metadata,
         dependency_stubs=dependency_stubs,
     )
@@ -1885,18 +1978,22 @@ def build_singleton_refactor_prompt_context(
     *,
     internals_path: Path,
     runtime_path: Path | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> str:
     resolved_runtime_path = (
         runtime_path
         if runtime_path is not None
         else internals_path.parent / "runtime.py"
     )
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
     return build_singleton_refactor_context_dump(
         function_name=ctx.function_name,
         address=ctx.address,
-        internals_source=internals_path.read_text(encoding="utf-8"),
+        internals_source=index.source,
         runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
         cell_metadata=_cell_metadata_for_singleton_refactor(ctx),
+        index=index,
+        function_source=ctx.python_source,
     )
 
 
@@ -1957,16 +2054,12 @@ def assemble_cluster_symbol_source(
     )
 
 
-def parse_cluster_return_type_hint(signature: str) -> str:
-    return parse_singleton_return_type_hint(signature)
-
-
-validate_cluster_return_type_hint = validate_singleton_return_type_hint
-
-
 def prepare_cluster_refactor_response(
     llm_response: ClusterRefactorLLMResponse,
     ctx: ClusterRefactorContext,
+    *,
+    runtime_source: str,
+    internals_source: str,
 ) -> ClusterRefactorResponse:
     if (
         llm_response.symbol_signature is None
@@ -1976,8 +2069,15 @@ def prepare_cluster_refactor_response(
         or llm_response.member_keys is None
     ):
         raise ValueError("cluster refactor response is missing required success fields")
-    validate_singleton_return_type_hint(
-        parse_cluster_return_type_hint(llm_response.symbol_signature)
+    return_hint = infer_refactor_return_type_hint(
+        python_sources=tuple(member.python_source for member in ctx.members),
+        runtime_source=runtime_source,
+        internals_source=internals_source,
+        naming_hints=ctx.naming_hints,
+    )
+    signature = inject_signature_return_type_hint(
+        llm_response.symbol_signature,
+        return_hint,
     )
     docstring = strip_python_string_delimiters(llm_response.symbol_docstring)
     covered_addresses = format_cluster_covered_addresses(
@@ -1989,12 +2089,12 @@ def prepare_cluster_refactor_response(
         formula=ctx.canonical_template,
     )
     helper_source = assemble_cluster_symbol_source(
-        signature=llm_response.symbol_signature,
+        signature=signature,
         docstring=docstring,
         body=llm_response.symbol_body,
     )
     return ClusterRefactorResponse(
-        helper_name=_parse_symbol_name_from_signature(llm_response.symbol_signature),
+        helper_name=_parse_symbol_name_from_signature(signature),
         helper_docstring=docstring,
         helper_source=helper_source,
         parameters=llm_response.parameters,
@@ -2102,14 +2202,27 @@ def _build_cluster_dependency_stubs(
     member_function_names: Sequence[str],
     internals_source: str,
     runtime_source: str,
+    index: InternalsSourceIndex | None = None,
+    member_function_sources: Mapping[str, str] | None = None,
 ) -> str:
-    function_sources = [
-        extract_function_source(internals_source, function_name)
-        for function_name in member_function_names
-    ]
+    resolved = (
+        index
+        if index is not None
+        else InternalsSourceIndex.from_source(internals_source)
+    )
+    if member_function_sources is None:
+        function_sources = [
+            resolved.function_source(function_name)
+            for function_name in member_function_names
+        ]
+    else:
+        function_sources = [
+            member_function_sources[function_name]
+            for function_name in member_function_names
+        ]
     called = _called_function_names_from_sources(function_sources)
     runtime_defs = _function_defs_by_name(runtime_source)
-    internals_defs = _function_defs_by_name(internals_source)
+    internals_defs = resolved.functions
     runtime_names = sorted(name for name in called if name in runtime_defs)
     semantic_names = sorted(
         name
@@ -2136,15 +2249,37 @@ def build_cluster_refactor_context_dump(
     runtime_source: str,
     key_vocabulary: Sequence[KeyConceptSpec],
     member_metadata: Sequence[Mapping[str, object]],
+    index: InternalsSourceIndex | None = None,
+    member_function_sources: Mapping[str, str] | None = None,
 ) -> str:
+    resolved = (
+        index
+        if index is not None
+        else InternalsSourceIndex.from_source(internals_source)
+    )
+    if member_function_sources is None:
+        resolved_member_sources = {
+            function_name: resolved.function_source(function_name)
+            for function_name in member_function_names
+        }
+    else:
+        resolved_member_sources = {
+            function_name: member_function_sources.get(
+                function_name,
+                resolved.function_source(function_name),
+            )
+            for function_name in member_function_names
+        }
     member_sources = "\n\n\n".join(
-        extract_function_source(internals_source, function_name).strip()
+        resolved_member_sources[function_name].strip()
         for function_name in member_function_names
     )
     dependency_stubs = _build_cluster_dependency_stubs(
         member_function_names=member_function_names,
         internals_source=internals_source,
         runtime_source=runtime_source,
+        index=resolved,
+        member_function_sources=resolved_member_sources,
     )
     return format_cluster_refactor_context_dump(
         member_sources=member_sources,
@@ -2175,6 +2310,7 @@ def build_cluster_refactor_prompt_context(
     *,
     internals_path: Path,
     runtime_path: Path | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> str:
     varying_dimension_ids = frozenset(
         dimension_id
@@ -2186,9 +2322,13 @@ def build_cluster_refactor_prompt_context(
         if runtime_path is not None
         else internals_path.parent / "runtime.py"
     )
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    member_function_sources = {
+        member.function_name: member.python_source for member in ctx.members
+    }
     return build_cluster_refactor_context_dump(
         member_function_names=tuple(member.function_name for member in ctx.members),
-        internals_source=internals_path.read_text(encoding="utf-8"),
+        internals_source=index.source,
         runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
         key_vocabulary=tuple(
             item
@@ -2196,6 +2336,8 @@ def build_cluster_refactor_prompt_context(
             if item.dimension_id in varying_dimension_ids
         ),
         member_metadata=_member_metadata_for_cluster_refactor(ctx),
+        index=index,
+        member_function_sources=member_function_sources,
     )
 
 
@@ -2618,15 +2760,15 @@ def _column_address_template(address: str) -> str:
 def resolve_semantic_dependencies(
     source: str,
     dependency_addresses: Iterable[str],
+    *,
+    index: InternalsSourceIndex | None = None,
 ) -> tuple[tuple[SemanticDependency, ...], tuple[str, ...]]:
     """Resolve external ``cell_*`` dependencies to the semantic helpers wrapping them."""
-    module = ast.parse(source)
-    defined_functions = {
-        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
-    }
+    resolved = index if index is not None else InternalsSourceIndex.from_source(source)
+    defined_functions = resolved.functions
     grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
     unresolved: set[str] = set()
-    semantic_helpers = collect_semantic_helper_names(source)
+    semantic_helpers = resolved.semantic_helper_names
     for address in dependency_addresses:
         function_name = address_to_function_name(address)
         node = defined_functions.get(function_name)
@@ -2639,7 +2781,9 @@ def resolve_semantic_dependencies(
             grouped[helper_name].append((address, column))
             continue
 
-        collapsed = _infer_collapsed_semantic_dependency(source, address)
+        collapsed = _infer_collapsed_semantic_dependency(
+            source, address, index=resolved
+        )
         if collapsed is None:
             unresolved.add(function_name)
             continue
@@ -2649,7 +2793,9 @@ def resolve_semantic_dependencies(
     semantic_dependencies = tuple(
         SemanticDependency(
             helper_name=helper_name,
-            call_form=_helper_pass_through_call_form(source, helper_name),
+            call_form=_helper_pass_through_call_form(
+                source, helper_name, index=resolved
+            ),
             address_template=_column_address_template(sorted(entries)[0][0]),
             columns=tuple(tag for _, tag in sorted(entries)),
             addresses=tuple(address for address, _ in sorted(entries)),
@@ -2659,15 +2805,20 @@ def resolve_semantic_dependencies(
     return semantic_dependencies, tuple(sorted(unresolved))
 
 
-def _helper_pass_through_call_form(source: str, helper_name: str) -> str:
-    module = ast.parse(source)
-    for node in module.body:
-        if isinstance(node, ast.FunctionDef) and node.name == helper_name:
-            parameter_names = [arg.arg for arg in node.args.args if arg.arg != "ctx"]
-            if len(parameter_names) == 1:
-                parameter_name = parameter_names[0]
-                return f"{helper_name}(ctx, {parameter_name}={parameter_name})"
-            return f"{helper_name}(ctx)"
+def _helper_pass_through_call_form(
+    source: str,
+    helper_name: str,
+    *,
+    index: InternalsSourceIndex | None = None,
+) -> str:
+    resolved = index if index is not None else InternalsSourceIndex.from_source(source)
+    node = resolved.functions.get(helper_name)
+    if node is not None:
+        parameter_names = [arg.arg for arg in node.args.args if arg.arg != "ctx"]
+        if len(parameter_names) == 1:
+            parameter_name = parameter_names[0]
+            return f"{helper_name}(ctx, {parameter_name}={parameter_name})"
+        return f"{helper_name}(ctx)"
     return f"{helper_name}(ctx)"
 
 
@@ -2723,29 +2874,29 @@ def _address_in_docstring_range(docstring: str, address: str) -> bool:
 def _infer_collapsed_semantic_dependency(
     source: str,
     address: str,
+    *,
+    index: InternalsSourceIndex | None = None,
 ) -> tuple[str, str] | None:
-    dispatch = _parse_address_dispatch(source) or {}
+    resolved = index if index is not None else InternalsSourceIndex.from_source(source)
+    dispatch = resolved.address_dispatch
     if address in dispatch:
         helper_name, key_kwargs = dispatch[address]
-        if helper_name not in collect_semantic_helper_names(source):
+        if helper_name not in resolved.semantic_helper_names:
             return None
         if len(key_kwargs) == 1:
             return helper_name, next(iter(key_kwargs))
         return helper_name, next(iter(key_kwargs))
 
-    symbol_dispatch = _parse_symbol_dispatch(source)
+    symbol_dispatch = resolved.symbol_dispatch
     symbol_name = symbol_dispatch.get(address)
     if symbol_name is not None:
-        if symbol_name not in collect_semantic_helper_names(source):
+        if symbol_name not in resolved.semantic_helper_names:
             return None
         return symbol_name, ""
 
-    module = ast.parse(source)
-    defined_functions = {
-        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
-    }
+    defined_functions = resolved.functions
     matches: list[tuple[str, str]] = []
-    for helper_name in sorted(collect_semantic_helper_names(source)):
+    for helper_name in sorted(resolved.semantic_helper_names):
         helper_def = defined_functions.get(helper_name)
         if helper_def is None:
             continue
@@ -2813,9 +2964,13 @@ def apply_phase_c(source: str) -> tuple[str, int]:
     return updated, len(to_prune) + trimmed
 
 
-def _parse_address_dispatch(source: str) -> AddressDispatch | None:
-    module = ast.parse(source)
-    for node in module.body:
+def _parse_address_dispatch(
+    source: str,
+    *,
+    module: ast.Module | None = None,
+) -> AddressDispatch | None:
+    tree = module if module is not None else ast.parse(source)
+    for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
@@ -2877,9 +3032,13 @@ def _trim_engine_dispatch_entries(source: str) -> tuple[str, int]:
     ), removed
 
 
-def _parse_symbol_dispatch(source: str) -> dict[str, str]:
-    module = ast.parse(source)
-    for node in module.body:
+def _parse_symbol_dispatch(
+    source: str,
+    *,
+    module: ast.Module | None = None,
+) -> dict[str, str]:
+    tree = module if module is not None else ast.parse(source)
+    for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
@@ -3206,9 +3365,11 @@ def refactor_internals_singleton(
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
     diagnostic_target: str | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> SingletonRefactorApplyResult:
-    source = internals_path.read_text(encoding="utf-8")
-    existing_names = _function_names(source)
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    source = index.source
+    existing_names = _function_names(source, index=index)
     if response is None:
         response = llm_refactor_singleton(
             ctx,
@@ -3217,6 +3378,7 @@ def refactor_internals_singleton(
             input_vectors=input_vectors,
             source_graph=source_graph,
             diagnostic_target=diagnostic_target,
+            internals_index=index,
         )
     validate_singleton_refactor_response(
         ctx,
@@ -3248,9 +3410,11 @@ def refactor_internals_cluster(
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
     diagnostic_target: str | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> ClusterRefactorApplyResult:
-    source = internals_path.read_text(encoding="utf-8")
-    existing_names = _function_names(source)
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    source = index.source
+    existing_names = _function_names(source, index=index)
     if response is None:
         response = llm_refactor_cluster(
             ctx,
@@ -3259,6 +3423,7 @@ def refactor_internals_cluster(
             input_vectors=input_vectors,
             source_graph=source_graph,
             diagnostic_target=diagnostic_target,
+            internals_index=index,
         )
     validate_cluster_refactor_response(
         ctx,
@@ -3300,10 +3465,11 @@ def refactor_internals_all_clusters(
     """
     pristine_source: str | None = None
     input_vectors: Sequence[Mapping[str, object]] | None = None
+    internals_index = _resolve_internals_index(internals_path)
     if parity_gate:
         from src.refactor_parity_gate import build_default_input_vectors
 
-        pristine_source = internals_path.read_text(encoding="utf-8")
+        pristine_source = internals_index.source
         input_vectors = build_default_input_vectors()
 
     ordered_units = compute_refactor_schedule(projection, clusters)
@@ -3320,10 +3486,11 @@ def refactor_internals_all_clusters(
                 internals_path,
                 source_graph=source_graph,
                 internal_binding_index=internal_binding_index,
+                internals_index=internals_index,
             )
             if ctx is None:
                 continue
-            refactor_internals_singleton(
+            singleton_result = refactor_internals_singleton(
                 ctx,
                 internals_path=internals_path,
                 dry_run=dry_run,
@@ -3331,7 +3498,12 @@ def refactor_internals_all_clusters(
                 input_vectors=input_vectors,
                 source_graph=source_graph,
                 diagnostic_target=diagnostic_target,
+                internals_index=internals_index,
             )
+            if not dry_run:
+                internals_index = InternalsSourceIndex.from_source(
+                    singleton_result.source
+                )
             refactored_any = True
             continue
 
@@ -3344,6 +3516,7 @@ def refactor_internals_all_clusters(
             bindings_path=bindings_path,
             workbook_path=workbook_path,
             layout=layout,
+            internals_index=internals_index,
         )
         if ctx is None:
             continue
@@ -3355,7 +3528,10 @@ def refactor_internals_all_clusters(
             input_vectors=input_vectors,
             source_graph=source_graph,
             diagnostic_target=diagnostic_target,
+            internals_index=internals_index,
         )
+        if not dry_run:
+            internals_index = InternalsSourceIndex.from_source(result.source)
         results.append(result)
         responses.append(result.response)
         refactored_any = True
@@ -3382,6 +3558,13 @@ def refactor_internals_all_clusters(
 load_dotenv(repo_root / ".env")
 
 
+def _read_runtime_source(internals_path: Path) -> str:
+    runtime_path = internals_path.parent / "runtime.py"
+    if not runtime_path.is_file():
+        return ""
+    return runtime_path.read_text(encoding="utf-8")
+
+
 def llm_refactor_singleton(
     ctx: SingletonRefactorContext,
     *,
@@ -3390,11 +3573,14 @@ def llm_refactor_singleton(
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
     diagnostic_target: str | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> SingletonRefactorResponse:
     llm_schema = SingletonRefactorLLMResponse.model_json_schema()
-    internals_bytes = internals_path.read_bytes()
-    internals_source = internals_path.read_text(encoding="utf-8")
-    existing_names = _function_names(internals_source)
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    internals_bytes = index.source.encode("utf-8")
+    internals_source = index.source
+    runtime_source = _read_runtime_source(internals_path)
+    existing_names = _function_names(internals_source, index=index)
     cache = load_refactor_cache()
     cache_key = singleton_refactor_cache_key(ctx, internals_bytes, llm_schema)
     failure_target = diagnostic_target or ctx.address
@@ -3424,7 +3610,12 @@ def llm_refactor_singleton(
     def _finalize_singleton_from_llm(
         parsed: SingletonRefactorLLMResponse,
     ) -> SingletonRefactorResponse:
-        prepared = prepare_singleton_refactor_response(parsed, ctx)
+        prepared = prepare_singleton_refactor_response(
+            parsed,
+            ctx,
+            runtime_source=runtime_source,
+            internals_source=internals_source,
+        )
         return _apply_singleton_refactor_validation(prepared)
 
     def _validate_cached_singleton_response(
@@ -3477,6 +3668,7 @@ def llm_refactor_singleton(
     context_dump = build_singleton_refactor_prompt_context(
         ctx,
         internals_path=internals_path,
+        internals_index=index,
     )
     user_prompt = _prompt_for_singleton_refactor(context_dump)
     last_attempt: dict[str, Any] = {}
@@ -3492,7 +3684,12 @@ def llm_refactor_singleton(
             kind="singleton",
             target=failure_target,
         )
-        prepared = prepare_singleton_refactor_response(parsed, ctx)
+        prepared = prepare_singleton_refactor_response(
+            parsed,
+            ctx,
+            runtime_source=runtime_source,
+            internals_source=internals_source,
+        )
         last_attempt["prepared_response"] = prepared.model_dump()
         validated_prepared = _apply_singleton_refactor_validation(prepared)
         return parsed
@@ -3573,11 +3770,14 @@ def llm_refactor_cluster(
     input_vectors: Sequence[Mapping[str, object]] | None = None,
     source_graph: DependencyGraph | None = None,
     diagnostic_target: str | None = None,
+    internals_index: InternalsSourceIndex | None = None,
 ) -> ClusterRefactorResponse:
     llm_schema = ClusterRefactorLLMResponse.model_json_schema()
-    internals_bytes = internals_path.read_bytes()
-    internals_source = internals_path.read_text(encoding="utf-8")
-    existing_names = _function_names(internals_source)
+    index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    internals_bytes = index.source.encode("utf-8")
+    internals_source = index.source
+    runtime_source = _read_runtime_source(internals_path)
+    existing_names = _function_names(internals_source, index=index)
     cache = load_refactor_cache()
     cache_key = refactor_cache_key(ctx, internals_bytes, llm_schema)
     failure_target = diagnostic_target or f"cluster_{ctx.cluster_id}"
@@ -3607,7 +3807,12 @@ def llm_refactor_cluster(
     def _finalize_cluster_from_llm(
         parsed: ClusterRefactorLLMResponse,
     ) -> ClusterRefactorResponse:
-        prepared = prepare_cluster_refactor_response(parsed, ctx)
+        prepared = prepare_cluster_refactor_response(
+            parsed,
+            ctx,
+            runtime_source=runtime_source,
+            internals_source=internals_source,
+        )
         return _apply_cluster_refactor_validation(prepared)
 
     def _validate_cached_cluster_response(
@@ -3660,6 +3865,7 @@ def llm_refactor_cluster(
     context_dump = build_cluster_refactor_prompt_context(
         ctx,
         internals_path=internals_path,
+        internals_index=index,
     )
     user_prompt = _prompt_for_refactor(context_dump, contract=ctx.contract)
     last_attempt: dict[str, Any] = {}
@@ -3675,7 +3881,12 @@ def llm_refactor_cluster(
             kind="cluster",
             target=failure_target,
         )
-        prepared = prepare_cluster_refactor_response(parsed, ctx)
+        prepared = prepare_cluster_refactor_response(
+            parsed,
+            ctx,
+            runtime_source=runtime_source,
+            internals_source=internals_source,
+        )
         last_attempt["prepared_response"] = prepared.model_dump()
         validated_prepared = _apply_cluster_refactor_validation(prepared)
         return parsed
@@ -3876,7 +4087,13 @@ def _function_to_primary_address(
     return None
 
 
-def _function_names(source: str) -> frozenset[str]:
+def _function_names(
+    source: str,
+    *,
+    index: InternalsSourceIndex | None = None,
+) -> frozenset[str]:
+    if index is not None:
+        return frozenset(index.functions)
     module = ast.parse(source)
     return frozenset(
         node.name for node in module.body if isinstance(node, ast.FunctionDef)

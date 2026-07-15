@@ -4,6 +4,56 @@ Author `inputs.bindings.yaml`, `outputs.bindings.yaml`, and `internals.bindings.
 
 Use schema version `1.8.0` and the prompt in [templates/binding-authoring-prompt.txt](../templates/binding-authoring-prompt.txt).
 
+After authoring (or when export fails in codegen), run
+`uv run python -m scripts.binding_resolution_audit`
+([issue #101](https://github.com/Teal-Insights/extraction-pipeline-template/issues/101))
+to catch bind-resolution errors that `validate_series_bindings` /
+`derive_*_series` can miss — for example sparse year headers without
+`fill: true`, or output series that resolve only a subset of their `data_range`.
+Codegen requires resolution `ok=True`; validation alone does not. This is a
+correctness audit of authored bindings; burndown
+(`uv run python -m scripts.internal_binding_burndown`) is the coverage worklist for
+cells that still lack a binding.
+
+## Sparse labels, measure columns, and graph targets
+
+Summary tables often place a year (or other group label) only on the first column
+of a repeating measure triplet, with blank cells under the remaining measures:
+
+```text
+header row:  2050   (blank) (blank)  2075   (blank) (blank)  ...
+measure row: Base   Alt     Gap      Base   Alt     Gap      ...
+data:        ...    ...     ...      ...    ...     ...      ...
+```
+
+That layout trips three authoring mistakes that pass `validate_series_bindings`
+but fail at output/input codegen:
+
+1. **Sparse `column_header` / `row_label` cells need `fill: true`.**
+   Without `fill`, blank label cells raise `bind_resolution_failed` for every
+   column/row that has no source label, even when the contiguous `data_range`
+   looked fine. Set `fill: true` when labels appear only on the first
+   column/row of a group and should propagate across the blank span.
+
+2. **Do not bind one contiguous rectangle across mixed measures** when the
+   public series key is only something like `(SCENARIO, TIME_PERIOD)`.
+   Columns from different measures then collide on the same key, or only a
+   subset of columns resolve. Prefer either:
+   - **one shard per measure column** (or per milestone column), sharing the
+     same `output.compute.name` / `input.setter.name` when export should merge
+     shards into one public function; or
+   - a **richer key** that includes the measure dimension (common for
+     internals that triangulate the whole triplet table).
+
+3. **`workbook_config.TARGETS` (and overlapping internal ranges) must cover
+   every bound data cell.** Sharding a “gap-only” column that sits past the
+   previous target end requires widening the target (and any internal
+   `data_range` that must stay on-graph for those cells). Bound cells outside
+   the extracted graph never resolve cleanly.
+
+Pedagogical catalog fragment (not used by the synthetic smoke workbook):
+[templates/binding-pattern-measure-shards.example.yaml](../templates/binding-pattern-measure-shards.example.yaml).
+
 ## Dimension `id` vs `concept`
 
 | Field | Role |

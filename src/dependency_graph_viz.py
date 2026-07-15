@@ -9,7 +9,7 @@ import subprocess
 from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from src.pipeline_monitor import StageTimer
@@ -40,7 +40,7 @@ def _graphviz_layout_setting() -> GraphvizLayoutSetting:
     raw = os.environ.get("GRAPHVIZ_LAYOUT", "auto").strip().lower()
     if raw not in ("auto", "always", "never"):
         raise ValueError(f"GRAPHVIZ_LAYOUT must be auto, always, or never; got {raw!r}")
-    return cast(GraphvizLayoutSetting, raw)
+    return raw
 
 
 def graph_topology_metrics(graph: DependencyGraph) -> dict[str, Any]:

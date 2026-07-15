@@ -23,7 +23,9 @@ from src.docstring_callback import configure_docstring_callback
 from src.extraction_pipeline import build_pipeline_graph
 from src.pipeline_config import (
     PipelineConfig,
+    add_clustering_mode_argument,
     add_variation_mode_argument,
+    apply_clustering_mode_cli_override,
     apply_variation_mode_cli_override,
     load_pipeline_config,
     validate_pipeline_config,
@@ -39,6 +41,7 @@ from src.formula_clustering import (
 )
 from src.refactor_bindings import (
     KeyConceptSpec,
+    build_address_to_series_id,
     build_bound_address_keys,
     load_key_concept_vocabulary,
     varying_key_concepts,
@@ -60,7 +63,15 @@ from src.refactor_order import compute_refactor_schedule
 from src.subgraph_projection import build_refactor_projection
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
-REFACTOR_BUCKETS_SCHEMA_VERSION = "1.2.0"
+REFACTOR_BUCKETS_SCHEMA_VERSION = "1.3.1"
+
+SERIES_PARTITION_NOTE = (
+    "Refactor partitions use internal series ids first, then public output/input "
+    "binding series ids. Cells with no internal-series owner are not automatically "
+    "singleton refactor units: a multi-member public binding series (for example an "
+    "output time sweep) remains one cluster refactor unit so collapse can emit "
+    "_ADDRESS_DISPATCH entries keyed by binding parameters such as TIME_PERIOD."
+)
 DEFAULT_JSON_OUTPUT = Path("artifacts/refactor-buckets.json")
 DEFAULT_MARKDOWN_OUTPUT = Path("artifacts/refactor-buckets.md")
 DEFAULT_JSON_OUTPUT_UNCOMPRESSED = Path("artifacts/refactor-buckets-uncompressed.json")
@@ -86,6 +97,7 @@ class RefactorBucketRecord:
     member_count: int
     members: tuple[str, ...]
     function_names: tuple[str, ...]
+    series_ids: tuple[str, ...]
     canonical_template: str
     external_dependencies: tuple[str, ...]
 
@@ -102,6 +114,7 @@ class RefactorBucketRecord:
             "member_count": self.member_count,
             "members": list(self.members),
             "function_names": list(self.function_names),
+            "series_ids": list(self.series_ids),
             "canonical_template": self.canonical_template,
             "external_dependencies": list(self.external_dependencies),
         }
@@ -116,9 +129,31 @@ def _member_engine_column(
     address: str,
     layout: ProjectionColumnLayout | None,
 ) -> str | None:
-    if layout is None:
-        return None
-    return layout.logical_engine_column(address)
+    """Mirror ``internals_refactor._member_engine_column`` for eligibility checks.
+
+    When no projection layout is configured, fall back to the address column letter
+    so non-engine public series (scenario sheets, etc.) are not false-skipped.
+    """
+    if layout is not None:
+        column = layout.logical_engine_column(address)
+        if column is not None:
+            return column
+    _, column, _row = parse_workbook_address(address)
+    return column
+
+
+def _series_ids_for_members(
+    members: Sequence[str],
+    address_to_series_id: Mapping[str, str] | None,
+) -> tuple[str, ...]:
+    if address_to_series_id is None:
+        return ()
+    series_ids = {
+        address_to_series_id[address]
+        for address in members
+        if address in address_to_series_id
+    }
+    return tuple(sorted(series_ids))
 
 
 def _singleton_skip_reason(
@@ -167,26 +202,27 @@ def _cluster_contract_and_skip_reason(
     if eligible_members < 2:
         return None, "cluster_has_fewer_than_two_graph_formula_members"
 
-    if workbook_path is not None and layout is not None:
-        varying = varying_key_concepts(
-            cluster.members,
-            bound_address_keys=bound_address_keys,
-            workbook_path=workbook_path,
-            layout=layout,
-        )
-        contract = select_cluster_refactor_contract(
-            cluster,
-            formula_nodes_for_clustering(graph),
-            bound_address_keys,
-            varying,
-            key_vocabulary=key_vocabulary,
-            workbook_path=workbook_path,
-            layout=layout,
-        )
-        if contract is None:
-            return None, "operand_level_variation_unsupported"
-        return contract, None
-    return None, None
+    if workbook_path is None:
+        return None, None
+
+    varying = varying_key_concepts(
+        cluster.members,
+        bound_address_keys=bound_address_keys,
+        workbook_path=workbook_path,
+        layout=layout,
+    )
+    contract = select_cluster_refactor_contract(
+        cluster,
+        formula_nodes_for_clustering(graph),
+        bound_address_keys,
+        varying,
+        key_vocabulary=key_vocabulary,
+        workbook_path=workbook_path,
+        layout=layout,
+    )
+    if contract is None:
+        return None, "operand_level_variation_unsupported"
+    return contract, None
 
 
 def _external_dependencies(
@@ -242,14 +278,20 @@ def record_refactor_buckets(
     compression: CompressionMode = "optimal",
     refactor_graph: ProjectionResult | None = None,
     bound_address_keys: BoundAddressKeys | None,
+    address_to_series_id: Mapping[str, str] | None = None,
 ) -> tuple[RefactorBucketRecord, ...]:
     """Classify formula clusters into singleton and cluster refactor target buckets."""
     resolved_bound_keys = _require_bound_address_keys(bound_address_keys)
     key_vocabulary = load_key_concept_vocabulary(config.bindings_path)
+    resolved_address_to_series_id = (
+        address_to_series_id if address_to_series_id is not None else {}
+    )
     clusters = cluster_graph_formulas(
         graph,
         bound_address_keys=resolved_bound_keys,
         variation_mode=config.variation_mode,
+        clustering_mode=config.clustering_mode,
+        address_to_series_id=address_to_series_id,
         workbook_path=config.workbook_path,
         layout=layout,
     )
@@ -325,6 +367,9 @@ def record_refactor_buckets(
                 member_count=len(cluster.members),
                 members=cluster.members,
                 function_names=function_names,
+                series_ids=_series_ids_for_members(
+                    cluster.members, resolved_address_to_series_id
+                ),
                 canonical_template=cluster.canonical_template,
                 external_dependencies=_external_dependencies(ctx),
             )
@@ -382,6 +427,7 @@ def build_refactor_buckets_report(
             if internals_path is not None
             else None
         ),
+        "series_partition_note": SERIES_PARTITION_NOTE,
         "formula_cluster_count": formula_cluster_count,
         "refactor_unit_count": refactor_unit_count,
         "cluster_count": refactor_unit_count,
@@ -409,6 +455,10 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
                 if report["compression"] == "none"
                 else "Pipeline stopped after codegen and before the LLM internals refactor step."
             ),
+            "",
+            "## Series partition notes",
+            "",
+            str(report.get("series_partition_note", SERIES_PARTITION_NOTE)),
             "",
             "## Summary",
             "",
@@ -455,6 +505,8 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
         lines.append("")
         if bucket["contract"] is not None:
             lines.append(f"- Contract: {bucket['contract']}")
+        if bucket["series_ids"]:
+            lines.append(f"- Series: `{', '.join(bucket['series_ids'])}`")
         if bucket["row"] is not None:
             lines.append(f"- Representative row: {bucket['row']}")
         lines.append(
@@ -521,6 +573,11 @@ def run_record_refactor_buckets(
         graph_result.output_series,
         graph_result.internal_series,
     )
+    address_to_series_id = build_address_to_series_id(
+        graph_result.internal_series,
+        output_series=graph_result.output_series,
+        input_series=graph_result.input_series,
+    )
     records = record_refactor_buckets(
         config,
         graph=cluster_graph,
@@ -530,6 +587,7 @@ def run_record_refactor_buckets(
         compression=compression,
         refactor_graph=projection if compression == "optimal" else None,
         bound_address_keys=bound_address_keys,
+        address_to_series_id=address_to_series_id,
     )
     report = build_refactor_buckets_report(
         config,
@@ -582,6 +640,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="Bypass on-disk graph and projection caches for this run.",
     )
     add_variation_mode_argument(parser)
+    add_clustering_mode_argument(parser)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     json_output = (
@@ -595,8 +654,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         else args.markdown_output
     )
 
-    config = apply_variation_mode_cli_override(
-        load_pipeline_config(), args.variation_mode
+    config = apply_clustering_mode_cli_override(
+        apply_variation_mode_cli_override(load_pipeline_config(), args.variation_mode),
+        args.clustering_mode,
     )
     validate_pipeline_config(config)
     activate_pipeline_config(config)

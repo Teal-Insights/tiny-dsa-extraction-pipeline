@@ -26,7 +26,7 @@ from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher.graph import DependencyGraph
 
 from src.refactor_bindings import BindingKeyValue, expected_keys_for_address
-from src.refactor_types import VariationMode
+from src.refactor_types import ClusteringMode, VariationMode
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
 ClusterableGraph: TypeAlias = DependencyGraph | ProjectionResult
@@ -34,6 +34,7 @@ ClusterableGraph: TypeAlias = DependencyGraph | ProjectionResult
 StructuralFingerprint: TypeAlias = tuple[tuple, tuple[str, ...]]
 
 BoundAddressKeys: TypeAlias = Mapping[str, Mapping[str, BindingKeyValue]]
+AddressToSeriesId: TypeAlias = Mapping[str, str]
 
 
 def _require_bound_address_keys(
@@ -47,6 +48,91 @@ def _require_bound_address_keys(
             "output, and internal series"
         )
     return bound_address_keys
+
+
+def _require_address_to_series_id(
+    address_to_series_id: AddressToSeriesId | None,
+    *,
+    clustering_mode: ClusteringMode,
+) -> AddressToSeriesId:
+    if clustering_mode == "ast":
+        return address_to_series_id or {}
+    if address_to_series_id is None:
+        raise ValueError(
+            "address_to_series_id is required for formula clustering when "
+            f"clustering_mode={clustering_mode!r}; build it with "
+            "build_address_to_series_id() from derived internal series, "
+            "falling back to public output/input series"
+        )
+    return address_to_series_id
+
+
+def _partition_members_by_series(
+    members: tuple[str, ...],
+    address_to_series_id: AddressToSeriesId,
+) -> tuple[tuple[str, ...], ...]:
+    if len(members) < 2:
+        return (members,)
+
+    grouped: dict[str, list[str]] = {}
+    unowned: list[str] = []
+    for address in members:
+        series_id = address_to_series_id.get(address)
+        if series_id is None:
+            unowned.append(address)
+        else:
+            grouped.setdefault(series_id, []).append(address)
+
+    partitions: list[tuple[str, ...]] = []
+    for series_members in grouped.values():
+        partitions.append(tuple(sorted(series_members)))
+    partitions.extend((address,) for address in sorted(unowned))
+    return tuple(partitions)
+
+
+def _cluster_members_by_series_only(
+    formula_nodes: Mapping[str, str],
+    address_to_series_id: AddressToSeriesId,
+) -> list[tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    unowned: list[str] = []
+    for address in sorted(formula_nodes):
+        series_id = address_to_series_id.get(address)
+        if series_id is None:
+            unowned.append(address)
+        else:
+            grouped.setdefault(series_id, []).append(address)
+
+    raw_clusters: list[tuple[str, ...]] = [
+        tuple(sorted(members)) for members in grouped.values()
+    ]
+    raw_clusters.extend((address,) for address in sorted(unowned))
+    return raw_clusters
+
+
+def _apply_variation_mode_splits(
+    members: tuple[str, ...],
+    formula_nodes: Mapping[str, str],
+    bound_address_keys: BoundAddressKeys,
+    *,
+    variation_mode: VariationMode,
+    workbook_path: Path | None,
+    layout: ProjectionColumnLayout | None,
+    key_cache: _ClusteringKeyCache | None,
+) -> list[tuple[str, ...]]:
+    ordered_members = tuple(sorted(members))
+    if variation_mode == "dominant_key_only" and len(ordered_members) >= 2:
+        return list(
+            _split_cluster_by_dominant_keys(
+                ordered_members,
+                formula_nodes,
+                bound_address_keys,
+                workbook_path=workbook_path,
+                layout=layout,
+                key_cache=key_cache,
+            )
+        )
+    return [ordered_members]
 
 
 @dataclass
@@ -396,6 +482,127 @@ def structural_fingerprint(
         layout=layout,
         key_cache=key_cache,
     )
+
+
+_BINARY_PRECEDENCE: dict[str, int] = {
+    "^": 6,
+    "*": 5,
+    "/": 5,
+    "+": 4,
+    "-": 4,
+    "&": 3,
+    "=": 2,
+    "<>": 2,
+    "<": 2,
+    ">": 2,
+    "<=": 2,
+    ">=": 2,
+}
+
+
+def _format_excel_number(value: object) -> str:
+    if isinstance(value, bool):
+        raise TypeError("bool is not a number literal")
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return format(value, "g")
+    raise TypeError(f"expected int or float number literal, got {type(value)!r}")
+
+
+def _format_excel_string(value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"expected str string literal, got {type(value)!r}")
+    text = value.replace('"', '""')
+    return f'"{text}"'
+
+
+def _format_excel_bool(value: object) -> str:
+    if value is True:
+        return "TRUE"
+    if value is False:
+        return "FALSE"
+    raise TypeError(f"expected bool literal, got {type(value)!r}")
+
+
+def _skeleton_literal_value(node: tuple, *, kind: str) -> object:
+    if len(node) < 2:
+        raise TypeError(f"{kind} skeleton node requires a value")
+    return node[1]
+
+
+def _format_ref_placeholder(index: object, concepts: object | None = None) -> str:
+    label = f"ref_{index}"
+    if concepts is None:
+        return label
+    if not isinstance(concepts, tuple):
+        return label
+    return f"{label}[{','.join(str(concept) for concept in concepts)}]"
+
+
+def _format_skeleton_node(node: tuple, *, min_prec: int) -> str:
+    kind = node[0]
+    if kind == "num":
+        return _format_excel_number(_skeleton_literal_value(node, kind=kind))
+    if kind == "str":
+        return _format_excel_string(_skeleton_literal_value(node, kind=kind))
+    if kind == "bool":
+        return _format_excel_bool(_skeleton_literal_value(node, kind=kind))
+    if kind == "empty":
+        return ""
+    if kind == "err":
+        return str(_skeleton_literal_value(node, kind=kind))
+    if kind == "ref":
+        if len(node) == 2:
+            return _format_ref_placeholder(node[1])
+        return _format_ref_placeholder(node[1], node[2])
+    if kind == "range":
+        if len(node) == 3:
+            start = _format_ref_placeholder(node[1])
+            end = _format_ref_placeholder(node[2])
+        else:
+            start = _format_ref_placeholder(node[1], node[3])
+            end = _format_ref_placeholder(node[2], node[4])
+        return f"{start}:{end}"
+    if kind == "wcol":
+        sheet, column = node[1], node[2]
+        return f"{sheet}!{column}:{column}"
+    if kind == "wrow":
+        sheet, row = node[1], node[2]
+        return f"{sheet}!{row}:{row}"
+    if kind == "unary":
+        op = str(node[1])
+        operand = _format_skeleton_node(node[2], min_prec=7)
+        return f"{op}{operand}"
+    if kind == "bin":
+        op = str(node[1])
+        prec = _BINARY_PRECEDENCE.get(op, 1)
+        left = _format_skeleton_node(node[2], min_prec=prec)
+        # Left-associative: parenthesize right side on equal precedence for
+        # non-associative-looking ops (-, /, comparisons).
+        right_prec = prec + (0 if op in {"*", "+", "&", "^"} else 1)
+        right = _format_skeleton_node(node[3], min_prec=right_prec)
+        rendered = f"{left}{op}{right}"
+        if prec < min_prec:
+            return f"({rendered})"
+        return rendered
+    if kind == "fn":
+        name = str(node[1])
+        args = ",".join(_format_skeleton_node(arg, min_prec=0) for arg in node[2])
+        return f"{name}({args})"
+    raise TypeError(f"unknown skeleton node kind: {kind!r}")
+
+
+def format_structural_skeleton(skeleton: tuple) -> str:
+    """Render a structural skeleton as an Excel-like formula with ref placeholders.
+
+    Cell/range slots become ``ref_N`` or ``ref_N[DIM,...]`` using the fingerprint's
+    sorted binding dimension ids. Scalar literals render as Excel number, string
+    (``"..."``), or boolean (``TRUE``/``FALSE``) tokens; empty args render blank.
+    """
+    return f"={_format_skeleton_node(skeleton, min_prec=0)}"
 
 
 def _binding_aware_fingerprint_complete(
@@ -838,43 +1045,75 @@ def cluster_graph_formulas(
     *,
     bound_address_keys: BoundAddressKeys | None,
     variation_mode: VariationMode = "independent",
+    clustering_mode: ClusteringMode = "series_ast",
+    address_to_series_id: AddressToSeriesId | None = None,
     workbook_path: Path | None = None,
     layout: ProjectionColumnLayout | None = None,
 ) -> tuple[FormulaCluster, ...]:
-    """Cluster non-leaf formula nodes by AST shape and binding-aware ref placeholders."""
+    """Cluster non-leaf formula nodes for internals refactor.
+
+    ``clustering_mode`` selects the base grouping strategy:
+
+    - ``series``: one unit per partition series id (internal first, else public
+      output/input binding series; no cross-series merging).
+    - ``series_ast``: AST-cluster, partition each cluster by owning series id
+      (internal first, else public output/input), then apply ``variation_mode``
+      within each series partition.
+    - ``ast``: AST (+ keys) only; series-blind (legacy behavior).
+
+    Missing internal ownership is not the same as an intended singleton: public
+    output (and input override) series ids keep multi-member time sweeps together.
+    """
     resolved_bound_keys = _require_bound_address_keys(bound_address_keys)
-    formula_nodes = _formula_nodes(graph)
-    addresses = sorted(formula_nodes)
-
-    key_cache = _ClusteringKeyCache(
-        bound_address_keys=resolved_bound_keys,
-        workbook_path=workbook_path,
-        layout=layout,
+    resolved_series_ids = _require_address_to_series_id(
+        address_to_series_id,
+        clustering_mode=clustering_mode,
     )
-    key_cache.warm_from_formula_nodes(formula_nodes)
+    formula_nodes = _formula_nodes(graph)
 
-    grouped: dict[tuple[object, ...], list[str]] = {}
-    for address in addresses:
-        fingerprint = key_cache.fingerprint_for_formula(address, formula_nodes[address])
-        bucket_key = _clustering_bucket_key(fingerprint, address=address)
-        grouped.setdefault(bucket_key, []).append(address)
+    key_cache: _ClusteringKeyCache | None = None
+    if clustering_mode != "series":
+        key_cache = _ClusteringKeyCache(
+            bound_address_keys=resolved_bound_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+        )
+        key_cache.warm_from_formula_nodes(formula_nodes)
 
     raw_clusters: list[tuple[str, ...]] = []
-    for _bucket_key, members in sorted(grouped.items(), key=lambda item: item[1]):
-        ordered_members = tuple(sorted(members))
-        if variation_mode == "dominant_key_only" and len(ordered_members) >= 2:
-            raw_clusters.extend(
-                _split_cluster_by_dominant_keys(
-                    ordered_members,
-                    formula_nodes,
-                    resolved_bound_keys,
-                    workbook_path=workbook_path,
-                    layout=layout,
-                    key_cache=key_cache,
-                )
+    if clustering_mode == "series":
+        raw_clusters.extend(
+            _cluster_members_by_series_only(formula_nodes, resolved_series_ids)
+        )
+    else:
+        assert key_cache is not None
+        grouped: dict[tuple[object, ...], list[str]] = {}
+        for address in sorted(formula_nodes):
+            fingerprint = key_cache.fingerprint_for_formula(
+                address, formula_nodes[address]
             )
-        else:
-            raw_clusters.append(ordered_members)
+            bucket_key = _clustering_bucket_key(fingerprint, address=address)
+            grouped.setdefault(bucket_key, []).append(address)
+
+        for _bucket_key, members in sorted(grouped.items(), key=lambda item: item[1]):
+            ordered_members = tuple(sorted(members))
+            member_groups = (
+                _partition_members_by_series(ordered_members, resolved_series_ids)
+                if clustering_mode == "series_ast"
+                else (ordered_members,)
+            )
+            for member_group in member_groups:
+                raw_clusters.extend(
+                    _apply_variation_mode_splits(
+                        member_group,
+                        formula_nodes,
+                        resolved_bound_keys,
+                        variation_mode=variation_mode,
+                        workbook_path=workbook_path,
+                        layout=layout,
+                        key_cache=key_cache,
+                    )
+                )
 
     clusters: list[FormulaCluster] = []
     for cluster_id, ordered_members in enumerate(

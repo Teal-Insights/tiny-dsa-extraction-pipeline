@@ -125,6 +125,10 @@ INTERNAL_BINDING_EXEMPT_CELLS: frozenset[str] = frozenset()
 # Override per run with ``--variation-mode`` on ``src.extraction_pipeline``.
 VARIATION_MODE = "independent"
 
+# Formula-cluster base mode for internals refactor (series, series_ast, or ast).
+# Override per run with ``--clustering-mode`` on ``src.extraction_pipeline``.
+CLUSTERING_MODE = "series_ast"
+
 # Optional hooks for ``uv run python -m src.workbook_audit`` (pre-extraction audit).
 AUDIT_TITLE = "Tiny DSA Workbook Audit"
 AUDIT_PUBLIC_INPUTS: tuple[tuple[str, str, str], ...] = ()

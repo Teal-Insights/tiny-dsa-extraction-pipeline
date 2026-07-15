@@ -402,4 +402,6 @@ def test_extract_graph_cli_supports_no_cache(
                 ) as extract:
                     main(["--extract-graph", "--no-cache"])
 
-    extract.assert_called_once_with(synthetic_config, no_cache=True)
+    extract.assert_called_once_with(
+        synthetic_config, no_cache=True, force_rebuild=False
+    )

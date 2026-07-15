@@ -33,6 +33,7 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
 | Projection layout | `workbook_config.py` → `PROJECTION_LAYOUT` | Optional Engine/Outputs column mapping for internals refactor (see below) |
 | Variation mode | `workbook_config.py` → `VARIATION_MODE` | Formula-cluster splitting for internals refactor (see [Refactor](#7-refactor)) |
+| Clustering mode | `workbook_config.py` → `CLUSTERING_MODE` | Base formula-cluster grouping before variation splitting (see [Refactor](#7-refactor)) |
 | Internal binding exemptions | `workbook_config.py` → `INTERNAL_BINDING_EXEMPT_CELLS` | Reviewed formula cells allowed to remain unbound |
 | Graph-cache target bundles | `workbook_config.py` → `GRAPH_CACHE_TARGET_BUNDLES` | Optional extra target sets for `scripts/regenerate_graph_cache.py` |
 | Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
@@ -97,7 +98,8 @@ See [artifacts/README.md](artifacts/README.md) and [artifacts/artifacts-catalog.
 Build the dependency graph with provenance enabled and write review artifacts before export:
 
 ```bash
-uv run python -m src.extraction_pipeline --extract-graph
+uv run python -m src.extraction_pipeline --stop-after-stage extract
+# equivalent: --extract-graph
 ```
 
 This writes `artifacts/dependency-graph/` (see [artifacts/artifacts-catalog.md](artifacts/artifacts-catalog.md)), then exits. Review graph completeness manually (step 5 in the [onboarding checklist](#clone-and-configure-onboarding-checklist)): expected sheets, no spurious nodes, shock/engine paths present.
@@ -208,13 +210,25 @@ Set `VARIATION_MODE` in [workbook_config.py](workbook_config.py) to control how 
 | `independent` (default) | Keep one refactor cluster when formulas share the same AST shape and scalar literals, even if operand binding keys vary along multiple dimensions. |
 | `dominant_key_only` | After AST clustering, split clusters where operand keys vary along more than one dimension, keeping only the dimension with the widest value spread as a refactor parameter. Use when a row of parallel formulas mixes, for example, country and time-period variation but you want helpers parameterized only by time period. |
 
-Structural fingerprints include literal numbers, strings, and booleans. Formulas that differ only by cell addresses or binding-key concepts can still share a cluster.
+#### Formula-cluster base mode
+
+Set `CLUSTERING_MODE` in [workbook_config.py](workbook_config.py) to control how refactor units are formed before `VARIATION_MODE` splitting. Default is `series_ast`.
+
+| Mode | Behavior |
+|---|---|
+| `series_ast` (default) | AST-cluster parallel formula families, partition each cluster by owning series id (internal first, else public output/input binding series), then apply `VARIATION_MODE` within each series partition. |
+| `series` | One refactor unit per partition series id (internal first, else public output/input; no cross-series merging; `VARIATION_MODE` does not apply). |
+| `ast` | Series-blind AST clustering only (legacy behavior). |
+
+Structural fingerprints include literal numbers, strings, and booleans. Formulas that differ only by cell addresses or binding-key concepts can still share a cluster under `ast` or within a single series under `series_ast`.
+
+Missing internal-series ownership is not the same as an intended singleton refactor unit. Output time-sweep cells that share a public `outputs.bindings.yaml` series id stay in one multi-member cluster so collapse can emit `_ADDRESS_DISPATCH` entries with per-cell binding keys (for example `TIME_PERIOD`).
 
 Override per run on either entry point:
 
 ```bash
-uv run python -m src.extraction_pipeline --variation-mode dominant_key_only
-uv run python -m src.record_refactor_buckets --variation-mode dominant_key_only
+uv run python -m src.extraction_pipeline --clustering-mode series_ast --variation-mode dominant_key_only
+uv run python -m src.record_refactor_buckets --clustering-mode series_ast --variation-mode dominant_key_only
 ```
 
 Inspect planned refactor targets without calling the LLM:
@@ -230,6 +244,22 @@ After graph-oracle parity passes (see [Verify graph](#3-verify-graph)), run the 
 ```bash
 uv sync
 uv run python -m src.extraction_pipeline
+```
+
+### Stop after a stage
+
+The pipeline is ordered as `extract → export → refactor → validate → document`. Use `--stop-after-stage` to run through a named stage and exit — useful while iterating without paying for later LLM or docs work:
+
+| Flag | Stops after | Typical use |
+|---|---|---|
+| `--stop-after-stage extract` (or `--extract-graph`) | Graph build + review artifacts | Bindings / constraint iteration |
+| `--stop-after-stage export` | Codegen package + seeded validation harness | Inspect generated API before LLM refactor |
+| `--stop-after-stage refactor` | Internals rewrite | Skip differential + docs |
+| `--stop-after-stage validate` | Post-refactor differential + shipped reports | Skip documentation website |
+| `--stop-after-stage document` (default) | Full pipeline | Release / complete run |
+
+```bash
+uv run python -m src.extraction_pipeline --stop-after-stage export
 ```
 
 ### Prerequisites

@@ -63,21 +63,44 @@ def _copy_differential_package(*, repo_root: Path, tests_root: Path) -> None:
         shutil.copy2(source, package_dst / filename)
 
 
-def export_validation_assets(*, config: PipelineConfig) -> None:
-    """Copy harness, workbook fixture, and reference reports into ``dist/tests/``."""
-    repo_root = config.repo_root
-    dist_root = config.dist_root
-    tests_root = dist_root / "tests"
+def _tests_layout(config: PipelineConfig) -> tuple[Path, Path, Path, Path]:
+    tests_root = config.dist_root / "tests"
     fixtures_root = tests_root / "fixtures"
     reference_root = tests_root / "results" / "reference"
     local_root = tests_root / "results" / "local"
+    return tests_root, fixtures_root, reference_root, local_root
 
+
+def seed_validation_harness(*, config: PipelineConfig) -> None:
+    """Copy harness, workbook fixture, and empty results dirs into ``dist/tests/``."""
+    repo_root = config.repo_root
+    tests_root, fixtures_root, reference_root, local_root = _tests_layout(config)
     workbook_src = repo_root / config.differential_workbook_rel
-    report_src = repo_root / config.differential_report_dir_rel
     workbook_fixture_name = workbook_src.name
 
     if not workbook_src.is_file():
         raise FileNotFoundError(f"Workbook not found: {workbook_src}")
+
+    fixtures_root.mkdir(parents=True, exist_ok=True)
+    reference_root.mkdir(parents=True, exist_ok=True)
+    local_root.mkdir(parents=True, exist_ok=True)
+
+    _copy_differential_package(repo_root=repo_root, tests_root=tests_root)
+    shutil.copy2(workbook_src, fixtures_root / workbook_fixture_name)
+
+    (tests_root / "README.md").write_text(
+        _render_tests_readme(
+            package_name=config.dist_metadata.package_name,
+            library_name=config.dist_metadata.library_name,
+        ),
+        encoding="utf-8",
+    )
+
+
+def export_reference_reports(*, config: PipelineConfig) -> None:
+    """Copy parity reports from the extraction-repo cache into ``dist/tests/``."""
+    report_src = config.repo_root / config.differential_report_dir_rel
+    *_, reference_root, _local_root = _tests_layout(config)
 
     missing_reports = [
         name for name in REFERENCE_REPORT_FILES if not (report_src / name).is_file()
@@ -90,19 +113,12 @@ def export_validation_assets(*, config: PipelineConfig) -> None:
             f"and commit refreshed reports under {config.differential_report_dir_rel}."
         )
 
-    fixtures_root.mkdir(parents=True, exist_ok=True)
     reference_root.mkdir(parents=True, exist_ok=True)
-    local_root.mkdir(parents=True, exist_ok=True)
-
-    _copy_differential_package(repo_root=repo_root, tests_root=tests_root)
-    shutil.copy2(workbook_src, fixtures_root / workbook_fixture_name)
     for name in REFERENCE_REPORT_FILES:
         shutil.copy2(report_src / name, reference_root / name)
 
-    (tests_root / "README.md").write_text(
-        _render_tests_readme(
-            package_name=config.dist_metadata.package_name,
-            library_name=config.dist_metadata.library_name,
-        ),
-        encoding="utf-8",
-    )
+
+def export_validation_assets(*, config: PipelineConfig) -> None:
+    """Seed the harness and copy reference reports into ``dist/tests/``."""
+    seed_validation_harness(config=config)
+    export_reference_reports(config=config)

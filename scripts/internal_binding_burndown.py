@@ -8,9 +8,10 @@ Each printed range is one candidate ``layout: row_series`` entry; singletons are
 
 Run: ``uv run python -m scripts.internal_binding_burndown``
 
-The graph build itself does not read the binding YAML, so this script reuses the
-newest cached graph pickle even when the bindings fingerprint (and hence the
-canonical cache key) has changed since the graph was cached.
+The graph build itself does not read the binding YAML. When present, this script
+prefers the fingerprint-matching cache entry; otherwise it falls back to the
+newest cached graph pickle (with a stale-key warning) even if the bindings
+fingerprint has changed since that pickle was written.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from src.graph_cache import (  # noqa: E402
     DEFAULT_GRAPH_CACHE_DIR,
     dependency_graph_cache_key,
     get_or_build_dependency_graph,
+    load_dependency_graph,
     load_newest_cached_dependency_graph,
 )
 from src.internal_binding_coverage import (  # noqa: E402
@@ -68,6 +70,15 @@ def _warn_if_cached_graph_is_stale(config: PipelineConfig, cache_key: str) -> No
 
 
 def load_graph(config: PipelineConfig) -> tuple[DependencyGraph, str | None]:
+    expected_key = _expected_graph_cache_key(config)
+    matched = load_dependency_graph(expected_key, cache_dir=DEFAULT_GRAPH_CACHE_DIR)
+    if matched is not None:
+        print(
+            f"Loaded cached graph key={expected_key[:12]} "
+            f"from {DEFAULT_GRAPH_CACHE_DIR} ({len(matched)} nodes)"
+        )
+        return matched, expected_key
+
     cached = load_newest_cached_dependency_graph(cache_dir=DEFAULT_GRAPH_CACHE_DIR)
     if cached is not None:
         graph, cache_key = cached

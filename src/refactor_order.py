@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import heapq
+import logging
+import time
+from collections import defaultdict
 from dataclasses import dataclass
 
 from src.formula_clustering import ClusterableGraph, FormulaCluster
 from src.workbook_addresses import parse_workbook_address
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -126,29 +132,27 @@ def _kahn_cluster_order(
     depends_on: dict[int, set[int]],
 ) -> tuple[FormulaCluster, ...] | None:
     eligible_by_id = {cluster.cluster_id: cluster for cluster in eligible}
-    inbound: dict[int, set[int]] = {cluster.cluster_id: set() for cluster in eligible}
+    dependents: dict[int, list[int]] = defaultdict(list)
+    remaining_inbound = {
+        cluster.cluster_id: len(depends_on[cluster.cluster_id]) for cluster in eligible
+    }
     for cluster_id, prerequisites in depends_on.items():
         for prerequisite_id in prerequisites:
-            inbound[cluster_id].add(prerequisite_id)
+            dependents[prerequisite_id].append(cluster_id)
 
-    remaining_inbound = {
-        cluster_id: len(edges) for cluster_id, edges in inbound.items()
-    }
-    ready = sorted(
+    ready: list[int] = [
         cluster_id for cluster_id, count in remaining_inbound.items() if count == 0
-    )
+    ]
+    heapq.heapify(ready)
     ordered_ids: list[int] = []
 
     while ready:
-        cluster_id = ready.pop(0)
+        cluster_id = heapq.heappop(ready)
         ordered_ids.append(cluster_id)
-        for dependent_id, prerequisites in inbound.items():
-            if cluster_id not in prerequisites:
-                continue
+        for dependent_id in dependents[cluster_id]:
             remaining_inbound[dependent_id] -= 1
             if remaining_inbound[dependent_id] == 0:
-                ready.append(dependent_id)
-        ready.sort()
+                heapq.heappush(ready, dependent_id)
 
     if len(ordered_ids) != len(eligible):
         return None
@@ -164,95 +168,85 @@ def _try_inter_family_dag_order(
     return _kahn_cluster_order(eligible, depends_on)
 
 
-def _is_member_ready(
-    address: str,
-    *,
-    remaining: set[str],
-    scheduled_members: set[str],
+def _member_adjacency(
     projection: ClusterableGraph,
-) -> bool:
-    for dependency in projection.get_dependencies(address):
-        if dependency in scheduled_members:
-            continue
-        if dependency in remaining:
-            return False
-    return True
-
-
-def _member_blocker_count(
-    address: str,
-    *,
-    remaining: set[str],
-    scheduled_members: set[str],
-    projection: ClusterableGraph,
-) -> int:
-    blockers = 0
-    for dependency in projection.get_dependencies(address):
-        if dependency in scheduled_members:
-            continue
-        if dependency in remaining:
-            blockers += 1
-    return blockers
+    members: set[str],
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    deps: dict[str, tuple[str, ...]] = {}
+    dependents_lists: dict[str, list[str]] = defaultdict(list)
+    for address in members:
+        address_deps = tuple(projection.get_dependencies(address))
+        deps[address] = address_deps
+        for dependency in address_deps:
+            if dependency in members:
+                dependents_lists[dependency].append(address)
+    dependents = {
+        address: tuple(dependent_addresses)
+        for address, dependent_addresses in dependents_lists.items()
+    }
+    return deps, dependents
 
 
 def _select_ready_parent_cluster(
     ready_by_family: dict[int, list[str]],
     *,
-    ready: frozenset[str],
-    remaining: set[str],
-    scheduled_members: set[str],
-    projection: ClusterableGraph,
+    blocker_buckets: dict[int, set[str]],
+    deps: dict[str, tuple[str, ...]],
 ) -> int:
     if len(ready_by_family) == 1:
         return next(iter(ready_by_family))
 
-    waiting = tuple(sorted(address for address in remaining if address not in ready))
-    if not waiting:
+    if not blocker_buckets:
         return min(
             ready_by_family,
             key=lambda parent_id: (-len(ready_by_family[parent_id]), parent_id),
         )
 
-    min_blockers = min(
-        _member_blocker_count(
-            address,
-            remaining=remaining,
-            scheduled_members=scheduled_members,
-            projection=projection,
-        )
-        for address in waiting
-    )
-    priority_waiters = frozenset(
-        address
-        for address in waiting
-        if _member_blocker_count(
-            address,
-            remaining=remaining,
-            scheduled_members=scheduled_members,
-            projection=projection,
-        )
-        == min_blockers
-    )
+    min_blockers = min(blocker_buckets)
+    priority_waiters = blocker_buckets[min_blockers]
 
-    def unblocks_score(parent_id: int) -> int:
-        batch = frozenset(ready_by_family[parent_id])
-        return sum(
-            1
-            for waiter in priority_waiters
-            if any(
-                dependency in batch
-                for dependency in projection.get_dependencies(waiter)
-            )
-        )
+    ready_address_to_parent = {
+        address: parent_id
+        for parent_id, addresses in ready_by_family.items()
+        for address in addresses
+    }
+    unblocks: dict[int, set[str]] = {parent_id: set() for parent_id in ready_by_family}
+    for waiter in priority_waiters:
+        for dependency in deps[waiter]:
+            parent_id = ready_address_to_parent.get(dependency)
+            if parent_id is not None:
+                unblocks[parent_id].add(waiter)
 
     return min(
         ready_by_family,
         key=lambda parent_id: (
-            -unblocks_score(parent_id),
+            -len(unblocks[parent_id]),
             -len(ready_by_family[parent_id]),
             parent_id,
         ),
     )
+
+
+def _decrease_blocker(
+    address: str,
+    *,
+    blocker_count: dict[str, int],
+    blocker_buckets: dict[int, set[str]],
+    ready: set[str],
+) -> None:
+    old_count = blocker_count[address]
+    new_count = old_count - 1
+    if new_count < 0:
+        raise ValueError(f"blocker count underflow for {address!r}")
+    blocker_count[address] = new_count
+    old_bucket = blocker_buckets[old_count]
+    old_bucket.remove(address)
+    if not old_bucket:
+        del blocker_buckets[old_count]
+    if new_count == 0:
+        ready.add(address)
+    else:
+        blocker_buckets.setdefault(new_count, set()).add(address)
 
 
 def _schedule_refactor_units_on_cycle(
@@ -266,23 +260,23 @@ def _schedule_refactor_units_on_cycle(
             address_to_parent[address] = cluster.cluster_id
 
     remaining = {address for cluster in eligible for address in cluster.members}
-    scheduled_members: set[str] = set()
+    deps, dependents = _member_adjacency(projection, remaining)
+    blocker_count = {
+        address: sum(1 for dependency in deps[address] if dependency in remaining)
+        for address in remaining
+    }
+    ready: set[str] = set()
+    blocker_buckets: dict[int, set[str]] = {}
+    for address, count in blocker_count.items():
+        if count == 0:
+            ready.add(address)
+        else:
+            blocker_buckets.setdefault(count, set()).add(address)
+
     units: list[RefactorUnit] = []
     refactor_group_id = 0
 
     while remaining:
-        ready = tuple(
-            sorted(
-                address
-                for address in remaining
-                if _is_member_ready(
-                    address,
-                    remaining=remaining,
-                    scheduled_members=scheduled_members,
-                    projection=projection,
-                )
-            )
-        )
         if not ready:
             raise ValueError(
                 "No refactor-ready members remain but schedule is incomplete"
@@ -293,13 +287,10 @@ def _schedule_refactor_units_on_cycle(
             parent_id = address_to_parent[address]
             ready_by_family.setdefault(parent_id, []).append(address)
 
-        ready_set = frozenset(ready)
         parent_id = _select_ready_parent_cluster(
             ready_by_family,
-            ready=ready_set,
-            remaining=remaining,
-            scheduled_members=scheduled_members,
-            projection=projection,
+            blocker_buckets=blocker_buckets,
+            deps=deps,
         )
         batch = tuple(sorted(ready_by_family[parent_id]))
         parent = clusters_by_id[parent_id]
@@ -316,7 +307,16 @@ def _schedule_refactor_units_on_cycle(
         refactor_group_id += 1
         for address in batch:
             remaining.remove(address)
-            scheduled_members.add(address)
+            ready.discard(address)
+            for dependent in dependents.get(address, ()):
+                if dependent not in remaining:
+                    continue
+                _decrease_blocker(
+                    dependent,
+                    blocker_count=blocker_count,
+                    blocker_buckets=blocker_buckets,
+                    ready=ready,
+                )
 
     return tuple(units)
 
@@ -336,9 +336,10 @@ def compute_refactor_schedule(
     if not eligible:
         return ()
 
+    started = time.perf_counter()
     dag_order = _try_inter_family_dag_order(projection, eligible)
     if dag_order is not None:
-        return tuple(
+        units = tuple(
             RefactorUnit(
                 parent_cluster_id=cluster.cluster_id,
                 refactor_group_id=index,
@@ -348,8 +349,22 @@ def compute_refactor_schedule(
             )
             for index, cluster in enumerate(dag_order)
         )
+        path = "dag"
+    else:
+        units = _schedule_refactor_units_on_cycle(projection, eligible)
+        path = "cycle_split"
 
-    return _schedule_refactor_units_on_cycle(projection, eligible)
+    elapsed = time.perf_counter() - started
+    singleton_units = sum(1 for unit in units if len(unit.members) == 1)
+    logger.info(
+        "refactor schedule path=%s families=%d units=%d singletons=%d elapsed=%.3fs",
+        path,
+        len(eligible),
+        len(units),
+        singleton_units,
+        elapsed,
+    )
+    return units
 
 
 def compute_cluster_refactor_order(

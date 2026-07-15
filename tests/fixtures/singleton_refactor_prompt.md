@@ -10,7 +10,7 @@ Return only JSON matching the response schema:
   "properties": {
     "symbol_signature": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types. Null when error is true.",
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, a single `ctx: EvalContext` argument, and parameter type hints. Do not include a return type hint. Null when error is true.",
       "title": "Symbol Signature"
     },
     "symbol_docstring": {
@@ -57,7 +57,7 @@ Return only JSON matching the response schema:
 
 - `symbol_signature` should take only one argument: `(ctx: EvalContext)`. Do not add parameters.
 - Choose function name as a clear `snake_case` semantic identifier informed by naming hints.
-- Return type must be one of `bool`, `float`, `int`, or `str`, or a `|` union composed only of those types, e.g., `-> float | str`.
+- Do not include a return type hint on `symbol_signature`; the pipeline injects it mechanically from the mechanical member source.
 
 ## Docstring
 
@@ -89,7 +89,7 @@ To support function naming and docstring generation, you will be provided a cell
 
 ```json
 {
-  "symbol_signature": "def united_states_excess_deaths(ctx: EvalContext) -> float:",
+  "symbol_signature": "def united_states_excess_deaths(ctx: EvalContext):",
   "symbol_docstring": "Excess deaths for the United States: total deaths less expected deaths.\n\nArgs:\n    ctx: Workbook evaluation context.\n\nReturns:\n    Excess deaths for the United States.",
   "symbol_body": "total_deaths = xl_number(united_states_total_deaths(ctx))\nexpected_deaths = xl_number(united_states_expected_deaths(ctx))\nreturn total_deaths - expected_deaths",
   "error": null,

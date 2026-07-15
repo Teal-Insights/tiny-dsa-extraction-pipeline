@@ -42,6 +42,9 @@ Binding schema and conventions:
       bind: {kind: value_map, values: {0: C:G}, read: int}
   key: [PROJECTION_PERIOD, REFERENCE_PERIOD]
 - When an internal formula's operands vary independently along one concept (e.g. bilateral flows reading a reporter series and a counterpart series), declare a distinct dimension id for each role on the internal series that binds the formula cells (e.g. REF_AREA plus COUNTERPART_REF_AREA, both concept REF_AREA). Without distinct ids such clusters are skipped as operand_level_variation_unsupported; with them the refactor uses the dimension-aware contract (see bindings/README.md).
+- Sparse column_header / row_label cells need fill: true when labels sit only on the first column/row of a group (e.g. a year above a Base/Alt/Gap measure triplet, with blanks above Alt and Gap). Without fill, blank labels raise bind_resolution_failed and resolution ok=False even if validate_series_bindings looked fine.
+- Do not bind one contiguous rectangle across mixed measure columns when the public key is only (SCENARIO, TIME_PERIOD) or similar. Prefer one shard per measure (or per milestone) column — sharing the same compute_/set_ name when export should merge shards — or a richer key that includes the measure dimension (as internals often do). See bindings/README.md and templates/binding-pattern-measure-shards.example.yaml.
+- workbook_config.TARGETS (and overlapping internal data ranges) must cover every bound data cell. Widening a binding past the previous target end requires widening TARGETS / internals so those cells stay on-graph.
 - Add input.setter.name values matching set_[a-z][a-z0-9_]* for input series.
 - Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
 - Add internal series with `internal: {}` for formula cells that need concept-key triangulation during internals refactor. Internal series do not generate public setter or compute code.
@@ -59,5 +62,6 @@ Task:
    - internal bindings should overlap formula nodes.
 6. Write bindings/inputs.bindings.yaml, bindings/outputs.bindings.yaml, and bindings/internals.bindings.yaml.
 7. Validate by loading the binding directory with load_series_bindings("bindings"), then running validate_series_bindings(graph, bindings, workbook=workbook_path), derive_input_series(...), derive_output_series(...), and derive_internal_series(...).
+8. Run `uv run python -m scripts.binding_resolution_audit` (see issue #101 / bindings/README.md) before treating export as ready. It catches codegen-fatal bind failures — sparse labels without fill, partial resolves, empty public series — that validate_series_bindings / derive_* can miss.
 
 Return the three YAML files and a short validation summary. If any series is ambiguous, explain the ambiguity instead of guessing.

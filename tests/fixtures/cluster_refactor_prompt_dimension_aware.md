@@ -12,7 +12,7 @@ Return only JSON matching the response schema:
   "properties": {
     "symbol_signature": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types. Null when error is true.",
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and parameter type hints. Do not include a return type hint. Null when error is true.",
       "title": "Helper Signature"
     },
     "symbol_docstring": {
@@ -137,7 +137,7 @@ Return only JSON matching the response schema:
 - Each cell in the cluster must have a unique combination of binding key values for triangulating that address.
 - Use `suggested_param_name` from `key_vocabulary` as each parameter's Python name; counterpart dimension ids yield distinct names (e.g. `ref_area` and `counterpart_ref_area`), so parameter names never collide.
 - Choose the function name as a clear `snake_case` semantic identifier informed by naming hints.
-- Return type must be one of `bool`, `float`, `int`, or `str`, or a `|` union composed only of those types, e.g. `-> float | str`.
+- Do not include a return type hint on `symbol_signature`; the pipeline injects it mechanically from the mechanical member sources.
 - Series-constant binding keys (`scope: series`) are not parameters; bake them into the helper.
 - The cluster has already been qualified by formula structure and binding-key shape at each reference position. Do not reinterpret its membership.
 
@@ -182,7 +182,7 @@ Both operand rows are selected by their own dimension-id parameter: the exports 
 
 ```json
 {
-  "symbol_signature": "def bilateral_trade_balance(ctx: EvalContext, time_period: int, ref_area: str, counterpart_ref_area: str) -> float:",
+  "symbol_signature": "def bilateral_trade_balance(ctx: EvalContext, time_period: int, ref_area: str, counterpart_ref_area: str):",
   "symbol_docstring": "Return exports minus imports for a reporter-counterpart area pair in a period.\n\nArgs:\n    ctx: Workbook evaluation context.\n    time_period: Period index (1 through 2).\n    ref_area: Reporting area code ('USA' or 'DEU').\n    counterpart_ref_area: Counterpart area code ('CHN' or 'FRA').\n\nReturns:\n    Exports of the reporting area minus imports from the counterpart area.",
   "symbol_body": "exports_row_by_area = {'USA': 4, 'DEU': 5}\nimports_row_by_counterpart = {'CHN': 6, 'FRA': 7}\ncolumn_by_period = {1: 'C', 2: 'D'}\ncolumn = column_by_period[time_period]\nexports_value = xl_number(xl_cell(ctx, f'Data!{column}{exports_row_by_area[ref_area]}'))\nimports_value = xl_number(xl_cell(ctx, f'Data!{column}{imports_row_by_counterpart[counterpart_ref_area]}'))\nreturn exports_value - imports_value",
   "parameters": [

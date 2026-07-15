@@ -10,7 +10,7 @@ Return only JSON matching the response schema:
   "properties": {
     "symbol_signature": {
       "anyOf": [{"type": "string"}, {"type": "null"}],
-      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and a scalar return type hint: `bool`, `float`, `int`, `str`, or a `|` union of those types. Null when error is true.",
+      "description": "Python function signature, including `def` keyword, `snake_case` semantic name, `ctx: EvalContext`, typed economic parameters from `key_vocabulary`, and parameter type hints. Do not include a return type hint. Null when error is true.",
       "title": "Helper Signature"
     },
     "symbol_docstring": {
@@ -135,7 +135,7 @@ Return only JSON matching the response schema:
 - Each cell in the cluster must have a unique combination of binding key values for triangulating that address.
 - Use `suggested_param_name` from `key_vocabulary` as each parameter's Python name.
 - Choose the function name as a clear `snake_case` semantic identifier informed by naming hints.
-- Return type must be one of `bool`, `float`, `int`, or `str`, or a `|` union composed only of those types, e.g. `-> float | str`.
+- Do not include a return type hint on `symbol_signature`; the pipeline injects it mechanically from the mechanical member sources.
 - Series-constant binding keys (`scope: series`) are not parameters; bake them into the helper.
 - The cluster has already been qualified by formula structure and binding-key shape at each reference position. Do not reinterpret its membership or add parameters for individual reference positions.
 
@@ -179,7 +179,7 @@ In this case, you could map `reporting_period` to workbook columns with a lookup
 
 ```json
 {
-  "symbol_signature": "def growth_threshold_met(ctx: EvalContext, reporting_period: int) -> float:",
+  "symbol_signature": "def growth_threshold_met(ctx: EvalContext, reporting_period: int):",
   "symbol_docstring": "Return 1.0 when the observed value meets or exceeds the growth threshold for the reporting period.\n\nArgs:\n    ctx: Workbook evaluation context.\n    reporting_period: Reporting period index (1 through 5).\n\nReturns:\n    1.0 if the observed value is at or above the threshold, else 0.0.",
   "symbol_body": "column_by_period = {1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F'}\ncolumn = column_by_period[reporting_period]\nobserved_value = xl_cell(ctx, f'Forecast!{column}4')\nthreshold = xl_cell(ctx, 'Assumptions!C2')\nmeets_threshold = xl_compare('>=', observed_value, threshold)\nreturn 1.0 if meets_threshold else 0.0",
   "parameters": [
@@ -231,7 +231,7 @@ For example, suppose you are assigned a cluster covering `Data!E20:H20` and `Dat
 
 ```json
 {
-  "symbol_signature": "def indicator_change_from_reference_period(ctx: EvalContext, time_period: int, ref_area: str) -> float:",
+  "symbol_signature": "def indicator_change_from_reference_period(ctx: EvalContext, time_period: int, ref_area: str):",
   "symbol_docstring": "Return the change in the observed indicator relative to its area-specific reference period.\n\nArgs:\n    ctx: Workbook evaluation context.\n    time_period: Period index (4 through 7).\n    ref_area: Reference area code ('USA' or 'FRA').\n\nReturns:\n    Current-period value minus the lagged value (lag 1 for USA, lag 3 for FRA).",
   "symbol_body": "source_row_by_area = {'USA': 4, 'FRA': 8}\nlag_by_area = {'USA': 1, 'FRA': 3}\ncolumn_by_period = {1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H'}\nsource_row = source_row_by_area[ref_area]\ncurrent_value = xl_number(xl_cell(ctx, f'Data!{column_by_period[time_period]}{source_row}'))\nreference_period = time_period - lag_by_area[ref_area]\nreference_value = xl_number(xl_cell(ctx, f'Data!{column_by_period[reference_period]}{source_row}'))\nreturn current_value - reference_value",
   "parameters": [
