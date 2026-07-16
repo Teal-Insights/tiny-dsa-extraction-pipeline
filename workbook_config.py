@@ -127,7 +127,7 @@ VARIATION_MODE = "independent"
 
 # Formula-cluster base mode for internals refactor (series, series_ast, or ast).
 # Override per run with ``--clustering-mode`` on ``src.extraction_pipeline``.
-CLUSTERING_MODE = "series_ast"
+CLUSTERING_MODE = "series"
 
 # Optional hooks for ``uv run python -m src.workbook_audit`` (pre-extraction audit).
 AUDIT_TITLE = "Tiny DSA Workbook Audit"

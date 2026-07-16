@@ -29,6 +29,9 @@ def test_load_canonical_api_example_reads_template() -> None:
     assert "compute_" in example
     assert "import polars as pl" in example
     assert f"from {config.api_import_path} import" in example
+    assert "bare scalar" in example
+    assert "full key order" in example or "full key-order" in example
+    assert "keyed record" in example.lower()
 
 
 def test_load_canonical_api_example_injects_api_import_path() -> None:
@@ -93,6 +96,9 @@ def test_build_section_prompt_includes_input_shape_guidance() -> None:
     assert "bare scalar" in prompt
     assert "Polars DataFrame" in prompt
     assert "ctx = make_context()" in prompt
+    assert "exactly one measure per key" in prompt
+    assert "one-element list" in prompt
+    assert "profile-table" in prompt or "profile table" in prompt
 
 
 def test_build_section_prompt_uses_discovered_api_signatures(tmp_path: Path) -> None:

@@ -25,17 +25,24 @@ from src.pipeline_config import PipelineConfig, discover_public_api_symbols
 from src.qmd_python_validation import PublicApiPolicy, validate_qmd_files
 
 SECTION_REWRITE_MODEL_ENV = "SECTION_REWRITE_MODEL"
-SECTION_REWRITE_PROMPT_VERSION = 6
+SECTION_REWRITE_PROMPT_VERSION = 7
 MAX_SECTION_REWRITE_ATTEMPTS = 3
 VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
 
 SETTER_INPUT_SHAPE_GUIDANCE = (
-    "Setter input shapes: single-cell setters accept a bare scalar; series setters "
-    "accept a 1-D sequence of measure values, a tidy Polars DataFrame, a single "
-    "record, or a list of records when the series is keyed. Reuse "
-    "ctx = make_context() across runnable cells. Tabulate compute_* results with "
-    "Polars, selecting the measure column with a clear alias as shown in the "
-    "canonical_api_usage reference."
+    "Setter input shapes: single-cell setters accept a bare scalar (not a "
+    "one-element list). Series setters accept a 1-D sequence of measure values, "
+    "a tidy Polars DataFrame, a single record, or a list of records when the "
+    "series is keyed. Positional series input must supply exactly one measure "
+    "per key in that setter's canonical key order — match the full positional "
+    "length for the series, or prefer keyed records / a single record when "
+    "updating only some keys. Never wrap a single scenario scalar in a "
+    "one-element list for a multi-key series setter. Do not call a profile-table "
+    "series setter merely to set the selected country's value; use the scalar "
+    "selector (for example set_country_name) unless the example is intentionally "
+    "rewriting the table. Reuse ctx = make_context() across runnable cells. "
+    "Tabulate compute_* results with Polars, selecting the measure column with "
+    "a clear alias as shown in the canonical_api_usage reference."
 )
 
 
@@ -839,7 +846,7 @@ def run_documentation_pipeline(config: PipelineConfig) -> None:
     write_introduction_page(config, section_client, guide_text)
     write_rewritten_guide_pages(config, section_client)
     write_validation_page(config=config)
-    api_symbols = discover_public_api_symbols(config.api_module_path)
+    api_symbols = list(discover_public_api_symbols(config.api_module_path))
     validate_qmd_files(
         dist_root=config.dist_root,
         qmd_paths=sorted(_user_guide_root(config).glob("*.qmd")),
@@ -849,6 +856,8 @@ def run_documentation_pipeline(config: PipelineConfig) -> None:
         ),
         metadata=config.dist_metadata,
         client=section_client,
+        model=model if section_client is not None else None,
+        api_signatures=extract_api_signatures(config.api_module_path, api_symbols),
     )
     sync_validated_pages_to_rewrite_cache(config=config, guide_text=guide_text)
     write_docs_deploy_workflow(config)

@@ -11,8 +11,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from openai import OpenAI
+from openai import Omit, OpenAI, omit
+from openai.types.shared import ReasoningEffort
 
+from src.llm_providers import provider_for_model
 from src.pipeline_config import DistProjectMetadata
 
 DOCUMENTATION_BASELINE_DEV_DEPS: tuple[str, ...] = (
@@ -63,8 +65,6 @@ _NAME_ERROR_PATTERN = re.compile(
     r"NameError: (?P<message>.+)",
     re.DOTALL,
 )
-
-_CELL_FIX_MODEL = "gpt-5.5"
 
 
 @dataclass(frozen=True)
@@ -300,18 +300,68 @@ def validate_runnable_cell_imports(
                 )
 
 
+def referenced_api_symbols(source: str, allowed: frozenset[str]) -> frozenset[str]:
+    """Return allowed API symbols referenced by imports or calls in ``source``."""
+    module = ast.parse(source)
+    found: set[str] = set()
+    for node in ast.walk(module):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in allowed:
+                    found.add(alias.name)
+            continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in allowed:
+                found.add(node.func.id)
+    return frozenset(found)
+
+
+def filter_api_signatures(api_signatures: str, symbols: frozenset[str]) -> str:
+    """Keep only function definitions whose names are in ``symbols``."""
+    if not api_signatures.strip() or not symbols:
+        return api_signatures
+    try:
+        tree = ast.parse(api_signatures)
+    except SyntaxError:
+        return api_signatures
+    lines = api_signatures.splitlines()
+    blocks: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in symbols:
+            end = node.end_lineno
+            if end is None:
+                continue
+            blocks.append("\n".join(lines[node.lineno - 1 : end]))
+    return "\n\n".join(blocks) if blocks else api_signatures
+
+
 def fix_python_cell_with_llm(
     *,
     client: OpenAI,
+    model: str,
     cell_source: str,
     error_message: str,
     qmd_label: str,
     cell_number: int,
     api_policy: PublicApiPolicy,
+    api_signatures: str = "",
 ) -> str:
+    provider = provider_for_model(model)
+    effort: ReasoningEffort | Omit = (
+        "high" if provider.supports_reasoning_effort else omit
+    )
     allowed = ", ".join(sorted(api_policy.allowed_symbols))
+    relevant_symbols = referenced_api_symbols(cell_source, api_policy.allowed_symbols)
+    relevant_signatures = filter_api_signatures(api_signatures, relevant_symbols)
+    signatures_block = (
+        f"\nRelevant {api_policy.api_import_path} signatures "
+        "(authoritative for call shapes):\n"
+        f"{relevant_signatures}\n"
+        if relevant_signatures.strip()
+        else ""
+    )
     response = client.chat.completions.create(
-        model=_CELL_FIX_MODEL,
+        model=model,
         messages=[
             {
                 "role": "system",
@@ -333,7 +383,12 @@ Constraints:
 - {api_policy.api_import_path} exports only: {allowed}.
 - Do not import Workbook or any other symbol from {api_policy.api_import_path}.
 - Return only valid Python source for the cell body.
-
+- If the error is a positional length mismatch, either expand the sequence to the
+  full key-order length from the docstring, or switch to keyed records / a single
+  record for partial updates. Prefer keyed records for one-entity scenario demos.
+- Do not wrap a single scenario scalar in a one-element list for a multi-key
+  series setter; single-cell setters take a bare scalar.
+{signatures_block}
 Execution error:
 {error_message}
 
@@ -343,7 +398,8 @@ Cell source:
             },
         ],
         stream=False,
-        reasoning_effort="high",
+        reasoning_effort=effort,
+        extra_body=provider.extra_body,
     )
     content = response.choices[0].message.content
     if content is None:
@@ -397,7 +453,9 @@ def _apply_runtime_cell_fix(
     error_text: str,
     ordered_paths: list[Path],
     client: OpenAI,
+    model: str,
     api_policy: PublicApiPolicy,
+    api_signatures: str = "",
 ) -> None:
     cell_number = _cell_number_from_script(script_text, error_text)
     if cell_number is None:
@@ -418,11 +476,13 @@ def _apply_runtime_cell_fix(
     cell = extract_python_cells(qmd_text)[cell_number - 1]
     fixed_source = fix_python_cell_with_llm(
         client=client,
+        model=model,
         cell_source=cell.source,
         error_message=error_text.strip(),
         qmd_label=qmd_label,
         cell_number=cell_number,
         api_policy=api_policy,
+        api_signatures=api_signatures,
     )
     validate_runnable_cell_imports(fixed_source, api_policy=api_policy)
     qmd_path.write_text(
@@ -444,9 +504,13 @@ def validate_qmd_files(
     metadata: DistProjectMetadata,
     run_uv_script: Callable[..., ScriptRunResult] | None = None,
     client: OpenAI | None = None,
+    model: str | None = None,
     write_pyproject: bool = True,
+    api_signatures: str = "",
 ) -> list[str]:
     """Execute aggregated runnable cells and record extra dev dependencies."""
+    if client is not None and model is None:
+        raise ValueError("model is required when client is provided for LLM cell fixes")
     runner = default_run_uv_script if run_uv_script is None else run_uv_script
     ordered_paths = [path for path in qmd_paths if path.is_file()]
     script_path = dist_root / VALIDATION_SCRIPT_NAME
@@ -483,7 +547,12 @@ def validate_qmd_files(
                 if cell_number is not None
                 else None
             )
-            if cell_number is not None and qmd_label is not None and client is not None:
+            if (
+                cell_number is not None
+                and qmd_label is not None
+                and client is not None
+                and model is not None
+            ):
                 fix_key = (qmd_label, cell_number)
                 fix_attempts_for_cell = llm_fix_attempts_by_cell.get(fix_key, 0)
                 if (
@@ -499,7 +568,9 @@ def validate_qmd_files(
                     error_text=error_text,
                     ordered_paths=ordered_paths,
                     client=client,
+                    model=model,
                     api_policy=api_policy,
+                    api_signatures=api_signatures,
                 )
                 llm_fix_attempts_total += 1
                 llm_fix_attempts_by_cell[fix_key] = fix_attempts_for_cell + 1

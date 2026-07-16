@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from openai import OpenAI
+from openai import OpenAI, omit
 
 from src.pipeline_config import DistProjectMetadata
 from src.qmd_python_validation import (
@@ -305,6 +305,7 @@ def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> No
 
     fixed = fix_python_cell_with_llm(
         client=cast(OpenAI, fake),
+        model="gpt-5.5",
         cell_source="print(unknown)\n",
         error_message="NameError: name 'unknown' is not defined",
         qmd_label="guide.qmd",
@@ -317,8 +318,77 @@ def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> No
 
     assert fixed == "print('fixed')\n"
     assert len(fake.chat.completions.calls) == 1
-    assert fake.chat.completions.calls[0]["reasoning_effort"] == "high"
-    assert "extra_body" not in fake.chat.completions.calls[0]
+    call = fake.chat.completions.calls[0]
+    assert call["model"] == "gpt-5.5"
+    assert call["reasoning_effort"] == "high"
+    assert call["extra_body"] is None
+
+
+def test_fix_python_cell_with_llm_includes_signatures_and_shape_guidance() -> None:
+    fake = _FakeClient("set_country_initial_debt(ctx, [40.0, 60.0, 80.0])\n")
+    signatures = (
+        "def set_country_initial_debt(ctx, records):\n"
+        "    '''Examples:\\n"
+        "        set_country_initial_debt(ctx, [40.0, 60.0, 80.0])\\n"
+        "    '''\n"
+        "    pass\n"
+        "\n"
+        "def set_other(ctx, value):\n"
+        "    pass\n"
+    )
+
+    fixed = fix_python_cell_with_llm(
+        client=cast(OpenAI, fake),
+        model="gpt-5.5",
+        cell_source="set_country_initial_debt(ctx, [60.0])\n",
+        error_message="ValueError: expected 3 values for positional input, got 1",
+        qmd_label="01-functional-overview.qmd",
+        cell_number=1,
+        api_policy=PublicApiPolicy(
+            api_import_path="tiny_dsa.api",
+            allowed_symbols=frozenset(
+                {"set_country_initial_debt", "set_other", "make_context"}
+            ),
+        ),
+        api_signatures=signatures,
+    )
+
+    assert fixed == "set_country_initial_debt(ctx, [40.0, 60.0, 80.0])\n"
+    user_prompt = cast(
+        list[dict[str, str]], fake.chat.completions.calls[0]["messages"]
+    )[1]["content"]
+    assert "positional length mismatch" in user_prompt
+    assert "keyed records" in user_prompt
+    assert "set_country_initial_debt" in user_prompt
+    assert "def set_country_initial_debt" in user_prompt
+    assert "def set_other" not in user_prompt
+
+
+def test_fix_python_cell_with_llm_routes_deepseek_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEEPSEEK_THINKING", raising=False)
+    fake = _FakeClient("print('fixed')\n")
+
+    fixed = fix_python_cell_with_llm(
+        client=cast(OpenAI, fake),
+        model="deepseek-v4-pro",
+        cell_source="print(unknown)\n",
+        error_message="NameError: name 'unknown' is not defined",
+        qmd_label="guide.qmd",
+        cell_number=1,
+        api_policy=PublicApiPolicy(
+            api_import_path="my_model.api",
+            allowed_symbols=frozenset({"make_context"}),
+        ),
+    )
+
+    assert fixed == "print('fixed')\n"
+    assert len(fake.chat.completions.calls) == 1
+    call = fake.chat.completions.calls[0]
+    assert call["model"] == "deepseek-v4-pro"
+    assert call["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert call["reasoning_effort"] is omit
 
 
 def test_default_run_uv_script_forces_utf8_stdio(
@@ -487,12 +557,14 @@ print(table_1)
         metadata=SAMPLE_METADATA,
         run_uv_script=fake_run_uv_script,
         client=cast(OpenAI, object()),
+        model="deepseek-v4-pro",
         write_pyproject=False,
     )
 
     cells = validation.extract_python_cells(qmd_path.read_text(encoding="utf-8"))
     assert run_count == 2
     assert len(fix_calls) == 1
+    assert fix_calls[0]["model"] == "deepseek-v4-pro"
     assert fix_calls[0]["cell_number"] == 2
     assert fix_calls[0]["error_message"] == (
         f'File "{dist_root / validation.VALIDATION_SCRIPT_NAME}", line 5, in <module>\n'
