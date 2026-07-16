@@ -22,10 +22,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 CLUSTER_NAMING_PROMPT_FIXTURE = (
     _REPO_ROOT / "tests" / "fixtures" / "cluster_naming_prompt.md"
 )
+SINGLETON_NAMING_PROMPT_FIXTURE = (
+    _REPO_ROOT / "tests" / "fixtures" / "singleton_naming_prompt.md"
+)
 
 
 def load_cluster_naming_prompt_fixed_portion() -> str:
     return CLUSTER_NAMING_PROMPT_FIXTURE.read_text(encoding="utf-8")
+
+
+def load_singleton_naming_prompt_fixed_portion() -> str:
+    return SINGLETON_NAMING_PROMPT_FIXTURE.read_text(encoding="utf-8")
 
 
 class LocalRename(BaseModel):
@@ -78,6 +85,14 @@ class ClusterNamingLLMResponse(BaseModel):
         )
 
 
+class SingletonNamingLLMResponse(ClusterNamingLLMResponse):
+    """Naming-only response for a mechanically assembled singleton body.
+
+    Same contract as clusters — docstring plus a rename map — but the schema
+    title participates in the cache key, so singletons get their own model.
+    """
+
+
 def format_cluster_naming_prompt_context(
     context_dump: str,
     draft: MechanicalBodyDraft,
@@ -89,6 +104,21 @@ def format_cluster_naming_prompt_context(
     return (
         f"{context_dump.strip()}\n\n"
         "Mechanical draft body (verified against every member; "
+        "rename locals and write the docstring only):\n\n"
+        f"```python\n{draft.body}\n```\n\n"
+        f"Renameable locals: {renameable}"
+    )
+
+
+def format_singleton_naming_prompt_context(
+    context_dump: str,
+    draft: MechanicalBodyDraft,
+) -> str:
+    """Append the assembled singleton draft body to a context dump."""
+    renameable = ", ".join(sorted(draft.renameable_locals))
+    return (
+        f"{context_dump.strip()}\n\n"
+        "Mechanical draft body (assembled from the verified translation; "
         "rename locals and write the docstring only):\n\n"
         f"```python\n{draft.body}\n```\n\n"
         f"Renameable locals: {renameable}"

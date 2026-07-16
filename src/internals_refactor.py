@@ -112,6 +112,25 @@ def set_cluster_context_observer(observer: ClusterContextObserver | None) -> Non
     _CLUSTER_CONTEXT_OBSERVER = observer
 
 
+SingletonContextObserver = Callable[["SingletonRefactorContext"], None]
+"""Hook receiving each singleton refactor context as its unit is processed."""
+
+_SINGLETON_CONTEXT_OBSERVER: SingletonContextObserver | None = None
+
+
+def set_singleton_context_observer(
+    observer: SingletonContextObserver | None,
+) -> None:
+    """Install (or clear) a hook that sees every singleton refactor context.
+
+    Fires before the cache check in ``llm_refactor_singleton`` so diagnostics
+    like ``scripts/run_refactor_stage.py --report-synthesis`` observe the exact
+    contexts (including mid-refactor semantic dependencies) of a real run.
+    """
+    global _SINGLETON_CONTEXT_OBSERVER
+    _SINGLETON_CONTEXT_OBSERVER = observer
+
+
 def fingerprint_fallback_count() -> int:
     """Return how many clusters fell back to the legacy sampled dump this process."""
     return _FINGERPRINT_FALLBACK_COUNT
@@ -542,6 +561,9 @@ class SingletonRefactorContext:
     allowed_runtime_symbols: tuple[str, ...]
     naming_hints: dict[str, object]
     expected_helper_name: str
+    inline_replacements: tuple[tuple[str, str], ...] = ()
+    """``(cell_function_name, replacement_call_source)`` pairs for every
+    dependency call site that resolves to a provably inlinable thin wrapper."""
 
 
 class SingletonRefactorResponse(BaseModel):
@@ -943,6 +965,34 @@ def build_cluster_refactor_context(
     )
 
 
+def _singleton_inline_replacements(
+    python_source: str,
+    dependency_addresses: tuple[str, ...],
+    index: InternalsSourceIndex,
+) -> tuple[tuple[str, str], ...]:
+    """Map each inlinable ``cell_*`` dependency call to its wrapper's call form.
+
+    Only wrappers for recorded dependency addresses qualify, so the mechanical
+    singleton body can never rewire a read the graph does not know about.
+    """
+    from src.mechanical_body import parse_inlinable_wrapper
+
+    dependency_functions = {
+        address_to_function_name(address) for address in dependency_addresses
+    }
+    replacements: list[tuple[str, str]] = []
+    for name in _called_function_names(python_source):
+        if not name.startswith("cell_") or name not in dependency_functions:
+            continue
+        node = index.functions.get(name)
+        if node is None:
+            continue
+        replacement = parse_inlinable_wrapper(node)
+        if replacement is not None:
+            replacements.append((name, replacement))
+    return tuple(replacements)
+
+
 def build_singleton_refactor_context(
     projection: ProjectionResult,
     cluster: FormulaCluster,
@@ -1000,12 +1050,13 @@ def build_singleton_refactor_context(
         existing_names=reserved_names - {expected_helper_name},
     )
 
+    python_source = index.function_source(function_name)
     return SingletonRefactorContext(
         address=address,
         function_name=function_name,
         canonical_template=cluster.canonical_template,
         normalized_formula=node.normalized_formula,
-        python_source=index.function_source(function_name),
+        python_source=python_source,
         dependency_addresses=dependency_addresses,
         external_dependencies=external_dependencies,
         semantic_dependencies=semantic_dependencies,
@@ -1020,6 +1071,9 @@ def build_singleton_refactor_context(
             internal_binding_index, address
         ).to_payload(),
         expected_helper_name=expected_helper_name,
+        inline_replacements=_singleton_inline_replacements(
+            python_source, dependency_addresses, index
+        ),
     )
 
 
@@ -3909,7 +3963,16 @@ def llm_refactor_singleton(
     diagnostic_target: str | None = None,
     internals_index: InternalsSourceIndex | None = None,
 ) -> SingletonRefactorResponse:
-    llm_schema = SingletonRefactorLLMResponse.model_json_schema()
+    mechanical_draft = _try_synthesize_singleton_body(ctx)
+    if mechanical_draft is not None:
+        from src.mechanical_naming import SingletonNamingLLMResponse
+
+        llm_schema: dict[str, object] = {
+            "schema": SingletonNamingLLMResponse.model_json_schema(),
+            "mechanical_body": mechanical_draft.body,
+        }
+    else:
+        llm_schema = SingletonRefactorLLMResponse.model_json_schema()
     index = _resolve_internals_index(internals_path, internals_index=internals_index)
     internals_bytes = index.source.encode("utf-8")
     internals_source = index.source
@@ -3918,18 +3981,30 @@ def llm_refactor_singleton(
     cache = load_refactor_cache()
     cache_key = singleton_refactor_cache_key(ctx, internals_bytes, llm_schema)
     failure_target = diagnostic_target or ctx.address
-    if _PROMPT_OBSERVER is not None:
-        _PROMPT_OBSERVER(
-            "singleton",
-            failure_target,
-            _prompt_for_singleton_refactor(
-                build_singleton_refactor_prompt_context(
-                    ctx,
-                    internals_path=internals_path,
-                    internals_index=index,
-                )
-            ),
+
+    def _build_user_prompt() -> str:
+        context_dump = build_singleton_refactor_prompt_context(
+            ctx,
+            internals_path=internals_path,
+            internals_index=index,
         )
+        if mechanical_draft is not None:
+            from src.mechanical_naming import (
+                format_singleton_naming_prompt_context,
+                load_singleton_naming_prompt_fixed_portion,
+            )
+
+            return (
+                load_singleton_naming_prompt_fixed_portion().strip()
+                + "\n\n"
+                + format_singleton_naming_prompt_context(context_dump, mechanical_draft)
+            )
+        return _prompt_for_singleton_refactor(context_dump)
+
+    if _SINGLETON_CONTEXT_OBSERVER is not None:
+        _SINGLETON_CONTEXT_OBSERVER(ctx)
+    if _PROMPT_OBSERVER is not None:
+        _PROMPT_OBSERVER("singleton", failure_target, _build_user_prompt())
 
     def _apply_singleton_refactor_validation(
         prepared: SingletonRefactorResponse,
@@ -4011,12 +4086,7 @@ def llm_refactor_singleton(
 
     model = refactor_model()
     client, provider = build_client(model)
-    context_dump = build_singleton_refactor_prompt_context(
-        ctx,
-        internals_path=internals_path,
-        internals_index=index,
-    )
-    user_prompt = _prompt_for_singleton_refactor(context_dump)
+    user_prompt = _build_user_prompt()
     last_attempt: dict[str, Any] = {}
     validated_prepared: SingletonRefactorResponse | None = None
 
@@ -4040,26 +4110,81 @@ def llm_refactor_singleton(
         validated_prepared = _apply_singleton_refactor_validation(prepared)
         return parsed
 
+    def _post_validate_singleton_naming(parsed):
+        from src.mechanical_naming import apply_cluster_naming_response
+
+        nonlocal validated_prepared
+        assert mechanical_draft is not None
+        last_attempt["llm_response"] = parsed.model_dump()
+        raise_if_llm_declared_error(
+            parsed,
+            kind="singleton",
+            target=failure_target,
+        )
+        body = apply_cluster_naming_response(
+            parsed,
+            mechanical_draft,
+            parameter_names=frozenset(),
+            forbidden_names=existing_names | frozenset(ctx.allowed_runtime_symbols),
+        )
+        legacy_shape = SingletonRefactorLLMResponse(
+            symbol_docstring=parsed.symbol_docstring,
+            symbol_body=body,
+            error=None,
+            error_reason=None,
+        )
+        prepared = prepare_singleton_refactor_response(
+            legacy_shape,
+            ctx,
+            runtime_source=runtime_source,
+            internals_source=internals_source,
+        )
+        last_attempt["prepared_response"] = prepared.model_dump()
+        validated_prepared = _apply_singleton_refactor_validation(prepared)
+        return parsed
+
     logger.info(
-        "singleton refactor LLM request address=%s model=%s prompt_version=%s",
+        "singleton refactor LLM request address=%s model=%s prompt_version=%s "
+        "contract=%s",
         ctx.address,
         model,
         REFACTOR_PROMPT_VERSION,
+        "naming_only" if mechanical_draft is not None else "full_body",
     )
     try:
-        llm_parsed, raw_content = generate_validated_json(
-            client=client,
-            model=model,
-            provider=provider,
-            system_prompt=(
-                "You rename and refactor one Excel-generated singleton helper into a "
-                "domain-aware semantic function. Return only JSON matching the schema."
-            ),
-            user_prompt=user_prompt,
-            response_model=SingletonRefactorLLMResponse,
-            post_validate=_post_validate_singleton_llm,
-            max_attempts=DEFAULT_MAX_ATTEMPTS,
-        )
+        if mechanical_draft is not None:
+            from src.mechanical_naming import SingletonNamingLLMResponse
+
+            _naming_parsed, raw_content = generate_validated_json(
+                client=client,
+                model=model,
+                provider=provider,
+                system_prompt=(
+                    "You add the semantic layer (docstring and local names) to a "
+                    "verified, mechanically generated Python function. Return only "
+                    "JSON matching the schema."
+                ),
+                user_prompt=user_prompt,
+                response_model=SingletonNamingLLMResponse,
+                post_validate=_post_validate_singleton_naming,
+                max_attempts=DEFAULT_MAX_ATTEMPTS,
+            )
+            llm_parsed = None
+        else:
+            llm_parsed, raw_content = generate_validated_json(
+                client=client,
+                model=model,
+                provider=provider,
+                system_prompt=(
+                    "You rename and refactor one Excel-generated singleton helper "
+                    "into a domain-aware semantic function. Return only JSON "
+                    "matching the schema."
+                ),
+                user_prompt=user_prompt,
+                response_model=SingletonRefactorLLMResponse,
+                post_validate=_post_validate_singleton_llm,
+                max_attempts=DEFAULT_MAX_ATTEMPTS,
+            )
     except RefactorDeclaredError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="singleton",
@@ -4097,11 +4222,14 @@ def llm_refactor_singleton(
             error,
         )
         raise
-    parsed = (
-        validated_prepared
-        if validated_prepared is not None
-        else _finalize_singleton_from_llm(llm_parsed)
-    )
+    if validated_prepared is not None:
+        parsed = validated_prepared
+    else:
+        if llm_parsed is None:
+            raise RuntimeError(
+                "naming-contract response completed without a validated refactor"
+            )
+        parsed = _finalize_singleton_from_llm(llm_parsed)
     _ = raw_content
     cache[cache_key] = parsed.model_dump_json()
     save_refactor_cache(cache)
@@ -4140,6 +4268,35 @@ def _try_synthesize_cluster_body(ctx: ClusterRefactorContext):
     logger.info(
         "cluster %s mechanical draft verified; using naming-only contract",
         ctx.cluster_id,
+    )
+    return draft
+
+
+def _try_synthesize_singleton_body(ctx: SingletonRefactorContext):
+    """Return a mechanical singleton body draft, or None to use the legacy contract."""
+    if not _mechanical_bodies_enabled():
+        return None
+    from src.mechanical_body import (
+        MechanicalSynthesisError,
+        synthesize_singleton_body,
+    )
+
+    try:
+        draft = synthesize_singleton_body(
+            ctx.python_source,
+            inline_replacements=dict(ctx.inline_replacements),
+        )
+    except MechanicalSynthesisError as error:
+        logger.info(
+            "singleton %s mechanical synthesis unavailable (%s); "
+            "using full-body contract",
+            ctx.address,
+            error.reason,
+        )
+        return None
+    logger.info(
+        "singleton %s mechanical draft assembled; using naming-only contract",
+        ctx.address,
     )
     return draft
 

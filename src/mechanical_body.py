@@ -63,6 +63,152 @@ class MechanicalBodyDraft:
     group_count: int
 
 
+def _is_literal_expr(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return node.value is None or isinstance(node.value, (str, int, float, bool))
+    if isinstance(node, ast.Tuple):
+        return all(_is_literal_expr(element) for element in node.elts)
+    return False
+
+
+def parse_inlinable_wrapper(function_def: ast.FunctionDef) -> str | None:
+    """Return the replacement expression for a ``(ctx)``-only thin wrapper.
+
+    A wrapper is inlinable when its executable body is a single ``return`` of a
+    call that forwards the same ``ctx`` and otherwise passes only literals —
+    e.g. ``return shock_active(ctx, time_period=1)`` or
+    ``return xl_cell(ctx, 'Inputs!B5')``. Substituting that call for a
+    ``wrapper(ctx)`` call site is exact: no locals, defaults, or evaluation
+    order are involved.
+    """
+    args = function_def.args
+    if (
+        [arg.arg for arg in args.args] != ["ctx"]
+        or args.posonlyargs
+        or args.kwonlyargs
+        or args.vararg is not None
+        or args.kwarg is not None
+        or args.defaults
+    ):
+        return None
+    body = function_def.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    if len(body) != 1:
+        return None
+    statement = body[0]
+    if not isinstance(statement, ast.Return) or statement.value is None:
+        return None
+    call = statement.value
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and not call.func.id.startswith(_CELL_FUNCTION_PREFIX)
+        and call.args
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "ctx"
+    ):
+        return None
+    if not all(_is_literal_expr(arg) for arg in call.args[1:]):
+        return None
+    for keyword in call.keywords:
+        if keyword.arg is None or not _is_literal_expr(keyword.value):
+            return None
+    return ast.unparse(call)
+
+
+def synthesize_singleton_body(
+    python_source: str,
+    *,
+    inline_replacements: Mapping[str, str],
+) -> MechanicalBodyDraft:
+    """Synthesize a draft body for a singleton refactor unit.
+
+    The unpacked translation is already statement-shaped, so the only rewrite
+    is call-graph rewiring: every ``cell_*(ctx)`` dependency call is replaced
+    with its thin wrapper's semantic call (from ``inline_replacements``, keyed
+    by wrapper function name). Everything else — coercion wrappers, laziness,
+    literals, runtime reads — is preserved verbatim.
+
+    Raises :class:`MechanicalSynthesisError` on any ``cell_*`` reference that
+    cannot be provably inlined; callers fall back to the full-body contract.
+    """
+    module = ast.parse(python_source)
+    functions = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+    if len(functions) != 1:
+        raise MechanicalSynthesisError("unsupported_translation_shape")
+    function_def = functions[0]
+    if [arg.arg for arg in function_def.args.args] != ["ctx"]:
+        raise MechanicalSynthesisError("unsupported_translation_signature")
+    statements = list(function_def.body)
+    if (
+        statements
+        and isinstance(statements[0], ast.Expr)
+        and isinstance(statements[0].value, ast.Constant)
+        and isinstance(statements[0].value.value, str)
+    ):
+        statements = statements[1:]
+
+    replacements: dict[int, ast.expr] = {}
+    inlined_call_funcs: set[int] = set()
+    for statement in statements:
+        for call in _iter_calls(statement):
+            func = call.func
+            if not isinstance(func, ast.Name) or not func.id.startswith(
+                _CELL_FUNCTION_PREFIX
+            ):
+                continue
+            if (
+                len(call.args) != 1
+                or not isinstance(call.args[0], ast.Name)
+                or call.args[0].id != "ctx"
+                or call.keywords
+            ):
+                raise MechanicalSynthesisError(f"cell_call_shape_unsupported:{func.id}")
+            replacement_source = inline_replacements.get(func.id)
+            if replacement_source is None:
+                raise MechanicalSynthesisError(
+                    f"cell_dependency_not_inlinable:{func.id}"
+                )
+            replacements[id(call)] = ast.parse(replacement_source, mode="eval").body
+            inlined_call_funcs.add(id(func))
+    for statement in statements:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Name)
+                and node.id.startswith(_CELL_FUNCTION_PREFIX)
+                and id(node) not in inlined_call_funcs
+            ):
+                raise MechanicalSynthesisError(f"cell_reference_unsupported:{node.id}")
+
+    rewritten = [_replace_nodes(statement, replacements) for statement in statements]
+    renameable = sorted(
+        {
+            node.id
+            for statement in rewritten
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name) and _MECHANICAL_TEMP_PATTERN.match(node.id)
+        }
+    )
+    body = "\n".join(ast.unparse(statement) for statement in rewritten)
+    indented = "\n".join(f"    {line}" for line in body.splitlines())
+    try:
+        ast.parse(f"def _draft(ctx):\n{indented}\n")
+    except SyntaxError as error:  # pragma: no cover - defensive
+        raise MechanicalSynthesisError(f"draft_body_invalid:{error}") from error
+    return MechanicalBodyDraft(
+        body=body,
+        renameable_locals=tuple(renameable),
+        lookup_table_names=(),
+        group_count=1,
+    )
+
+
 def _sort_key(value: BindingKeyValue) -> tuple[int, object]:
     if isinstance(value, bool):
         return (3, value)

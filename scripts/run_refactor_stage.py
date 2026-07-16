@@ -27,11 +27,17 @@ from src.formula_clustering import cluster_graph_formulas
 from src.internal_bindings import build_internal_binding_index
 from src.internals_refactor import (
     ClusterRefactorContext,
+    SingletonRefactorContext,
     refactor_internals_all_clusters,
     set_cluster_context_observer,
     set_refactor_prompt_observer,
+    set_singleton_context_observer,
 )
-from src.mechanical_body import MechanicalSynthesisError, synthesize_cluster_body
+from src.mechanical_body import (
+    MechanicalSynthesisError,
+    synthesize_cluster_body,
+    synthesize_singleton_body,
+)
 from src.logging_config import configure_logging
 from src.pipeline_config import (
     add_clustering_mode_argument,
@@ -53,11 +59,21 @@ DEFAULT_OUTPUT_ROOT = Path("artifacts/refactor-lab")
 
 
 def _synthesis_reporter(report_dir: Path):
-    """Return an observer that tries mechanical synthesis on each cluster context."""
+    """Return observers that try mechanical synthesis on each refactor context."""
     report_dir.mkdir(parents=True, exist_ok=True)
     results: list[str] = []
 
-    def _observe(ctx: ClusterRefactorContext) -> None:
+    def _record_draft(name: str, draft) -> None:
+        results.append(
+            f"{name}: OK (groups={draft.group_count}, "
+            f"locals={list(draft.renameable_locals)}, "
+            f"tables={list(draft.lookup_table_names)})"
+        )
+        (report_dir / f"{name}.draft.py").write_text(
+            draft.body + "\n", encoding="utf-8", newline="\n"
+        )
+
+    def _observe_cluster(ctx: ClusterRefactorContext) -> None:
         name = ctx.expected_helper_name
         if ctx.fingerprint_summary is None:
             results.append(f"{name}: SKIP (no fingerprint summary)")
@@ -72,16 +88,21 @@ def _synthesis_reporter(report_dir: Path):
         except MechanicalSynthesisError as error:
             results.append(f"{name}: FAIL ({error.reason})")
             return
-        results.append(
-            f"{name}: OK (groups={draft.group_count}, "
-            f"locals={list(draft.renameable_locals)}, "
-            f"tables={list(draft.lookup_table_names)})"
-        )
-        (report_dir / f"{name}.draft.py").write_text(
-            draft.body + "\n", encoding="utf-8", newline="\n"
-        )
+        _record_draft(name, draft)
 
-    return _observe, results
+    def _observe_singleton(ctx: SingletonRefactorContext) -> None:
+        name = ctx.expected_helper_name
+        try:
+            draft = synthesize_singleton_body(
+                ctx.python_source,
+                inline_replacements=dict(ctx.inline_replacements),
+            )
+        except MechanicalSynthesisError as error:
+            results.append(f"{name}: FAIL ({error.reason})")
+            return
+        _record_draft(name, draft)
+
+    return _observe_cluster, _observe_singleton, results
 
 
 def _prompt_dump_observer(dump_dir: Path):
@@ -145,8 +166,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         default=None,
         metavar="DIR",
         help=(
-            "Attempt mechanical body synthesis for every cluster unit, write "
-            "verified drafts to DIR, and print an OK/FAIL summary."
+            "Attempt mechanical body synthesis for every refactor unit (clusters "
+            "and singletons), write verified drafts to DIR, and print an OK/FAIL "
+            "summary."
         ),
     )
     add_variation_mode_argument(parser)
@@ -200,8 +222,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         set_refactor_prompt_observer(_prompt_dump_observer(args.dump_prompts))
     synthesis_results: list[str] | None = None
     if args.report_synthesis is not None:
-        observer, synthesis_results = _synthesis_reporter(args.report_synthesis)
-        set_cluster_context_observer(observer)
+        cluster_observer, singleton_observer, synthesis_results = _synthesis_reporter(
+            args.report_synthesis
+        )
+        set_cluster_context_observer(cluster_observer)
+        set_singleton_context_observer(singleton_observer)
     try:
         results = refactor_internals_all_clusters(
             refactor_projection,
@@ -219,6 +244,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     finally:
         set_refactor_prompt_observer(None)
         set_cluster_context_observer(None)
+        set_singleton_context_observer(None)
 
     print(f"Refactored {len(results)} cluster unit(s) at {internals_path}")
     if args.dump_prompts is not None:
