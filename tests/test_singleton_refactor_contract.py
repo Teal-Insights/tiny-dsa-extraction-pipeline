@@ -215,6 +215,18 @@ EVAL_CONTEXT_REFACTOR_RESPONSE = SingletonRefactorResponse(
     ).strip(),
 )
 
+CELLVALUE_REFACTOR_RESPONSE = SingletonRefactorResponse(
+    symbol_name="inputs_c1",
+    symbol_docstring="Inputs cell C1.",
+    symbol_source=dedent(
+        '''
+        def inputs_c1(ctx: EvalContext) -> CellValue:
+            """Inputs cell C1."""
+            return xl_cell(ctx, "Inputs!C1")
+        '''
+    ).strip(),
+)
+
 
 MINIMAL_PROMPT_PAYLOAD: dict[str, object] = {
     "address": "Engine!C20",
@@ -249,7 +261,8 @@ def test_prompt_for_singleton_refactor_does_not_require_llm_note_section() -> No
         SingletonRefactorLLMResponse.model_json_schema(),
     )
     assert "Include a Note section" not in prompt
-    assert '"symbol_signature"' in prompt
+    assert '"symbol_docstring"' in prompt
+    assert '"symbol_signature"' not in prompt
     assert '"symbol_body"' in prompt
     assert '"symbol_source"' not in prompt.split("Singleton context:", maxsplit=1)[0]
 
@@ -268,7 +281,8 @@ def test_singleton_prompt_documents_error_escape_hatch() -> None:
     assert "error" in properties
     assert "error_reason" in properties
     required = schema.get("required", [])
-    assert "symbol_signature" in required
+    assert "symbol_docstring" in required
+    assert "symbol_signature" not in required
     assert "error" in required
     assert "error_reason" in required
 
@@ -357,13 +371,11 @@ def test_validate_singleton_refactor_response_accepts_eval_context_type_hint() -
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints={},
+        expected_helper_name="united_states_excess_deaths",
     )
     prepared = _prepare_singleton_refactor_response(
         prepare_singleton_refactor_response(
             SingletonRefactorLLMResponse(
-                symbol_signature=(
-                    "def united_states_excess_deaths(ctx: EvalContext) -> float:"
-                ),
                 symbol_docstring=(
                     '"""\n'
                     "Excess deaths for the United States.\n\n"
@@ -408,9 +420,9 @@ def test_prepare_singleton_refactor_response_assembles_and_appends_note() -> Non
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints={},
+        expected_helper_name="projected_debt_to_gdp",
     )
     llm_response = SingletonRefactorLLMResponse(
-        symbol_signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
         symbol_docstring=(
             '"""\n'
             "Projected debt-to-GDP for period 1.\n\n"
@@ -540,10 +552,10 @@ def test_prepare_singleton_refactor_response_ignores_llm_return_type_hint() -> N
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints=EXCESS_DEATHS_CELL_METADATA,
+        expected_helper_name="united_states_excess_deaths",
     )
     prepared = prepare_singleton_refactor_response(
         SingletonRefactorLLMResponse(
-            symbol_signature="def united_states_excess_deaths(ctx: EvalContext) -> str:",
             symbol_docstring=(
                 '"""\n'
                 "Excess deaths for the United States.\n\n"
@@ -577,10 +589,10 @@ def test_prepare_singleton_refactor_response_injects_return_type_when_llm_uses_c
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints=EXCESS_DEATHS_CELL_METADATA,
+        expected_helper_name="united_states_excess_deaths",
     )
     prepared = prepare_singleton_refactor_response(
         SingletonRefactorLLMResponse(
-            symbol_signature="def united_states_excess_deaths(ctx: EvalContext) -> CellValue:",
             symbol_docstring=(
                 '"""\n'
                 "Excess deaths for the United States.\n\n"
@@ -626,10 +638,10 @@ def test_prepare_singleton_refactor_response_propagates_cellvalue_for_opaque_pas
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints={"address": "Inputs!C1"},
+        expected_helper_name="inputs_c1",
     )
     prepared = prepare_singleton_refactor_response(
         SingletonRefactorLLMResponse(
-            symbol_signature="def inputs_c1(ctx: EvalContext):",
             symbol_docstring='"""\nInputs cell C1.\n"""',
             symbol_body='return xl_cell(ctx, "Inputs!C1")',
             error=None,
@@ -691,6 +703,7 @@ def test_apply_singleton_refactor_plan_injects_eval_context_import() -> None:
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints={},
+        expected_helper_name="united_states_excess_deaths",
     )
     updated = ensure_singleton_refactor_imports(
         INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
@@ -708,3 +721,53 @@ def test_apply_singleton_refactor_plan_injects_eval_context_import() -> None:
     assert "from .runtime import" in applied
     assert "EvalContext" in applied.split("from .runtime import", maxsplit=1)[1]
     assert "def united_states_excess_deaths(ctx: EvalContext) -> float:" in applied
+
+
+def test_ensure_singleton_refactor_imports_injects_cellvalue() -> None:
+    updated = ensure_singleton_refactor_imports(
+        INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
+        CELLVALUE_REFACTOR_RESPONSE,
+    )
+    import_line = next(
+        line for line in updated.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "CellValue" in import_line
+    assert "EvalContext" in import_line
+
+
+def test_apply_singleton_refactor_plan_injects_cellvalue_import() -> None:
+    internals = dedent(
+        """
+        from __future__ import annotations
+
+        from .runtime import xl_cell
+
+        def cell_inputs_c1(ctx):
+            return xl_cell(ctx, "Inputs!C1")
+        """
+    ).strip()
+    ctx = SingletonRefactorContext(
+        address="Inputs!C1",
+        function_name="cell_inputs_c1",
+        canonical_template="=Inputs!C1",
+        normalized_formula="=Inputs!C1",
+        python_source="def cell_inputs_c1(ctx):\n    return xl_cell(ctx, 'Inputs!C1')\n",
+        dependency_addresses=(),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints={},
+        expected_helper_name="inputs_c1",
+    )
+    applied, _rewrite_count = apply_singleton_refactor_plan(
+        internals,
+        CELLVALUE_REFACTOR_RESPONSE,
+        ctx,
+    )
+    import_line = next(
+        line for line in applied.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "CellValue" in import_line
+    assert "EvalContext" in import_line
+    assert "def inputs_c1(ctx: EvalContext) -> CellValue:" in applied

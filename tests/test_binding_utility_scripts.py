@@ -802,6 +802,55 @@ def test_find_sparse_label_bind_issues_without_fill(
     assert "sparse_label_without_fill" in rendered
 
 
+def test_duplicate_internal_audit_respects_exclude_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overlapping data_ranges are not duplicates when exclude_rows carve out cells."""
+    import src.binding_resolution_audit as audit_module
+
+    class _FakeNode:
+        is_leaf = False
+        normalized_formula = "=1"
+
+    class _FakeGraph:
+        def get_node(self, _address: str) -> _FakeNode:
+            return _FakeNode()
+
+    monkeypatch.setattr(
+        audit_module,
+        "expand_data_range_for_graph",
+        lambda _graph, data_range, workbook=None: (
+            ("Engine!B2", "Engine!B3", "Engine!B4", "Engine!B5")
+            if data_range == "Engine!B2:B5"
+            else (("Engine!B4",) if data_range == "Engine!B4" else ())
+        ),
+    )
+    bindings = cast(
+        Any,
+        {
+            "series": [
+                {
+                    "id": "row_series",
+                    "data_range": "Engine!B4",
+                    "internal": {},
+                },
+                {
+                    "id": "column_series",
+                    "data_range": "Engine!B2:B5",
+                    "internal": {},
+                    "exclude_rows": [4],
+                },
+            ]
+        },
+    )
+    findings = find_duplicate_internal_formula_cell_bindings(
+        cast(DependencyGraph, _FakeGraph()),
+        bindings,
+        workbook_path=Path("unused.xlsx"),
+    )
+    assert findings == []
+
+
 def test_binding_resolution_audit_reports_duplicate_internal_cell_bindings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

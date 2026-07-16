@@ -12,6 +12,7 @@ from src.refactor_order import (
     assert_valid_refactor_schedule,
     compute_cluster_refactor_order,
     compute_refactor_schedule,
+    compute_refactor_schedule_with_diagnostics,
     refactor_failure_target,
 )
 from src.subgraph_projection import build_refactor_projection
@@ -284,6 +285,201 @@ def test_schedule_prefers_family_that_unblocks_least_blocked_waiter() -> None:
     assert_valid_refactor_schedule(projection, units)
 
 
+def test_scheduler_prefers_whole_ready_family_over_concurrent_peel() -> None:
+    """At one decision point, a wholly ready family beats a peelable subset.
+
+    Families A and C form an inter-family cycle (force peel mode). Family B has
+    no cross-family hinges and is wholly ready at the same time A has a peelable
+    frontier ``{A1}``. The scheduler must emit whole B first, not peel A.
+    """
+    family_a = FormulaCluster(
+        cluster_id=0,
+        members=("Engine!A1", "Engine!A2"),
+        canonical_template="=A",
+        row=None,
+    )
+    family_b = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!B1", "Engine!B2"),
+        canonical_template="=B",
+        row=None,
+    )
+    family_c = FormulaCluster(
+        cluster_id=2,
+        members=("Engine!C1",),
+        canonical_template="=C",
+        row=None,
+    )
+
+    class _WholeFamilyBeatsPeelProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            # Cell deps stay acyclic (A1 → C1 → A2); families A↔C still cycle.
+            deps = {
+                "Engine!A1": (),
+                "Engine!A2": ("Engine!C1",),
+                "Engine!B1": (),
+                "Engine!B2": ("Engine!B1",),
+                "Engine!C1": ("Engine!A1",),
+            }
+            return deps.get(address, ())
+
+    projection = cast(ProjectionResult, _WholeFamilyBeatsPeelProjection())
+    units = compute_refactor_schedule(projection, (family_a, family_b, family_c))
+
+    assert units[0].members == ("Engine!B1", "Engine!B2")
+    assert_valid_refactor_schedule(projection, units)
+
+
+def test_scheduler_prefers_whole_ready_family_over_subset_peel() -> None:
+    """Peel only when no whole family is ready; resume whole-family scheduling after.
+
+    Family A and B form an inter-family cycle, so no whole family is ready at
+    start and a within-family peel of ``A1`` is required. That peel clears B's
+    only cross-family hinge, so the next unit must be the entire remaining
+    family B ``(B1, B2)`` — not a cell-level peel that shreds B into singletons.
+    """
+    family_a = FormulaCluster(
+        cluster_id=0,
+        members=("Engine!A1", "Engine!A2"),
+        canonical_template="=A",
+        row=None,
+    )
+    family_b = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!B1", "Engine!B2"),
+        canonical_template="=B",
+        row=None,
+    )
+
+    class _PeelThenWholeFamilyProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            deps = {
+                "Engine!A1": (),
+                # Cross-family hinge keeps whole A unready until B runs.
+                "Engine!A2": ("Engine!A1", "Engine!B1"),
+                "Engine!B1": ("Engine!A1",),
+                "Engine!B2": ("Engine!B1",),
+            }
+            return deps.get(address, ())
+
+    projection = cast(ProjectionResult, _PeelThenWholeFamilyProjection())
+    units = compute_refactor_schedule(projection, (family_a, family_b))
+
+    assert [unit.members for unit in units] == [
+        ("Engine!A1",),
+        ("Engine!B1", "Engine!B2"),
+        ("Engine!A2",),
+    ]
+    assert_valid_refactor_schedule(projection, units)
+
+
+def test_cycle_split_peels_within_family_chain_together_not_as_singletons() -> None:
+    """Within-family depends-on chains must peel as one unit, not successive singletons.
+
+    Family A is a recurrence chain (A2 depends on A1, A3 on A2). Family B inserts a
+    cross-family hinge after A1 so the inter-family DAG is cyclic and a peel is
+    required. After B1 is scheduled, A2 and A3 are only waiting on within-family
+    prerequisites — they must leave together.
+    """
+    family_a = FormulaCluster(
+        cluster_id=0,
+        members=("Engine!A1", "Engine!A2", "Engine!A3"),
+        canonical_template="=PRIOR",
+        row=None,
+    )
+    family_b = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!B1",),
+        canonical_template="=Engine!A1",
+        row=None,
+    )
+
+    class _ChainWithCrossHingeProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            deps = {
+                "Engine!A1": (),
+                "Engine!B1": ("Engine!A1",),
+                # Cross-family hinge: A2 waits on B1 as well as within-family A1.
+                "Engine!A2": ("Engine!A1", "Engine!B1"),
+                "Engine!A3": ("Engine!A2",),
+            }
+            return deps.get(address, ())
+
+    projection = cast(ProjectionResult, _ChainWithCrossHingeProjection())
+    units = compute_refactor_schedule(projection, (family_a, family_b))
+
+    assert [unit.members for unit in units] == [
+        ("Engine!A1",),
+        ("Engine!B1",),
+        ("Engine!A2", "Engine!A3"),
+    ]
+    assert_valid_refactor_schedule(projection, units)
+
+
+def test_cycle_split_peels_all_leafmost_within_family_frontiers() -> None:
+    """Upward within-family walks from every leafmost seed, stopping at external walls.
+
+    Family A is rooted at A1 with two depends-on branches plus a disconnected cell:
+
+    - ``A1 > A2 > A3 > A4`` — fully unblocked within-family chain
+    - ``A1 > A5 > A6 > A7`` — external hinge on A5 (depends on family B)
+    - ``A8`` — same family, no edges to the rest; also a leafmost seed
+
+    Leafmost seeds are A4, A7, and A8. Each walk includes cells whose outstanding
+    deps are only within the peel; A5 is a wall (external to B). A1 is excluded
+    because it depends on A5 and is therefore secondhand-blocked by that external
+    hinge.
+
+    Ready peel: A2, A3, A4, A6, A7, A8 (not A1, not A5).
+    """
+    family_a = FormulaCluster(
+        cluster_id=0,
+        members=tuple(f"Engine!A{index}" for index in range(1, 9)),
+        canonical_template="=PRIOR",
+        row=None,
+    )
+    family_b = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!B1",),
+        canonical_template="=ENGINE",
+        row=None,
+    )
+
+    class _TwoBranchRootProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            deps = {
+                # Unblocked branch: A1 > A2 > A3 > A4
+                "Engine!A4": (),
+                "Engine!A3": ("Engine!A4",),
+                "Engine!A2": ("Engine!A3",),
+                # Blocked branch: A1 > A5 > A6 > A7, external wall at A5
+                "Engine!A7": (),
+                "Engine!A6": ("Engine!A7",),
+                "Engine!A5": ("Engine!A6", "Engine!B1"),
+                "Engine!A1": ("Engine!A2", "Engine!A5"),
+                # Disconnected same-family leafmost seed
+                "Engine!A8": (),
+                # Inter-family cycle hinge: B waits on the unblocked branch tip.
+                "Engine!B1": ("Engine!A2",),
+            }
+            return deps.get(address, ())
+
+    projection = cast(ProjectionResult, _TwoBranchRootProjection())
+    units = compute_refactor_schedule(projection, (family_a, family_b))
+
+    assert units[0].members == (
+        "Engine!A2",
+        "Engine!A3",
+        "Engine!A4",
+        "Engine!A6",
+        "Engine!A7",
+        "Engine!A8",
+    )
+    assert "Engine!A1" not in units[0].members
+    assert "Engine!A5" not in units[0].members
+    assert_valid_refactor_schedule(projection, units)
+
+
 def test_cycle_schedule_emits_alternating_singletons_for_interleaved_families() -> None:
     projection, clusters = _interleaved_family_cycle_schedule(3)
     units = compute_refactor_schedule(cast(ProjectionResult, projection), clusters)
@@ -320,8 +516,9 @@ def test_cycle_schedule_scales_to_thousands_of_interleaved_members(
     assert_valid_refactor_schedule(cast(ProjectionResult, projection), units)
     assert any(
         "refactor schedule path=cycle_split" in record.message
-        and "families=2" in record.message
-        and f"units={2 * member_count}" in record.message
+        and "fingerprint_families=2" in record.message
+        and f"schedule_units={2 * member_count}" in record.message
+        and f"singleton_schedule_units={2 * member_count}" in record.message
         for record in caplog.records
     )
 
@@ -403,6 +600,228 @@ def test_dag_schedule_logs_path(caplog) -> None:
     assert [unit.members for unit in units] == [("Engine!A1",), ("Engine!B1",)]
     assert any(
         "refactor schedule path=dag" in record.message
-        and "families=2" in record.message
+        and "fingerprint_families=2" in record.message
+        and "schedule_units=2" in record.message
         for record in caplog.records
+    )
+
+
+def test_schedule_diagnostics_marks_dag_path_emits() -> None:
+    cluster_a = FormulaCluster(
+        cluster_id=0,
+        members=("Engine!A1", "Engine!A2"),
+        canonical_template="=1",
+        row=None,
+    )
+    cluster_b = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!B1",),
+        canonical_template="=Engine!A1",
+        row=None,
+    )
+
+    class _DagProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            deps = {
+                "Engine!A1": (),
+                "Engine!A2": ("Engine!A1",),
+                "Engine!B1": ("Engine!A1",),
+            }
+            return deps.get(address, ())
+
+    units, summary = compute_refactor_schedule_with_diagnostics(
+        cast(ProjectionResult, _DagProjection()),
+        (cluster_a, cluster_b),
+    )
+    assert len(units) == 2
+    assert summary.path == "dag"
+    assert summary.fingerprint_family_count == 2
+    assert summary.schedule_unit_count == 2
+    assert summary.dag_emits == 2
+    assert summary.whole_family_emits == 0
+    assert summary.peel_emits == 0
+    assert summary.decisions == ()
+
+    units_detail, detail = compute_refactor_schedule_with_diagnostics(
+        cast(ProjectionResult, _DagProjection()),
+        (cluster_a, cluster_b),
+        include_decisions=True,
+    )
+    assert units_detail == units
+    assert [decision.kind for decision in detail.decisions] == ["dag", "dag"]
+    assert all(
+        decision.member_count == len(units[index].members)
+        for index, decision in enumerate(detail.decisions)
+    )
+
+
+def test_schedule_diagnostics_distinguishes_peel_then_whole_family() -> None:
+    """Peel A1, then whole B, then leftover A as whole remaining family."""
+    family_a = FormulaCluster(
+        cluster_id=0,
+        members=("Engine!A1", "Engine!A2"),
+        canonical_template="=A",
+        row=None,
+    )
+    family_b = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!B1", "Engine!B2"),
+        canonical_template="=B",
+        row=None,
+    )
+
+    class _PeelThenWholeFamilyProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            deps = {
+                "Engine!A1": (),
+                "Engine!A2": ("Engine!A1", "Engine!B1"),
+                "Engine!B1": ("Engine!A1",),
+                "Engine!B2": ("Engine!B1",),
+            }
+            return deps.get(address, ())
+
+    units, summary = compute_refactor_schedule_with_diagnostics(
+        cast(ProjectionResult, _PeelThenWholeFamilyProjection()),
+        (family_a, family_b),
+    )
+
+    assert [unit.members for unit in units] == [
+        ("Engine!A1",),
+        ("Engine!B1", "Engine!B2"),
+        ("Engine!A2",),
+    ]
+    assert summary.path == "cycle_split"
+    assert summary.dag_emits == 0
+    assert summary.whole_family_emits == 2
+    assert summary.peel_emits == 1
+    assert summary.decisions == ()
+
+    _units, detail = compute_refactor_schedule_with_diagnostics(
+        cast(ProjectionResult, _PeelThenWholeFamilyProjection()),
+        (family_a, family_b),
+        include_decisions=True,
+    )
+    assert [decision.kind for decision in detail.decisions] == [
+        "peel",
+        "whole_family",
+        "whole_family",
+    ]
+    first_peel = detail.decisions[0]
+    assert first_peel.parent_cluster_id == 0
+    assert first_peel.member_count == 1
+    assert first_peel.blocking_family_sample
+    assert any(
+        family_id == 1 and cross_blocked > 0
+        for family_id, cross_blocked in first_peel.blocking_family_sample
+    )
+    assert any(
+        waiter == "Engine!B1" and dep == "Engine!A1" and dep_family == 0
+        for waiter, dep, dep_family in first_peel.blocking_cross_edge_sample
+    )
+
+    by_family = {
+        stats.parent_cluster_id: stats for stats in summary.families_by_unit_count
+    }
+    assert by_family[0].member_count == 2
+    assert by_family[0].unit_count == 2
+    assert by_family[0].peel_emits == 1
+    assert by_family[0].whole_family_emits == 1
+    assert by_family[0].dag_emits == 0
+    assert by_family[0].singleton_units == 2
+    assert by_family[1].unit_count == 1
+    assert by_family[1].whole_family_emits == 1
+    assert by_family[1].peel_emits == 0
+
+
+def test_schedule_diagnostics_samples_least_stuck_families_not_stuckest() -> None:
+    """Peel hinge samples prefer near-ready (least stuck) families over mega-stuck ones.
+
+    Family Peel seeds the graph. Family Near has one cross hinge on that seed (almost
+    whole-family ready). Family Far has many remaining cross hinges. When diagnostics
+    sample why no whole family is ready, Near must appear before Far — we care about
+    the unblock frontier, not the globally stickiest SCC participants.
+    """
+    family_peel = FormulaCluster(
+        cluster_id=0,
+        members=("Engine!P1", "Engine!P2"),
+        canonical_template="=PEEL",
+        row=None,
+    )
+    family_near = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!N1", "Engine!N2"),
+        canonical_template="=NEAR",
+        row=None,
+    )
+    family_far = FormulaCluster(
+        cluster_id=2,
+        members=tuple(f"Engine!F{index}" for index in range(1, 6)),
+        canonical_template="=FAR",
+        row=None,
+    )
+
+    class _LeastStuckSampleProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            deps = {
+                "Engine!P1": (),
+                # Keeps Peel in the inter-family cycle with Near.
+                "Engine!P2": ("Engine!N1",),
+                "Engine!N1": ("Engine!P1",),
+                "Engine!N2": ("Engine!N1",),
+                # Far waits on P1 with many still-cross-blocked members.
+                "Engine!F1": ("Engine!P1",),
+                "Engine!F2": ("Engine!P1",),
+                "Engine!F3": ("Engine!P1",),
+                "Engine!F4": ("Engine!P1",),
+                "Engine!F5": ("Engine!P1",),
+            }
+            return deps.get(address, ())
+
+    units, detail = compute_refactor_schedule_with_diagnostics(
+        cast(ProjectionResult, _LeastStuckSampleProjection()),
+        (family_peel, family_near, family_far),
+        include_decisions=True,
+    )
+    assert units[0].members == ("Engine!P1",)
+    first_peel = detail.decisions[0]
+    assert first_peel.kind == "peel"
+    assert first_peel.blocking_family_sample
+    sampled_family_ids = [
+        family_id for family_id, _ in first_peel.blocking_family_sample
+    ]
+    assert sampled_family_ids[0] == 1, (
+        f"expected least-stuck Near (1) first, got {first_peel.blocking_family_sample}"
+    )
+    assert 2 in sampled_family_ids
+    assert sampled_family_ids.index(1) < sampled_family_ids.index(2)
+    near_blocked = dict(first_peel.blocking_family_sample)[1]
+    far_blocked = dict(first_peel.blocking_family_sample)[2]
+    assert near_blocked < far_blocked
+    assert any(
+        waiter == "Engine!N1" and dep == "Engine!P1"
+        for waiter, dep, _dep_family in first_peel.blocking_cross_edge_sample
+    )
+
+
+def test_schedule_diagnostics_ranks_worst_families_for_interleaved_cycle() -> None:
+    projection, clusters = _interleaved_family_cycle_schedule(4)
+    units, report = compute_refactor_schedule_with_diagnostics(
+        cast(ProjectionResult, projection),
+        clusters,
+    )
+
+    assert len(units) == 8
+    assert report.path == "cycle_split"
+    assert report.decisions == ()
+    # Tail leftovers with cleared cross hinges become whole-family emits.
+    assert report.peel_emits == 6
+    assert report.whole_family_emits == 2
+    assert report.dag_emits == 0
+    # Worst first: both families shredded equally into 4 units of 4 members.
+    assert [stats.unit_count for stats in report.families_by_unit_count] == [4, 4]
+    assert all(stats.singleton_units == 4 for stats in report.families_by_unit_count)
+    assert all(stats.peel_emits == 3 for stats in report.families_by_unit_count)
+    assert all(stats.whole_family_emits == 1 for stats in report.families_by_unit_count)
+    assert all(
+        stats.slices_per_member == 1.0 for stats in report.families_by_unit_count
     )

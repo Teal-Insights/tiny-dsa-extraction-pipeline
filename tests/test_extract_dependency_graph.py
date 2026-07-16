@@ -90,15 +90,13 @@ def test_load_pipeline_config_default_graph_output_dir() -> None:
     assert config.graph_output_dir.parent.name == "artifacts"
 
 
-def test_export_generated_package_passes_variation_mode_to_cluster_graph_formulas(
-    synthetic_pipeline_config_fixture,
-) -> None:
-    config = replace(
-        synthetic_pipeline_config_fixture,
-        variation_mode="dominant_key_only",
-    )
-    cluster_graph_formulas = MagicMock(return_value=())
-
+def _export_generated_package_with_mocked_codegen(
+    config,
+    *,
+    cluster_graph_formulas: MagicMock,
+    refactor_internals_all_clusters: MagicMock | None = None,
+) -> MagicMock:
+    refactor = refactor_internals_all_clusters or MagicMock()
     with patch(
         "src.extraction_pipeline.build_pipeline_graph",
         return_value=MagicMock(
@@ -127,7 +125,8 @@ def test_export_generated_package_passes_variation_mode_to_cluster_graph_formula
                             cluster_graph_formulas,
                         ):
                             with patch(
-                                "src.internals_refactor.refactor_internals_all_clusters"
+                                "src.internals_refactor.refactor_internals_all_clusters",
+                                refactor,
                             ):
                                 with patch(
                                     "src.extraction_pipeline.run_post_refactor_differential"
@@ -136,6 +135,49 @@ def test_export_generated_package_passes_variation_mode_to_cluster_graph_formula
                                         "src.extraction_pipeline.export_reference_reports"
                                     ):
                                         export_generated_package(config)
+    return refactor
+
+
+def test_export_generated_package_writes_under_isolated_dist_root(
+    synthetic_pipeline_config_fixture,
+    tmp_path: Path,
+) -> None:
+    dist_root = tmp_path / "dist"
+    config = replace(synthetic_pipeline_config_fixture, dist_root=dist_root)
+    repo_pollution = (
+        config.repo_root / "dist" / config.dist_metadata.package_name / "internals.py"
+    )
+    before = repo_pollution.read_bytes() if repo_pollution.is_file() else None
+
+    _export_generated_package_with_mocked_codegen(
+        config,
+        cluster_graph_formulas=MagicMock(return_value=()),
+    )
+
+    written = config.package_root / "internals.py"
+    assert written.is_file()
+    assert written.read_text(encoding="utf-8") == "pass\n"
+    assert written.resolve().is_relative_to(dist_root.resolve())
+    if before is None:
+        assert not repo_pollution.is_file()
+    else:
+        assert repo_pollution.read_bytes() == before
+
+
+def test_export_generated_package_passes_variation_mode_to_cluster_graph_formulas(
+    synthetic_pipeline_config_fixture,
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        dist_root=tmp_path / "dist",
+        variation_mode="dominant_key_only",
+    )
+    cluster_graph_formulas = MagicMock(return_value=())
+    _export_generated_package_with_mocked_codegen(
+        config,
+        cluster_graph_formulas=cluster_graph_formulas,
+    )
 
     cluster_graph_formulas.assert_called_once()
     assert (
@@ -146,53 +188,44 @@ def test_export_generated_package_passes_variation_mode_to_cluster_graph_formula
 
 def test_export_generated_package_passes_clustering_mode_to_cluster_graph_formulas(
     synthetic_pipeline_config_fixture,
+    tmp_path: Path,
 ) -> None:
     config = replace(
         synthetic_pipeline_config_fixture,
+        dist_root=tmp_path / "dist",
         clustering_mode="ast",
     )
     cluster_graph_formulas = MagicMock(return_value=())
-
-    with patch(
-        "src.extraction_pipeline.build_pipeline_graph",
-        return_value=MagicMock(
-            graph=MagicMock(),
-            series_bindings=MagicMock(),
-            input_series=(),
-            output_series=(),
-            internal_series=(),
-            graph_cache_key="cache-key",
-        ),
-    ):
-        with patch(
-            "src.extraction_pipeline.build_refactor_projection",
-            return_value=MagicMock(),
-        ):
-            with patch(
-                "src.extraction_pipeline.configure_docstring_callback",
-                return_value="series_docs",
-            ):
-                with patch("src.extraction_pipeline.CodeGenerator") as generator_cls:
-                    generator = generator_cls.return_value.__enter__.return_value
-                    generator.generate_modules.return_value = {"internals.py": "pass\n"}
-                    with patch("src.extraction_pipeline.seed_validation_harness"):
-                        with patch(
-                            "src.formula_clustering.cluster_graph_formulas",
-                            cluster_graph_formulas,
-                        ):
-                            with patch(
-                                "src.internals_refactor.refactor_internals_all_clusters"
-                            ):
-                                with patch(
-                                    "src.extraction_pipeline.run_post_refactor_differential"
-                                ):
-                                    with patch(
-                                        "src.extraction_pipeline.export_reference_reports"
-                                    ):
-                                        export_generated_package(config)
+    _export_generated_package_with_mocked_codegen(
+        config,
+        cluster_graph_formulas=cluster_graph_formulas,
+    )
 
     cluster_graph_formulas.assert_called_once()
     assert cluster_graph_formulas.call_args.kwargs["clustering_mode"] == "ast"
+
+
+def test_export_generated_package_passes_bound_address_keys_to_refactor(
+    synthetic_pipeline_config_fixture,
+    tmp_path: Path,
+) -> None:
+    """Avoid the second graph rebuild via ``_default_bound_address_keys``."""
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        dist_root=tmp_path / "dist",
+    )
+    expected_keys = {"Engine!B2": {"TIME_PERIOD": 1}}
+    with patch(
+        "src.refactor_bindings.build_bound_address_keys",
+        return_value=expected_keys,
+    ):
+        refactor = _export_generated_package_with_mocked_codegen(
+            config,
+            cluster_graph_formulas=MagicMock(return_value=()),
+        )
+
+    refactor.assert_called_once()
+    assert refactor.call_args.kwargs["bound_address_keys"] is expected_keys
 
 
 def test_main_passes_cli_variation_mode_to_pipeline(

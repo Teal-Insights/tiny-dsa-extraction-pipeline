@@ -35,7 +35,10 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, get_args, get
 from excel_grapher.core.cell_types import Between, RealBetween
 
 from src.pipeline_context import require_pipeline_config
-from src.runtime_symbols import allowed_runtime_symbols
+from src.runtime_symbols import (
+    discover_allowed_reader_symbols,
+    discover_allowed_runtime_symbols,
+)
 
 if TYPE_CHECKING:
     from src.internals_refactor import (
@@ -56,6 +59,11 @@ repo_root = Path(__file__).resolve().parents[1]
 def _runtime_path() -> Path:
     config = require_pipeline_config()
     return config.package_root / "runtime.py"
+
+
+def _readers_path() -> Path:
+    config = require_pipeline_config()
+    return config.package_root / "_readers.py"
 
 
 def _data_path() -> Path:
@@ -96,8 +104,8 @@ def _runtime() -> ModuleType:
     return module
 
 
-def _strip_runtime_import(source: str) -> str:
-    """Remove the ``from .runtime import (...)`` block so the source execs standalone."""
+def _strip_package_relative_imports(source: str) -> str:
+    """Remove ``from .runtime`` / ``from ._readers`` imports for standalone exec."""
     module = ast.parse(source)
     lines = source.splitlines(keepends=True)
     spans = [
@@ -105,23 +113,67 @@ def _strip_runtime_import(source: str) -> str:
         for node in module.body
         if isinstance(node, ast.ImportFrom)
         and node.level == 1
-        and node.module == "runtime"
+        and node.module in {"runtime", "_readers"}
     ]
     for start, end in sorted(spans, reverse=True):
         del lines[start:end]
     return "".join(lines)
 
 
-def exec_internals_module(source: str) -> dict[str, Any]:
-    """Execute an ``internals.py`` source string with runtime symbols injected."""
+@lru_cache(maxsize=1)
+def _readers_namespace() -> dict[str, Any]:
+    """Load exported ``_readers.py`` with runtime symbols injected."""
+    readers_path = _readers_path()
+    reader_names = discover_allowed_reader_symbols(readers_path)
+    if not reader_names:
+        return {}
     runtime = _runtime()
     namespace: dict[str, Any] = {
-        name: getattr(runtime, name) for name in allowed_runtime_symbols()
+        name: getattr(runtime, name)
+        for name in dir(runtime)
+        if not name.startswith("__")
     }
+    namespace["__name__"] = "_exported_readers_parity"
+    source = readers_path.read_text(encoding="utf-8")
+    compiled = compile(
+        _strip_package_relative_imports(source),
+        "<readers-parity>",
+        "exec",
+    )
+    exec(compiled, namespace)
+    return {name: namespace[name] for name in reader_names}
+
+
+def exec_internals_module(source: str) -> dict[str, Any]:
+    """Execute an ``internals.py`` source string with runtime/reader symbols injected."""
+    runtime = _runtime()
+    namespace: dict[str, Any] = {
+        name: getattr(runtime, name)
+        for name in discover_allowed_runtime_symbols(_runtime_path())
+    }
+    namespace.update(_readers_namespace())
     namespace["__name__"] = "_exported_internals_parity"
-    compiled = compile(_strip_runtime_import(source), "<internals-parity>", "exec")
+    compiled = compile(
+        _strip_package_relative_imports(source),
+        "<internals-parity>",
+        "exec",
+    )
     exec(compiled, namespace)
     return namespace
+
+
+@lru_cache(maxsize=2)
+def _golden_namespace(pristine_source: str) -> dict[str, Any]:
+    """Execute the pristine ``internals.py`` once and reuse its namespace.
+
+    The pristine oracle source is identical for every cluster and singleton in a
+    refactor run, so execing the multi-megabyte module inside each gate call
+    dominated post-response cost (~4 s per call over 800+ rewrites). The returned
+    namespace is only read during evaluation — each parity check builds a fresh
+    :class:`EvalContext` (which owns the per-run memoization ``cache``) bound to
+    ``namespace["_resolve_formula"]`` — so a single cached exec is safe to share.
+    """
+    return exec_internals_module(pristine_source)
 
 
 def make_eval_context(namespace: dict[str, Any], inputs: InputVector) -> Any:
@@ -257,20 +309,25 @@ def check_cluster_parity(
 
     runtime = _runtime()
     candidate_source = apply_refactor_plan(current_source, response, ctx)
-    golden_ns = exec_internals_module(pristine_source)
+    golden_ns = _golden_namespace(pristine_source)
     candidate_ns, helper = _load_candidate(candidate_source, response.helper_name)
 
     mismatches: list[_Mismatch] = []
     for index, inputs in enumerate(input_vectors):
+        # Build one evaluation context per input vector and share it across all
+        # members. Cluster members are the same formula shape across engine
+        # columns/rows, so they resolve overlapping dependency subtrees; a shared
+        # ``ctx.cache`` memoizes those once instead of once per member. The
+        # resolver is pure for fixed inputs, so cross-member reuse is exact.
+        golden_ctx = make_eval_context(golden_ns, inputs)
+        candidate_ctx = make_eval_context(candidate_ns, inputs)
         for entry in response.member_keys:
             literals = _parameter_literals(response.parameters, entry.keys_dict())
-            golden_ctx = make_eval_context(golden_ns, inputs)
             expected = _evaluate_golden(
                 lambda eval_ctx=golden_ctx, address=entry.address: runtime.xl_cell(
                     eval_ctx, address
                 )
             )
-            candidate_ctx = make_eval_context(candidate_ns, inputs)
             call = _format_call(response.helper_name, literals)
             actual = _evaluate_candidate(
                 lambda fn=helper, eval_ctx=candidate_ctx, kwargs=literals: fn(
@@ -322,7 +379,7 @@ def check_singleton_parity(
 
     runtime = _runtime()
     candidate_source, _ = apply_singleton_refactor_plan(current_source, response, ctx)
-    golden_ns = exec_internals_module(pristine_source)
+    golden_ns = _golden_namespace(pristine_source)
     candidate_ns, symbol = _load_candidate(candidate_source, response.symbol_name)
     call = f"{response.symbol_name}(ctx)"
 

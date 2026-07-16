@@ -29,16 +29,24 @@ def _load_runtime_module(path: Path) -> ModuleType:
     return module
 
 
+def _public_function_names(source: str) -> list[str]:
+    tree = ast.parse(source)
+    return [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    ]
+
+
 def discover_allowed_runtime_symbols(runtime_path: Path) -> tuple[str, ...]:
     """Return public formula-runtime callables and ``XlError`` from exported runtime."""
     source = runtime_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    names: list[str] = []
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_"):
-            names.append(node.name)
-        elif isinstance(node, ast.ClassDef) and node.name == "XlError":
-            names.append(node.name)
+    names = _public_function_names(source)
+    if any(
+        isinstance(node, ast.ClassDef) and node.name == "XlError" for node in tree.body
+    ):
+        names.append("XlError")
     names = [name for name in names if name not in _SENTINEL_RETURNING_EXCLUDED_SYMBOLS]
     module = _load_runtime_module(runtime_path)
     try:
@@ -49,13 +57,46 @@ def discover_allowed_runtime_symbols(runtime_path: Path) -> tuple[str, ...]:
         sys.modules.pop("_runtime_symbols_probe", None)
 
 
+def discover_allowed_reader_symbols(readers_path: Path) -> tuple[str, ...]:
+    """Return public ``read_*`` helpers from the exported ``_readers`` module.
+
+    Missing ``_readers.py`` is treated as an empty set so older exports remain
+    valid. Names are discovered via AST only: the module imports ``.runtime``
+    relatively and is not executed in isolation here.
+    """
+    if not readers_path.is_file():
+        return ()
+    source = readers_path.read_text(encoding="utf-8")
+    return tuple(sorted(_public_function_names(source)))
+
+
+def discover_allowed_formula_symbols(
+    runtime_path: Path,
+    readers_path: Path | None = None,
+) -> tuple[str, ...]:
+    """Union runtime helpers with input-layer readers for refactor allowlists."""
+    symbols = set(discover_allowed_runtime_symbols(runtime_path))
+    if readers_path is not None:
+        symbols.update(discover_allowed_reader_symbols(readers_path))
+    return tuple(sorted(symbols))
+
+
 def _runtime_path_from_config() -> Path:
     from src.pipeline_context import require_pipeline_config
 
     return require_pipeline_config().package_root / "runtime.py"
 
 
+def _readers_path_from_config() -> Path:
+    from src.pipeline_context import require_pipeline_config
+
+    return require_pipeline_config().package_root / "_readers.py"
+
+
 @lru_cache(maxsize=1)
 def allowed_runtime_symbols() -> tuple[str, ...]:
     """Cached allowlist used by refactor validation and the parity gate."""
-    return discover_allowed_runtime_symbols(_runtime_path_from_config())
+    return discover_allowed_formula_symbols(
+        _runtime_path_from_config(),
+        _readers_path_from_config(),
+    )

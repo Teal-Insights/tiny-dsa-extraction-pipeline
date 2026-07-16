@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import builtins
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +64,25 @@ def cluster_binding_naming_hints(
     if member_payloads:
         cluster_payload["members"] = member_payloads
     return cluster_payload
+
+
+def sole_series_id_for_addresses(
+    addresses: Sequence[str],
+    address_to_series_id: Mapping[str, str],
+) -> str:
+    """Return the single series_id covering every address in a refactor unit."""
+    missing = sorted(
+        address for address in addresses if address not in address_to_series_id
+    )
+    if missing:
+        raise ValueError(f"addresses missing series_id mapping: {missing}")
+    series_ids = {address_to_series_id[address] for address in addresses}
+    if len(series_ids) != 1:
+        raise ValueError(
+            "expected exactly one series_id for refactor unit, "
+            f"got {sorted(series_ids)}"
+        )
+    return next(iter(series_ids))
 
 
 def validate_semantic_identifier(

@@ -224,18 +224,91 @@ def _parity_gate_active_config(parity_gate_dist_root: Path) -> Iterator[None]:
 
 
 def test_allowed_runtime_symbols_exist_on_fixture_runtime() -> None:
-    from src.refactor_parity_gate import _runtime
-    from src.runtime_symbols import allowed_runtime_symbols
+    from src.refactor_parity_gate import _runtime, _runtime_path
+    from src.runtime_symbols import discover_allowed_runtime_symbols
 
     runtime = _runtime()
-    for symbol in allowed_runtime_symbols():
+    for symbol in discover_allowed_runtime_symbols(_runtime_path()):
         assert hasattr(runtime, symbol), symbol
+
+
+def test_exec_internals_injects_reader_symbols(parity_gate_dist_root: Path) -> None:
+    package_name = load_pipeline_config().dist_metadata.package_name
+    readers_path = parity_gate_dist_root / package_name / "_readers.py"
+    readers_path.write_text(
+        "\n".join(
+            [
+                "from .runtime import xl_cell",
+                "",
+                "def read_shock_type(ctx):",
+                "    return xl_cell(ctx, 'Inputs!B1')",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    from tests.fixtures.test_state import clear_runtime_caches
+
+    clear_runtime_caches()
+    source = (
+        "from ._readers import read_shock_type\n"
+        "from .runtime import xl_cell\n\n"
+        "def _resolve_formula(ctx, address):\n"
+        "    return None\n\n"
+        "def cell_inputs_b1(ctx):\n"
+        "    return read_shock_type(ctx)\n"
+    )
+    namespace = exec_internals_module(source)
+    assert callable(namespace["read_shock_type"])
+    assert callable(namespace["cell_inputs_b1"])
 
 
 def test_exec_pristine_cluster_source() -> None:
     namespace = exec_internals_module(PRISTINE_CLUSTER)
     assert callable(namespace["_resolve_formula"])
     assert callable(namespace["cell_engine_c6"])
+
+
+def test_golden_namespace_caches_identical_pristine_source() -> None:
+    from src.refactor_parity_gate import _golden_namespace
+
+    _golden_namespace.cache_clear()
+    first = _golden_namespace(PRISTINE_CLUSTER)
+    second = _golden_namespace(PRISTINE_CLUSTER)
+    assert first is second
+    assert callable(first["_resolve_formula"])
+
+
+def test_cluster_gate_reuses_golden_namespace_across_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import refactor_parity_gate as gate
+
+    exec_calls: list[str] = []
+    real_exec = gate.exec_internals_module
+
+    def tracking_exec(source: str) -> dict:
+        exec_calls.append(source)
+        return real_exec(source)
+
+    monkeypatch.setattr(gate, "exec_internals_module", tracking_exec)
+    gate._golden_namespace.cache_clear()
+
+    check_cluster_parity(
+        pristine_source=PRISTINE_CLUSTER,
+        current_source=PRISTINE_CLUSTER,
+        response=_cluster_response(CORRECT_CLUSTER_SOURCE),
+        input_vectors=CLUSTER_INPUTS,
+    )
+    check_cluster_parity(
+        pristine_source=PRISTINE_CLUSTER,
+        current_source=PRISTINE_CLUSTER,
+        response=_cluster_response(CORRECT_CLUSTER_SOURCE),
+        input_vectors=CLUSTER_INPUTS,
+    )
+
+    pristine_execs = [source for source in exec_calls if source == PRISTINE_CLUSTER]
+    assert len(pristine_execs) == 1
 
 
 def test_cluster_gate_passes_for_semantics_preserving_refactor() -> None:
@@ -329,6 +402,7 @@ def _singleton_context() -> SingletonRefactorContext:
         call_sites=(),
         allowed_runtime_symbols=allowed_runtime_symbols(),
         naming_hints={},
+        expected_helper_name="initial_value",
     )
 
 

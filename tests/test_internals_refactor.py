@@ -37,21 +37,26 @@ from src.internals_refactor import (
     build_singleton_refactor_context,
     build_singleton_refactor_prompt_context,
     collapse_bindings_for_response,
+    complete_cluster_member_keys_from_expected,
     extract_function_source,
     llm_refactor_cluster,
     llm_refactor_singleton,
     load_cluster_refactor_prompt_fixed_portion,
+    prepare_cluster_refactor_response,
     prepare_singleton_refactor_response,
     prompt_payload,
     raise_if_llm_declared_error,
     refactor_cache_key,
     refactor_internals_all_clusters,
     refactor_internals_singleton,
+    sample_indices_for_prompt,
     singleton_prompt_payload,
+    substitute_collapse_bindings,
     validate_allowed_global_references,
     validate_cluster_refactor_response,
     validate_parameter_names_match_vocabulary,
     validate_semantic_local_names,
+    validate_singleton_refactor_response,
     write_refactor_failure_diagnostic,
     _prepare_cluster_refactor_response,
     _prompt_for_refactor,
@@ -163,6 +168,7 @@ CLUSTER_CONTEXT = ClusterRefactorContext(
         "Engine!D6": {"TIME_PERIOD": 2},
     },
     naming_hints={},
+    expected_helper_name="combined_input_passthrough",
 )
 
 CLUSTER_DOCSTRING = (
@@ -242,7 +248,6 @@ def test_write_refactor_failure_diagnostic_persists_response_artifacts(
         dump_dir=tmp_path,
         user_prompt="prompt body",
         llm_response={
-            "symbol_signature": "def debt_to_gdp_shocked_path(ctx: EvalContext) -> float:",
             "symbol_docstring": "Example.",
             "symbol_body": "return 1.0",
         },
@@ -295,6 +300,20 @@ def test_validate_cluster_accepts_well_formed_response() -> None:
     with patch(
         "src.internals_refactor._resolved_projection_layout",
         return_value=TEST_LAYOUT,
+    ):
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
+
+
+def test_validate_cluster_skips_engine_column_check_without_projection_layout() -> None:
+    """Bindings already triangulate members; layout mapping is optional."""
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=None,
     ):
         validate_cluster_refactor_response(
             CLUSTER_CONTEXT,
@@ -382,11 +401,157 @@ def test_validate_cluster_rejects_disallowed_global_reference() -> None:
         )
 
 
+def test_validate_cluster_allowlist_excludes_cell_star_names() -> None:
+    """``cell_*`` calls are already banned; do not dump them in allowlist errors."""
+    ctx = replace(
+        CLUSTER_CONTEXT,
+        external_dependencies=(
+            "cell_climate_database_z72",
+            "cell_inputs_b6",
+            "shock_active",
+        ),
+    )
+    bad_source = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    return mystery_helper(ctx)
+'''
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        with pytest.raises(ValueError, match="disallowed function") as exc_info:
+            validate_cluster_refactor_response(
+                ctx,
+                _cluster_response(helper_source=bad_source),
+                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+                internals_source=PRISTINE_CLUSTER,
+            )
+    message = str(exc_info.value)
+    assert "cell_climate_database_z72" not in message
+    assert "cell_inputs_b6" not in message
+    assert "cell_engine_c6" not in message
+    assert "cell_engine_d6" not in message
+    assert "shock_active" in message
+    assert "xl_cell" in message
+
+
+def test_validate_singleton_allowlist_excludes_cell_star_names() -> None:
+    docstring = (
+        "Return a value.\n\n"
+        "Args:\n    ctx: Workbook evaluation context.\n\n"
+        "Returns:\n    Projected value.\n"
+    )
+    ctx = SingletonRefactorContext(
+        address="Engine!C20",
+        function_name="cell_engine_c20",
+        canonical_template="=1",
+        normalized_formula="=1",
+        python_source="def cell_engine_c20(ctx):\n    return 1.0\n",
+        dependency_addresses=("Climate Database!Z72",),
+        external_dependencies=(
+            "cell_climate_database_z72",
+            "shock_active",
+        ),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
+        naming_hints={},
+        expected_helper_name="projected_debt_to_gdp",
+    )
+    bad_source = f'''def projected_debt_to_gdp(ctx):
+    """{docstring}"""
+    return mystery_helper(ctx)
+'''
+    with pytest.raises(ValueError, match="disallowed function") as exc_info:
+        validate_singleton_refactor_response(
+            ctx,
+            SingletonRefactorResponse(
+                symbol_name="projected_debt_to_gdp",
+                symbol_docstring=docstring,
+                symbol_source=bad_source,
+            ),
+            existing_names=frozenset({"cell_engine_c20"}),
+            internals_source="def cell_engine_c20(ctx):\n    return 1.0\n",
+        )
+    message = str(exc_info.value)
+    assert "cell_climate_database_z72" not in message
+    assert "cell_engine_c20" not in message
+    assert "shock_active" in message
+    assert "xl_cell" in message
+
+
+def test_validate_singleton_allowlist_accepts_reader_functions() -> None:
+    docstring = (
+        "Return the configured shock type.\n\n"
+        "Args:\n    ctx: Workbook evaluation context.\n\n"
+        "Returns:\n    Shock type label.\n"
+    )
+    ctx = SingletonRefactorContext(
+        address="Engine!C20",
+        function_name="cell_engine_c20",
+        canonical_template="=Inputs!B1",
+        normalized_formula="=Inputs!B1",
+        python_source="def cell_engine_c20(ctx):\n    return xl_cell(ctx, 'Inputs!B1')\n",
+        dependency_addresses=("Inputs!B1",),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS + ("read_shock_type",),
+        naming_hints={},
+        expected_helper_name="shock_type",
+    )
+    source = f'''def shock_type(ctx):
+    """{docstring}"""
+    return read_shock_type(ctx)
+'''
+    validate_singleton_refactor_response(
+        ctx,
+        SingletonRefactorResponse(
+            symbol_name="shock_type",
+            symbol_docstring=docstring,
+            symbol_source=source,
+        ),
+        existing_names=frozenset({"cell_engine_c20"}),
+        internals_source="def cell_engine_c20(ctx):\n    return xl_cell(ctx, 'Inputs!B1')\n",
+    )
+
+
 def test_collapse_bindings_for_response_renders_literal_calls() -> None:
     bindings = collapse_bindings_for_response(_cluster_response())
     assert len(bindings) == 2
     assert bindings[0].literal_call == "combined_input_passthrough(ctx, time_period=1)"
     assert bindings[1].literal_call == "combined_input_passthrough(ctx, time_period=2)"
+
+
+def test_substitute_collapse_bindings_parses_source_once() -> None:
+    """Large internals modules must not re-parse once per cluster member."""
+    source = """
+def consumer(ctx):
+    a = cell_engine_c6(ctx)
+    b = cell_engine_d6(ctx)
+    c = xl_eval(ctx, 'Engine!C6', cell_engine_c6)
+    return a + b + c
+"""
+    bindings = collapse_bindings_for_response(_cluster_response())
+    parse_calls = {"count": 0}
+    real_parse = ast.parse
+
+    def counting_parse(
+        source_text: str, *_args: object, **_kwargs: object
+    ) -> ast.Module:
+        parse_calls["count"] += 1
+        return real_parse(source_text)
+
+    with patch("src.internals_refactor.ast.parse", side_effect=counting_parse):
+        updated, rewrite_count = substitute_collapse_bindings(source, bindings)
+
+    assert parse_calls["count"] == 1
+    assert rewrite_count == 3
+    assert "cell_engine_c6(ctx)" not in updated
+    assert "cell_engine_d6(ctx)" not in updated
+    assert "xl_eval(ctx, 'Engine!C6', cell_engine_c6)" not in updated
+    assert updated.count("combined_input_passthrough(ctx, time_period=1)") == 2
+    assert "combined_input_passthrough(ctx, time_period=2)" in updated
 
 
 def test_collapse_bindings_for_dual_period_dimension_ids() -> None:
@@ -514,6 +679,7 @@ def test_prepare_rejects_ambiguous_shared_concept_without_dimension_id() -> None
             "Engine!D6": {"PROJECTION_PERIOD": 2},
         },
         naming_hints={},
+        expected_helper_name="combined_input_passthrough",
     )
     response = ClusterRefactorResponse.model_validate(
         {
@@ -651,6 +817,7 @@ def test_build_singleton_refactor_context_includes_collapsed_semantic_dependenci
         projection,
         cluster,
         internals_path,
+        address_to_series_id={"Engine!C20": "shock_passthrough"},
     )
 
     assert ctx is not None
@@ -727,6 +894,7 @@ def test_apply_singleton_refactor_plan_replaces_xl_eval_at_call_sites() -> None:
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints={},
+        expected_helper_name="projected_debt_to_gdp",
     )
     response = SingletonRefactorResponse(
         symbol_name="projected_debt_to_gdp",
@@ -754,7 +922,6 @@ def test_apply_singleton_refactor_plan_replaces_xl_eval_at_call_sites() -> None:
 
 
 SINGLETON_LLM_RESPONSE = SingletonRefactorLLMResponse(
-    symbol_signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
     symbol_docstring=(
         "Projected debt-to-GDP.\n\n"
         "Args:\n    ctx: Workbook evaluation context.\n\n"
@@ -779,6 +946,7 @@ def _singleton_refactor_test_context(tmp_path: Path) -> SingletonRefactorContext
         call_sites=(),
         allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS,
         naming_hints={},
+        expected_helper_name="projected_debt_to_gdp",
     )
 
 
@@ -911,7 +1079,6 @@ def test_llm_refactor_singleton_post_validate_retries_on_parity_error(
 
 def test_singleton_llm_response_omits_optional_error_fields() -> None:
     response = SingletonRefactorLLMResponse(
-        symbol_signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
         symbol_docstring=(
             "Projected debt-to-GDP.\n\n"
             "Args:\n    ctx: Workbook evaluation context.\n\n"
@@ -928,7 +1095,6 @@ def test_singleton_llm_response_omits_optional_error_fields() -> None:
 def test_singleton_llm_response_error_requires_nonempty_reason() -> None:
     with pytest.raises(ValidationError, match="error_reason"):
         SingletonRefactorLLMResponse(
-            symbol_signature=None,
             symbol_docstring=None,
             symbol_body=None,
             error=True,
@@ -939,7 +1105,6 @@ def test_singleton_llm_response_error_requires_nonempty_reason() -> None:
 def test_singleton_llm_response_error_requires_null_success_fields() -> None:
     with pytest.raises(ValidationError, match="success fields must be null"):
         SingletonRefactorLLMResponse(
-            symbol_signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
             symbol_docstring="Doc.",
             symbol_body="return 1.0",
             error=True,
@@ -949,14 +1114,13 @@ def test_singleton_llm_response_error_requires_null_success_fields() -> None:
 
 def test_singleton_llm_response_error_allows_null_success_fields() -> None:
     response = SingletonRefactorLLMResponse(
-        symbol_signature=None,
         symbol_docstring=None,
         symbol_body=None,
         error=True,
         error_reason="Unsupported independent operand variation.",
     )
     assert response.error is True
-    assert response.symbol_signature is None
+    assert response.symbol_docstring is None
     with pytest.raises(RefactorDeclaredError, match="Unsupported independent"):
         raise_if_llm_declared_error(
             response,
@@ -967,7 +1131,6 @@ def test_singleton_llm_response_error_allows_null_success_fields() -> None:
 
 def test_cluster_llm_response_error_allows_null_success_fields() -> None:
     response = ClusterRefactorLLMResponse(
-        symbol_signature=None,
         symbol_docstring=None,
         symbol_body=None,
         parameters=None,
@@ -998,7 +1161,6 @@ def test_llm_refactor_singleton_aborts_on_declared_error_without_retry(
     ctx = _singleton_refactor_test_context(tmp_path)
     prepare_calls = 0
     error_payload = {
-        "symbol_signature": None,
         "symbol_docstring": None,
         "symbol_body": None,
         "error": True,
@@ -1086,7 +1248,6 @@ def test_llm_refactor_cluster_aborts_on_declared_error_without_retry(
     internals_path.write_text(PRISTINE_CLUSTER, encoding="utf-8")
     prepare_calls = 0
     error_payload = {
-        "symbol_signature": None,
         "symbol_docstring": None,
         "symbol_body": None,
         "parameters": None,
@@ -1179,7 +1340,6 @@ def test_llm_refactor_singleton_declared_error_writes_diagnostic_dump(
     ctx = _singleton_refactor_test_context(tmp_path)
     dump_root = tmp_path / "failures"
     error_payload = {
-        "symbol_signature": None,
         "symbol_docstring": None,
         "symbol_body": None,
         "error": True,
@@ -1278,6 +1438,7 @@ DUAL_PERIOD_CONTEXT = replace(
         "Engine!D6": {"PROJECTION_PERIOD": 2, "REFERENCE_PERIOD": 0},
     },
     contract="dimension_aware",
+    expected_helper_name="indicator_change_from_reference",
 )
 
 DUAL_PERIOD_DOCSTRING = (
@@ -1441,6 +1602,12 @@ def test_validate_member_sweep_rejects_invented_counterpart_parameter() -> None:
             )
 
 
+TRADE_BALANCE_SERIES_MAP = {
+    "Engine!B5": "trade_balance",
+    "Engine!C5": "trade_balance",
+    "Engine!D5": "trade_balance",
+}
+
 TRADE_BALANCE_CLUSTER = FormulaCluster(
     cluster_id=7,
     members=("Engine!B5", "Engine!C5", "Engine!D5"),
@@ -1587,6 +1754,7 @@ def test_build_cluster_refactor_context_skips_unroutable_operand_variation(
         key_vocabulary=(KEY_VOCABULARY[0], REF_AREA_SPEC),
         workbook_path=tmp_path / "workbook.xlsx",
         bindings_path=tmp_path / "bindings",
+        address_to_series_id=TRADE_BALANCE_SERIES_MAP,
     )
     assert ctx is None
 
@@ -1614,6 +1782,7 @@ def test_build_cluster_refactor_context_selects_dimension_aware_contract(
         key_vocabulary=(KEY_VOCABULARY[0], REF_AREA_SPEC, COUNTERPART_REF_AREA_SPEC),
         workbook_path=tmp_path / "workbook.xlsx",
         bindings_path=tmp_path / "bindings",
+        address_to_series_id=TRADE_BALANCE_SERIES_MAP,
     )
     assert ctx is not None
     assert ctx.contract == "dimension_aware"
@@ -1621,6 +1790,39 @@ def test_build_cluster_refactor_context_selects_dimension_aware_contract(
         "REF_AREA": "US",
         "COUNTERPART_REF_AREA": "CN",
     }
+
+
+def test_build_cluster_refactor_context_locks_helper_name_from_series_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_symbols",
+        lambda: ALLOWED_RUNTIME_SYMBOLS,
+    )
+    bound_address_keys: dict[str, dict[str, BindingKeyValue]] = {
+        "Inputs!B10": {"TIME_PERIOD": 1},
+        "Inputs!C10": {"TIME_PERIOD": 1},
+        "Inputs!B11": {"TIME_PERIOD": 2},
+        "Inputs!C11": {"TIME_PERIOD": 2},
+        "Inputs!B12": {"TIME_PERIOD": 3},
+        "Inputs!C12": {"TIME_PERIOD": 3},
+        "Engine!B5": {"TIME_PERIOD": 1},
+        "Engine!C5": {"TIME_PERIOD": 2},
+        "Engine!D5": {"TIME_PERIOD": 3},
+    }
+    ctx = build_cluster_refactor_context(
+        _trade_balance_projection(),
+        TRADE_BALANCE_CLUSTER,
+        _write_trade_balance_internals(tmp_path),
+        bound_address_keys=bound_address_keys,
+        key_vocabulary=(KEY_VOCABULARY[0],),
+        workbook_path=tmp_path / "workbook.xlsx",
+        bindings_path=tmp_path / "bindings",
+        address_to_series_id=TRADE_BALANCE_SERIES_MAP,
+    )
+    assert ctx is not None
+    assert ctx.expected_helper_name == "trade_balance"
 
 
 def test_build_cluster_refactor_context_defaults_to_member_sweep(
@@ -1651,6 +1853,7 @@ def test_build_cluster_refactor_context_defaults_to_member_sweep(
         key_vocabulary=(KEY_VOCABULARY[0],),
         workbook_path=tmp_path / "workbook.xlsx",
         bindings_path=tmp_path / "bindings",
+        address_to_series_id=TRADE_BALANCE_SERIES_MAP,
     )
     assert ctx is not None
     assert ctx.contract == "member_sweep"
@@ -1698,6 +1901,7 @@ def test_build_cluster_context_parses_internals_once_with_shared_index(
             workbook_path=tmp_path / "workbook.xlsx",
             bindings_path=tmp_path / "bindings",
             internals_index=index,
+            address_to_series_id=TRADE_BALANCE_SERIES_MAP,
         )
     assert ctx is not None
     assert ctx.contract == "member_sweep"
@@ -1733,6 +1937,7 @@ def test_build_singleton_prompt_context_uses_shared_index_without_rereads(
         cluster,
         internals_path,
         internals_index=index,
+        address_to_series_id=TRADE_BALANCE_SERIES_MAP,
     )
     assert ctx is not None
 
@@ -1783,6 +1988,7 @@ def test_build_cluster_prompt_context_uses_shared_index_without_rereads(
         workbook_path=tmp_path / "workbook.xlsx",
         bindings_path=tmp_path / "bindings",
         internals_index=index,
+        address_to_series_id=TRADE_BALANCE_SERIES_MAP,
     )
     assert ctx is not None
 
@@ -1802,9 +2008,11 @@ def test_build_cluster_prompt_context_uses_shared_index_without_rereads(
             internals_index=index,
         )
     assert extract_calls == []
+    assert "## Fingerprint F1" in dump
     assert "cell_engine_b5" in dump
-    assert "cell_engine_c5" in dump
-    assert "cell_engine_d5" in dump
+    assert "Exemplar translation" in dump
+    assert "Member key space" in dump
+    assert "Reference relations" in dump
 
 
 def test_llm_refactor_singleton_uses_shared_index_without_rereads(
@@ -1864,10 +2072,6 @@ def test_llm_refactor_cluster_uses_shared_index_without_rereads(
     )
     index = InternalsSourceIndex.from_source(internals_path.read_text(encoding="utf-8"))
     llm_response = ClusterRefactorLLMResponse(
-        symbol_signature=(
-            "def indicator_change_from_reference(ctx: EvalContext, "
-            "projection_period: int, reference_period: int) -> float:"
-        ),
         symbol_docstring=DUAL_PERIOD_DOCSTRING,
         symbol_body=(
             "column_by_period = {0: 'B', 1: 'C', 2: 'D'}\n"
@@ -2049,6 +2253,7 @@ def test_refactor_schedule_rebuilds_index_only_after_apply(
         workbook_path=tmp_path / "workbook.xlsx",
         dry_run=False,
         parity_gate=False,
+        address_to_series_id={},
     )
 
     # One initial index + one rebuild per successful singleton apply (4 units).
@@ -2070,10 +2275,6 @@ def test_llm_refactor_cluster_uses_dimension_aware_prompt(
     internals_path.write_text(PRISTINE_CLUSTER, encoding="utf-8")
     recorded: dict[str, object] = {}
     llm_response = ClusterRefactorLLMResponse(
-        symbol_signature=(
-            "def indicator_change_from_reference(ctx: EvalContext, "
-            "projection_period: int, reference_period: int) -> float:"
-        ),
         symbol_docstring=DUAL_PERIOD_DOCSTRING,
         symbol_body=(
             "column_by_period = {0: 'B', 1: 'C', 2: 'D'}\n"
@@ -2189,6 +2390,7 @@ def test_refactor_internals_all_clusters_consumes_refactor_schedule(
         workbook_path=tmp_path / "workbook.xlsx",
         dry_run=True,
         parity_gate=False,
+        address_to_series_id={},
     )
 
     assert scheduled_members == [
@@ -2203,3 +2405,489 @@ def test_refactor_internals_all_clusters_consumes_refactor_schedule(
         "cluster_0_g2",
         "cluster_1_g3",
     ]
+
+
+def test_refactor_internals_all_clusters_forwards_bound_address_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Multi-member units must receive caller keys, not the graph-rebuild fallback."""
+    import src.internals_refactor as module
+
+    from src.refactor_order import RefactorUnit
+    from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
+
+    graph, bindings = inter_cluster_cycle_graph()
+    clusters = (
+        FormulaCluster(
+            cluster_id=0,
+            canonical_template="=X",
+            members=("Engine!B2", "Engine!C2"),
+            row=2,
+        ),
+    )
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(
+        "def cell_engine_b2(ctx):\n    return 1.0\n"
+        "def cell_engine_c2(ctx):\n    return 1.0\n",
+        encoding="utf-8",
+    )
+    received: dict[str, object] = {}
+
+    def fake_build_cluster(
+        *_args: object,
+        bound_address_keys: object = None,
+        **_kwargs: object,
+    ) -> None:
+        received["bound_address_keys"] = bound_address_keys
+        return None
+
+    def boom_default_bound_keys() -> dict[str, dict[str, object]]:
+        raise AssertionError("_default_bound_address_keys must not run")
+
+    unit = RefactorUnit(
+        parent_cluster_id=0,
+        refactor_group_id=0,
+        members=("Engine!B2", "Engine!C2"),
+        canonical_template="=X",
+        row=2,
+    )
+    monkeypatch.setattr(module, "compute_refactor_schedule", lambda *_a, **_k: (unit,))
+    monkeypatch.setattr(module, "build_cluster_refactor_context", fake_build_cluster)
+    monkeypatch.setattr(module, "_default_bound_address_keys", boom_default_bound_keys)
+    monkeypatch.setattr(
+        module, "build_singleton_refactor_context", lambda *_a, **_k: None
+    )
+
+    module.refactor_internals_all_clusters(
+        cast(ProjectionResult, graph),
+        clusters,
+        internals_path=internals_path,
+        bindings_path=tmp_path / "bindings",
+        workbook_path=tmp_path / "workbook.xlsx",
+        bound_address_keys=cast(dict[str, dict[str, BindingKeyValue]], bindings),
+        dry_run=True,
+        parity_gate=False,
+        address_to_series_id={},
+    )
+
+    assert received["bound_address_keys"] is bindings
+
+
+def test_sample_indices_for_prompt_keeps_small_sequences() -> None:
+    assert sample_indices_for_prompt(12, limit=50) == tuple(range(12))
+
+
+def test_sample_indices_for_prompt_caps_and_keeps_endpoints() -> None:
+    indices = sample_indices_for_prompt(420, limit=50)
+    assert len(indices) <= 50
+    assert indices[0] == 0
+    assert indices[-1] == 419
+    assert indices == tuple(sorted(indices))
+    assert len(set(indices)) == len(indices)
+
+
+def test_complete_cluster_member_keys_fills_omitted_members() -> None:
+    members = tuple(
+        MemberContext(
+            address=f"Engine!{column}6",
+            function_name=f"cell_engine_{column.lower()}6",
+            engine_column=column,
+            normalized_formula=f"=Inputs!{column}1",
+            python_source=(
+                f"def cell_engine_{column.lower()}6(ctx):\n"
+                f"    return xl_cell(ctx, 'Inputs!{column}1')\n"
+            ),
+            dependency_addresses=(),
+            dependency_functions=(),
+        )
+        for column in ("C", "D", "E")
+    )
+    ctx = replace(
+        CLUSTER_CONTEXT,
+        members=members,
+        expected_member_keys={
+            "Engine!C6": {"TIME_PERIOD": 1},
+            "Engine!D6": {"TIME_PERIOD": 2},
+            "Engine!E6": {"TIME_PERIOD": 3},
+        },
+    )
+    partial = (
+        MemberKeys(
+            address="Engine!C6",
+            function_name="cell_engine_c6",
+            keys=(MemberKeyEntry(dimension_id="TIME_PERIOD", value=1),),
+        ),
+    )
+    completed = complete_cluster_member_keys_from_expected(
+        partial,
+        ctx,
+        parameters=CLUSTER_PARAMETERS,
+    )
+    assert [entry.address for entry in completed] == [
+        "Engine!C6",
+        "Engine!D6",
+        "Engine!E6",
+    ]
+    assert completed[1].keys == (MemberKeyEntry(dimension_id="TIME_PERIOD", value=2),)
+    assert completed[2].function_name == "cell_engine_e6"
+
+
+def test_prepare_cluster_refactor_response_accepts_sampled_member_keys() -> None:
+    members = tuple(
+        MemberContext(
+            address=f"Engine!{column}6",
+            function_name=f"cell_engine_{column.lower()}6",
+            engine_column=column,
+            normalized_formula=f"=Inputs!{column}1",
+            python_source=(
+                f"def cell_engine_{column.lower()}6(ctx):\n    return 1.0\n"
+            ),
+            dependency_addresses=(),
+            dependency_functions=(),
+        )
+        for column in ("C", "D", "E")
+    )
+    ctx = replace(
+        CLUSTER_CONTEXT,
+        members=members,
+        expected_member_keys={
+            "Engine!C6": {"TIME_PERIOD": 1},
+            "Engine!D6": {"TIME_PERIOD": 2},
+            "Engine!E6": {"TIME_PERIOD": 3},
+        },
+    )
+    llm_response = ClusterRefactorLLMResponse(
+        symbol_docstring=CLUSTER_DOCSTRING,
+        symbol_body="return xl_cell(ctx, f'Inputs!{chr(66 + time_period)}1')",
+        parameters=CLUSTER_PARAMETERS,
+        member_keys=(
+            MemberKeys(
+                address="Engine!C6",
+                function_name="cell_engine_c6",
+                keys=(MemberKeyEntry(dimension_id="TIME_PERIOD", value=1),),
+            ),
+        ),
+        error=None,
+        error_reason=None,
+    )
+    prepared = prepare_cluster_refactor_response(
+        llm_response,
+        ctx,
+        runtime_source="def xl_cell(ctx, address):\n    return 0\n",
+        internals_source="\n\n".join(member.python_source for member in members),
+    )
+    assert [entry.address for entry in prepared.member_keys] == [
+        "Engine!C6",
+        "Engine!D6",
+        "Engine!E6",
+    ]
+    assert prepared.parameters[0].name == "time_period"
+
+
+def test_prepare_cluster_refactor_response_ignores_llm_parameters_and_member_keys() -> (
+    None
+):
+    """LLM-supplied parameters/member_keys are accepted for one version then ignored."""
+    llm_response = ClusterRefactorLLMResponse(
+        symbol_docstring=CLUSTER_DOCSTRING,
+        symbol_body="return xl_cell(ctx, f'Inputs!{chr(66 + time_period)}1')",
+        parameters=(
+            HelperParameter(
+                name="wrong_name",
+                dimension_id="TIME_PERIOD",
+                dtype="int",
+            ),
+        ),
+        member_keys=(
+            MemberKeys(
+                address="Engine!C6",
+                function_name="cell_engine_c6",
+                keys=(MemberKeyEntry(dimension_id="TIME_PERIOD", value=99),),
+            ),
+        ),
+        error=None,
+        error_reason=None,
+    )
+    prepared = prepare_cluster_refactor_response(
+        llm_response,
+        CLUSTER_CONTEXT,
+        runtime_source="def xl_cell(ctx, address):\n    return 0\n",
+        internals_source=VALID_CLUSTER_SOURCE,
+    )
+    assert prepared.parameters == (
+        HelperParameter(
+            name="time_period",
+            dimension_id="TIME_PERIOD",
+            dtype="int",
+            concept="TIME_PERIOD",
+        ),
+    )
+    assert prepared.member_keys[0].keys[0].value == 1
+    assert prepared.member_keys[1].keys[0].value == 2
+
+
+def test_build_cluster_refactor_prompt_context_uses_fingerprint_for_large_clusters(
+    tmp_path: Path,
+) -> None:
+    from src.refactor_fingerprints import build_cluster_fingerprint_summary
+
+    members = tuple(
+        MemberContext(
+            address=f"Engine!C{row}",
+            function_name=f"cell_engine_c{row}",
+            engine_column="C",
+            normalized_formula=f"=Inputs!C{row}",
+            python_source=(
+                f"def cell_engine_c{row}(ctx):\n"
+                f"    return xl_cell(ctx, 'Inputs!C{row}')\n"
+            ),
+            dependency_addresses=(),
+            dependency_functions=(),
+        )
+        for row in range(1, 61)
+    )
+    bound_keys = {
+        **{
+            member.address: {"TIME_PERIOD": index + 1}
+            for index, member in enumerate(members)
+        },
+        **{f"Inputs!C{row}": {"TIME_PERIOD": row} for row in range(1, 61)},
+    }
+    expected_member_keys = {
+        member.address: {"TIME_PERIOD": index + 1}
+        for index, member in enumerate(members)
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected_member_keys,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+    )
+    assert summary.fallback_reason is None
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(
+        "\n\n".join(member.python_source for member in members),
+        encoding="utf-8",
+    )
+    runtime_path = tmp_path / "runtime.py"
+    runtime_path.write_text(
+        "def xl_cell(ctx, address):\n    return 0\n", encoding="utf-8"
+    )
+    ctx = replace(
+        CLUSTER_CONTEXT,
+        members=members,
+        expected_member_keys=expected_member_keys,
+        fingerprint_summary=summary,
+    )
+    dump = build_cluster_refactor_prompt_context(
+        ctx,
+        internals_path=internals_path,
+        runtime_path=runtime_path,
+        member_limit=5,
+    )
+    assert "showing 5 of 60 members" not in dump
+    assert "60 of 60 members" in dump
+    assert "Exemplar translation" in dump
+    assert dump.count("def cell_engine_c") == 1
+
+
+def test_build_cluster_refactor_prompt_context_falls_back_when_summary_unusable(
+    tmp_path: Path,
+) -> None:
+    from src.refactor_fingerprints import ClusterFingerprintSummary
+
+    members = tuple(
+        MemberContext(
+            address=f"Engine!C{row}",
+            function_name=f"cell_engine_c{row}",
+            engine_column="C",
+            normalized_formula="=Inputs!C1",
+            python_source=(
+                f"def cell_engine_c{row}(ctx):\n    return xl_cell(ctx, 'Inputs!C1')\n"
+            ),
+            dependency_addresses=(),
+            dependency_functions=(),
+        )
+        for row in range(1, 61)
+    )
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(
+        "\n\n".join(member.python_source for member in members),
+        encoding="utf-8",
+    )
+    runtime_path = tmp_path / "runtime.py"
+    runtime_path.write_text(
+        "def xl_cell(ctx, address):\n    return 0\n", encoding="utf-8"
+    )
+    ctx = replace(
+        CLUSTER_CONTEXT,
+        members=members,
+        expected_member_keys={
+            member.address: {"TIME_PERIOD": index + 1}
+            for index, member in enumerate(members)
+        },
+        fingerprint_summary=ClusterFingerprintSummary(
+            groups=(),
+            key_space={"TIME_PERIOD": tuple(range(1, 61))},
+            key_to_column=None,
+            fallback_reason="missing_ref_key_values",
+        ),
+    )
+    dump = build_cluster_refactor_prompt_context(
+        ctx,
+        internals_path=internals_path,
+        runtime_path=runtime_path,
+        member_limit=5,
+    )
+    assert "showing 5 of 60 members" in dump
+    assert dump.count("def cell_engine_c") == 5
+    assert "cell_engine_c1" in dump
+    assert "cell_engine_c60" in dump
+
+
+def test_cluster_refactor_prompts_document_fingerprint_and_mechanical_fields() -> None:
+    for contract in ("member_sweep", "dimension_aware"):
+        prompt = load_cluster_refactor_prompt_fixed_portion(contract)
+        assert "fingerprint" in prompt.lower() or "Reference relations" in prompt
+        assert "mechanically" in prompt.lower()
+        assert "Do not emit `parameters` or `member_keys`" in prompt
+
+
+_READER_WITH_KWONLY = """\
+def read_primary_balance_baseline(
+    ctx: EvalContext,
+    *,
+    time_period: int,
+) -> CellValue:
+    \"\"\"Return the primary-balance baseline for a projection period.\"\"\"
+    return xl_cell(ctx, f'Inputs!B{time_period}')
+"""
+
+
+def test_singleton_refactor_prompt_includes_reader_stub_with_keyword_only_args(
+    tmp_path: Path,
+) -> None:
+    """Called read_* helpers from _readers.py must appear with real signatures."""
+    cell_source = (
+        "def cell_engine_c20(ctx):\n"
+        "    return read_primary_balance_baseline(ctx, time_period=1)\n"
+    )
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(cell_source, encoding="utf-8")
+    (tmp_path / "runtime.py").write_text(
+        "def xl_cell(ctx, address):\n    return 0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "_readers.py").write_text(_READER_WITH_KWONLY, encoding="utf-8")
+    ctx = SingletonRefactorContext(
+        address="Engine!C20",
+        function_name="cell_engine_c20",
+        canonical_template="=Inputs!B1",
+        normalized_formula="=Inputs!B1",
+        python_source=cell_source,
+        dependency_addresses=("Inputs!B1",),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS
+        + ("read_primary_balance_baseline",),
+        naming_hints={},
+        expected_helper_name="primary_balance_baseline",
+    )
+
+    dump = build_singleton_refactor_prompt_context(
+        ctx,
+        internals_path=internals_path,
+    )
+
+    assert "def read_primary_balance_baseline(" in dump
+    assert "*, time_period: int" in dump
+
+
+def test_cluster_refactor_prompt_includes_reader_stub_with_keyword_only_args(
+    tmp_path: Path,
+) -> None:
+    """Cluster dependency stubs must include called read_* keyword-only signatures."""
+    member_sources = (
+        (
+            "def cell_engine_c6(ctx):\n"
+            "    return read_primary_balance_baseline(ctx, time_period=1)\n"
+        ),
+        (
+            "def cell_engine_d6(ctx):\n"
+            "    return read_primary_balance_baseline(ctx, time_period=2)\n"
+        ),
+    )
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text("\n\n".join(member_sources), encoding="utf-8")
+    (tmp_path / "runtime.py").write_text(
+        "def xl_cell(ctx, address):\n    return 0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "_readers.py").write_text(_READER_WITH_KWONLY, encoding="utf-8")
+    members = (
+        replace(
+            CLUSTER_MEMBERS[0],
+            python_source=member_sources[0],
+            normalized_formula="=Inputs!B1",
+        ),
+        replace(
+            CLUSTER_MEMBERS[1],
+            python_source=member_sources[1],
+            normalized_formula="=Inputs!B2",
+        ),
+    )
+    ctx = replace(
+        CLUSTER_CONTEXT,
+        members=members,
+        fingerprint_summary=None,
+    )
+
+    dump = build_cluster_refactor_prompt_context(
+        ctx,
+        internals_path=internals_path,
+    )
+
+    assert "def read_primary_balance_baseline(" in dump
+    assert "*, time_period: int" in dump
+
+
+def test_refactor_prompt_omits_readers_when_readers_module_missing(
+    tmp_path: Path,
+) -> None:
+    """Older exports without _readers.py remain a no-op for prompt stubs."""
+    cell_source = (
+        "def cell_engine_c20(ctx):\n"
+        "    return read_primary_balance_baseline(ctx, time_period=1)\n"
+    )
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(cell_source, encoding="utf-8")
+    (tmp_path / "runtime.py").write_text(
+        "def xl_cell(ctx, address):\n    return 0\n",
+        encoding="utf-8",
+    )
+    ctx = SingletonRefactorContext(
+        address="Engine!C20",
+        function_name="cell_engine_c20",
+        canonical_template="=Inputs!B1",
+        normalized_formula="=Inputs!B1",
+        python_source=cell_source,
+        dependency_addresses=("Inputs!B1",),
+        external_dependencies=(),
+        semantic_dependencies=(),
+        call_sites=(),
+        allowed_runtime_symbols=ALLOWED_RUNTIME_SYMBOLS
+        + ("read_primary_balance_baseline",),
+        naming_hints={},
+        expected_helper_name="primary_balance_baseline",
+    )
+
+    dump = build_singleton_refactor_prompt_context(
+        ctx,
+        internals_path=internals_path,
+    )
+
+    dependencies = dump.split("Dependencies:", 1)[1]
+    assert "def read_primary_balance_baseline(" not in dependencies

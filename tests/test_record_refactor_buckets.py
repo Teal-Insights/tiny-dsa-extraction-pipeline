@@ -80,7 +80,7 @@ def pipeline_config(synthetic_workbook_path: Path) -> PipelineConfig:
     return replace(
         synthetic_pipeline_config(workbook_path=synthetic_workbook_path),
         internal_binding_validation_mode="off",
-        clustering_mode="ast",
+        clustering_mode="series_ast",
     )
 
 
@@ -236,7 +236,18 @@ def test_refactor_buckets_include_expected_singleton_and_cluster_members(
     assert "Engine!C2" in members
     assert "Outputs!B1" in members
     assert "Outputs!C1" in members
-    assert any(bucket["kind"] == "cluster" for bucket in buckets)
+    # series_ast keeps parallel engine cells in separate series-owned units
+    engine_buckets = [
+        bucket
+        for bucket in buckets
+        if set(bucket["members"]) & {"Engine!B2", "Engine!C2"}
+    ]
+    assert len(engine_buckets) == 2
+    assert all(bucket["kind"] == "singleton" for bucket in engine_buckets)
+    assert {frozenset(bucket["series_ids"]) for bucket in engine_buckets} == {
+        frozenset({"engine_b2"}),
+        frozenset({"engine_c2"}),
+    }
 
 
 def test_refactor_buckets_include_series_ids_for_internal_members(

@@ -16,6 +16,8 @@ If you are asked to commit your work, make sure you commit it to an issue branch
 
 ## Binding and graph-cache utilities
 
+Warm extract also caches `derive_*_series` payloads under `.cache/series-resolution/` (keyed from `graph_cache_key`, like `.cache/projection/`). That directory is local/untracked; pytest redirects it via `tests/fixtures/test_state.py`. Pass `--no-cache` to bypass it.
+
 Four workflow scripts live under `scripts/`:
 
 - `uv run python -m scripts.regenerate_graph_cache` — rebuild and prune `.cache/dependency-graph/` so warm pytest/CI runs can skip cold graph builds. Use `--force` after changing the workbook, `bindings/*.bindings.yaml`, `workbook_config.py` targets/constraints, or upgrading excel-grapher. Optional extra target bundles come from `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. Commit the cache directory only when your downstream pipeline chooses to vendor it (override `.gitignore` for `.cache/dependency-graph/`).

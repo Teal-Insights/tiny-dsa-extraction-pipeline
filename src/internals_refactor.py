@@ -33,6 +33,7 @@ from src.refactor_bindings import (
     engine_column_from_member_keys,
     expected_member_keys_for_cluster,
     format_binding_key_literal,
+    helper_parameters_for_varying_keys,
     load_key_concept_vocabulary,
     render_literal_helper_call,
     resolve_dimension_key,
@@ -42,10 +43,17 @@ from src.refactor_contracts import (
     concepts_with_multiple_dimensions,
     select_cluster_refactor_contract,
 )
+from src.refactor_fingerprints import (
+    ClusterFingerprintSummary,
+    SemanticDependencyRef,
+    build_cluster_fingerprint_summary,
+    format_cluster_fingerprint_dump,
+)
 from src.refactor_order import compute_refactor_schedule, refactor_failure_target
 from src.refactor_return_types import (
     ALLOWED_REFACTOR_RETURN_TYPE_HINTS,
     KNOWN_RUNTIME_RETURN_HINTS,
+    _binding_dtype_to_python,
     infer_refactor_return_type_hint,
     normalize_return_type_hint_for_allowlist,
     validate_scalar_return_type_hint,
@@ -57,6 +65,7 @@ from src.semantic_naming import (
     cluster_binding_naming_hints,
     semantic_helpers_available_for_calls,
     binding_record_hints_from_cell,
+    sole_series_id_for_addresses,
     validate_semantic_identifier,
 )
 
@@ -65,7 +74,31 @@ repo_root = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
 
 REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
-REFACTOR_PROMPT_VERSION = 26
+REFACTOR_PROMPT_VERSION = 29
+CLUSTER_REFACTOR_PROMPT_MEMBER_LIMIT = 30
+_FINGERPRINT_FALLBACK_COUNT = 0
+
+
+def fingerprint_fallback_count() -> int:
+    """Return how many clusters fell back to the legacy sampled dump this process."""
+    return _FINGERPRINT_FALLBACK_COUNT
+
+
+def reset_fingerprint_fallback_count() -> None:
+    global _FINGERPRINT_FALLBACK_COUNT
+    _FINGERPRINT_FALLBACK_COUNT = 0
+
+
+def _record_fingerprint_fallback(reason: str, *, cluster_id: int) -> None:
+    global _FINGERPRINT_FALLBACK_COUNT
+    _FINGERPRINT_FALLBACK_COUNT += 1
+    logger.info(
+        "cluster %s fingerprint dump fallback (%s); using legacy sampled sources "
+        "(fallback_count=%s)",
+        cluster_id,
+        reason,
+        _FINGERPRINT_FALLBACK_COUNT,
+    )
 
 
 def refactor_model() -> str:
@@ -214,7 +247,9 @@ class ClusterRefactorContext:
     key_vocabulary: tuple[KeyConceptSpec, ...]
     expected_member_keys: dict[str, dict[str, BindingKeyValue]]
     naming_hints: dict[str, object]
+    expected_helper_name: str
     contract: ClusterRefactorContract = "member_sweep"
+    fingerprint_summary: ClusterFingerprintSummary | None = None
 
 
 class HelperParameter(BaseModel):
@@ -341,6 +376,7 @@ def _validate_llm_response_error_or_success[T: BaseModel](
     response: T,
     *,
     success_fields: tuple[str, ...],
+    optional_ignored_fields: tuple[str, ...] = (),
 ) -> T:
     error = getattr(response, "error")
     error_reason = getattr(response, "error_reason")
@@ -353,6 +389,11 @@ def _validate_llm_response_error_or_success[T: BaseModel](
         populated = [
             name for name in success_fields if getattr(response, name) is not None
         ]
+        populated.extend(
+            name
+            for name in optional_ignored_fields
+            if getattr(response, name, None) is not None
+        )
         if populated:
             raise ValueError(
                 "success fields must be null when error is true: "
@@ -396,14 +437,6 @@ def raise_if_llm_declared_error(
 class ClusterRefactorLLMResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    symbol_signature: str | None = Field(
-        description=(
-            "Python function signature, including `def` keyword, `snake_case` "
-            "semantic name, `ctx: EvalContext`, typed economic parameters from "
-            "`key_vocabulary`, and parameter type hints. Do not include a return "
-            "type hint; the pipeline injects it mechanically. Null when error is true."
-        ),
-    )
     symbol_docstring: str | None = Field(
         description=(
             "Google-style docstring. Include Args and Returns sections. "
@@ -414,15 +447,18 @@ class ClusterRefactorLLMResponse(BaseModel):
         description="Python function body. Null when error is true.",
     )
     parameters: tuple[HelperParameter, ...] | None = Field(
+        default=None,
         description=(
-            "Economic parameters the helper varies along, tied to binding "
-            "dimension ids. Null when error is true."
+            "Deprecated: ignored when present. The pipeline synthesizes parameters "
+            "from varying binding dimensions and key_vocabulary. Null when error "
+            "is true or omitted on success."
         ),
     )
     member_keys: tuple[MemberKeys, ...] | None = Field(
+        default=None,
         description=(
-            "One entry per cluster member with literal key values for that address. "
-            "Null when error is true."
+            "Deprecated: ignored when present. The pipeline synthesizes member_keys "
+            "from expected binding keys. Null when error is true or omitted on success."
         ),
     )
     error: bool | None = Field(
@@ -443,12 +479,10 @@ class ClusterRefactorLLMResponse(BaseModel):
         return _validate_llm_response_error_or_success(
             self,
             success_fields=(
-                "symbol_signature",
                 "symbol_docstring",
                 "symbol_body",
-                "parameters",
-                "member_keys",
             ),
+            optional_ignored_fields=("parameters", "member_keys"),
         )
 
 
@@ -474,6 +508,7 @@ class SingletonRefactorContext:
     call_sites: tuple[CallSite, ...]
     allowed_runtime_symbols: tuple[str, ...]
     naming_hints: dict[str, object]
+    expected_helper_name: str
 
 
 class SingletonRefactorResponse(BaseModel):
@@ -499,14 +534,6 @@ class SingletonRefactorResponse(BaseModel):
 class SingletonRefactorLLMResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    symbol_signature: str | None = Field(
-        description=(
-            "Python function signature, including `def` keyword, `snake_case` "
-            "semantic name, a single `ctx: EvalContext` argument, and parameter "
-            "type hints. Do not include a return type hint; the pipeline injects "
-            "it mechanically. Null when error is true."
-        ),
-    )
     symbol_docstring: str | None = Field(
         description=(
             "Google-style docstring. Include Args and Returns sections. "
@@ -534,7 +561,6 @@ class SingletonRefactorLLMResponse(BaseModel):
         return _validate_llm_response_error_or_success(
             self,
             success_fields=(
-                "symbol_signature",
                 "symbol_docstring",
                 "symbol_body",
             ),
@@ -639,6 +665,12 @@ def _time_period_for_engine_column(
 
 
 def _default_bound_address_keys() -> dict[str, dict[str, BindingKeyValue]]:
+    """Fallback that rebuilds the pipeline graph solely to derive bound keys.
+
+    Prefer passing ``bound_address_keys`` (and ``source_graph``) from the caller
+    that already ran ``build_pipeline_graph``; otherwise a warm pipeline pays a
+    second dependency-graph load plus ``derive_*_series`` work.
+    """
     from src.extraction_pipeline import build_pipeline_graph
     from src.pipeline_context import require_pipeline_config
 
@@ -680,7 +712,7 @@ def build_cluster_refactor_context(
     cluster: FormulaCluster,
     internals_path: Path,
     *,
-    bound_address_keys: dict[str, dict[str, BindingKeyValue]] | None = None,
+    bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None = None,
     key_vocabulary: tuple[KeyConceptSpec, ...] | None = None,
     workbook_path: Path,
     bindings_path: Path,
@@ -688,6 +720,7 @@ def build_cluster_refactor_context(
     internal_binding_index: InternalBindingIndex | None = None,
     layout: ProjectionColumnLayout | None = None,
     internals_index: InternalsSourceIndex | None = None,
+    address_to_series_id: Mapping[str, str] | None = None,
 ) -> ClusterRefactorContext | None:
     if len(cluster.members) < 2:
         return None
@@ -801,6 +834,43 @@ def build_cluster_refactor_context(
         )
     )
 
+    semantic_refs = tuple(
+        SemanticDependencyRef(
+            helper_name=dependency.helper_name,
+            call_form=dependency.call_form,
+            address_template=dependency.address_template,
+            addresses=dependency.addresses,
+        )
+        for dependency in semantic_dependencies
+    )
+    fingerprint_summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected_member_keys,
+        bound_address_keys=resolved_bound_keys,
+        workbook_path=workbook_path,
+        layout=resolved_layout,
+        address_to_series_id=address_to_series_id,
+        semantic_dependencies=semantic_refs,
+    )
+    if fingerprint_summary.fallback_reason is not None:
+        _record_fingerprint_fallback(
+            fingerprint_summary.fallback_reason,
+            cluster_id=cluster.cluster_id,
+        )
+
+    if address_to_series_id is None:
+        raise ValueError(
+            "address_to_series_id is required to lock cluster helper names"
+        )
+    expected_helper_name = sole_series_id_for_addresses(
+        member_address_list,
+        address_to_series_id,
+    )
+    validate_semantic_identifier(
+        expected_helper_name,
+        existing_names=frozenset(),
+    )
+
     return ClusterRefactorContext(
         cluster_id=cluster.cluster_id,
         canonical_template=cluster.canonical_template,
@@ -828,7 +898,9 @@ def build_cluster_refactor_context(
                 for member in members
             )
         ),
+        expected_helper_name=expected_helper_name,
         contract=contract,
+        fingerprint_summary=fingerprint_summary,
     )
 
 
@@ -840,6 +912,7 @@ def build_singleton_refactor_context(
     source_graph: DependencyGraph | None = None,
     internal_binding_index: InternalBindingIndex | None = None,
     internals_index: InternalsSourceIndex | None = None,
+    address_to_series_id: Mapping[str, str] | None = None,
 ) -> SingletonRefactorContext | None:
     if len(cluster.members) != 1:
         return None
@@ -869,6 +942,19 @@ def build_singleton_refactor_context(
         )
     )
 
+    if address_to_series_id is None:
+        raise ValueError(
+            "address_to_series_id is required to lock singleton helper names"
+        )
+    expected_helper_name = sole_series_id_for_addresses(
+        (address,),
+        address_to_series_id,
+    )
+    validate_semantic_identifier(
+        expected_helper_name,
+        existing_names=frozenset(),
+    )
+
     return SingletonRefactorContext(
         address=address,
         function_name=function_name,
@@ -888,6 +974,7 @@ def build_singleton_refactor_context(
         naming_hints=_binding_hints_for_address(
             internal_binding_index, address
         ).to_payload(),
+        expected_helper_name=expected_helper_name,
     )
 
 
@@ -1086,6 +1173,7 @@ def prompt_payload(ctx: ClusterRefactorContext) -> dict[str, object]:
             "require_semantic_locals": True,
         },
         "naming_hints": ctx.naming_hints,
+        "expected_helper_name": ctx.expected_helper_name,
     }
 
 
@@ -1459,6 +1547,16 @@ def validate_allowed_global_references(
         )
 
 
+def _without_cell_function_names(names: set[str]) -> set[str]:
+    """Drop ``cell_*`` names from refactor allowlists.
+
+    Helper bodies must not reference excel cell wrappers
+    (``validate_no_cell_function_references``), so including those names in the
+    allowlist only inflates validation errors for large range dependencies.
+    """
+    return {name for name in names if not name.startswith("cell_")}
+
+
 def validate_cluster_refactor_response(
     ctx: ClusterRefactorContext,
     response: ClusterRefactorResponse,
@@ -1466,6 +1564,11 @@ def validate_cluster_refactor_response(
     existing_names: frozenset[str],
     internals_source: str,
 ) -> None:
+    if response.helper_name != ctx.expected_helper_name:
+        raise ValueError(
+            "helper_name must equal locked series_id "
+            f"{ctx.expected_helper_name!r}, got {response.helper_name!r}"
+        )
     validate_semantic_identifier(
         response.helper_name,
         existing_names=existing_names,
@@ -1568,20 +1671,23 @@ def validate_cluster_refactor_response(
                     f"{dimension_id}={actual_value!r}, "
                     f"expected {expected_value!r}"
                 )
-        engine_column = engine_column_from_member_keys(
-            entry_keys,
-            address=entry.address,
-            layout=_resolved_projection_layout(),
-        )
-        if engine_column is None:
-            raise ValueError(
-                f"member_keys for {entry.address} do not resolve to an engine column"
+        layout = _resolved_projection_layout()
+        if layout is not None:
+            engine_column = engine_column_from_member_keys(
+                entry_keys,
+                address=entry.address,
+                layout=layout,
             )
-        if engine_column != member.engine_column:
-            raise ValueError(
-                f"member_keys for {entry.address} resolve to engine column "
-                f"{engine_column!r}, expected {member.engine_column!r}"
-            )
+            if engine_column is None:
+                raise ValueError(
+                    f"member_keys for {entry.address} do not resolve "
+                    "to an engine column"
+                )
+            if engine_column != member.engine_column:
+                raise ValueError(
+                    f"member_keys for {entry.address} resolve to engine column "
+                    f"{engine_column!r}, expected {member.engine_column!r}"
+                )
 
     if not response.helper_name.isidentifier():
         raise ValueError(
@@ -1628,7 +1734,7 @@ def validate_cluster_refactor_response(
     ):
         raise ValueError("helper_source must not contain imports")
 
-    allowed_names = (
+    allowed_names = _without_cell_function_names(
         set(ctx.allowed_runtime_symbols)
         | set(ctx.external_dependencies)
         | {member.function_name for member in ctx.members}
@@ -1731,6 +1837,19 @@ def _parse_symbol_name_from_signature(signature: str) -> str:
     return match.group(1)
 
 
+def build_locked_helper_signature(
+    helper_name: str,
+    *,
+    parameters: Sequence[HelperParameter] = (),
+) -> str:
+    """Build ``def {helper_name}(ctx: EvalContext, ...)`` from locked name + params."""
+    parts = ["ctx: EvalContext"]
+    for parameter in parameters:
+        python_type = _binding_dtype_to_python(parameter.dtype) or parameter.dtype
+        parts.append(f"{parameter.name}: {python_type}")
+    return f"def {helper_name}({', '.join(parts)}):"
+
+
 def prepare_singleton_refactor_response(
     llm_response: SingletonRefactorLLMResponse,
     ctx: SingletonRefactorContext,
@@ -1738,11 +1857,7 @@ def prepare_singleton_refactor_response(
     runtime_source: str,
     internals_source: str,
 ) -> SingletonRefactorResponse:
-    if (
-        llm_response.symbol_signature is None
-        or llm_response.symbol_docstring is None
-        or llm_response.symbol_body is None
-    ):
+    if llm_response.symbol_docstring is None or llm_response.symbol_body is None:
         raise ValueError(
             "singleton refactor response is missing required success fields"
         )
@@ -1753,7 +1868,7 @@ def prepare_singleton_refactor_response(
         naming_hints=ctx.naming_hints,
     )
     signature = inject_signature_return_type_hint(
-        llm_response.symbol_signature,
+        build_locked_helper_signature(ctx.expected_helper_name),
         return_hint,
     )
     docstring = strip_python_string_delimiters(llm_response.symbol_docstring)
@@ -1768,7 +1883,7 @@ def prepare_singleton_refactor_response(
         body=llm_response.symbol_body,
     )
     return SingletonRefactorResponse(
-        symbol_name=_parse_symbol_name_from_signature(signature),
+        symbol_name=ctx.expected_helper_name,
         symbol_docstring=docstring,
         symbol_source=symbol_source,
     )
@@ -1802,10 +1917,14 @@ def format_singleton_refactor_context_dump(
     function_source: str,
     cell_metadata: Mapping[str, object],
     dependency_stubs: str,
+    helper_name: str | None = None,
 ) -> str:
     yaml_block = _format_cell_metadata_yaml(cell_metadata)
+    header = "Function to refactor:\n\n"
+    if helper_name is not None:
+        header = f"Function to refactor (helper_name={helper_name}):\n\n"
     return (
-        "Function to refactor:\n\n"
+        f"{header}"
         f"```python\n{function_source.strip()}\n```\n\n"
         "Cell metadata:\n\n"
         f"```yaml\n{yaml_block}\n```\n\n"
@@ -1932,6 +2051,7 @@ def build_singleton_refactor_context_dump(
     cell_metadata: Mapping[str, object],
     index: InternalsSourceIndex | None = None,
     function_source: str | None = None,
+    helper_name: str | None = None,
 ) -> str:
     resolved = (
         index
@@ -1955,6 +2075,7 @@ def build_singleton_refactor_context_dump(
         function_source=resolved_function_source,
         cell_metadata=metadata,
         dependency_stubs=dependency_stubs,
+        helper_name=helper_name,
     )
 
 
@@ -1980,20 +2101,16 @@ def build_singleton_refactor_prompt_context(
     runtime_path: Path | None = None,
     internals_index: InternalsSourceIndex | None = None,
 ) -> str:
-    resolved_runtime_path = (
-        runtime_path
-        if runtime_path is not None
-        else internals_path.parent / "runtime.py"
-    )
     index = _resolve_internals_index(internals_path, internals_index=internals_index)
     return build_singleton_refactor_context_dump(
         function_name=ctx.function_name,
         address=ctx.address,
         internals_source=index.source,
-        runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
+        runtime_source=_read_runtime_source(internals_path, runtime_path=runtime_path),
         cell_metadata=_cell_metadata_for_singleton_refactor(ctx),
         index=index,
         function_source=ctx.python_source,
+        helper_name=ctx.expected_helper_name,
     )
 
 
@@ -2054,6 +2171,46 @@ def assemble_cluster_symbol_source(
     )
 
 
+def synthesize_cluster_parameters(
+    ctx: ClusterRefactorContext,
+) -> tuple[HelperParameter, ...]:
+    """Build helper parameters from varying dimensions × key vocabulary."""
+    dimension_sets = [
+        frozenset(ctx.expected_member_keys[member.address].keys())
+        for member in ctx.members
+    ]
+    if not dimension_sets:
+        return ()
+    if len(set(dimension_sets)) != 1:
+        raise ValueError("cluster members must share one varying key dimension set")
+    varying_dimension_ids = dimension_sets[0]
+    specs = helper_parameters_for_varying_keys(
+        varying_dimension_ids, ctx.key_vocabulary
+    )
+    return tuple(
+        HelperParameter(
+            name=spec.suggested_param_name,
+            dimension_id=spec.dimension_id,
+            dtype=spec.dtype,
+            concept=spec.concept,
+        )
+        for spec in specs
+    )
+
+
+def synthesize_cluster_member_keys(
+    ctx: ClusterRefactorContext,
+    *,
+    parameters: Sequence[HelperParameter],
+) -> tuple[MemberKeys, ...]:
+    """Build full-cluster member_keys from expected binding keys."""
+    return complete_cluster_member_keys_from_expected(
+        (),
+        ctx,
+        parameters=parameters,
+    )
+
+
 def prepare_cluster_refactor_response(
     llm_response: ClusterRefactorLLMResponse,
     ctx: ClusterRefactorContext,
@@ -2061,14 +2218,10 @@ def prepare_cluster_refactor_response(
     runtime_source: str,
     internals_source: str,
 ) -> ClusterRefactorResponse:
-    if (
-        llm_response.symbol_signature is None
-        or llm_response.symbol_docstring is None
-        or llm_response.symbol_body is None
-        or llm_response.parameters is None
-        or llm_response.member_keys is None
-    ):
+    if llm_response.symbol_docstring is None or llm_response.symbol_body is None:
         raise ValueError("cluster refactor response is missing required success fields")
+    parameters = synthesize_cluster_parameters(ctx)
+    member_keys = synthesize_cluster_member_keys(ctx, parameters=parameters)
     return_hint = infer_refactor_return_type_hint(
         python_sources=tuple(member.python_source for member in ctx.members),
         runtime_source=runtime_source,
@@ -2076,7 +2229,10 @@ def prepare_cluster_refactor_response(
         naming_hints=ctx.naming_hints,
     )
     signature = inject_signature_return_type_hint(
-        llm_response.symbol_signature,
+        build_locked_helper_signature(
+            ctx.expected_helper_name,
+            parameters=parameters,
+        ),
         return_hint,
     )
     docstring = strip_python_string_delimiters(llm_response.symbol_docstring)
@@ -2094,11 +2250,11 @@ def prepare_cluster_refactor_response(
         body=llm_response.symbol_body,
     )
     return ClusterRefactorResponse(
-        helper_name=_parse_symbol_name_from_signature(signature),
+        helper_name=ctx.expected_helper_name,
         helper_docstring=docstring,
         helper_source=helper_source,
-        parameters=llm_response.parameters,
-        member_keys=llm_response.member_keys,
+        parameters=parameters,
+        member_keys=member_keys,
     )
 
 
@@ -2173,11 +2329,25 @@ def format_cluster_refactor_context_dump(
     key_vocabulary: Sequence[KeyConceptSpec],
     member_metadata: Sequence[Mapping[str, object]],
     dependency_stubs: str,
+    shown_member_count: int | None = None,
+    total_member_count: int | None = None,
 ) -> str:
     vocabulary_yaml = _format_key_vocabulary_yaml(key_vocabulary)
     metadata_yaml = _format_member_metadata_yaml(member_metadata)
+    if (
+        shown_member_count is not None
+        and total_member_count is not None
+        and shown_member_count < total_member_count
+    ):
+        heading = (
+            f"Cluster to refactor (showing {shown_member_count} of "
+            f"{total_member_count} members; remaining member_keys are filled "
+            "mechanically):\n\n"
+        )
+    else:
+        heading = "Cluster to refactor:\n\n"
     return (
-        "Cluster to refactor:\n\n"
+        f"{heading}"
         f"```python\n{member_sources.strip()}\n```\n\n"
         "Key vocabulary:\n\n"
         f"```yaml\n{vocabulary_yaml}\n```\n\n"
@@ -2242,6 +2412,68 @@ def _build_cluster_dependency_stubs(
     return "\n\n".join(stubs)
 
 
+def sample_indices_for_prompt(
+    count: int,
+    *,
+    limit: int = CLUSTER_REFACTOR_PROMPT_MEMBER_LIMIT,
+) -> tuple[int, ...]:
+    """Return up to ``limit`` indices spaced across ``0..count-1`` inclusive."""
+    if limit < 1:
+        raise ValueError(f"limit must be >= 1, got {limit}")
+    if count < 0:
+        raise ValueError(f"count must be >= 0, got {count}")
+    if count <= limit:
+        return tuple(range(count))
+    if limit == 1:
+        return (0,)
+    return tuple(
+        dict.fromkeys(round(i * (count - 1) / (limit - 1)) for i in range(limit))
+    )
+
+
+def sample_members_for_prompt[T](
+    members: Sequence[T],
+    *,
+    limit: int = CLUSTER_REFACTOR_PROMPT_MEMBER_LIMIT,
+) -> tuple[T, ...]:
+    """Return a uniformly spaced subset of ``members`` capped at ``limit``."""
+    indices = sample_indices_for_prompt(len(members), limit=limit)
+    return tuple(members[index] for index in indices)
+
+
+def complete_cluster_member_keys_from_expected(
+    member_keys: Sequence[MemberKeys],
+    ctx: ClusterRefactorContext,
+    *,
+    parameters: Sequence[HelperParameter],
+) -> tuple[MemberKeys, ...]:
+    """Fill missing member_keys from expected binding keys for the full cluster."""
+    parameter_dimension_ids = tuple(
+        dict.fromkeys(parameter.dimension_id for parameter in parameters)
+    )
+    by_address = {entry.address: entry for entry in member_keys}
+    completed: list[MemberKeys] = []
+    for member in ctx.members:
+        existing = by_address.get(member.address)
+        if existing is not None:
+            completed.append(existing)
+            continue
+        expected = ctx.expected_member_keys.get(member.address, {})
+        keys = tuple(
+            MemberKeyEntry(dimension_id=dimension_id, value=expected[dimension_id])
+            for dimension_id in parameter_dimension_ids
+            if dimension_id in expected
+        )
+        completed.append(
+            MemberKeys(
+                address=member.address,
+                function_name=member.function_name,
+                keys=keys,
+            )
+        )
+    return tuple(completed)
+
+
 def build_cluster_refactor_context_dump(
     *,
     member_function_names: Sequence[str],
@@ -2249,6 +2481,8 @@ def build_cluster_refactor_context_dump(
     runtime_source: str,
     key_vocabulary: Sequence[KeyConceptSpec],
     member_metadata: Sequence[Mapping[str, object]],
+    shown_member_count: int | None = None,
+    total_member_count: int | None = None,
     index: InternalsSourceIndex | None = None,
     member_function_sources: Mapping[str, str] | None = None,
 ) -> str:
@@ -2286,14 +2520,19 @@ def build_cluster_refactor_context_dump(
         key_vocabulary=key_vocabulary,
         member_metadata=member_metadata,
         dependency_stubs=dependency_stubs,
+        shown_member_count=shown_member_count,
+        total_member_count=total_member_count,
     )
 
 
 def _member_metadata_for_cluster_refactor(
     ctx: ClusterRefactorContext,
+    *,
+    members: Sequence[MemberContext] | None = None,
 ) -> tuple[dict[str, object], ...]:
+    selected_members = ctx.members if members is None else tuple(members)
     entries: list[dict[str, object]] = []
-    for member in ctx.members:
+    for member in selected_members:
         entry: dict[str, object] = {
             "address": member.address,
             "function_name": member.function_name,
@@ -2310,6 +2549,7 @@ def build_cluster_refactor_prompt_context(
     *,
     internals_path: Path,
     runtime_path: Path | None = None,
+    member_limit: int = CLUSTER_REFACTOR_PROMPT_MEMBER_LIMIT,
     internals_index: InternalsSourceIndex | None = None,
 ) -> str:
     varying_dimension_ids = frozenset(
@@ -2317,37 +2557,68 @@ def build_cluster_refactor_prompt_context(
         for keys in ctx.expected_member_keys.values()
         for dimension_id in keys
     )
-    resolved_runtime_path = (
-        runtime_path
-        if runtime_path is not None
-        else internals_path.parent / "runtime.py"
-    )
     index = _resolve_internals_index(internals_path, internals_index=internals_index)
+    filtered_vocabulary = tuple(
+        item
+        for item in ctx.key_vocabulary
+        if item.dimension_id in varying_dimension_ids
+    )
+    vocabulary_yaml = _format_key_vocabulary_yaml(filtered_vocabulary)
+    runtime_source = _read_runtime_source(internals_path, runtime_path=runtime_path)
+
+    summary = ctx.fingerprint_summary
+    use_fingerprint = summary is not None and summary.fallback_reason is None
+    if use_fingerprint:
+        assert summary is not None
+        exemplars = tuple(group.exemplar for group in summary.groups)
+        member_function_sources = {
+            member.function_name: member.python_source for member in exemplars
+        }
+        dependency_stubs = _build_cluster_dependency_stubs(
+            member_function_names=tuple(member.function_name for member in exemplars),
+            internals_source=index.source,
+            runtime_source=runtime_source,
+            index=index,
+            member_function_sources=member_function_sources,
+        )
+        metadata_yaml = _format_member_metadata_yaml(
+            _member_metadata_for_cluster_refactor(ctx, members=exemplars)
+        )
+        return format_cluster_fingerprint_dump(
+            summary,
+            exemplar_keys_by_address=ctx.expected_member_keys,
+            key_vocabulary_yaml=vocabulary_yaml,
+            member_metadata_yaml=metadata_yaml,
+            dependency_stubs=dependency_stubs,
+            helper_name=ctx.expected_helper_name,
+        )
+
+    prompt_members = sample_members_for_prompt(ctx.members, limit=member_limit)
     member_function_sources = {
-        member.function_name: member.python_source for member in ctx.members
+        member.function_name: member.python_source for member in prompt_members
     }
     return build_cluster_refactor_context_dump(
-        member_function_names=tuple(member.function_name for member in ctx.members),
+        member_function_names=tuple(member.function_name for member in prompt_members),
         internals_source=index.source,
-        runtime_source=resolved_runtime_path.read_text(encoding="utf-8"),
-        key_vocabulary=tuple(
-            item
-            for item in ctx.key_vocabulary
-            if item.dimension_id in varying_dimension_ids
+        runtime_source=runtime_source,
+        key_vocabulary=filtered_vocabulary,
+        member_metadata=_member_metadata_for_cluster_refactor(
+            ctx, members=prompt_members
         ),
-        member_metadata=_member_metadata_for_cluster_refactor(ctx),
+        shown_member_count=len(prompt_members),
+        total_member_count=len(ctx.members),
         index=index,
         member_function_sources=member_function_sources,
     )
 
 
+def _type_hint_runtime_imports(source: str) -> set[str]:
+    """Collect allowlisted type-hint names that appear in refactored source."""
+    return {name for name in ALLOWED_REFACTOR_TYPE_HINT_NAMES if name in source}
+
+
 def _cluster_runtime_imports(response: ClusterRefactorResponse) -> set[str]:
-    imports: set[str] = set()
-    if "EvalContext" in response.helper_source:
-        imports.add("EvalContext")
-    if "CellValue" in response.helper_source:
-        imports.add("CellValue")
-    return imports
+    return _type_hint_runtime_imports(response.helper_source)
 
 
 def ensure_cluster_refactor_imports(
@@ -2361,10 +2632,7 @@ def ensure_cluster_refactor_imports(
 
 
 def _singleton_runtime_imports(response: SingletonRefactorResponse) -> set[str]:
-    imports: set[str] = set()
-    if "EvalContext" in response.symbol_source:
-        imports.add("EvalContext")
-    return imports
+    return _type_hint_runtime_imports(response.symbol_source)
 
 
 def _merge_runtime_imports(source: str, symbols: set[str]) -> str:
@@ -2433,6 +2701,7 @@ def singleton_prompt_payload(ctx: SingletonRefactorContext) -> dict[str, object]
             "require_semantic_locals": True,
         },
         "naming_hints": ctx.naming_hints,
+        "expected_helper_name": ctx.expected_helper_name,
     }
 
 
@@ -2443,7 +2712,11 @@ def validate_singleton_refactor_response(
     existing_names: frozenset[str],
     internals_source: str,
 ) -> None:
-    _ = ctx
+    if response.symbol_name != ctx.expected_helper_name:
+        raise ValueError(
+            "symbol_name must equal locked series_id "
+            f"{ctx.expected_helper_name!r}, got {response.symbol_name!r}"
+        )
     validate_semantic_identifier(
         response.symbol_name,
         existing_names=existing_names,
@@ -2491,7 +2764,7 @@ def validate_singleton_refactor_response(
     ):
         raise ValueError("symbol_source must not contain imports")
 
-    allowed_names = (
+    allowed_names = _without_cell_function_names(
         set(ctx.allowed_runtime_symbols)
         | set(ctx.external_dependencies)
         | {ctx.function_name}
@@ -2639,14 +2912,21 @@ def substitute_collapse_bindings(
     source: str,
     bindings: tuple[CollapseBinding, ...],
 ) -> tuple[str, int]:
-    rewrite_count = 0
-    updated = source
-    for binding in bindings:
-        updated, count = _rewrite_xl_eval_collapse_binding(updated, binding)
-        rewrite_count += count
-        updated, count = _rewrite_direct_collapse_binding(updated, binding)
-        rewrite_count += count
-    return updated, rewrite_count
+    if not bindings:
+        return source, 0
+    bindings_by_function = {binding.function_name: binding for binding in bindings}
+    module = ast.parse(source)
+    replacements: list[tuple[int, int, str, str]] = []
+    visitor = _CollapseBindingsRewriteVisitor(
+        bindings_by_function=bindings_by_function,
+        source=source,
+        replacements=replacements,
+    )
+    for function_def in _iter_function_defs(module.body):
+        visitor.visit(function_def)
+    if not replacements:
+        return source, 0
+    return _apply_segment_replacements(source, replacements), len(replacements)
 
 
 def collect_static_cell_function_references(source: str) -> frozenset[str]:
@@ -3234,89 +3514,37 @@ def _xl_eval_matches_collapse(
     return False
 
 
-def _rewrite_xl_eval_collapse_binding(
-    source: str,
-    binding: CollapseBinding,
-) -> tuple[str, int]:
-    module = ast.parse(source)
-    replacements: list[tuple[int, int, str, str]] = []
-    for function_def in _iter_function_defs(module.body):
-        visitor = _XlEvalCollapseRewriteVisitor(
-            binding=binding,
-            source=source,
-            replacements=replacements,
-        )
-        visitor.visit(function_def)
-    if not replacements:
-        return source, 0
-    return _apply_segment_replacements(source, replacements), len(replacements)
+class _CollapseBindingsRewriteVisitor(ast.NodeVisitor):
+    """Rewrite direct and xl_eval call sites for every collapse binding in one walk."""
 
-
-def _rewrite_direct_collapse_binding(
-    source: str,
-    binding: CollapseBinding,
-) -> tuple[str, int]:
-    module = ast.parse(source)
-    replacements: list[tuple[int, int, str, str]] = []
-    for function_def in _iter_function_defs(module.body):
-        visitor = _DirectCollapseRewriteVisitor(
-            binding=binding,
-            source=source,
-            replacements=replacements,
-        )
-        visitor.visit(function_def)
-    if not replacements:
-        return source, 0
-    return _apply_segment_replacements(source, replacements), len(replacements)
-
-
-class _XlEvalCollapseRewriteVisitor(ast.NodeVisitor):
     def __init__(
         self,
         *,
-        binding: CollapseBinding,
+        bindings_by_function: dict[str, CollapseBinding],
         source: str,
         replacements: list[tuple[int, int, str, str]],
     ) -> None:
-        self.binding = binding
+        self.bindings_by_function = bindings_by_function
         self.source = source
         self.replacements = replacements
 
     def visit_Call(self, node: ast.Call) -> None:
-        if _xl_eval_matches_collapse(node, self.binding):
-            segment = ast.get_source_segment(self.source, node)
-            if segment is not None:
-                self.replacements.append(
-                    (
-                        node.lineno,
-                        node.end_lineno or node.lineno,
-                        segment,
-                        self.binding.literal_call,
-                    )
-                )
-        self.generic_visit(node)
-
-
-class _DirectCollapseRewriteVisitor(ast.NodeVisitor):
-    def __init__(
-        self,
-        *,
-        binding: CollapseBinding,
-        source: str,
-        replacements: list[tuple[int, int, str, str]],
-    ) -> None:
-        self.binding = binding
-        self.source = source
-        self.replacements = replacements
-
-    def visit_Call(self, node: ast.Call) -> None:
-        if (
+        binding: CollapseBinding | None = None
+        if isinstance(node.func, ast.Name) and node.func.id == "xl_eval":
+            callee = _xl_eval_callee_function(node)
+            if callee is not None:
+                candidate = self.bindings_by_function.get(callee)
+                if candidate is not None and _xl_eval_matches_collapse(node, candidate):
+                    binding = candidate
+        elif (
             isinstance(node.func, ast.Name)
-            and node.func.id == self.binding.function_name
             and len(node.args) == 1
             and isinstance(node.args[0], ast.Name)
             and node.args[0].id == "ctx"
         ):
+            binding = self.bindings_by_function.get(node.func.id)
+
+        if binding is not None:
             segment = ast.get_source_segment(self.source, node)
             if segment is not None:
                 self.replacements.append(
@@ -3324,7 +3552,7 @@ class _DirectCollapseRewriteVisitor(ast.NodeVisitor):
                         node.lineno,
                         node.end_lineno or node.lineno,
                         segment,
-                        self.binding.literal_call,
+                        binding.literal_call,
                     )
                 )
         self.generic_visit(node)
@@ -3451,9 +3679,11 @@ def refactor_internals_all_clusters(
     internals_path: Path,
     bindings_path: Path,
     workbook_path: Path,
+    address_to_series_id: Mapping[str, str],
     dry_run: bool = False,
     source_graph: DependencyGraph | None = None,
     internal_binding_index: InternalBindingIndex | None = None,
+    bound_address_keys: dict[str, dict[str, BindingKeyValue]] | None = None,
     parity_gate: bool = True,
     layout: ProjectionColumnLayout | None = None,
 ) -> tuple[ClusterRefactorApplyResult, ...]:
@@ -3462,6 +3692,10 @@ def refactor_internals_all_clusters(
     When ``parity_gate`` is enabled, each refactored helper is checked against the
     pristine pre-refactor cell semantics across several input vectors before its
     transaction is committed; a divergence rolls back and re-prompts the model.
+
+    Pass ``bound_address_keys`` from the extract stage when available so cluster
+    context construction does not call ``_default_bound_address_keys`` (which
+    rebuilds the pipeline graph).
     """
     pristine_source: str | None = None
     input_vectors: Sequence[Mapping[str, object]] | None = None
@@ -3487,6 +3721,7 @@ def refactor_internals_all_clusters(
                 source_graph=source_graph,
                 internal_binding_index=internal_binding_index,
                 internals_index=internals_index,
+                address_to_series_id=address_to_series_id,
             )
             if ctx is None:
                 continue
@@ -3513,10 +3748,12 @@ def refactor_internals_all_clusters(
             internals_path,
             source_graph=source_graph,
             internal_binding_index=internal_binding_index,
+            bound_address_keys=bound_address_keys,
             bindings_path=bindings_path,
             workbook_path=workbook_path,
             layout=layout,
             internals_index=internals_index,
+            address_to_series_id=address_to_series_id,
         )
         if ctx is None:
             continue
@@ -3558,11 +3795,24 @@ def refactor_internals_all_clusters(
 load_dotenv(repo_root / ".env")
 
 
-def _read_runtime_source(internals_path: Path) -> str:
-    runtime_path = internals_path.parent / "runtime.py"
-    if not runtime_path.is_file():
-        return ""
-    return runtime_path.read_text(encoding="utf-8")
+def _read_runtime_source(
+    internals_path: Path,
+    *,
+    runtime_path: Path | None = None,
+) -> str:
+    """Load runtime (and optional ``_readers``) for dependency stubs and return hints."""
+    parts: list[str] = []
+    resolved_runtime = (
+        runtime_path
+        if runtime_path is not None
+        else internals_path.parent / "runtime.py"
+    )
+    if resolved_runtime.is_file():
+        parts.append(resolved_runtime.read_text(encoding="utf-8"))
+    readers_path = internals_path.parent / "_readers.py"
+    if readers_path.is_file():
+        parts.append(readers_path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 def llm_refactor_singleton(
@@ -3891,10 +4141,17 @@ def llm_refactor_cluster(
         validated_prepared = _apply_cluster_refactor_validation(prepared)
         return parsed
 
+    prompt_member_count = len(
+        sample_indices_for_prompt(
+            len(ctx.members), limit=CLUSTER_REFACTOR_PROMPT_MEMBER_LIMIT
+        )
+    )
     logger.info(
-        "cluster refactor LLM request cluster_id=%s members=%d model=%s prompt_version=%s",
+        "cluster refactor LLM request cluster_id=%s members=%d prompt_members=%d "
+        "model=%s prompt_version=%s",
         ctx.cluster_id,
         len(ctx.members),
+        prompt_member_count,
         model,
         REFACTOR_PROMPT_VERSION,
     )

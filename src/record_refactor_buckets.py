@@ -63,7 +63,7 @@ from src.refactor_order import compute_refactor_schedule
 from src.subgraph_projection import build_refactor_projection
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
-REFACTOR_BUCKETS_SCHEMA_VERSION = "1.3.1"
+REFACTOR_BUCKETS_SCHEMA_VERSION = "1.4.0"
 
 SERIES_PARTITION_NOTE = (
     "Refactor partitions use internal series ids first, then public output/input "
@@ -100,9 +100,14 @@ class RefactorBucketRecord:
     series_ids: tuple[str, ...]
     canonical_template: str
     external_dependencies: tuple[str, ...]
+    fingerprint_group_count: int | None = None
+    relation_tiers: tuple[str, ...] | None = None
+    fingerprint_fallback_reason: str | None = None
+    legacy_token_estimate: int | None = None
+    fingerprint_token_estimate: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "refactor_order": self.refactor_order,
             "refactor_group_id": self.refactor_group_id,
             "cluster_id": self.cluster_id,
@@ -118,6 +123,15 @@ class RefactorBucketRecord:
             "canonical_template": self.canonical_template,
             "external_dependencies": list(self.external_dependencies),
         }
+        if self.kind == "cluster":
+            payload["fingerprint_group_count"] = self.fingerprint_group_count
+            payload["relation_tiers"] = (
+                list(self.relation_tiers) if self.relation_tiers is not None else None
+            )
+            payload["fingerprint_fallback_reason"] = self.fingerprint_fallback_reason
+            payload["legacy_token_estimate"] = self.legacy_token_estimate
+            payload["fingerprint_token_estimate"] = self.fingerprint_token_estimate
+        return payload
 
 
 def _defined_function_names(internals_source: str) -> set[str]:
@@ -324,6 +338,7 @@ def record_refactor_buckets(
                     cluster,
                     internals_path,
                     internal_binding_index=internal_binding_index,
+                    address_to_series_id=resolved_address_to_series_id,
                 )
             )
         else:
@@ -347,6 +362,8 @@ def record_refactor_buckets(
                     bindings_path=config.bindings_path,
                     workbook_path=config.workbook_path,
                     layout=layout,
+                    bound_address_keys=resolved_bound_keys,
+                    address_to_series_id=resolved_address_to_series_id,
                 )
             )
 
@@ -354,6 +371,22 @@ def record_refactor_buckets(
             address_to_function_name(address) for address in cluster.members
         )
         eligible = compression == "none" or ctx is not None
+        fingerprint_group_count = None
+        relation_tiers = None
+        fingerprint_fallback_reason = None
+        legacy_token_estimate = None
+        fingerprint_token_estimate = None
+        if (
+            kind == "cluster"
+            and isinstance(ctx, ClusterRefactorContext)
+            and ctx.fingerprint_summary is not None
+        ):
+            summary = ctx.fingerprint_summary
+            fingerprint_group_count = summary.fingerprint_group_count
+            relation_tiers = summary.relation_tiers
+            fingerprint_fallback_reason = summary.fallback_reason
+            legacy_token_estimate = summary.legacy_token_estimate
+            fingerprint_token_estimate = summary.fingerprint_token_estimate
         records.append(
             RefactorBucketRecord(
                 refactor_order=refactor_order,
@@ -372,6 +405,11 @@ def record_refactor_buckets(
                 ),
                 canonical_template=cluster.canonical_template,
                 external_dependencies=_external_dependencies(ctx),
+                fingerprint_group_count=fingerprint_group_count,
+                relation_tiers=relation_tiers,
+                fingerprint_fallback_reason=fingerprint_fallback_reason,
+                legacy_token_estimate=legacy_token_estimate,
+                fingerprint_token_estimate=fingerprint_token_estimate,
             )
         )
     return tuple(records)
@@ -435,6 +473,42 @@ def build_refactor_buckets_report(
         "skipped_target_count": len(records) - len(eligible_records),
         "buckets": [record.to_dict() for record in records],
         "summary_by_kind": _summary_by_kind(records),
+        "fingerprint_summary": _fingerprint_coverage_summary(records),
+    }
+
+
+def _fingerprint_coverage_summary(
+    records: Sequence[RefactorBucketRecord],
+) -> dict[str, Any]:
+    cluster_records = [record for record in records if record.kind == "cluster"]
+    with_summary = [
+        record
+        for record in cluster_records
+        if record.fingerprint_group_count is not None
+        or record.fingerprint_fallback_reason is not None
+    ]
+    fallback_count = sum(
+        1 for record in with_summary if record.fingerprint_fallback_reason is not None
+    )
+    tier_counts: dict[str, int] = {}
+    for record in with_summary:
+        if record.relation_tiers is None:
+            continue
+        for tier in record.relation_tiers:
+            tier_counts[tier] = tier_counts.get(tier, 0) + 1
+    legacy_tokens = sum(record.legacy_token_estimate or 0 for record in with_summary)
+    fingerprint_tokens = sum(
+        record.fingerprint_token_estimate or 0
+        for record in with_summary
+        if record.fingerprint_fallback_reason is None
+    )
+    return {
+        "cluster_bucket_count": len(cluster_records),
+        "summarized_cluster_count": len(with_summary),
+        "fallback_cluster_count": fallback_count,
+        "relation_tier_counts": dict(sorted(tier_counts.items())),
+        "legacy_token_estimate_total": legacy_tokens,
+        "fingerprint_token_estimate_total": fingerprint_tokens,
     }
 
 
@@ -469,6 +543,30 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
             "",
         ]
     )
+    fingerprint_summary = report.get("fingerprint_summary")
+    if isinstance(fingerprint_summary, Mapping):
+        tier_counts = fingerprint_summary.get("relation_tier_counts") or {}
+        tier_text = (
+            ", ".join(f"{tier}={count}" for tier, count in sorted(tier_counts.items()))
+            or "none"
+        )
+        lines.extend(
+            [
+                "## Fingerprint prompt coverage",
+                "",
+                f"- Summarized cluster buckets: "
+                f"**{fingerprint_summary.get('summarized_cluster_count', 0)}**",
+                f"- Fingerprint dump fallbacks: "
+                f"**{fingerprint_summary.get('fallback_cluster_count', 0)}**",
+                f"- Relation tiers: {tier_text}",
+                (
+                    "- Token estimates (legacy sources vs fingerprint): "
+                    f"**{fingerprint_summary.get('legacy_token_estimate_total', 0)}** vs "
+                    f"**{fingerprint_summary.get('fingerprint_token_estimate_total', 0)}**"
+                ),
+                "",
+            ]
+        )
 
     summary_by_kind = report["summary_by_kind"]
     for kind in ("singleton", "cluster"):

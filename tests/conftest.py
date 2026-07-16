@@ -85,8 +85,14 @@ def synthetic_workbook_path(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="session")
-def synthetic_pipeline_config_fixture(synthetic_workbook_path):
-    return synthetic_pipeline_config(workbook_path=synthetic_workbook_path)
+def synthetic_pipeline_config_fixture(
+    synthetic_workbook_path,
+    tmp_path_factory: pytest.TempPathFactory,
+):
+    return synthetic_pipeline_config(
+        workbook_path=synthetic_workbook_path,
+        dist_root=tmp_path_factory.mktemp("synthetic_dist"),
+    )
 
 
 @dataclass(frozen=True)

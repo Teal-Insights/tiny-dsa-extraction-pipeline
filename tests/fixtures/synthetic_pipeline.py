@@ -108,6 +108,7 @@ def synthetic_pipeline_config(
     *,
     workbook_path: Path,
     repo_root: Path | None = None,
+    dist_root: Path | None = None,
 ) -> PipelineConfig:
     root = repo_root or Path(__file__).resolve().parents[2]
     if not workbook_path.is_file():
@@ -118,7 +119,7 @@ def synthetic_pipeline_config(
         workbook_path=workbook_path,
         guide_path=root / "data" / "guide.md",
         bindings_path=FIXTURES_ROOT,
-        dist_root=root / "dist",
+        dist_root=dist_root if dist_root is not None else root / "dist",
         targets=TARGETS,
         constraints=dict(CONSTRAINTS),
         dist_metadata=DistProjectMetadata(

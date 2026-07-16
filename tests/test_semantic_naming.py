@@ -10,6 +10,7 @@ from src.semantic_naming import (
     collect_semantic_helper_names,
     semantic_helpers_available_for_calls,
     binding_record_hints_from_cell,
+    sole_series_id_for_addresses,
     validate_semantic_identifier,
 )
 
@@ -107,3 +108,26 @@ def test_semantic_helpers_available_for_calls_includes_allocated_names() -> None
 def test_collect_semantic_helper_names_requires_ctx_parameter() -> None:
     source = "def helper(x): return x\n"
     assert collect_semantic_helper_names(source) == frozenset()
+
+
+def test_sole_series_id_for_addresses_requires_unique_mapping() -> None:
+    assert (
+        sole_series_id_for_addresses(
+            ("Sheet!A1", "Sheet!B1"),
+            {"Sheet!A1": "growth_threshold_met", "Sheet!B1": "growth_threshold_met"},
+        )
+        == "growth_threshold_met"
+    )
+
+
+def test_sole_series_id_for_addresses_rejects_missing_and_mixed() -> None:
+    with pytest.raises(ValueError, match="missing series_id"):
+        sole_series_id_for_addresses(
+            ("Sheet!A1", "Sheet!B1"),
+            {"Sheet!A1": "growth_threshold_met"},
+        )
+    with pytest.raises(ValueError, match="exactly one series_id"):
+        sole_series_id_for_addresses(
+            ("Sheet!A1", "Sheet!B1"),
+            {"Sheet!A1": "series_a", "Sheet!B1": "series_b"},
+        )

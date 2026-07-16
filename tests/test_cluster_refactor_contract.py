@@ -234,12 +234,10 @@ GROWTH_THRESHOLD_CLUSTER_CONTEXT = ClusterRefactorContext(
         for entry in GROWTH_THRESHOLD_MEMBER_METADATA
     },
     naming_hints={},
+    expected_helper_name="growth_threshold_met",
 )
 
 GROWTH_THRESHOLD_LLM_RESPONSE = ClusterRefactorLLMResponse(
-    symbol_signature=(
-        "def growth_threshold_met(ctx: EvalContext, reporting_period: int) -> float:"
-    ),
     symbol_docstring=(
         "Return 1.0 when the observed value meets or exceeds the growth threshold "
         "for the reporting period.\n\n"
@@ -369,7 +367,7 @@ def test_cluster_prompts_carry_rules_but_not_selection_criteria() -> None:
     assert "When this contract applies" not in member_sweep
     assert "When this contract applies" not in dimension_aware
     assert "COUNTERPART_REF_AREA" in dimension_aware
-    assert "one parameter per varying binding dimension id" in dimension_aware
+    assert "counterpart dimension ids that share a concept" in dimension_aware
     assert "Never collapse two dimension ids" in dimension_aware
 
 
@@ -381,7 +379,8 @@ def test_dimension_aware_prompt_documents_error_escape_hatch() -> None:
     assert "stop the pipeline" in prompt
     assert "set every success field" in prompt
     assert "to `null`" in prompt
-    assert '"symbol_signature"' in prompt
+    assert '"symbol_docstring"' in prompt
+    assert '"symbol_signature"' not in prompt
 
 
 def test_prompt_for_cluster_refactor_starts_with_fixed_portion() -> None:
@@ -401,8 +400,9 @@ def test_prompt_for_cluster_refactor_does_not_require_llm_note_section() -> None
         ClusterRefactorLLMResponse.model_json_schema(),
     )
     assert "Include a Note section" not in prompt
-    assert '"symbol_signature"' in prompt
+    assert '"symbol_docstring"' in prompt
     assert '"symbol_body"' in prompt
+    assert '"symbol_signature"' not in prompt
     assert '"helper_source"' not in prompt.split("Cluster context:", maxsplit=1)[0]
 
 
@@ -420,7 +420,9 @@ def test_cluster_prompt_documents_error_escape_hatch() -> None:
     assert "error" in properties
     assert "error_reason" in properties
     required = schema.get("required", [])
-    assert "symbol_signature" in required
+    assert "symbol_docstring" in required
+    assert "symbol_body" in required
+    assert "symbol_signature" not in required
     assert "error" in required
     assert "error_reason" in required
 
@@ -480,46 +482,30 @@ def test_prepare_cluster_refactor_response_assembles_and_appends_note() -> None:
         "Excel: =IF(Forecast!{col}4>=Assumptions!$C$2,1,0)."
     ) in prepared.helper_docstring
     assert prepared.helper_docstring in prepared.helper_source
-    assert prepared.parameters == GROWTH_THRESHOLD_LLM_RESPONSE.parameters
+    assert prepared.parameters == (
+        HelperParameter(
+            name="reporting_period",
+            dimension_id="REPORTING_PERIOD",
+            dtype="int",
+            concept="REPORTING_PERIOD",
+        ),
+    )
     assert prepared.member_keys == GROWTH_THRESHOLD_LLM_RESPONSE.member_keys
 
 
-def test_prepare_cluster_refactor_response_ignores_llm_return_type_hint() -> None:
-    llm_response = GROWTH_THRESHOLD_LLM_RESPONSE.model_copy(
-        update={
-            "symbol_signature": (
-                "def growth_threshold_met(ctx: EvalContext, reporting_period: int) "
-                "-> str:"
-            )
-        }
-    )
-    prepared = prepare_cluster_refactor_response(
-        llm_response,
-        GROWTH_THRESHOLD_CLUSTER_CONTEXT,
-        **CLUSTER_PREPARE_KWARGS,
-    )
-    assert "-> float:" in prepared.helper_source
-    assert "-> str:" not in prepared.helper_source.split('"""', maxsplit=1)[0]
-
-
-def test_prepare_cluster_refactor_response_injects_return_type_when_llm_uses_cellvalue() -> (
+def test_prepare_cluster_refactor_response_locks_helper_name_and_injects_return_type() -> (
     None
 ):
-    llm_response = GROWTH_THRESHOLD_LLM_RESPONSE.model_copy(
-        update={
-            "symbol_signature": (
-                "def growth_threshold_met(ctx: EvalContext, reporting_period: int) "
-                "-> CellValue:"
-            )
-        }
-    )
     prepared = prepare_cluster_refactor_response(
-        llm_response,
+        GROWTH_THRESHOLD_LLM_RESPONSE,
         GROWTH_THRESHOLD_CLUSTER_CONTEXT,
         **CLUSTER_PREPARE_KWARGS,
     )
-    assert "-> float:" in prepared.helper_source
-    assert "CellValue" not in prepared.helper_source.split('"""', maxsplit=1)[0]
+    signature_line = prepared.helper_source.split('"""', maxsplit=1)[0]
+    assert signature_line.startswith(
+        "def growth_threshold_met(ctx: EvalContext, reporting_period: int) -> float:"
+    )
+    assert "CellValue" not in signature_line
 
 
 def test_format_cluster_refactor_context_dump_matches_fixture() -> None:
@@ -618,6 +604,38 @@ def test_ensure_cluster_refactor_imports_injects_eval_context() -> None:
         "def growth_threshold_met(ctx: EvalContext, reporting_period: int) -> float:"
         in (applied)
     )
+
+
+def test_ensure_cluster_refactor_imports_injects_cellvalue() -> None:
+    response = ClusterRefactorResponse(
+        helper_name="inputs_passthrough",
+        helper_docstring="Passthrough input.\n\nArgs:\n    ctx: Context.",
+        parameters=(
+            HelperParameter(
+                name="reporting_period",
+                dimension_id="REPORTING_PERIOD",
+                dtype="int",
+            ),
+        ),
+        helper_source=dedent(
+            '''
+            def inputs_passthrough(ctx: EvalContext, reporting_period: int) -> CellValue:
+                """Passthrough input."""
+                columns = {1: "B", 2: "C"}
+                return xl_cell(ctx, f"Forecast!{columns[reporting_period]}4")
+            '''
+        ).strip(),
+        member_keys=(),
+    )
+    updated = ensure_cluster_refactor_imports(
+        INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
+        response,
+    )
+    import_line = next(
+        line for line in updated.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "CellValue" in import_line
+    assert "EvalContext" in import_line
 
 
 def test_strip_python_string_delimiters_shared_with_singleton() -> None:

@@ -24,6 +24,13 @@ DEFAULT_GRAPH_CACHE_DIR = (
 )
 COMMITTED_GRAPH_CACHE_DIR = DEFAULT_GRAPH_CACHE_DIR
 
+# Same-process reuse of loaded graphs keyed by (cache_dir, cache_key). Callers
+# that mutate the returned DependencyGraph (e.g. leaf_classification assignment
+# or projection) share those mutations with later process-cache hits for the
+# same key; treat the object as owned by the pipeline run, not as an immutable
+# snapshot.
+_PROCESS_GRAPH_CACHE: dict[tuple[str, str], DependencyGraph] = {}
+
 
 def _graph_cache_dir(cache_dir: Path | None) -> Path:
     if cache_dir is None:
@@ -158,6 +165,10 @@ class DependencyGraphCacheResult:
     elapsed_seconds: float
 
 
+def _process_cache_slot(cache_dir: Path, cache_key: str) -> tuple[str, str]:
+    return (str(cache_dir.resolve()), cache_key)
+
+
 def get_or_build_dependency_graph(
     *,
     workbook_path: Path,
@@ -181,10 +192,25 @@ def get_or_build_dependency_graph(
         load_values=load_values,
         capture_dependency_provenance=capture_dependency_provenance,
     )
+    process_slot = _process_cache_slot(resolved_cache_dir, cache_key)
     started = time.perf_counter()
     if not no_cache and not force_rebuild:
+        remembered = _PROCESS_GRAPH_CACHE.get(process_slot)
+        if remembered is not None:
+            elapsed = time.perf_counter() - started
+            print(
+                "create_dependency_graph: process cache hit "
+                f"({elapsed:.1f}s, key={cache_key[:12]})"
+            )
+            return DependencyGraphCacheResult(
+                graph=remembered,
+                cache_key=cache_key,
+                cache_hit=True,
+                elapsed_seconds=elapsed,
+            )
         cached = load_dependency_graph(cache_key, cache_dir=resolved_cache_dir)
         if cached is not None:
+            _PROCESS_GRAPH_CACHE[process_slot] = cached
             elapsed = time.perf_counter() - started
             print(
                 f"create_dependency_graph: cache hit ({elapsed:.1f}s, key={cache_key[:12]})"
@@ -219,11 +245,13 @@ def get_or_build_dependency_graph(
             cache_dir=resolved_cache_dir,
         )
         save_elapsed = time.perf_counter() - save_started
+        _PROCESS_GRAPH_CACHE[process_slot] = graph
         print(
             "create_dependency_graph: cache miss "
             f"(build {build_elapsed:.1f}s, save {save_elapsed:.1f}s, key={cache_key[:12]})"
         )
     else:
+        _PROCESS_GRAPH_CACHE.pop(process_slot, None)
         print(
             "create_dependency_graph: cache bypassed "
             f"(build {build_elapsed:.1f}s, key={cache_key[:12]})"
@@ -237,10 +265,28 @@ def get_or_build_dependency_graph(
     )
 
 
+def clear_process_dependency_graph_cache(
+    *,
+    cache_dir: Path | None = None,
+) -> None:
+    """Drop in-process graph reuse entries.
+
+    When ``cache_dir`` is set, only entries for that directory are removed;
+    otherwise the entire process cache is cleared.
+    """
+    if cache_dir is None:
+        _PROCESS_GRAPH_CACHE.clear()
+        return
+    prefix = str(_graph_cache_dir(cache_dir).resolve())
+    for slot in [slot for slot in _PROCESS_GRAPH_CACHE if slot[0] == prefix]:
+        del _PROCESS_GRAPH_CACHE[slot]
+
+
 def clear_dependency_graph_cache(
     *,
     cache_dir: Path | None = None,
 ) -> None:
+    clear_process_dependency_graph_cache(cache_dir=cache_dir)
     cache_dir = _graph_cache_dir(cache_dir)
     if not cache_dir.is_dir():
         return

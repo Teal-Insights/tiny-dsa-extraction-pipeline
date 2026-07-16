@@ -8,7 +8,7 @@ from src.pipeline_config import DistProjectMetadata, PipelineConfig
 from src.pipeline_context import activate_pipeline_config
 from src.runtime_symbols import (
     allowed_runtime_symbols,
-    discover_allowed_runtime_symbols,
+    discover_allowed_formula_symbols,
 )
 
 
@@ -35,6 +35,10 @@ def _write_runtime(path: Path) -> None:
 def test_allowed_runtime_symbols_uses_package_root(tmp_path: Path) -> None:
     package_root = tmp_path / "dist" / "my_model"
     _write_runtime(package_root / "runtime.py")
+    (package_root / "_readers.py").write_text(
+        "def read_shock_type(ctx):\n    return 'level'\n",
+        encoding="utf-8",
+    )
     config = PipelineConfig(
         repo_root=tmp_path,
         workbook_path=tmp_path / "workbook.xlsx",
@@ -76,8 +80,9 @@ def test_allowed_runtime_symbols_uses_package_root(tmp_path: Path) -> None:
     allowed_runtime_symbols.cache_clear()
     symbols = allowed_runtime_symbols()
 
-    assert symbols == discover_allowed_runtime_symbols(
-        config.package_root / "runtime.py"
+    assert symbols == discover_allowed_formula_symbols(
+        config.package_root / "runtime.py",
+        config.package_root / "_readers.py",
     )
     assert "to_bool" not in symbols
-    assert symbols == ("XlError", "xl_eval")
+    assert symbols == ("XlError", "read_shock_type", "xl_eval")
