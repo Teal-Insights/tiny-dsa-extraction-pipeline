@@ -13,187 +13,250 @@ from .runtime import CellValue, EvalContext, XlError, xl_bool, xl_cell, xl_compa
 # --- Formula cell functions ---
 
 def output_delta(ctx: EvalContext, time_period: int) -> float:
-    """Compute the difference between the shocked and baseline debt-to-GDP paths for a given projection period.
+    """Compute the delta between shocked and baseline debt-to-GDP ratios for a given projection year.
 
 Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection period (1 through 5).
+    ctx: Evaluation context for reading workbook data.
+    time_period: Projection year, an integer from 1 to 5.
 
 Returns:
-    The shocked path value minus the baseline path value as a float.
+    The difference between the shocked and baseline debt-to-GDP ratios (shocked minus baseline).
 
 Note:
     Covers Outputs!B14:F14. Excel: =Engine!C20-Engine!C6.
 """
-    return xl_number(shocked_path_internal(ctx, time_period=time_period)) - xl_number(baseline_path_internal(ctx, time_period=time_period))
+    shocked_ratio = shocked_path_internal(ctx, time_period=time_period)
+    baseline_ratio = baseline_path_internal(ctx, time_period=time_period)
+    return xl_number(shocked_ratio) - xl_number(baseline_ratio)
 
 def baseline_path_internal(ctx: EvalContext, time_period: int) -> float:
-    """Compute the baseline debt-to-GDP path for projection periods 1-5.
+    """Compute the baseline debt-to-GDP ratio for a given projection year using the debt dynamics equation.
 
 Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection period (1 through 5).
+    ctx: The workbook evaluation context.
+    time_period: The projection year (an integer from 1 to 5).
 
 Returns:
-    The debt-to-GDP ratio at the given period.
+    The baseline debt-to-GDP ratio for the specified projection year.
 
 Note:
     Covers Engine!C6:G6. Excel: =Inputs!B6*(1+Inputs!C17/100)/(1+Inputs!C16/100)-Inputs!C18.
 """
-    prev = xl_number(initial_debt_resolved(ctx) if time_period == 1 else baseline_path_internal(ctx, time_period=time_period - 1))
-    i = xl_number(read_interest_baseline(ctx, time_period=time_period))
-    g = xl_number(read_growth_baseline(ctx, time_period=time_period))
-    b = xl_number(read_primary_balance_baseline(ctx, time_period=time_period))
-    return (prev * (1 + i / 100.0) / (1 + g / 100.0) if 1 + g / 100.0 != 0 else xl_raise(XlError.DIV)) - b
+    if time_period == 1:
+        initial_debt = initial_debt_resolved(ctx)
+        initial_interest_rate = read_interest_baseline(ctx, time_period=1)
+        initial_growth_rate = read_growth_baseline(ctx, time_period=1)
+        initial_primary_balance = read_primary_balance_baseline(ctx, time_period=1)
+        return xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(initial_debt) * xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(initial_interest_rate), xl_number(100.0))))), xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(initial_growth_rate), xl_number(100.0)))))) - xl_number(initial_primary_balance)
+    previous_debt = baseline_path_internal(ctx, time_period=time_period - 1)
+    interest_rate = read_interest_baseline(ctx, time_period=time_period)
+    growth_rate = read_growth_baseline(ctx, time_period=time_period)
+    primary_balance = read_primary_balance_baseline(ctx, time_period=time_period)
+    return xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(previous_debt) * xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(interest_rate), xl_number(100.0))))), xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(growth_rate), xl_number(100.0)))))) - xl_number(primary_balance)
 
 def shocked_path_internal(ctx: EvalContext, time_period: int) -> float:
-    """Recursively compute the shocked debt-to-GDP ratio for a given projection year.
+    """Computes the debt-to-GDP ratio for a given projection year under a shock scenario.
 
 Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection year (1 through 5).
+    ctx: Evaluation context for reading workbook data.
+    time_period: Projection year, an integer from 1 to 5.
 
 Returns:
-    The shocked debt-to-GDP ratio for the given projection year as a float.
+    The shocked debt-to-GDP ratio for the given time period.
 
 Note:
     Covers Engine!C20:G20. Excel: =Inputs!B6*(1+(Inputs!C17+CHOOSE(Inputs!B22,0,Engine!B9,0)*Engine!C10)/100)/(1+(Inputs!C16+CHOOSE(Inputs!B22,Engine!B9,0,0)*Engine!C10)/100)-Engine!C16.
 """
-    interest = xl_number(read_interest_baseline(ctx, time_period=time_period))
-    growth = xl_number(read_growth_baseline(ctx, time_period=time_period))
-    shock_type_val = xl_int(read_shock_type(ctx))
-    if shock_type_val not in (1, 2, 3):
-        xl_raise(XlError.VALUE)
-    shock_mag = shock_magnitude_resolved(ctx)
-    adj_num = {1: 0.0, 2: shock_mag, 3: 0.0}[shock_type_val]
-    adj_den = {1: shock_mag, 2: 0.0, 3: 0.0}[shock_type_val]
-    shock_act = shock_active(ctx, time_period=time_period)
-    numerator = 1.0 + (interest + adj_num * shock_act) / 100.0
-    denominator = 1.0 + (growth + adj_den * shock_act) / 100.0
-    ratio = numerator / denominator if denominator != 0 else xl_raise(XlError.DIV)
     if time_period == 1:
-        prev = xl_number(initial_debt_resolved(ctx))
-    else:
-        prev = shocked_path_internal(ctx, time_period=time_period - 1)
-    result = prev * ratio - xl_number(shocked_primary_balance(ctx, time_period=time_period))
-    return result
+        initial_debt = initial_debt_resolved(ctx)
+        initial_interest_baseline = read_interest_baseline(ctx, time_period=1)
+        initial_interest_shock_type = read_shock_type(ctx)
+        initial_shock_active_interest = shock_active(ctx, time_period=1)
+        initial_growth_baseline = read_growth_baseline(ctx, time_period=1)
+        initial_growth_shock_type = read_shock_type(ctx)
+        initial_shock_active_growth = shock_active(ctx, time_period=1)
+        initial_shocked_primary_balance = shocked_primary_balance(ctx, time_period=1)
+        return xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(initial_debt) * xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(initial_interest_baseline) + xl_number(xl_number(xl_raise(XlError.VALUE) if (initial_interest_shock_type_int := xl_int(initial_interest_shock_type)) < 1 or initial_interest_shock_type_int > 3 else 0.0 if initial_interest_shock_type_int == 1 else shock_magnitude_resolved(ctx) if initial_interest_shock_type_int == 2 else 0.0 if initial_interest_shock_type_int == 3 else xl_raise(XlError.VALUE)) * xl_number(initial_shock_active_interest))), xl_number(100.0))))), xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(initial_growth_baseline) + xl_number(xl_number(xl_raise(XlError.VALUE) if (initial_growth_shock_type_int := xl_int(initial_growth_shock_type)) < 1 or initial_growth_shock_type_int > 3 else shock_magnitude_resolved(ctx) if initial_growth_shock_type_int == 1 else 0.0 if initial_growth_shock_type_int == 2 else 0.0 if initial_growth_shock_type_int == 3 else xl_raise(XlError.VALUE)) * xl_number(initial_shock_active_growth))), xl_number(100.0)))))) - xl_number(initial_shocked_primary_balance)
+    previous_debt = shocked_path_internal(ctx, time_period=time_period - 1)
+    interest_baseline = read_interest_baseline(ctx, time_period=time_period)
+    interest_shock_type = read_shock_type(ctx)
+    shock_active_interest = shock_active(ctx, time_period=time_period)
+    growth_baseline = read_growth_baseline(ctx, time_period=time_period)
+    growth_shock_type = read_shock_type(ctx)
+    shock_active_growth = shock_active(ctx, time_period=time_period)
+    shocked_primary_balance_value = shocked_primary_balance(ctx, time_period=time_period)
+    return xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(previous_debt) * xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(interest_baseline) + xl_number(xl_number(xl_raise(XlError.VALUE) if (interest_shock_type_int := xl_int(interest_shock_type)) < 1 or interest_shock_type_int > 3 else 0.0 if interest_shock_type_int == 1 else shock_magnitude_resolved(ctx) if interest_shock_type_int == 2 else 0.0 if interest_shock_type_int == 3 else xl_raise(XlError.VALUE)) * xl_number(shock_active_interest))), xl_number(100.0))))), xl_number(xl_number(1.0) + xl_number((lambda _ln, _rn: _ln / _rn if _rn != 0 else xl_raise(XlError.DIV))(xl_number(xl_number(growth_baseline) + xl_number(xl_number(xl_raise(XlError.VALUE) if (growth_shock_type_int := xl_int(growth_shock_type)) < 1 or growth_shock_type_int > 3 else shock_magnitude_resolved(ctx) if growth_shock_type_int == 1 else 0.0 if growth_shock_type_int == 2 else 0.0 if growth_shock_type_int == 3 else xl_raise(XlError.VALUE)) * xl_number(shock_active_growth))), xl_number(100.0)))))) - xl_number(shocked_primary_balance_value)
 
 def shocked_primary_balance(ctx: EvalContext, time_period: int) -> float:
-    """Compute the shocked primary balance by adding the shock impact to the baseline primary balance for the given time period.
+    """Compute the shocked primary balance for a given time period.
 
 Args:
-    ctx: Workbook evaluation context.
-    time_period: Projection time period (1 through 5).
+    time_period: int, the projection year number (1 to 5).
 
 Returns:
-    The shocked primary balance value as a percentage of GDP.
+    float, the shocked primary balance as a percentage of GDP.
 
 Note:
     Covers Engine!C16:G16. Excel: =Inputs!C18+CHOOSE(Inputs!B22,0,0,Engine!B9)*Engine!C10.
 """
-    baseline = xl_number(read_primary_balance_baseline(ctx, time_period=time_period))
-    shock_type_val = xl_int(read_shock_type(ctx))
-    if shock_type_val < 1 or shock_type_val > 3:
-        xl_raise(XlError.VALUE)
-    if shock_type_val == 3:
-        shock_term = shock_magnitude_resolved(ctx)
-    else:
-        shock_term = 0.0
-    active = xl_number(shock_active(ctx, time_period=time_period))
-    return baseline + shock_term * active
+    primary_balance_baseline = read_primary_balance_baseline(ctx, time_period=time_period)
+    shock_type_code = read_shock_type(ctx)
+    shock_active_flag = shock_active(ctx, time_period=time_period)
+    return xl_number(primary_balance_baseline) + xl_number(xl_number(xl_raise(XlError.VALUE) if (shock_type_int := xl_int(shock_type_code)) < 1 or shock_type_int > 3 else 0.0 if shock_type_int == 1 else 0.0 if shock_type_int == 2 else shock_magnitude_resolved(ctx) if shock_type_int == 3 else xl_raise(XlError.VALUE)) * xl_number(shock_active_flag))
 
 def shock_active(ctx: EvalContext, time_period: int) -> float:
-    """Return 1.0 if the engine period value is greater than or equal to the shock year; otherwise 0.0.
+    """Determine whether the shock is active in a given time period.
 
 Args:
-    ctx: Workbook evaluation context.
-    time_period: Time period index (1 through 5).
+    time_period (int): The time period index, ranging from 1 to 5.
 
 Returns:
-    1.0 if the engine value meets or exceeds the shock year, else 0.0.
+    float: 1.0 if the shock is active (time_period >= shock_year), else 0.0.
 
 Note:
     Covers Engine!C10:G10. Excel: =IF(Engine!C5>=Inputs!B21,1,0).
 """
-    column_by_period = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}
-    column = column_by_period[time_period]
-    engine_value = xl_cell(ctx, f'Engine!{column}5')
+    period_col_map = {1: 'C', 2: 'D', 3: 'E', 4: 'F', 5: 'G'}
+    engine_period = xl_cell(ctx, f'Engine!{period_col_map[time_period]}5')
     shock_year = read_shock_year(ctx)
-    condition_met = xl_bool(xl_compare('>=', engine_value, shock_year))
-    return 1.0 if condition_met else 0.0
+    return 1.0 if (is_active := xl_bool(xl_compare('>=', engine_period, shock_year))) else 0.0
 
 def initial_debt_resolved(ctx: EvalContext) -> CellValue:
-    """Lookup the resolved initial debt-to-GDP ratio for the selected country from the country profile table.
+    """Retrieve the initial debt-to-GDP ratio (as a percentage of GDP) for the selected country from the country profile table.
 
 Args:
     ctx: Workbook evaluation context.
 
 Returns:
-    The initial debt-to-GDP ratio as a CellValue.
+    Initial debt-to-GDP ratio for the selected country.
 
 Note:
     Covers Inputs!B6. Excel: =INDEX(Inputs!A10:C12,MATCH(Inputs!B5,Inputs!A10:A12,0),2).
 """
     country_name = read_country_name(ctx)
     country_column = xl_range(ctx, 'Inputs!A10:A12')
-    row_number = xl_match(country_name, country_column, 0.0)
-    lookup_table_ref = ('Inputs', 10, 1, 12, 3)
-    index_ref = xl_index_ref(lookup_table_ref, row_number, 2.0)
-    return xl_offset(ctx, index_ref, 0.0, 0.0)
+    match_row = xl_match(country_name, country_column, 0.0)
+    return xl_offset(ctx, xl_index_ref(('Inputs', 10, 1, 12, 3), match_row, 2.0), 0.0, 0.0)
 
 def shock_magnitude_resolved(ctx: EvalContext) -> CellValue:
-    """Resolve the shock magnitude (in percentage points) based on the selected shock type.
+    """Resolve the shock magnitude for the selected macroeconomic shock type.
 
 Args:
     ctx: Workbook evaluation context.
 
 Returns:
-    Shock magnitude resolved from the Inputs table.
+    Shock magnitude, expressed in percentage points, looked up from the Inputs sheet based on the shock type code.
 
 Note:
     Covers Engine!B9. Excel: =OFFSET(Inputs!B26,0,Inputs!B22-1).
 """
-    shock_type = xl_number(read_shock_type(ctx))
-    offset_cols = shock_type - 1.0
-    return xl_offset(ctx, ('Inputs', 26, 2), 0.0, offset_cols, None, None)
+    shock_type_code = read_shock_type(ctx)
+    col_offset = xl_number(shock_type_code) - 1.0
+    return xl_offset(ctx, ('Inputs', 26, 2), 0.0, col_offset, None, None)
 
 # --- Projection public address aliases ---
 
 def cell_engine_b20(ctx):
-    return xl_offset(ctx, xl_index_ref(('Inputs', 10, 1, 12, 3), xl_match(read_country_name(ctx), xl_range(ctx, 'Inputs!A10:A12'), 0.0), 2.0), 0.0, 0.0)
+    _t3 = read_country_name(ctx)
+    _t4 = xl_range(ctx, 'Inputs!A10:A12')
+    _t5 = xl_match(_t3, _t4, 0.0)
+    return xl_offset(ctx, xl_index_ref(('Inputs', 10, 1, 12, 3), _t5, 2.0), 0.0, 0.0)
 
 def cell_engine_b6(ctx):
-    return xl_offset(ctx, xl_index_ref(('Inputs', 10, 1, 12, 3), xl_match(read_country_name(ctx), xl_range(ctx, 'Inputs!A10:A12'), 0.0), 2.0), 0.0, 0.0)
+    _t6 = read_country_name(ctx)
+    _t7 = xl_range(ctx, 'Inputs!A10:A12')
+    _t8 = xl_match(_t6, _t7, 0.0)
+    return xl_offset(ctx, xl_index_ref(('Inputs', 10, 1, 12, 3), _t8, 2.0), 0.0, 0.0)
 
 def cell_outputs_b12(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(initial_debt_resolved(ctx)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_interest_baseline(ctx, time_period=1)), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_growth_baseline(ctx, time_period=1)), xl_number(100.0))))))))) - xl_number(read_primary_balance_baseline(ctx, time_period=1)))
+    _t9 = initial_debt_resolved(ctx)
+    _t10 = read_interest_baseline(ctx, time_period=1)
+    _t11 = read_growth_baseline(ctx, time_period=1)
+    _t12 = read_primary_balance_baseline(ctx, time_period=1)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t9) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t10), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t11), xl_number(100.0))))))))) - xl_number(_t12))
 
 def cell_outputs_b13(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(initial_debt_resolved(ctx)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_interest_baseline(ctx, time_period=1)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t1 := xl_int(read_shock_type(ctx))) < 1 or _t1 > 3 else ((0.0) if _t1 == 1 else (((shock_magnitude_resolved(ctx)) if _t1 == 2 else (((0.0) if _t1 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=1)))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_growth_baseline(ctx, time_period=1)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t2 := xl_int(read_shock_type(ctx))) < 1 or _t2 > 3 else ((shock_magnitude_resolved(ctx)) if _t2 == 1 else (((0.0) if _t2 == 2 else (((0.0) if _t2 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=1)))))), xl_number(100.0))))))))) - xl_number(shocked_primary_balance(ctx, time_period=1)))
+    _t13 = initial_debt_resolved(ctx)
+    _t14 = read_interest_baseline(ctx, time_period=1)
+    _t15 = read_shock_type(ctx)
+    _t17 = shock_active(ctx, time_period=1)
+    _t18 = read_growth_baseline(ctx, time_period=1)
+    _t19 = read_shock_type(ctx)
+    _t21 = shock_active(ctx, time_period=1)
+    _t22 = shocked_primary_balance(ctx, time_period=1)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t13) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t14) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t16 := xl_int(_t15)) < 1 or _t16 > 3 else ((0.0) if _t16 == 1 else (((shock_magnitude_resolved(ctx)) if _t16 == 2 else (((0.0) if _t16 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t17))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t18) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t20 := xl_int(_t19)) < 1 or _t20 > 3 else ((shock_magnitude_resolved(ctx)) if _t20 == 1 else (((0.0) if _t20 == 2 else (((0.0) if _t20 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t21))))), xl_number(100.0))))))))) - xl_number(_t22))
 
 def cell_outputs_c12(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(baseline_path_internal(ctx, time_period=1)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_interest_baseline(ctx, time_period=2)), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_growth_baseline(ctx, time_period=2)), xl_number(100.0))))))))) - xl_number(read_primary_balance_baseline(ctx, time_period=2)))
+    _t23 = baseline_path_internal(ctx, time_period=1)
+    _t24 = read_interest_baseline(ctx, time_period=2)
+    _t25 = read_growth_baseline(ctx, time_period=2)
+    _t26 = read_primary_balance_baseline(ctx, time_period=2)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t23) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t24), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t25), xl_number(100.0))))))))) - xl_number(_t26))
 
 def cell_outputs_c13(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(shocked_path_internal(ctx, time_period=1)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_interest_baseline(ctx, time_period=2)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t3 := xl_int(read_shock_type(ctx))) < 1 or _t3 > 3 else ((0.0) if _t3 == 1 else (((shock_magnitude_resolved(ctx)) if _t3 == 2 else (((0.0) if _t3 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=2)))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_growth_baseline(ctx, time_period=2)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t4 := xl_int(read_shock_type(ctx))) < 1 or _t4 > 3 else ((shock_magnitude_resolved(ctx)) if _t4 == 1 else (((0.0) if _t4 == 2 else (((0.0) if _t4 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=2)))))), xl_number(100.0))))))))) - xl_number(shocked_primary_balance(ctx, time_period=2)))
+    _t27 = shocked_path_internal(ctx, time_period=1)
+    _t28 = read_interest_baseline(ctx, time_period=2)
+    _t29 = read_shock_type(ctx)
+    _t31 = shock_active(ctx, time_period=2)
+    _t32 = read_growth_baseline(ctx, time_period=2)
+    _t33 = read_shock_type(ctx)
+    _t35 = shock_active(ctx, time_period=2)
+    _t36 = shocked_primary_balance(ctx, time_period=2)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t27) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t28) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t30 := xl_int(_t29)) < 1 or _t30 > 3 else ((0.0) if _t30 == 1 else (((shock_magnitude_resolved(ctx)) if _t30 == 2 else (((0.0) if _t30 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t31))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t32) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t34 := xl_int(_t33)) < 1 or _t34 > 3 else ((shock_magnitude_resolved(ctx)) if _t34 == 1 else (((0.0) if _t34 == 2 else (((0.0) if _t34 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t35))))), xl_number(100.0))))))))) - xl_number(_t36))
 
 def cell_outputs_d12(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(baseline_path_internal(ctx, time_period=2)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_interest_baseline(ctx, time_period=3)), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_growth_baseline(ctx, time_period=3)), xl_number(100.0))))))))) - xl_number(read_primary_balance_baseline(ctx, time_period=3)))
+    _t37 = baseline_path_internal(ctx, time_period=2)
+    _t38 = read_interest_baseline(ctx, time_period=3)
+    _t39 = read_growth_baseline(ctx, time_period=3)
+    _t40 = read_primary_balance_baseline(ctx, time_period=3)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t37) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t38), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t39), xl_number(100.0))))))))) - xl_number(_t40))
 
 def cell_outputs_d13(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(shocked_path_internal(ctx, time_period=2)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_interest_baseline(ctx, time_period=3)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t5 := xl_int(read_shock_type(ctx))) < 1 or _t5 > 3 else ((0.0) if _t5 == 1 else (((shock_magnitude_resolved(ctx)) if _t5 == 2 else (((0.0) if _t5 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=3)))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_growth_baseline(ctx, time_period=3)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t6 := xl_int(read_shock_type(ctx))) < 1 or _t6 > 3 else ((shock_magnitude_resolved(ctx)) if _t6 == 1 else (((0.0) if _t6 == 2 else (((0.0) if _t6 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=3)))))), xl_number(100.0))))))))) - xl_number(shocked_primary_balance(ctx, time_period=3)))
+    _t41 = shocked_path_internal(ctx, time_period=2)
+    _t42 = read_interest_baseline(ctx, time_period=3)
+    _t43 = read_shock_type(ctx)
+    _t45 = shock_active(ctx, time_period=3)
+    _t46 = read_growth_baseline(ctx, time_period=3)
+    _t47 = read_shock_type(ctx)
+    _t49 = shock_active(ctx, time_period=3)
+    _t50 = shocked_primary_balance(ctx, time_period=3)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t41) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t42) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t44 := xl_int(_t43)) < 1 or _t44 > 3 else ((0.0) if _t44 == 1 else (((shock_magnitude_resolved(ctx)) if _t44 == 2 else (((0.0) if _t44 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t45))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t46) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t48 := xl_int(_t47)) < 1 or _t48 > 3 else ((shock_magnitude_resolved(ctx)) if _t48 == 1 else (((0.0) if _t48 == 2 else (((0.0) if _t48 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t49))))), xl_number(100.0))))))))) - xl_number(_t50))
 
 def cell_outputs_e12(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(baseline_path_internal(ctx, time_period=3)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_interest_baseline(ctx, time_period=4)), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_growth_baseline(ctx, time_period=4)), xl_number(100.0))))))))) - xl_number(read_primary_balance_baseline(ctx, time_period=4)))
+    _t51 = baseline_path_internal(ctx, time_period=3)
+    _t52 = read_interest_baseline(ctx, time_period=4)
+    _t53 = read_growth_baseline(ctx, time_period=4)
+    _t54 = read_primary_balance_baseline(ctx, time_period=4)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t51) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t52), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t53), xl_number(100.0))))))))) - xl_number(_t54))
 
 def cell_outputs_e13(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(shocked_path_internal(ctx, time_period=3)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_interest_baseline(ctx, time_period=4)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t7 := xl_int(read_shock_type(ctx))) < 1 or _t7 > 3 else ((0.0) if _t7 == 1 else (((shock_magnitude_resolved(ctx)) if _t7 == 2 else (((0.0) if _t7 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=4)))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_growth_baseline(ctx, time_period=4)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t8 := xl_int(read_shock_type(ctx))) < 1 or _t8 > 3 else ((shock_magnitude_resolved(ctx)) if _t8 == 1 else (((0.0) if _t8 == 2 else (((0.0) if _t8 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=4)))))), xl_number(100.0))))))))) - xl_number(shocked_primary_balance(ctx, time_period=4)))
+    _t55 = shocked_path_internal(ctx, time_period=3)
+    _t56 = read_interest_baseline(ctx, time_period=4)
+    _t57 = read_shock_type(ctx)
+    _t59 = shock_active(ctx, time_period=4)
+    _t60 = read_growth_baseline(ctx, time_period=4)
+    _t61 = read_shock_type(ctx)
+    _t63 = shock_active(ctx, time_period=4)
+    _t64 = shocked_primary_balance(ctx, time_period=4)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t55) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t56) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t58 := xl_int(_t57)) < 1 or _t58 > 3 else ((0.0) if _t58 == 1 else (((shock_magnitude_resolved(ctx)) if _t58 == 2 else (((0.0) if _t58 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t59))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t60) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t62 := xl_int(_t61)) < 1 or _t62 > 3 else ((shock_magnitude_resolved(ctx)) if _t62 == 1 else (((0.0) if _t62 == 2 else (((0.0) if _t62 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t63))))), xl_number(100.0))))))))) - xl_number(_t64))
 
 def cell_outputs_f12(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(baseline_path_internal(ctx, time_period=4)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_interest_baseline(ctx, time_period=5)), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(read_growth_baseline(ctx, time_period=5)), xl_number(100.0))))))))) - xl_number(read_primary_balance_baseline(ctx, time_period=5)))
+    _t65 = baseline_path_internal(ctx, time_period=4)
+    _t66 = read_interest_baseline(ctx, time_period=5)
+    _t67 = read_growth_baseline(ctx, time_period=5)
+    _t68 = read_primary_balance_baseline(ctx, time_period=5)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t65) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t66), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number(_t67), xl_number(100.0))))))))) - xl_number(_t68))
 
 def cell_outputs_f13(ctx):
-    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(shocked_path_internal(ctx, time_period=4)) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_interest_baseline(ctx, time_period=5)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t9 := xl_int(read_shock_type(ctx))) < 1 or _t9 > 3 else ((0.0) if _t9 == 1 else (((shock_magnitude_resolved(ctx)) if _t9 == 2 else (((0.0) if _t9 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=5)))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(read_growth_baseline(ctx, time_period=5)) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t10 := xl_int(read_shock_type(ctx))) < 1 or _t10 > 3 else ((shock_magnitude_resolved(ctx)) if _t10 == 1 else (((0.0) if _t10 == 2 else (((0.0) if _t10 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(shock_active(ctx, time_period=5)))))), xl_number(100.0))))))))) - xl_number(shocked_primary_balance(ctx, time_period=5)))
+    _t69 = shocked_path_internal(ctx, time_period=4)
+    _t70 = read_interest_baseline(ctx, time_period=5)
+    _t71 = read_shock_type(ctx)
+    _t73 = shock_active(ctx, time_period=5)
+    _t74 = read_growth_baseline(ctx, time_period=5)
+    _t75 = read_shock_type(ctx)
+    _t77 = shock_active(ctx, time_period=5)
+    _t78 = shocked_primary_balance(ctx, time_period=5)
+    return (xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t69) * xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t70) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t72 := xl_int(_t71)) < 1 or _t72 > 3 else ((0.0) if _t72 == 1 else (((shock_magnitude_resolved(ctx)) if _t72 == 2 else (((0.0) if _t72 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t73))))), xl_number(100.0)))))))), xl_number((xl_number(1.0) + xl_number(((lambda _ln, _rn: (_ln / _rn if _rn != 0 else xl_raise(XlError.DIV)))(xl_number((xl_number(_t74) + xl_number((xl_number(((xl_raise(XlError.VALUE) if (_t76 := xl_int(_t75)) < 1 or _t76 > 3 else ((shock_magnitude_resolved(ctx)) if _t76 == 1 else (((0.0) if _t76 == 2 else (((0.0) if _t76 == 3 else (xl_raise(XlError.VALUE)))))))))) * xl_number(_t77))))), xl_number(100.0))))))))) - xl_number(_t78))
 
 # --- Formula resolver ---
 _RESOLVED_FORMULAS = {}

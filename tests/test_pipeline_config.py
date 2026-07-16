@@ -24,7 +24,7 @@ def test_load_pipeline_config_reads_workbook_config() -> None:
     )
     assert config.graph_audit_cases == ()
     assert config.variation_mode == "independent"
-    assert config.clustering_mode == "series_ast"
+    assert config.clustering_mode == "series"
     assert config.canonical_api_example_path.name == "canonical-api-usage.md"
     assert (
         config.repo_relative_posix_path(config.canonical_api_example_path)
