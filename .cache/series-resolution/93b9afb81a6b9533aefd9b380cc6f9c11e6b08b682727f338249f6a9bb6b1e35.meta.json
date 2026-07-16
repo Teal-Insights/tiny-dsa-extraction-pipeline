@@ -1,0 +1,9 @@
+{
+  "cache_key": "93b9afb81a6b9533aefd9b380cc6f9c11e6b08b682727f338249f6a9bb6b1e35",
+  "cache_schema_version": "1.0.0",
+  "excel_grapher_version": "3.15.0",
+  "graph_cache_key": "89f96449590504bdcb994e9e6083ce5f642f2dd05a279417e932f205dfce5224",
+  "input_series_count": 8,
+  "internal_series_count": 10,
+  "output_series_count": 3
+}

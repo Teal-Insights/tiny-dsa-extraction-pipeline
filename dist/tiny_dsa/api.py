@@ -1,10 +1,29 @@
 from __future__ import annotations
 
+import warnings
+
+from ._api_helpers import (
+    DataFrameInput,
+    EmptyMeasure,
+    Record,
+    Records,
+    Sequence,
+    _apply_series_records,
+    coerce_setter_input,
+)
+from ._readers import (
+    _LEAF_INDEX_COUNTRY_NAME,
+    _LEAF_INDEX_COUNTRY_INITIAL_DEBT,
+    _LEAF_INDEX_GROWTH_BASELINE,
+    _LEAF_INDEX_INTEREST_BASELINE,
+    _LEAF_INDEX_PRIMARY_BALANCE_BASELINE,
+    _LEAF_INDEX_SHOCK_YEAR,
+    _LEAF_INDEX_SHOCK_TYPE,
+    _LEAF_INDEX_SHOCK_MAGNITUDES,
+)
 from .data import CONSTANTS, DEFAULT_INPUTS
 from .internals import _resolve_formula
-from ._api_helpers import EmptyMeasure, Record, Records, Scalar, SeriesInput, _apply_series_records, _coerce_records, coerce_setter_input
 from .runtime import EvalContext, coerce_inputs_dict, xl_cell, xl_range_rows
-import warnings
 
 
 def make_context(inputs: dict[str, object] | None = None) -> EvalContext:
@@ -18,27 +37,23 @@ def make_context(inputs: dict[str, object] | None = None) -> EvalContext:
 
 # --- Series binding setters (Records API) ---
 
-_LEAF_INDEX_COUNTRY_NAME = {
-    (): 'Inputs!B5',
-}
-
 def set_country_name(
     ctx: EvalContext,
-    records: Records | Record | Scalar,
+    records: Records | Record | str,
     *,
     strict: bool = True,
 ) -> None:
-    """Set the country name for the debt sustainability analysis.
+    """Set the country name for the Tiny-DSA scenario.
 
-    Updates the selected country name in the Inputs sheet, which drives the initial debt-to-GDP ratio lookup.
-    Input is normalized to a record with PARAMETER 'country_name' and OBS_VALUE; the setter checks record structure and key fields but does not validate the country name against the profile table.
+    Updates the selected country in the Inputs sheet, which controls the initial debt-to-GDP ratio via the country profile table.
+    The OBS_VALUE from each record is written to the workbook cell country_name (Inputs!B5).
 
     Args:
-        records (Scalar | Record | Records): A bare scalar value, a single record dict, or a list of records.
+        records (Records | Record | str): A bare scalar value, a single record dict, or a list of records.
             Required record fields:
-                - OBS_VALUE: The name of the country to set.
+                - OBS_VALUE: The country name to select.
             Optional record fields:
-                - PARAMETER: The parameter being set, identifying the workbook input cell. If supplied, expected value: "country_name".
+                - PARAMETER: Identifies this record as the country name parameter. If supplied, expected value: "country_name".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -53,7 +68,15 @@ def set_country_name(
     """
     _apply_series_records(
         ctx,
-        _coerce_records(records, 'OBS_VALUE', allow_scalar=True),
+        coerce_setter_input(
+            records,
+            layout='scalar',
+            key_fields=(),
+            measure_field='OBS_VALUE',
+            key_order=None,
+            strict=strict,
+            measure_dtype='string',
+        ),
         key_fields=(),
         allowed_fields=frozenset({'OBS_VALUE', 'PARAMETER'}),
         measure_field='OBS_VALUE',
@@ -64,35 +87,29 @@ def set_country_name(
         requires_address=False,
     )
 
-_LEAF_INDEX_COUNTRY_INITIAL_DEBT = {
-    (('COUNTRY', 'Borvelia'),): 'Inputs!B10',
-    (('COUNTRY', 'Litellia'),): 'Inputs!B11',
-    (('COUNTRY', 'Aurelium'),): 'Inputs!B12',
-}
-
 _KEY_ORDER_COUNTRY_INITIAL_DEBT = ('Aurelium', 'Borvelia', 'Litellia')
 
 def set_country_initial_debt(
     ctx: EvalContext,
-    records: SeriesInput,
+    records: Records | Record | Sequence[float] | DataFrameInput,
     *,
     strict: bool = True,
     empty_measure: EmptyMeasure = "write",
 ) -> None:
-    """Set the initial debt-to-GDP ratios for countries in the profile table.
+    """Set initial debt-to-GDP ratios for the country profile lookup table.
 
-    Updates the initial debt-to-GDP values for the selected countries in the Tiny-DSA country profile lookup table.
-    Each record matches a row in the country profile table by the COUNTRY field; the OBS_VALUE is written to the corresponding initial debt cell.
+    Updates the initial debt-to-GDP ratios for the pre-defined set of countries in the country profile table.
+    Each record corresponds to a row in the country profile table (Inputs!A10:C12), keyed by the COUNTRY label in column A, and places the OBS_VALUE in column B.
 
     Args:
-        records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        records (Records | Record | Sequence[float] | DataFrameInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
         empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
-                - COUNTRY: Country name as listed in the country profile table.
-                - OBS_VALUE: The initial debt-to-GDP ratio, expressed as a percentage of GDP.
+                - COUNTRY: Country identifier used as the lookup key.
+                - OBS_VALUE: Initial debt-to-GDP ratio, in percent of GDP.
             Optional record fields:
-                - INDICATOR: The economic indicator that the observation value represents. If supplied, expected value: "initial_debt_to_gdp".
-                - UNIT_MEASURE: Unit of measurement for the debt-to-GDP ratio. If supplied, expected value: "PC_GDP".
+                - INDICATOR: Economic indicator that this series represents. If supplied, expected value: "initial_debt_to_gdp".
+                - UNIT_MEASURE: Unit of measure for the observation value. If supplied, expected value: "PC_GDP".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -122,6 +139,7 @@ def set_country_initial_debt(
             empty_measure=empty_measure,
             requires_address=False,
             key_dtypes={'COUNTRY': 'string'},
+            measure_dtype='float',
         ),
         key_fields=('COUNTRY',),
         allowed_fields=frozenset({'COUNTRY', 'INDICATOR', 'OBS_VALUE', 'UNIT_MEASURE'}),
@@ -133,37 +151,29 @@ def set_country_initial_debt(
         requires_address=False,
     )
 
-_LEAF_INDEX_GROWTH_BASELINE = {
-    (('TIME_PERIOD', 1),): 'Inputs!C16',
-    (('TIME_PERIOD', 2),): 'Inputs!D16',
-    (('TIME_PERIOD', 3),): 'Inputs!E16',
-    (('TIME_PERIOD', 4),): 'Inputs!F16',
-    (('TIME_PERIOD', 5),): 'Inputs!G16',
-}
-
 _KEY_ORDER_GROWTH_BASELINE = (1, 2, 3, 4, 5)
 
 def set_growth_baseline(
     ctx: EvalContext,
-    records: SeriesInput,
+    records: Records | Record | Sequence[float] | DataFrameInput,
     *,
     strict: bool = True,
     empty_measure: EmptyMeasure = "write",
 ) -> None:
     """Set baseline real GDP growth rates for projection years 1 through 5.
 
-    Updates the growth_baseline named range (Inputs!C16:G16) with the provided growth values.
-    Each record’s OBS_VALUE is assigned to the cell in the growth_baseline range corresponding to its TIME_PERIOD.
+    Updates the baseline real GDP growth path used in the debt recursion.
+    Each record maps to a single cell in the `growth_baseline` range: `TIME_PERIOD` identifies the year, `OBS_VALUE` provides the growth rate.
 
     Args:
-        records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        records (Records | Record | Sequence[float] | DataFrameInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
         empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
-                - TIME_PERIOD: Projection year.
-                - OBS_VALUE: Real GDP growth rate in percent per annum.
+                - TIME_PERIOD: Projection year index (1 to 5).
+                - OBS_VALUE: Real GDP growth rate expressed as a percentage per annum.
             Optional record fields:
-                - INDICATOR: Economic indicator for the series. If supplied, expected value: "real_gdp_growth".
-                - UNIT_MEASURE: Unit of measure for the observation value. If supplied, expected value: "PERCENT_PER_ANNUM".
+                - INDICATOR: Series indicator identifying the data as real GDP growth. If supplied, expected value: "real_gdp_growth".
+                - UNIT_MEASURE: Unit of measurement for the growth rate values. If supplied, expected value: "PERCENT_PER_ANNUM".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -193,6 +203,7 @@ def set_growth_baseline(
             empty_measure=empty_measure,
             requires_address=False,
             key_dtypes={'TIME_PERIOD': 'int'},
+            measure_dtype='float',
         ),
         key_fields=('TIME_PERIOD',),
         allowed_fields=frozenset({'INDICATOR', 'OBS_VALUE', 'TIME_PERIOD', 'UNIT_MEASURE'}),
@@ -204,37 +215,29 @@ def set_growth_baseline(
         requires_address=False,
     )
 
-_LEAF_INDEX_INTEREST_BASELINE = {
-    (('TIME_PERIOD', 1),): 'Inputs!C17',
-    (('TIME_PERIOD', 2),): 'Inputs!D17',
-    (('TIME_PERIOD', 3),): 'Inputs!E17',
-    (('TIME_PERIOD', 4),): 'Inputs!F17',
-    (('TIME_PERIOD', 5),): 'Inputs!G17',
-}
-
 _KEY_ORDER_INTEREST_BASELINE = (1, 2, 3, 4, 5)
 
 def set_interest_baseline(
     ctx: EvalContext,
-    records: SeriesInput,
+    records: Records | Record | Sequence[float] | DataFrameInput,
     *,
     strict: bool = True,
     empty_measure: EmptyMeasure = "write",
 ) -> None:
-    """Set the baseline real interest rates for projection years 1 through 5.
+    """Set baseline real interest rate assumptions for the five-year projection horizon.
 
-    Sets the annual real interest rate baseline values in the Inputs sheet.
-    Each record's `TIME_PERIOD` maps to a projection year header, and `OBS_VALUE` sets the corresponding cell in the Inputs!C17:G17 range.
+    Updates the baseline real interest rate path for each projection year.
+    Each record corresponds to a projection year, with TIME_PERIOD indicating the year and OBS_VALUE the real interest rate for that year.
 
     Args:
-        records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        records (Records | Record | Sequence[float] | DataFrameInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
         empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
-                - TIME_PERIOD: The projection year identifying the column in the baseline range.
-                - OBS_VALUE: The real interest rate value for the projection year.
+                - TIME_PERIOD: The projection year within the five-year horizon.
+                - OBS_VALUE: The baseline real interest rate for the year, expressed as the effective real rate on general-government debt, in percent per annum.
             Optional record fields:
-                - INDICATOR: A constant identifying the series as real interest rate data. If supplied, expected value: "real_interest_rate".
-                - UNIT_MEASURE: The unit of measure for the interest rate values. If supplied, expected value: "PERCENT_PER_ANNUM".
+                - INDICATOR: The economic indicator associated with this series. If supplied, expected value: "real_interest_rate".
+                - UNIT_MEASURE: The unit of measure for the interest rate. If supplied, expected value: "PERCENT_PER_ANNUM".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -264,6 +267,7 @@ def set_interest_baseline(
             empty_measure=empty_measure,
             requires_address=False,
             key_dtypes={'TIME_PERIOD': 'int'},
+            measure_dtype='float',
         ),
         key_fields=('TIME_PERIOD',),
         allowed_fields=frozenset({'INDICATOR', 'OBS_VALUE', 'TIME_PERIOD', 'UNIT_MEASURE'}),
@@ -275,37 +279,29 @@ def set_interest_baseline(
         requires_address=False,
     )
 
-_LEAF_INDEX_PRIMARY_BALANCE_BASELINE = {
-    (('TIME_PERIOD', 1),): 'Inputs!C18',
-    (('TIME_PERIOD', 2),): 'Inputs!D18',
-    (('TIME_PERIOD', 3),): 'Inputs!E18',
-    (('TIME_PERIOD', 4),): 'Inputs!F18',
-    (('TIME_PERIOD', 5),): 'Inputs!G18',
-}
-
 _KEY_ORDER_PRIMARY_BALANCE_BASELINE = (1, 2, 3, 4, 5)
 
 def set_primary_balance_baseline(
     ctx: EvalContext,
-    records: SeriesInput,
+    records: Records | Record | Sequence[float] | DataFrameInput,
     *,
     strict: bool = True,
     empty_measure: EmptyMeasure = "write",
 ) -> None:
     """Set the baseline primary balance path for projection years 1 through 5.
 
-    Updates the primary balance baseline series with the provided records.
-    Each record supplies a projection year (TIME_PERIOD) and its corresponding primary balance value (OBS_VALUE) for the baseline path.
+    Updates the primary balance baseline values, expressed as percent of GDP with positive values denoting a surplus.
+    Each record corresponds to one projection year; TIME_PERIOD maps to the column header (1–5), and OBS_VALUE sets the primary balance for that year.
 
     Args:
-        records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        records (Records | Record | Sequence[float] | DataFrameInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
         empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
-                - TIME_PERIOD: Projection year index, from 1 to 5.
-                - OBS_VALUE: Primary balance as a percent of GDP; positive values denote a surplus.
+                - TIME_PERIOD: Projection year (1 through 5).
+                - OBS_VALUE: Primary balance value, expressed as percent of GDP (positive values denote a surplus).
             Optional record fields:
-                - INDICATOR: Series indicator identifier. If supplied, expected value: "primary_balance".
-                - UNIT_MEASURE: Unit of measure for the observation values. If supplied, expected value: "PC_GDP".
+                - INDICATOR: The indicator type. If supplied, expected value: "primary_balance".
+                - UNIT_MEASURE: The unit of measure for the values. If supplied, expected value: "PC_GDP".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -335,6 +331,7 @@ def set_primary_balance_baseline(
             empty_measure=empty_measure,
             requires_address=False,
             key_dtypes={'TIME_PERIOD': 'int'},
+            measure_dtype='float',
         ),
         key_fields=('TIME_PERIOD',),
         allowed_fields=frozenset({'INDICATOR', 'OBS_VALUE', 'TIME_PERIOD', 'UNIT_MEASURE'}),
@@ -346,27 +343,23 @@ def set_primary_balance_baseline(
         requires_address=False,
     )
 
-_LEAF_INDEX_SHOCK_YEAR = {
-    (): 'Inputs!B21',
-}
-
 def set_shock_year(
     ctx: EvalContext,
-    records: Records | Record | Scalar,
+    records: Records | Record | int,
     *,
     strict: bool = True,
 ) -> None:
-    """Set the shock year in the Tiny-DSA Inputs sheet.
+    """Set the projection year for shock activation.
 
-    Updates the value of the shock year, an integer between 1 and 5 that determines the first projection year in which the selected shock takes effect.
-    Each record corresponds to the scalar shock year value; the OBS_VALUE field holds the integer year.
+    Updates the shock year cell (Inputs!B21) with the integer value representing the first projection period in which the shock applies.
+    Each record provides an integer observation value; the setter normalizes the input into records, checks record shape and key matching, and writes the value to cell Inputs!B21.
 
     Args:
-        records (Scalar | Record | Records): A bare scalar value, a single record dict, or a list of records.
+        records (Records | Record | int): A bare scalar value, a single record dict, or a list of records.
             Required record fields:
-                - OBS_VALUE: The integer year, from 1 to 5, in which the shock begins.
+                - OBS_VALUE: The first projection year (integer) in which the configured shock becomes active.
             Optional record fields:
-                - PARAMETER: Identifies the record as belonging to the shock_year parameter. If supplied, expected value: "shock_year".
+                - PARAMETER: A constant string identifier for the shock year parameter. If supplied, expected value: "shock_year".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -381,7 +374,15 @@ def set_shock_year(
     """
     _apply_series_records(
         ctx,
-        _coerce_records(records, 'OBS_VALUE', allow_scalar=True),
+        coerce_setter_input(
+            records,
+            layout='scalar',
+            key_fields=(),
+            measure_field='OBS_VALUE',
+            key_order=None,
+            strict=strict,
+            measure_dtype='int',
+        ),
         key_fields=(),
         allowed_fields=frozenset({'OBS_VALUE', 'PARAMETER'}),
         measure_field='OBS_VALUE',
@@ -392,27 +393,23 @@ def set_shock_year(
         requires_address=False,
     )
 
-_LEAF_INDEX_SHOCK_TYPE = {
-    (): 'Inputs!B22',
-}
-
 def set_shock_type(
     ctx: EvalContext,
-    records: Records | Record | Scalar,
+    records: Records | Record | int,
     *,
     strict: bool = True,
 ) -> None:
-    """Set the shock type for the scenario configuration.
+    """Set the shock type for the stress scenario in the Tiny-DSA workbook.
 
-    Updates the shock type in the Inputs sheet to specify which macroeconomic or fiscal parameter the shock affects.
-    The OBS_VALUE field of the record is written to the scalar cell Inputs!B22.
+    Updates the shock type parameter in the Inputs sheet, specifying which macroeconomic variable the shock applies to (real GDP growth, real interest rate, or primary balance).
+    The OBS_VALUE from the record is written to the shock_type cell (Inputs!B22).
 
     Args:
-        records (Scalar | Record | Records): A bare scalar value, a single record dict, or a list of records.
+        records (Records | Record | int): A bare scalar value, a single record dict, or a list of records.
             Required record fields:
-                - OBS_VALUE: The shock type code: 1 for real GDP growth, 2 for real interest rate, 3 for primary balance.
+                - OBS_VALUE: The shock type code indicating the affected parameter: 1 for real GDP growth, 2 for real interest rate, 3 for primary balance.
             Optional record fields:
-                - PARAMETER: Identifies the conceptual parameter being configured. If supplied, expected value: "shock_type".
+                - PARAMETER: Identifies the workbook parameter being configured; for this setter it is always the shock type. If supplied, expected value: "shock_type".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -427,7 +424,15 @@ def set_shock_type(
     """
     _apply_series_records(
         ctx,
-        _coerce_records(records, 'OBS_VALUE', allow_scalar=True),
+        coerce_setter_input(
+            records,
+            layout='scalar',
+            key_fields=(),
+            measure_field='OBS_VALUE',
+            key_order=None,
+            strict=strict,
+            measure_dtype='int',
+        ),
         key_fields=(),
         allowed_fields=frozenset({'OBS_VALUE', 'PARAMETER'}),
         measure_field='OBS_VALUE',
@@ -438,35 +443,29 @@ def set_shock_type(
         requires_address=False,
     )
 
-_LEAF_INDEX_SHOCK_MAGNITUDES = {
-    (('SHOCK_PARAMETER', 'Growth'),): 'Inputs!B26',
-    (('SHOCK_PARAMETER', 'Interest'),): 'Inputs!C26',
-    (('SHOCK_PARAMETER', 'Primary balance'),): 'Inputs!D26',
-}
-
 _KEY_ORDER_SHOCK_MAGNITUDES = ('Growth', 'Interest', 'Primary balance')
 
 def set_shock_magnitudes(
     ctx: EvalContext,
-    records: SeriesInput,
+    records: Records | Record | Sequence[float] | DataFrameInput,
     *,
     strict: bool = True,
     empty_measure: EmptyMeasure = "write",
 ) -> None:
-    """Set the shock magnitudes for each shock parameter (growth, interest, primary balance).
+    """Set shock magnitudes for each shock parameter.
 
-    Defines the magnitude of the shock for each of the three possible affected parameters.
-    Each record represents one shock magnitude cell in the shock table (Inputs!B26:D26); the SHOCK_PARAMETER field maps to the column header.
+    Sets the three shock magnitudes in the shock table (Inputs!B26:D26) that determine the size of the shock applied to a selected parameter.
+    Each record provides a shock parameter name and its associated magnitude; the three records map left-to-right across the three cells of the shock table.
 
     Args:
-        records (SeriesInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
+        records (Records | Record | Sequence[float] | DataFrameInput): A list of records, a single record dict, a tidy pandas/polars DataFrame, or a 1-D iterable of measure values in key order.
         empty_measure (EmptyMeasure): How to treat rows with missing measure values (`None` or float NaN after DataFrame coercion). "write" (default) passes values through; "skip" drops them; "error" raises. Empty key fields always raise.
             Required record fields:
-                - SHOCK_PARAMETER: The parameter affected by the shock (e.g., 'Growth', 'Interest', or 'Primary Balance').
-                - OBS_VALUE: The shock magnitude applied to the parameter.
+                - SHOCK_PARAMETER: Name of the shock parameter (e.g., 'Growth', 'Interest', 'Primary Balance').
+                - OBS_VALUE: Magnitude of the shock in percentage points.
             Optional record fields:
-                - PARAMETER: Constant field identifying the data as shock magnitude entries. If supplied, expected value: "shock_magnitude".
-                - UNIT_MEASURE: Unit of measure for the shock magnitude. If supplied, expected value: "PP".
+                - PARAMETER: Constant identifier for the shock magnitudes series. If supplied, expected value: "shock_magnitude".
+                - UNIT_MEASURE: Unit of measure for the shock magnitudes. If supplied, expected value: "PP".
 
     Returns:
         None: Applies the input updates to ctx.
@@ -496,6 +495,7 @@ def set_shock_magnitudes(
             empty_measure=empty_measure,
             requires_address=False,
             key_dtypes={'SHOCK_PARAMETER': 'string'},
+            measure_dtype='float',
         ),
         key_fields=('SHOCK_PARAMETER',),
         allowed_fields=frozenset({'OBS_VALUE', 'PARAMETER', 'SHOCK_PARAMETER', 'UNIT_MEASURE'}),
@@ -518,10 +518,10 @@ _OUTPUT_LEAVES_OUTPUT_BASELINE: list[tuple[str, Record]] = [
 ]
 
 def compute_output_baseline(ctx=None, *, inputs=None) -> Records:
-    """Compute the baseline debt-to-GDP trajectory for projection years 1 through 5.
+    """Compute the baseline debt-to-GDP path for projection years 1 through 5.
 
-    Return the baseline debt-to-GDP path as a list of records.
-    Each record maps to a cell in Outputs!B12:F12, with TIME_PERIOD as the year and OBS_VALUE as the debt-to-GDP ratio.
+    Returns the baseline debt-to-GDP projections from the Outputs sheet.
+    Each record matches a cell in Outputs!B12:F12, with TIME_PERIOD from the column header and OBS_VALUE from the cell value.
 
     Args:
         ctx (EvalContext | None): Existing evaluation context, if available.
@@ -530,11 +530,11 @@ def compute_output_baseline(ctx=None, *, inputs=None) -> Records:
     Returns:
         Records: Computed output records.
             Required record fields:
-                - TIME_PERIOD: Projection year (1 through 5).
+                - TIME_PERIOD: Projection year (1 to 5).
                 - OBS_VALUE: Debt-to-GDP ratio as a percentage of GDP.
             Optional record fields:
-                - SCENARIO: Scenario identifier distinguishing baseline from shocked output. If supplied, expected value: "baseline".
-                - UNIT_MEASURE: Unit of measure for the OBS_VALUE. If supplied, expected value: "PC_GDP".
+                - SCENARIO: Scenario identifier for the output series. If supplied, expected value: "baseline".
+                - UNIT_MEASURE: Unit of measure for the observation values. If supplied, expected value: "PC_GDP".
 
     Source binding:
         Workbook range: Outputs!B12:F12
@@ -568,10 +568,10 @@ _OUTPUT_LEAVES_OUTPUT_SHOCKED: list[tuple[str, Record]] = [
 ]
 
 def compute_output_shocked(ctx=None, *, inputs=None) -> Records:
-    """Returns the shocked debt-to-GDP path as a series of records.
+    """Return the shocked debt-to-GDP ratio path for projection years 1 through 5.
 
-    Provides the projected debt-to-GDP trajectory under the shocked scenario for projection years 1 through 5.
-    Each record represents one projection year, with the observation value in percent of GDP.
+    Return the computed shocked scenario debt-to-GDP ratios as a list of records, one per projection year.
+    Each record corresponds to one projection year and its shocked debt-to-GDP value from the Outputs sheet.
 
     Args:
         ctx (EvalContext | None): Existing evaluation context, if available.
@@ -580,11 +580,11 @@ def compute_output_shocked(ctx=None, *, inputs=None) -> Records:
     Returns:
         Records: Computed output records.
             Required record fields:
-                - TIME_PERIOD: Projection year (1–5).
-                - OBS_VALUE: Debt-to-GDP ratio under the shocked scenario.
+                - TIME_PERIOD: Projection year (1 through 5).
+                - OBS_VALUE: Shocked debt-to-GDP ratio, expressed as percent of GDP.
             Optional record fields:
-                - SCENARIO: Scenario identifier. If supplied, expected value: "shocked".
-                - UNIT_MEASURE: Unit of measure for the observation value. If supplied, expected value: "PC_GDP".
+                - SCENARIO: Scenario identifier; always the shocked scenario. If supplied, expected value: "shocked".
+                - UNIT_MEASURE: Unit of measure for the ratio. If supplied, expected value: "PC_GDP".
 
     Source binding:
         Workbook range: Outputs!B13:F13
@@ -618,10 +618,10 @@ _OUTPUT_LEAVES_OUTPUT_DELTA: list[tuple[str, Record]] = [
 ]
 
 def compute_output_delta(ctx=None, *, inputs=None) -> Records:
-    """Compute the difference between the shocked and baseline debt-to-GDP paths over the projection horizon.
+    """Return the difference between shocked and baseline debt-to-GDP paths (in percentage points) for years 1–5.
 
-    Return a list of records, each containing a projection year and the corresponding difference, in percentage points, between the shocked and baseline debt-to-GDP ratios.
-    Each record corresponds to one cell in the Outputs!B14:F14 range, providing the delta value for a single projection year.
+    Compute and return the delta (shocked minus baseline) of the debt-to-GDP ratio projection for each projection year.
+    Each returned record corresponds to one column (year) in the Outputs!B14:F14 range.
 
     Args:
         ctx (EvalContext | None): Existing evaluation context, if available.
@@ -630,11 +630,11 @@ def compute_output_delta(ctx=None, *, inputs=None) -> Records:
     Returns:
         Records: Computed output records.
             Required record fields:
-                - TIME_PERIOD: Projection year identifier, ranging from 1 to 5.
-                - OBS_VALUE: Difference between the shocked and baseline debt-to-GDP ratios, expressed in percentage points of GDP.
+                - TIME_PERIOD: Projection year (1 through 5).
+                - OBS_VALUE: Difference between shocked and baseline debt-to-GDP ratios, in percentage points.
             Optional record fields:
-                - SCENARIO: Scenario classification for the delta series. If supplied, expected value: "shocked_minus_baseline".
-                - UNIT_MEASURE: Unit of measurement for the debt ratio difference. If supplied, expected value: "PP".
+                - SCENARIO: Identifies the scenario as the difference between shocked and baseline paths. If supplied, expected value: "shocked_minus_baseline".
+                - UNIT_MEASURE: Unit of measure for the observation value. If supplied, expected value: "PP".
 
     Source binding:
         Workbook range: Outputs!B14:F14
@@ -665,15 +665,30 @@ def list_setters() -> list[str]:
     return ['set_country_initial_debt', 'set_country_name', 'set_growth_baseline', 'set_interest_baseline', 'set_primary_balance_baseline', 'set_shock_magnitudes', 'set_shock_type', 'set_shock_year']
 
 
+def list_readers() -> list[str]:
+    """Return generated series-binding reader function names."""
+    return ['read_country_initial_debt', 'read_country_name', 'read_growth_baseline', 'read_interest_baseline', 'read_primary_balance_baseline', 'read_shock_magnitudes', 'read_shock_type', 'read_shock_year']
+
+
 def list_computes() -> list[str]:
     """Return generated series-binding compute function names."""
     return ['compute_output_baseline', 'compute_output_delta', 'compute_output_shocked']
 
 
+def list_reader_leaves() -> dict[str, dict[str, object]]:
+    """Return address → semantic reader call metadata."""
+    return {'Inputs!B10': {'series_id': 'country_initial_debt', 'reader': 'read_country_initial_debt', 'keys': {'COUNTRY': 'Borvelia'}, 'kwargs': {'country': 'Borvelia'}, 'kind': 'keyed', 'call_form': "read_country_initial_debt(ctx, country='Borvelia')"}, 'Inputs!B11': {'series_id': 'country_initial_debt', 'reader': 'read_country_initial_debt', 'keys': {'COUNTRY': 'Litellia'}, 'kwargs': {'country': 'Litellia'}, 'kind': 'keyed', 'call_form': "read_country_initial_debt(ctx, country='Litellia')"}, 'Inputs!B12': {'series_id': 'country_initial_debt', 'reader': 'read_country_initial_debt', 'keys': {'COUNTRY': 'Aurelium'}, 'kwargs': {'country': 'Aurelium'}, 'kind': 'keyed', 'call_form': "read_country_initial_debt(ctx, country='Aurelium')"}, 'Inputs!B21': {'series_id': 'shock_year', 'reader': 'read_shock_year', 'keys': {}, 'kwargs': {}, 'kind': 'scalar', 'call_form': 'read_shock_year(ctx)'}, 'Inputs!B22': {'series_id': 'shock_type', 'reader': 'read_shock_type', 'keys': {}, 'kwargs': {}, 'kind': 'scalar', 'call_form': 'read_shock_type(ctx)'}, 'Inputs!B26': {'series_id': 'shock_magnitudes', 'reader': 'read_shock_magnitudes', 'keys': {'SHOCK_PARAMETER': 'Growth'}, 'kwargs': {'shock_parameter': 'Growth'}, 'kind': 'keyed', 'call_form': "read_shock_magnitudes(ctx, shock_parameter='Growth')"}, 'Inputs!B5': {'series_id': 'country_name', 'reader': 'read_country_name', 'keys': {}, 'kwargs': {}, 'kind': 'scalar', 'call_form': 'read_country_name(ctx)'}, 'Inputs!C16': {'series_id': 'growth_baseline', 'reader': 'read_growth_baseline', 'keys': {'TIME_PERIOD': 1}, 'kwargs': {'time_period': 1}, 'kind': 'keyed', 'call_form': 'read_growth_baseline(ctx, time_period=1)'}, 'Inputs!C17': {'series_id': 'interest_baseline', 'reader': 'read_interest_baseline', 'keys': {'TIME_PERIOD': 1}, 'kwargs': {'time_period': 1}, 'kind': 'keyed', 'call_form': 'read_interest_baseline(ctx, time_period=1)'}, 'Inputs!C18': {'series_id': 'primary_balance_baseline', 'reader': 'read_primary_balance_baseline', 'keys': {'TIME_PERIOD': 1}, 'kwargs': {'time_period': 1}, 'kind': 'keyed', 'call_form': 'read_primary_balance_baseline(ctx, time_period=1)'}, 'Inputs!C26': {'series_id': 'shock_magnitudes', 'reader': 'read_shock_magnitudes', 'keys': {'SHOCK_PARAMETER': 'Interest'}, 'kwargs': {'shock_parameter': 'Interest'}, 'kind': 'keyed', 'call_form': "read_shock_magnitudes(ctx, shock_parameter='Interest')"}, 'Inputs!D16': {'series_id': 'growth_baseline', 'reader': 'read_growth_baseline', 'keys': {'TIME_PERIOD': 2}, 'kwargs': {'time_period': 2}, 'kind': 'keyed', 'call_form': 'read_growth_baseline(ctx, time_period=2)'}, 'Inputs!D17': {'series_id': 'interest_baseline', 'reader': 'read_interest_baseline', 'keys': {'TIME_PERIOD': 2}, 'kwargs': {'time_period': 2}, 'kind': 'keyed', 'call_form': 'read_interest_baseline(ctx, time_period=2)'}, 'Inputs!D18': {'series_id': 'primary_balance_baseline', 'reader': 'read_primary_balance_baseline', 'keys': {'TIME_PERIOD': 2}, 'kwargs': {'time_period': 2}, 'kind': 'keyed', 'call_form': 'read_primary_balance_baseline(ctx, time_period=2)'}, 'Inputs!D26': {'series_id': 'shock_magnitudes', 'reader': 'read_shock_magnitudes', 'keys': {'SHOCK_PARAMETER': 'Primary balance'}, 'kwargs': {'shock_parameter': 'Primary balance'}, 'kind': 'keyed', 'call_form': "read_shock_magnitudes(ctx, shock_parameter='Primary balance')"}, 'Inputs!E16': {'series_id': 'growth_baseline', 'reader': 'read_growth_baseline', 'keys': {'TIME_PERIOD': 3}, 'kwargs': {'time_period': 3}, 'kind': 'keyed', 'call_form': 'read_growth_baseline(ctx, time_period=3)'}, 'Inputs!E17': {'series_id': 'interest_baseline', 'reader': 'read_interest_baseline', 'keys': {'TIME_PERIOD': 3}, 'kwargs': {'time_period': 3}, 'kind': 'keyed', 'call_form': 'read_interest_baseline(ctx, time_period=3)'}, 'Inputs!E18': {'series_id': 'primary_balance_baseline', 'reader': 'read_primary_balance_baseline', 'keys': {'TIME_PERIOD': 3}, 'kwargs': {'time_period': 3}, 'kind': 'keyed', 'call_form': 'read_primary_balance_baseline(ctx, time_period=3)'}, 'Inputs!F16': {'series_id': 'growth_baseline', 'reader': 'read_growth_baseline', 'keys': {'TIME_PERIOD': 4}, 'kwargs': {'time_period': 4}, 'kind': 'keyed', 'call_form': 'read_growth_baseline(ctx, time_period=4)'}, 'Inputs!F17': {'series_id': 'interest_baseline', 'reader': 'read_interest_baseline', 'keys': {'TIME_PERIOD': 4}, 'kwargs': {'time_period': 4}, 'kind': 'keyed', 'call_form': 'read_interest_baseline(ctx, time_period=4)'}, 'Inputs!F18': {'series_id': 'primary_balance_baseline', 'reader': 'read_primary_balance_baseline', 'keys': {'TIME_PERIOD': 4}, 'kwargs': {'time_period': 4}, 'kind': 'keyed', 'call_form': 'read_primary_balance_baseline(ctx, time_period=4)'}, 'Inputs!G16': {'series_id': 'growth_baseline', 'reader': 'read_growth_baseline', 'keys': {'TIME_PERIOD': 5}, 'kwargs': {'time_period': 5}, 'kind': 'keyed', 'call_form': 'read_growth_baseline(ctx, time_period=5)'}, 'Inputs!G17': {'series_id': 'interest_baseline', 'reader': 'read_interest_baseline', 'keys': {'TIME_PERIOD': 5}, 'kwargs': {'time_period': 5}, 'kind': 'keyed', 'call_form': 'read_interest_baseline(ctx, time_period=5)'}, 'Inputs!G18': {'series_id': 'primary_balance_baseline', 'reader': 'read_primary_balance_baseline', 'keys': {'TIME_PERIOD': 5}, 'kwargs': {'time_period': 5}, 'kind': 'keyed', 'call_form': 'read_primary_balance_baseline(ctx, time_period=5)'}}
+
+
+def list_reader_ranges() -> dict[str, dict[str, object]]:
+    """Return binding-aligned data_range → range-reader metadata."""
+    return {'Inputs!B10:B12': {'series_id': 'country_initial_debt', 'reader': 'read_country_initial_debt_range', 'data_range': 'Inputs!B10:B12', 'call_form': 'read_country_initial_debt_range(ctx)'}, 'Inputs!B26:D26': {'series_id': 'shock_magnitudes', 'reader': 'read_shock_magnitudes_range', 'data_range': 'Inputs!B26:D26', 'call_form': 'read_shock_magnitudes_range(ctx)'}, 'Inputs!C16:G16': {'series_id': 'growth_baseline', 'reader': 'read_growth_baseline_range', 'data_range': 'Inputs!C16:G16', 'call_form': 'read_growth_baseline_range(ctx)'}, 'Inputs!C17:G17': {'series_id': 'interest_baseline', 'reader': 'read_interest_baseline_range', 'data_range': 'Inputs!C17:G17', 'call_form': 'read_interest_baseline_range(ctx)'}, 'Inputs!C18:G18': {'series_id': 'primary_balance_baseline', 'reader': 'read_primary_balance_baseline_range', 'data_range': 'Inputs!C18:G18', 'call_form': 'read_primary_balance_baseline_range(ctx)'}}
+
+
 TARGETS = {
-    'Outputs!B12:Outputs!F12': xl_range_rows,
-    'Outputs!B13:Outputs!F13': xl_range_rows,
-    'Outputs!B14:Outputs!F14': xl_range_rows,
+    'Outputs!B12:F12': xl_range_rows,
+    'Outputs!B13:F13': xl_range_rows,
+    'Outputs!B14:F14': xl_range_rows,
 }
 
 
