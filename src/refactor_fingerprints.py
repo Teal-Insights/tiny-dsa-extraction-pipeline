@@ -76,6 +76,13 @@ class RefRelation:
     member dimension that is lagged (usually the same as ``dim``). Absent for
     direct value lookups (``ref.d == table[member.k]``).
     """
+    lookup_keys: dict[str, str] = field(default_factory=dict)
+    """Map ref-dim -> member dim whose value indexes ``lookups[dim]``.
+
+    For a lag lookup this is the dimension whose value selects the lag delta;
+    for a direct value lookup it is the dimension whose value selects the ref
+    key. Present for every entry in ``lookups``.
+    """
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,10 @@ class FingerprintGroup:
     exemplar: MemberContext
     ref_relations: tuple[RefRelation, ...]
     ref_addresses_by_member: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    ref_keys_by_member: tuple[
+        tuple[str, tuple[dict[str, BindingKeyValue], ...]], ...
+    ] = ()
+    """Per member address, the binding keys of each ref slot in slot order."""
 
 
 @dataclass(frozen=True)
@@ -187,6 +198,7 @@ def classify_ref_relation(
     offsets: dict[str, int] = {}
     lookups: dict[str, dict[BindingKeyValue, BindingKeyValue]] = {}
     lookup_bases: dict[str, str] = {}
+    lookup_keys: dict[str, str] = {}
     needs_explicit = False
 
     for dimension_id in ref_dims:
@@ -243,9 +255,10 @@ def classify_ref_relation(
                     if table is not None and len(table) >= 1:
                         lag_candidates.append((key_dim, table))
                 if len(lag_candidates) == 1:
-                    _key_dim, table = lag_candidates[0]
+                    key_dim, table = lag_candidates[0]
                     lookups[dimension_id] = table
                     lookup_bases[dimension_id] = dimension_id
+                    lookup_keys[dimension_id] = key_dim
                     continue
 
         # Direct value lookup: ref.d == table[member.k] for exactly one k.
@@ -269,15 +282,17 @@ def classify_ref_relation(
             if compresses or external_dim:
                 value_candidates.append((key_dim, table))
         if len(value_candidates) == 1:
-            _key_dim, table = value_candidates[0]
+            key_dim, table = value_candidates[0]
             lookups[dimension_id] = table
+            lookup_keys[dimension_id] = key_dim
             continue
         if len(value_candidates) > 1:
             # Prefer the key dim that is not the ref dim itself when multiple fit.
             non_self = [c for c in value_candidates if c[0] != dimension_id]
             if len(non_self) == 1:
-                _key_dim, table = non_self[0]
+                key_dim, table = non_self[0]
                 lookups[dimension_id] = table
+                lookup_keys[dimension_id] = key_dim
                 continue
             needs_explicit = True
             break
@@ -328,6 +343,7 @@ def classify_ref_relation(
         explicit=None,
         resolution=resolved,
         lookup_bases=dict(sorted(lookup_bases.items())),
+        lookup_keys=dict(sorted(lookup_keys.items())),
     )
 
 
@@ -635,6 +651,10 @@ def build_cluster_fingerprint_summary(
                 ref_addresses_by_member=tuple(
                     (address, refs_by_address[address]) for address in member_addresses
                 ),
+                ref_keys_by_member=tuple(
+                    (address, tuple(ref_values_by_member[address]))
+                    for address in member_addresses
+                ),
             )
         )
 
@@ -713,7 +733,9 @@ def _format_ref_relation_lines(relation: RefRelation) -> list[str]:
             lag_key_dims = [
                 dim for dim in relation.identity_dims if dim != dimension_id
             ]
-            lag_key = lag_key_dims[0] if lag_key_dims else "KEY"
+            lag_key = relation.lookup_keys.get(
+                dimension_id, lag_key_dims[0] if lag_key_dims else "KEY"
+            )
             parts.append(
                 f"{dimension_id} = member.{dimension_id} - lag, "
                 f"lag by {lag_key} {_format_mapping(table)}"
@@ -722,7 +744,9 @@ def _format_ref_relation_lines(relation: RefRelation) -> list[str]:
             key_dim_candidates = [
                 dim for dim in relation.identity_dims if dim != dimension_id
             ]
-            key_label = key_dim_candidates[0] if key_dim_candidates else "keys"
+            key_label = relation.lookup_keys.get(
+                dimension_id, key_dim_candidates[0] if key_dim_candidates else "keys"
+            )
             parts.append(
                 f"{dimension_id} = table[{key_label}] {_format_mapping(table)}"
             )

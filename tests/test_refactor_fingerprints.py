@@ -124,6 +124,8 @@ def test_classify_ragged_lag_lookup_by_row_dim() -> None:
     assert relation.tier == "lookup"
     assert relation.identity_dims == ("REF_AREA",)
     assert relation.lookups == {"TIME_PERIOD": {"USA": 1, "FRA": 3}}
+    assert relation.lookup_bases == {"TIME_PERIOD": "TIME_PERIOD"}
+    assert relation.lookup_keys == {"TIME_PERIOD": "REF_AREA"}
 
 
 def test_classify_irregular_falls_back_to_explicit() -> None:
@@ -196,6 +198,10 @@ def test_build_summary_uniform_sweep_single_group() -> None:
     assert group.ref_relations[0].series_id == "DEBT_STOCK"
     assert summary.key_space == {"TIME_PERIOD": (4, 5, 6)}
     assert summary.key_to_column == {4: "E", 5: "F", 6: "G"}
+    ref_keys = dict(group.ref_keys_by_member)
+    assert set(ref_keys) == set(group.members)
+    assert ref_keys["Data!E20"][0]["TIME_PERIOD"] == 4
+    assert ref_keys["Data!G20"][0]["TIME_PERIOD"] == 6
 
 
 def test_build_summary_missing_ref_keys_falls_back() -> None:

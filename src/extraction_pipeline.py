@@ -420,7 +420,9 @@ def run_export_stage(
     )
     callback_name = configure_docstring_callback(config)
 
-    with CodeGenerator(cast(GraphLike, refactor_projection)) as generator:
+    with CodeGenerator(
+        cast(GraphLike, refactor_projection), unpack_return=True
+    ) as generator:
         modules = generator.generate_modules(
             list(config.targets),
             series_bindings=series_bindings,

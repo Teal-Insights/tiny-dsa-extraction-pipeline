@@ -9,7 +9,7 @@ import os
 import re
 import textwrap
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,6 +78,38 @@ REFACTOR_MODEL_ENV = "REFACTOR_MODEL"
 REFACTOR_PROMPT_VERSION = 29
 CLUSTER_REFACTOR_PROMPT_MEMBER_LIMIT = 30
 _FINGERPRINT_FALLBACK_COUNT = 0
+
+RefactorPromptObserver = Callable[[str, str, str], None]
+"""Hook receiving ``(kind, target, prompt)`` for each refactor unit's user prompt."""
+
+_PROMPT_OBSERVER: RefactorPromptObserver | None = None
+
+
+def set_refactor_prompt_observer(observer: RefactorPromptObserver | None) -> None:
+    """Install (or clear) a hook that sees every refactor prompt as it is built.
+
+    The observer fires before the cache check, so prompts are observable even on
+    fully cached runs. Used by ``scripts/run_refactor_stage.py --dump-prompts``.
+    """
+    global _PROMPT_OBSERVER
+    _PROMPT_OBSERVER = observer
+
+
+ClusterContextObserver = Callable[["ClusterRefactorContext"], None]
+"""Hook receiving each cluster refactor context as its unit is processed."""
+
+_CLUSTER_CONTEXT_OBSERVER: ClusterContextObserver | None = None
+
+
+def set_cluster_context_observer(observer: ClusterContextObserver | None) -> None:
+    """Install (or clear) a hook that sees every cluster refactor context.
+
+    Fires before the cache check in ``llm_refactor_cluster`` so diagnostics like
+    ``scripts/run_refactor_stage.py --report-synthesis`` observe the exact
+    contexts (including mid-refactor semantic dependencies) of a real run.
+    """
+    global _CLUSTER_CONTEXT_OBSERVER
+    _CLUSTER_CONTEXT_OBSERVER = observer
 
 
 def fingerprint_fallback_count() -> int:
@@ -3886,6 +3918,18 @@ def llm_refactor_singleton(
     cache = load_refactor_cache()
     cache_key = singleton_refactor_cache_key(ctx, internals_bytes, llm_schema)
     failure_target = diagnostic_target or ctx.address
+    if _PROMPT_OBSERVER is not None:
+        _PROMPT_OBSERVER(
+            "singleton",
+            failure_target,
+            _prompt_for_singleton_refactor(
+                build_singleton_refactor_prompt_context(
+                    ctx,
+                    internals_path=internals_path,
+                    internals_index=index,
+                )
+            ),
+        )
 
     def _apply_singleton_refactor_validation(
         prepared: SingletonRefactorResponse,
@@ -4064,6 +4108,42 @@ def llm_refactor_singleton(
     return parsed
 
 
+def _mechanical_bodies_enabled() -> bool:
+    value = os.environ.get("MECHANICAL_REFACTOR_BODIES", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _try_synthesize_cluster_body(ctx: ClusterRefactorContext):
+    """Return a verified mechanical body draft, or None to use the legacy contract."""
+    if not _mechanical_bodies_enabled():
+        return None
+    summary = ctx.fingerprint_summary
+    if summary is None or summary.fallback_reason is not None:
+        return None
+    from src.mechanical_body import MechanicalSynthesisError, synthesize_cluster_body
+
+    try:
+        draft = synthesize_cluster_body(
+            summary,
+            key_vocabulary=ctx.key_vocabulary,
+            expected_member_keys=ctx.expected_member_keys,
+            helper_name=ctx.expected_helper_name,
+        )
+    except MechanicalSynthesisError as error:
+        logger.info(
+            "cluster %s mechanical synthesis unavailable (%s); "
+            "using full-body contract",
+            ctx.cluster_id,
+            error.reason,
+        )
+        return None
+    logger.info(
+        "cluster %s mechanical draft verified; using naming-only contract",
+        ctx.cluster_id,
+    )
+    return draft
+
+
 def llm_refactor_cluster(
     ctx: ClusterRefactorContext,
     *,
@@ -4074,7 +4154,16 @@ def llm_refactor_cluster(
     diagnostic_target: str | None = None,
     internals_index: InternalsSourceIndex | None = None,
 ) -> ClusterRefactorResponse:
-    llm_schema = ClusterRefactorLLMResponse.model_json_schema()
+    mechanical_draft = _try_synthesize_cluster_body(ctx)
+    if mechanical_draft is not None:
+        from src.mechanical_naming import ClusterNamingLLMResponse
+
+        llm_schema: dict[str, object] = {
+            "schema": ClusterNamingLLMResponse.model_json_schema(),
+            "mechanical_body": mechanical_draft.body,
+        }
+    else:
+        llm_schema = ClusterRefactorLLMResponse.model_json_schema()
     index = _resolve_internals_index(internals_path, internals_index=internals_index)
     internals_bytes = index.source.encode("utf-8")
     internals_source = index.source
@@ -4083,6 +4172,21 @@ def llm_refactor_cluster(
     cache = load_refactor_cache()
     cache_key = refactor_cache_key(ctx, internals_bytes, llm_schema)
     failure_target = diagnostic_target or f"cluster_{ctx.cluster_id}"
+    if _CLUSTER_CONTEXT_OBSERVER is not None:
+        _CLUSTER_CONTEXT_OBSERVER(ctx)
+    if _PROMPT_OBSERVER is not None:
+        _PROMPT_OBSERVER(
+            "cluster",
+            failure_target,
+            _prompt_for_refactor(
+                build_cluster_refactor_prompt_context(
+                    ctx,
+                    internals_path=internals_path,
+                    internals_index=index,
+                ),
+                contract=ctx.contract,
+            ),
+        )
 
     def _apply_cluster_refactor_validation(
         prepared: ClusterRefactorResponse,
@@ -4169,7 +4273,19 @@ def llm_refactor_cluster(
         internals_path=internals_path,
         internals_index=index,
     )
-    user_prompt = _prompt_for_refactor(context_dump, contract=ctx.contract)
+    if mechanical_draft is not None:
+        from src.mechanical_naming import (
+            format_cluster_naming_prompt_context,
+            load_cluster_naming_prompt_fixed_portion,
+        )
+
+        user_prompt = (
+            load_cluster_naming_prompt_fixed_portion().strip()
+            + "\n\n"
+            + format_cluster_naming_prompt_context(context_dump, mechanical_draft)
+        )
+    else:
+        user_prompt = _prompt_for_refactor(context_dump, contract=ctx.contract)
     last_attempt: dict[str, Any] = {}
     validated_prepared: ClusterRefactorResponse | None = None
 
@@ -4193,6 +4309,41 @@ def llm_refactor_cluster(
         validated_prepared = _apply_cluster_refactor_validation(prepared)
         return parsed
 
+    def _post_validate_cluster_naming(parsed):
+        from src.mechanical_naming import apply_cluster_naming_response
+
+        nonlocal validated_prepared
+        assert mechanical_draft is not None
+        last_attempt["llm_response"] = parsed.model_dump()
+        raise_if_llm_declared_error(
+            parsed,
+            kind="cluster",
+            target=failure_target,
+        )
+        body = apply_cluster_naming_response(
+            parsed,
+            mechanical_draft,
+            parameter_names=frozenset(
+                parameter.name for parameter in synthesize_cluster_parameters(ctx)
+            ),
+            forbidden_names=existing_names | frozenset(ctx.allowed_runtime_symbols),
+        )
+        legacy_shape = ClusterRefactorLLMResponse(
+            symbol_docstring=parsed.symbol_docstring,
+            symbol_body=body,
+            error=None,
+            error_reason=None,
+        )
+        prepared = prepare_cluster_refactor_response(
+            legacy_shape,
+            ctx,
+            runtime_source=runtime_source,
+            internals_source=internals_source,
+        )
+        last_attempt["prepared_response"] = prepared.model_dump()
+        validated_prepared = _apply_cluster_refactor_validation(prepared)
+        return parsed
+
     prompt_member_count = len(
         sample_indices_for_prompt(
             len(ctx.members), limit=CLUSTER_REFACTOR_PROMPT_MEMBER_LIMIT
@@ -4200,27 +4351,47 @@ def llm_refactor_cluster(
     )
     logger.info(
         "cluster refactor LLM request cluster_id=%s members=%d prompt_members=%d "
-        "model=%s prompt_version=%s",
+        "model=%s prompt_version=%s contract=%s",
         ctx.cluster_id,
         len(ctx.members),
         prompt_member_count,
         model,
         REFACTOR_PROMPT_VERSION,
+        "naming_only" if mechanical_draft is not None else ctx.contract,
     )
     try:
-        llm_parsed, raw_content = generate_validated_json(
-            client=client,
-            model=model,
-            provider=provider,
-            system_prompt=(
-                "You refactor parallel Excel-generated Python helpers into one "
-                "domain-aware parameterized function. Return only JSON matching the schema."
-            ),
-            user_prompt=user_prompt,
-            response_model=ClusterRefactorLLMResponse,
-            post_validate=_post_validate_cluster_llm,
-            max_attempts=DEFAULT_MAX_ATTEMPTS,
-        )
+        if mechanical_draft is not None:
+            from src.mechanical_naming import ClusterNamingLLMResponse
+
+            _naming_parsed, raw_content = generate_validated_json(
+                client=client,
+                model=model,
+                provider=provider,
+                system_prompt=(
+                    "You add the semantic layer (docstring and local names) to a "
+                    "verified, mechanically generated Python function. Return only "
+                    "JSON matching the schema."
+                ),
+                user_prompt=user_prompt,
+                response_model=ClusterNamingLLMResponse,
+                post_validate=_post_validate_cluster_naming,
+                max_attempts=DEFAULT_MAX_ATTEMPTS,
+            )
+            llm_parsed = None
+        else:
+            llm_parsed, raw_content = generate_validated_json(
+                client=client,
+                model=model,
+                provider=provider,
+                system_prompt=(
+                    "You refactor parallel Excel-generated Python helpers into one "
+                    "domain-aware parameterized function. Return only JSON matching the schema."
+                ),
+                user_prompt=user_prompt,
+                response_model=ClusterRefactorLLMResponse,
+                post_validate=_post_validate_cluster_llm,
+                max_attempts=DEFAULT_MAX_ATTEMPTS,
+            )
     except RefactorDeclaredError as error:
         dump_dir = write_refactor_failure_diagnostic(
             kind="cluster",
@@ -4258,11 +4429,14 @@ def llm_refactor_cluster(
             error,
         )
         raise
-    parsed = (
-        validated_prepared
-        if validated_prepared is not None
-        else _finalize_cluster_from_llm(llm_parsed)
-    )
+    if validated_prepared is not None:
+        parsed = validated_prepared
+    else:
+        if llm_parsed is None:
+            raise RuntimeError(
+                "naming-contract response completed without a validated refactor"
+            )
+        parsed = _finalize_cluster_from_llm(llm_parsed)
     _ = raw_content
     cache[cache_key] = parsed.model_dump_json()
     save_refactor_cache(cache)

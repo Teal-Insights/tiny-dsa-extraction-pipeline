@@ -237,6 +237,33 @@ Inspect planned refactor targets without calling the LLM:
 uv run python -m src.record_refactor_buckets
 ```
 
+#### Mechanical body synthesis and the naming-only contract
+
+Generated cell translations are unpacked mechanically (excel-grapher
+`unpack_return`): eager reads become statement-level `_tN` temporaries while
+lazy `IF`/`CHOOSE` branches stay inline, preserving Excel error semantics.
+
+For each cluster refactor unit, [src/mechanical_body.py](src/mechanical_body.py)
+then attempts to synthesize the parameterized helper body directly from the
+fingerprint reference relations: geometry lookup dictionaries, derived
+lag/offset arguments, dependency pass-through calls, self-recurrence, and
+cross-fingerprint routing (`series` clustering). Every synthesized read is
+verified per member against the recorded ref addresses/keys. When synthesis
+succeeds, the LLM receives the **naming-only contract**
+([tests/fixtures/cluster_naming_prompt.md](tests/fixtures/cluster_naming_prompt.md)):
+it writes the docstring and renames the mechanical locals, and the pipeline
+applies the renames mechanically — the model cannot alter semantics. Units the
+synthesizer cannot prove correct fall back to the legacy full-body contract,
+and the per-helper parity gate guards both paths. Set
+`MECHANICAL_REFACTOR_BODIES=0` to disable synthesis for a run.
+
+Iterate on the refactor stage in isolation (scratch output root, warm caches):
+
+```bash
+uv run python -m scripts.run_refactor_stage --dump-prompts artifacts/refactor-lab-prompts
+uv run python -m scripts.run_refactor_stage --report-synthesis artifacts/refactor-lab-synthesis
+```
+
 ## Run the pipeline
 
 After graph-oracle parity passes (see [Verify graph](#3-verify-graph)), run the full export pipeline:
