@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,32 @@ def test_load_canonical_api_example_reads_template() -> None:
     assert "make_context()" in example
     assert "compute_" in example
     assert "import polars as pl" in example
+    assert f"from {config.api_import_path} import" in example
+
+
+def test_load_canonical_api_example_injects_api_import_path() -> None:
+    config = load_pipeline_config()
+    config = replace(
+        config,
+        dist_metadata=replace(config.dist_metadata, package_name="tiny_dsa"),
+    )
+    example = load_canonical_api_example(config)
+    prompt = build_section_prompt(
+        library_name=config.dist_metadata.library_name,
+        api_import_path=config.api_import_path,
+        section_name="Functional Overview",
+        source_section_markdown="Source",
+        python_focus_instructions="Mirror the canonical example.",
+        pipeline_context_blocks={"canonical_api_usage": example},
+        api_signatures="def make_context(): ...",
+        response_schema={"type": "object"},
+    )
+
+    assert "from tiny_dsa.api import" in example
+    assert "my_model.api" not in example
+    assert "from tiny_dsa.api import" in prompt
+    assert "my_model.api" not in prompt
+    assert "```{python}" in example
 
 
 def test_section_focus_templates_use_placeholders() -> None:

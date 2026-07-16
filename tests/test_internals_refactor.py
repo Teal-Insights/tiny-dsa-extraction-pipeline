@@ -309,6 +309,26 @@ def test_validate_cluster_accepts_well_formed_response() -> None:
         )
 
 
+def test_validate_cluster_allows_locked_helper_name_already_in_internals() -> None:
+    """Re-applying the schedule-allocated helper must not look like a foreign collision."""
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(),
+            existing_names=frozenset(
+                {
+                    "cell_engine_c6",
+                    "cell_engine_d6",
+                    CLUSTER_CONTEXT.expected_helper_name,
+                }
+            ),
+            internals_source=PRISTINE_CLUSTER,
+        )
+
+
 def test_validate_cluster_skips_engine_column_check_without_projection_layout() -> None:
     """Bindings already triangulate members; layout mapping is optional."""
     with patch(
@@ -395,6 +415,76 @@ def test_validate_cluster_rejects_disallowed_global_reference() -> None:
     helper_def = _single_function_def(bad_source)
     assert helper_def is not None
     with pytest.raises(ValueError, match="disallowed global names"):
+        validate_allowed_global_references(
+            helper_def,
+            allowed_names={"xl_cell", "ctx", "time_period"},
+        )
+
+
+def test_validate_allowed_global_references_treats_lambda_params_as_locals() -> None:
+    """Lambda parameters must not be reported as disallowed globals (issue #149)."""
+    source = f'''def safe_ratio(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    numerator = xl_cell(ctx, 'Inputs!C1')
+    denominator = xl_cell(ctx, 'Inputs!C2')
+    return (lambda num, den: num / den if den != 0 else xl_raise(XlError.DIV))(
+        numerator, denominator
+    )
+'''
+    helper_def = _single_function_def(source)
+    assert helper_def is not None
+    validate_allowed_global_references(
+        helper_def,
+        allowed_names={"xl_cell", "xl_raise", "XlError", "ctx", "time_period"},
+    )
+
+
+def test_validate_allowed_global_references_treats_nested_def_bindings_as_locals() -> (
+    None
+):
+    source = f'''def safe_ratio(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    numerator = xl_cell(ctx, 'Inputs!C1')
+    denominator = xl_cell(ctx, 'Inputs!C2')
+
+    def divide(num, den):
+        return num / den if den != 0 else xl_raise(XlError.DIV)
+
+    return divide(numerator, denominator)
+'''
+    helper_def = _single_function_def(source)
+    assert helper_def is not None
+    validate_allowed_global_references(
+        helper_def,
+        allowed_names={"xl_cell", "xl_raise", "XlError", "ctx", "time_period"},
+    )
+
+
+def test_validate_allowed_global_references_treats_with_as_targets_as_locals() -> None:
+    source = f'''def read_with_temp(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    with open('/dev/null') as handle:
+        _ = handle.read(0)
+    return xl_cell(ctx, 'Inputs!C1')
+'''
+    helper_def = _single_function_def(source)
+    assert helper_def is not None
+    validate_allowed_global_references(
+        helper_def,
+        allowed_names={"xl_cell", "open", "ctx", "time_period"},
+    )
+
+
+def test_validate_allowed_global_references_still_rejects_free_names_in_lambda() -> (
+    None
+):
+    source = f'''def safe_ratio(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    return (lambda num, den: mystery_helper(num, den))(1, 2)
+'''
+    helper_def = _single_function_def(source)
+    assert helper_def is not None
+    with pytest.raises(ValueError, match="disallowed global names.*mystery_helper"):
         validate_allowed_global_references(
             helper_def,
             allowed_names={"xl_cell", "ctx", "time_period"},
@@ -2253,7 +2343,12 @@ def test_refactor_schedule_rebuilds_index_only_after_apply(
         workbook_path=tmp_path / "workbook.xlsx",
         dry_run=False,
         parity_gate=False,
-        address_to_series_id={},
+        address_to_series_id={
+            "Engine!B2": "family_b",
+            "Engine!C2": "family_c",
+            "Engine!B3": "family_b",
+            "Engine!C3": "family_c",
+        },
     )
 
     # One initial index + one rebuild per successful singleton apply (4 units).
@@ -2390,7 +2485,12 @@ def test_refactor_internals_all_clusters_consumes_refactor_schedule(
         workbook_path=tmp_path / "workbook.xlsx",
         dry_run=True,
         parity_gate=False,
-        address_to_series_id={},
+        address_to_series_id={
+            "Engine!B2": "family_b",
+            "Engine!C2": "family_c",
+            "Engine!B3": "family_b",
+            "Engine!C3": "family_c",
+        },
     )
 
     assert scheduled_members == [
@@ -2468,7 +2568,10 @@ def test_refactor_internals_all_clusters_forwards_bound_address_keys(
         bound_address_keys=cast(dict[str, dict[str, BindingKeyValue]], bindings),
         dry_run=True,
         parity_gate=False,
-        address_to_series_id={},
+        address_to_series_id={
+            "Engine!B2": "family_bc",
+            "Engine!C2": "family_bc",
+        },
     )
 
     assert received["bound_address_keys"] is bindings

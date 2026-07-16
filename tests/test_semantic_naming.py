@@ -6,6 +6,7 @@ import pytest
 
 from src.semantic_naming import (
     BindingRecordHints,
+    allocate_schedule_helper_names,
     cluster_binding_naming_hints,
     collect_semantic_helper_names,
     semantic_helpers_available_for_calls,
@@ -130,4 +131,61 @@ def test_sole_series_id_for_addresses_rejects_missing_and_mixed() -> None:
         sole_series_id_for_addresses(
             ("Sheet!A1", "Sheet!B1"),
             {"Sheet!A1": "series_a", "Sheet!B1": "series_b"},
+        )
+
+
+def test_allocate_schedule_helper_names_keeps_bare_series_id_for_sole_unit() -> None:
+    names = allocate_schedule_helper_names(
+        (("Engine!C20", "Engine!D20"),),
+        {"Engine!C20": "shocked_path_internal", "Engine!D20": "shocked_path_internal"},
+    )
+    assert names == ("shocked_path_internal",)
+
+
+def test_allocate_schedule_helper_names_uniquifies_peeled_series_units() -> None:
+    """Multiple schedule units from one series must not share a locked helper name."""
+    names = allocate_schedule_helper_names(
+        (
+            ("Engine!C20",),
+            ("Engine!D20", "Engine!E20"),
+        ),
+        {
+            "Engine!C20": "shocked_path_internal",
+            "Engine!D20": "shocked_path_internal",
+            "Engine!E20": "shocked_path_internal",
+        },
+    )
+    assert names == ("shocked_path_internal", "shocked_path_internal_2")
+    assert len(set(names)) == len(names)
+
+
+def test_allocate_schedule_helper_names_avoids_existing_and_earlier_unit_names() -> (
+    None
+):
+    """Collisions with internals and earlier schedule units are resolved before LLM."""
+    names = allocate_schedule_helper_names(
+        (
+            ("Engine!C20",),
+            ("Engine!D20",),
+            ("Engine!E20",),
+        ),
+        {
+            "Engine!C20": "shocked_path_internal",
+            "Engine!D20": "shocked_path_internal",
+            "Engine!E20": "other_series",
+        },
+        existing_names=frozenset({"shocked_path_internal", "other_series"}),
+    )
+    assert names[0] == "shocked_path_internal_2"
+    assert names[1] == "shocked_path_internal_3"
+    # Sole unit for other_series may overwrite the existing helper of that name.
+    assert names[2] == "other_series"
+    assert len(set(names)) == len(names)
+
+
+def test_allocate_schedule_helper_names_detects_unresolvable_shape_collision() -> None:
+    with pytest.raises(ValueError, match="snake_case|collides|identifier"):
+        allocate_schedule_helper_names(
+            (("Engine!C20",),),
+            {"Engine!C20": "NotASnake"},
         )

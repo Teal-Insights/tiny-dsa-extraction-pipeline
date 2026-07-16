@@ -60,6 +60,10 @@ from src.internals_refactor import (
 )
 from src.logging_config import configure_logging
 from src.refactor_order import compute_refactor_schedule
+from src.semantic_naming import (
+    allocate_schedule_helper_names,
+    collect_semantic_helper_names,
+)
 from src.subgraph_projection import build_refactor_projection
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
@@ -319,12 +323,35 @@ def record_refactor_buckets(
         and refactor_graph is not None
         and internals_path is not None
     )
+    existing_helper_names = (
+        collect_semantic_helper_names(internals_source)
+        if use_refactor_context
+        else frozenset()
+    )
+    allocated_helper_names: tuple[str, ...] | None = None
+    if use_refactor_context and resolved_address_to_series_id:
+        allocated_helper_names = allocate_schedule_helper_names(
+            tuple(unit.members for unit in ordered_units),
+            resolved_address_to_series_id,
+            existing_names=existing_helper_names,
+        )
 
     records: list[RefactorBucketRecord] = []
     for refactor_order, unit in enumerate(ordered_units):
         cluster = unit.as_formula_cluster()
         kind: RefactorKind = "singleton" if len(cluster.members) == 1 else "cluster"
         contract: ClusterRefactorContract | None = None
+        helper_name = (
+            allocated_helper_names[refactor_order]
+            if allocated_helper_names is not None
+            else None
+        )
+        reserved_for_others = (
+            (frozenset(allocated_helper_names) | existing_helper_names)
+            - ({helper_name} if helper_name is not None else set())
+            if allocated_helper_names is not None
+            else None
+        )
         if compression == "none":
             skip_reason = None
             ctx = None
@@ -339,6 +366,8 @@ def record_refactor_buckets(
                     internals_path,
                     internal_binding_index=internal_binding_index,
                     address_to_series_id=resolved_address_to_series_id,
+                    expected_helper_name=helper_name,
+                    existing_helper_names=reserved_for_others,
                 )
             )
         else:
@@ -364,6 +393,8 @@ def record_refactor_buckets(
                     layout=layout,
                     bound_address_keys=resolved_bound_keys,
                     address_to_series_id=resolved_address_to_series_id,
+                    expected_helper_name=helper_name,
+                    existing_helper_names=reserved_for_others,
                 )
             )
 

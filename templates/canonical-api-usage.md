@@ -2,10 +2,10 @@ User-guide runnable cells should follow this interaction model: import from the 
 
 Each `compute_*` call returns a list of records with fields such as `TIME_PERIOD`, `OBS_VALUE`, and any binding-defined key or context fields. Tabulate results with Polars: sort by the time or key dimension and `select` the measure column with a clear alias.
 
-```{python}
+```{{python}}
 import polars as pl
 
-from my_model.api import (
+from {api_import_path} import (
     make_context,
     set_example_scalar,
     set_example_series,

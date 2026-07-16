@@ -304,7 +304,11 @@ def extract_qmd_section(qmd_text: str, heading: str) -> str:
 
 
 def load_canonical_api_example(config: PipelineConfig) -> str:
-    return config.canonical_api_example_path.read_text(encoding="utf-8").strip()
+    return (
+        config.canonical_api_example_path.read_text(encoding="utf-8")
+        .strip()
+        .format(api_import_path=config.api_import_path)
+    )
 
 
 def canonical_api_context(config: PipelineConfig) -> dict[str, str]:

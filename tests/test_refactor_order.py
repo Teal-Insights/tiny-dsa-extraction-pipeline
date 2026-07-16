@@ -15,6 +15,7 @@ from src.refactor_order import (
     compute_refactor_schedule_with_diagnostics,
     refactor_failure_target,
 )
+from src.semantic_naming import allocate_schedule_helper_names
 from src.subgraph_projection import build_refactor_projection
 from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -414,6 +415,68 @@ def test_cycle_split_peels_within_family_chain_together_not_as_singletons() -> N
         ("Engine!A2", "Engine!A3"),
     ]
     assert_valid_refactor_schedule(projection, units)
+
+
+def test_peeled_schedule_units_from_one_series_get_unique_helper_names() -> None:
+    """Peel slices of one series lock distinct helper names at schedule time."""
+    family_a = FormulaCluster(
+        cluster_id=0,
+        members=("Engine!A1", "Engine!A2", "Engine!A3"),
+        canonical_template="=PRIOR",
+        row=None,
+    )
+    family_b = FormulaCluster(
+        cluster_id=1,
+        members=("Engine!B1",),
+        canonical_template="=Engine!A1",
+        row=None,
+    )
+
+    class _ChainWithCrossHingeProjection:
+        def get_dependencies(self, address: str) -> tuple[str, ...]:
+            deps = {
+                "Engine!A1": (),
+                "Engine!B1": ("Engine!A1",),
+                "Engine!A2": ("Engine!A1", "Engine!B1"),
+                "Engine!A3": ("Engine!A2",),
+            }
+            return deps.get(address, ())
+
+    projection = cast(ProjectionResult, _ChainWithCrossHingeProjection())
+    units = compute_refactor_schedule(projection, (family_a, family_b))
+    address_to_series_id = {
+        "Engine!A1": "shocked_path_internal",
+        "Engine!A2": "shocked_path_internal",
+        "Engine!A3": "shocked_path_internal",
+        "Engine!B1": "hinge_helper",
+    }
+
+    names = allocate_schedule_helper_names(
+        tuple(unit.members for unit in units),
+        address_to_series_id,
+    )
+
+    assert [unit.members for unit in units] == [
+        ("Engine!A1",),
+        ("Engine!B1",),
+        ("Engine!A2", "Engine!A3"),
+    ]
+    assert names == (
+        "shocked_path_internal",
+        "hinge_helper",
+        "shocked_path_internal_2",
+    )
+
+
+def test_allocate_schedule_helper_names_avoids_name_already_in_internals() -> None:
+    """A peeled series colliding with an existing internals helper is renamed."""
+    names = allocate_schedule_helper_names(
+        (("Engine!A1",), ("Engine!A2",)),
+        {"Engine!A1": "shared_series", "Engine!A2": "shared_series"},
+        existing_names=frozenset({"shared_series"}),
+    )
+    assert names == ("shared_series_2", "shared_series_3")
+    assert len(set(names)) == 2
 
 
 def test_cycle_split_peels_all_leafmost_within_family_frontiers() -> None:

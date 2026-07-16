@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import builtins
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -83,6 +84,54 @@ def sole_series_id_for_addresses(
             f"got {sorted(series_ids)}"
         )
     return next(iter(series_ids))
+
+
+def _dedupe_helper_name(base: str, taken: set[str]) -> str:
+    """Return ``base`` or ``base_2``, ``base_3``, … not present in ``taken``."""
+    if base not in taken:
+        return base
+    index = 2
+    while True:
+        candidate = f"{base}_{index}"
+        if candidate not in taken:
+            return candidate
+        index += 1
+
+
+def allocate_schedule_helper_names(
+    unit_members: Sequence[Sequence[str]],
+    address_to_series_id: Mapping[str, str],
+    *,
+    existing_names: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    """Lock a unique helper name for each schedule unit before any LLM call.
+
+    Sole units for a series keep the bare ``series_id`` (overwrite of an
+    existing helper with that name is allowed). When a series is sliced into
+    multiple units, later peels receive deterministic ``series_id_2``,
+    ``series_id_3``, … suffixes, skipping names already reserved by earlier
+    units or present in ``existing_names``.
+    """
+    series_ids = tuple(
+        sole_series_id_for_addresses(members, address_to_series_id)
+        for members in unit_members
+    )
+    series_counts = Counter(series_ids)
+    reserved: set[str] = set()
+    allocated: list[str] = []
+
+    for series_id in series_ids:
+        if series_counts[series_id] == 1:
+            # Sole claimant may overwrite an existing helper of the same name.
+            blocked = reserved
+        else:
+            blocked = reserved | set(existing_names)
+        name = _dedupe_helper_name(series_id, blocked)
+        validate_semantic_identifier(name, existing_names=frozenset(reserved))
+        allocated.append(name)
+        reserved.add(name)
+
+    return tuple(allocated)
 
 
 def validate_semantic_identifier(
