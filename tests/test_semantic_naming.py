@@ -178,9 +178,19 @@ def test_allocate_schedule_helper_names_avoids_existing_and_earlier_unit_names()
     )
     assert names[0] == "shocked_path_internal_2"
     assert names[1] == "shocked_path_internal_3"
-    # Sole unit for other_series may overwrite the existing helper of that name.
-    assert names[2] == "other_series"
+    # Sole units also treat existing_names as blocked (no overwrite).
+    assert names[2] == "other_series_2"
     assert len(set(names)) == len(names)
+
+
+def test_allocate_schedule_helper_names_blocks_existing_for_sole_units() -> None:
+    """A sole unit for a series does not reuse a name already present in internals."""
+    names = allocate_schedule_helper_names(
+        (("Engine!C20", "Engine!D20"),),
+        {"Engine!C20": "shocked_path_internal", "Engine!D20": "shocked_path_internal"},
+        existing_names=frozenset({"shocked_path_internal"}),
+    )
+    assert names == ("shocked_path_internal_2",)
 
 
 def test_allocate_schedule_helper_names_detects_unresolvable_shape_collision() -> None:

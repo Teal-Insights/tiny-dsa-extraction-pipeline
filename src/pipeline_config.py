@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
@@ -43,6 +44,37 @@ class DistProjectMetadata:
             return f'uv add "{self.project_name} @ git+{self.repository_url}"'
         return f"uv add {self.project_name}"
 
+    def repository_slug(self) -> str | None:
+        """Return ``owner/repo`` when ``repository_url`` is a GitHub repository.
+
+        The deploy workflow uses this slug as the target repository for
+        publishing the generated ``dist/`` package. Returns ``None`` for
+        non-GitHub or unset URLs, which disables the publish steps.
+        """
+        if self.repository_url is None:
+            return None
+        match = re.fullmatch(
+            r"https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?",
+            self.repository_url,
+        )
+        if match is None:
+            return None
+        return f"{match.group('owner')}/{match.group('repo')}"
+
+
+@dataclass(frozen=True)
+class RunnableCellRule:
+    """Forbidden-source rule for executable ``{python}`` guide cells.
+
+    ``pattern`` is a regex searched against each runnable cell's source at
+    rewrite time; a match rejects the rewrite with ``message`` appended to the
+    error. Prose and non-executable ``python`` fences are never checked, so
+    fragile APIs can still be documented there.
+    """
+
+    pattern: str
+    message: str
+
 
 @dataclass(frozen=True)
 class PipelineConfig:
@@ -71,6 +103,7 @@ class PipelineConfig:
     internal_binding_exempt_cells: frozenset[str] = frozenset()
     variation_mode: VariationMode = "independent"
     clustering_mode: ClusteringMode = "series_ast"
+    runnable_cell_rules: tuple[RunnableCellRule, ...] = ()
 
     @property
     def package_root(self) -> Path:
@@ -144,6 +177,37 @@ def _load_internal_binding_exempt_cells(value: object) -> frozenset[str]:
         "INTERNAL_BINDING_EXEMPT_CELLS must be a frozenset, set, list, or tuple "
         f"of sheet-qualified addresses; got {type(value).__name__}"
     )
+
+
+def _load_runnable_cell_rules(value: object) -> tuple[RunnableCellRule, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (tuple, list)):
+        raise ValueError(
+            "RUNNABLE_CELL_RULES must be a tuple or list of RunnableCellRule "
+            "instances or (pattern, message) pairs"
+        )
+    rules: list[RunnableCellRule] = []
+    for index, entry in enumerate(value):
+        if isinstance(entry, RunnableCellRule):
+            rule = entry
+        elif isinstance(entry, (tuple, list)) and len(entry) == 2:
+            pattern, message = entry
+            rule = RunnableCellRule(pattern=str(pattern), message=str(message))
+        else:
+            raise ValueError(
+                "RUNNABLE_CELL_RULES entries must be RunnableCellRule instances "
+                f"or (pattern, message) pairs; got {entry!r} at index {index}"
+            )
+        try:
+            re.compile(rule.pattern)
+        except re.error as error:
+            raise ValueError(
+                f"RUNNABLE_CELL_RULES pattern at index {index} is not a valid "
+                f"regex: {rule.pattern!r} ({error})"
+            ) from error
+        rules.append(rule)
+    return tuple(rules)
 
 
 def add_variation_mode_argument(parser: argparse.ArgumentParser) -> None:
@@ -253,6 +317,9 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     clustering_mode = parse_clustering_mode(
         getattr(user_config, "CLUSTERING_MODE", "series_ast")
     )
+    runnable_cell_rules = _load_runnable_cell_rules(
+        getattr(user_config, "RUNNABLE_CELL_RULES", ())
+    )
 
     if not isinstance(dist_metadata, DistProjectMetadata):
         raise TypeError("workbook_config.DIST_METADATA must be a DistProjectMetadata")
@@ -287,6 +354,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         internal_binding_exempt_cells=internal_binding_exempt_cells,
         variation_mode=variation_mode,
         clustering_mode=clustering_mode,
+        runnable_cell_rules=runnable_cell_rules,
     )
 
 
@@ -316,15 +384,18 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
 
 
 def discover_public_api_symbols(api_module_path: Path) -> tuple[str, ...]:
-    """Return public function names exported from the generated ``api.py`` module."""
+    """Return public function names exported from the generated ``api.py`` module.
+
+    Duplicate top-level definitions (possible when codegen emits a compute once
+    per scenario variant) are collapsed to a single name.
+    """
     import ast
 
     source = api_module_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    return tuple(
-        sorted(
-            node.name
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
-        )
-    )
+    names = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    }
+    return tuple(sorted(names))

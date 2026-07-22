@@ -106,14 +106,17 @@ def _synthesis_reporter(report_dir: Path):
 
 
 def _prompt_dump_observer(dump_dir: Path):
-    """Return an observer writing one ``NNN_kind_target.md`` file per prompt."""
+    """Return an observer writing one ``{kind}_{target}.md`` file per prompt.
+
+    Files are keyed by unit identity (kind + target) with no ordering counter, so
+    concurrent pass-2 dumps stay collision-free and a repeat prompt for the same
+    unit overwrites its earlier dump rather than accumulating duplicates.
+    """
     dump_dir.mkdir(parents=True, exist_ok=True)
-    counter = {"next": 0}
 
     def _observe(kind: str, target: str, prompt: str) -> None:
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", target).strip("_") or "unit"
-        path = dump_dir / f"{counter['next']:03d}_{kind}_{slug}.md"
-        counter["next"] += 1
+        path = dump_dir / f"{kind}_{slug}.md"
         path.write_text(prompt, encoding="utf-8", newline="\n")
 
     return _observe
@@ -158,7 +161,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="Bypass graph/projection/series-resolution caches for this run.",
+        help="Bypass graph/projection/series-resolution/codegen caches for this run.",
     )
     parser.add_argument(
         "--report-synthesis",

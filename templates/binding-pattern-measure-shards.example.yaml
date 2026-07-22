@@ -11,7 +11,7 @@
 # Anti-pattern: one series with data_range covering H3:K5 and column_header
 # without fill — only the labeled start columns resolve; mixed measures share
 # the same (SCENARIO, TIME_PERIOD) key.
-schema_version: 1.8.0
+schema_version: 1.10.0
 workbook: workbook.xlsx
 
 concept_scheme:

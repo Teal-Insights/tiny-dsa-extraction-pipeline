@@ -189,7 +189,13 @@ GROWTH_THRESHOLD_RUNTIME_STUB = dedent(
     '''
 ).strip()
 
-CLUSTER_PREPARE_KWARGS = {
+
+class ClusterPrepareKwargs(TypedDict):
+    runtime_source: str
+    internals_source: str
+
+
+CLUSTER_PREPARE_KWARGS: ClusterPrepareKwargs = {
     "runtime_source": GROWTH_THRESHOLD_RUNTIME_STUB,
     "internals_source": GROWTH_THRESHOLD_INTERNALS,
 }
@@ -427,6 +433,21 @@ def test_cluster_prompt_documents_error_escape_hatch() -> None:
     assert "error_reason" in required
 
 
+def test_cluster_prompts_teach_renaming_mechanical_temporaries() -> None:
+    """Exemplars may already contain _tN temps from unpack_return codegen."""
+    member_sweep = load_cluster_refactor_prompt_fixed_portion()
+    dimension_aware = load_cluster_refactor_prompt_fixed_portion("dimension_aware")
+
+    assert "Example 1: Unpacking nested calls" not in member_sweep
+    assert "Renaming mechanical temporaries" in member_sweep
+    for prompt in (member_sweep, dimension_aware):
+        assert "_tN" in prompt
+        assert "Rename every `_tN`" in prompt
+        assert "_t1 =" in prompt
+        assert "do not re-nest" in prompt.lower() or "do not eagerly" in prompt.lower()
+        assert "lazy" in prompt.lower() or "short-circuit" in prompt.lower()
+
+
 def test_append_cluster_refactor_note_section_covers_address_range() -> None:
     docstring = (
         "Return 1.0 when the observed value meets or exceeds the growth threshold.\n\n"
@@ -447,25 +468,57 @@ def test_append_cluster_refactor_note_section_covers_address_range() -> None:
 
 
 def test_assemble_cluster_symbol_source_wraps_docstring_and_body() -> None:
+    docstring = (
+        "Return 1.0 when the observed value meets or exceeds the growth threshold.\n\n"
+        "Args:\n    ctx: Workbook evaluation context.\n"
+        "    reporting_period: Reporting period index.\n\n"
+        "Returns:\n    1.0 if the observed value is at or above the threshold, else 0.0.\n\n"
+        "Note:\n    Covers Forecast!B12:F12. Excel: =1."
+    )
     assembled = assemble_cluster_symbol_source(
         signature="def growth_threshold_met(ctx: EvalContext, reporting_period: int) -> float:",
-        docstring=(
-            "Return 1.0 when the observed value meets or exceeds the growth threshold.\n\n"
-            "Args:\n    ctx: Workbook evaluation context.\n"
-            "    reporting_period: Reporting period index.\n\n"
-            "Returns:\n    1.0 if the observed value is at or above the threshold, else 0.0.\n\n"
-            "Note:\n    Covers Forecast!B12:F12. Excel: =1."
-        ),
+        docstring=docstring,
         body="return 1.0",
     )
     assert assembled.startswith(
         "def growth_threshold_met(ctx: EvalContext, reporting_period: int) -> float:\n"
     )
     assert "    return 1.0\n" in assembled
-    assert (
-        '    """Return 1.0 when the observed value meets or exceeds the growth threshold.'
-        in (assembled)
-    )
+    helper_def = ast.parse(assembled).body[0]
+    assert isinstance(helper_def, ast.FunctionDef)
+    embedded = helper_def.body[0]
+    assert isinstance(embedded, ast.Expr)
+    assert isinstance(embedded.value, ast.Constant)
+    assert embedded.value.value == docstring
+
+
+def test_assemble_cluster_symbol_source_roundtrips_escape_bearing_docstrings() -> None:
+    """Excel notes may contain \\n or \"\"\"; embedding must not reinterpret them."""
+    for formula in (r'=A1&"\n"', '=CONCAT("""")'):
+        docstring = append_cluster_refactor_note_section(
+            (
+                "Helper summary.\n\n"
+                "Args:\n    ctx: Workbook evaluation context.\n"
+                "    reporting_period: Period index.\n\n"
+                "Returns:\n    Cell value."
+            ),
+            covered_addresses="Forecast!B12:F12",
+            formula=formula,
+        )
+        assembled = assemble_cluster_symbol_source(
+            signature=(
+                "def growth_threshold_met(ctx: EvalContext, reporting_period: int) "
+                "-> float:"
+            ),
+            docstring=docstring,
+            body="return 1.0",
+        )
+        helper_def = ast.parse(assembled).body[0]
+        assert isinstance(helper_def, ast.FunctionDef)
+        embedded = helper_def.body[0]
+        assert isinstance(embedded, ast.Expr)
+        assert isinstance(embedded.value, ast.Constant)
+        assert embedded.value.value == docstring
 
 
 def test_prepare_cluster_refactor_response_assembles_and_appends_note() -> None:
@@ -481,7 +534,12 @@ def test_prepare_cluster_refactor_response_assembles_and_appends_note() -> None:
         "Note:\n    Covers Forecast!B12:F12. "
         "Excel: =IF(Forecast!{col}4>=Assumptions!$C$2,1,0)."
     ) in prepared.helper_docstring
-    assert prepared.helper_docstring in prepared.helper_source
+    helper_def = ast.parse(prepared.helper_source).body[0]
+    assert isinstance(helper_def, ast.FunctionDef)
+    embedded = helper_def.body[0]
+    assert isinstance(embedded, ast.Expr)
+    assert isinstance(embedded.value, ast.Constant)
+    assert embedded.value.value == prepared.helper_docstring
     assert prepared.parameters == (
         HelperParameter(
             name="reporting_period",
@@ -491,6 +549,28 @@ def test_prepare_cluster_refactor_response_assembles_and_appends_note() -> None:
         ),
     )
     assert prepared.member_keys == GROWTH_THRESHOLD_LLM_RESPONSE.member_keys
+
+
+def test_prepare_cluster_refactor_response_derives_docstring_from_source() -> None:
+    """helper_docstring is a mirror of helper_source, including escape-bearing Notes."""
+    from dataclasses import replace
+
+    ctx = replace(
+        GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+        canonical_template=r'=IF(A1="\n",1,0)',
+    )
+    prepared = prepare_cluster_refactor_response(
+        GROWTH_THRESHOLD_LLM_RESPONSE,
+        ctx,
+        **CLUSTER_PREPARE_KWARGS,
+    )
+    helper_def = ast.parse(prepared.helper_source).body[0]
+    assert isinstance(helper_def, ast.FunctionDef)
+    embedded = helper_def.body[0]
+    assert isinstance(embedded, ast.Expr)
+    assert isinstance(embedded.value, ast.Constant)
+    assert embedded.value.value == prepared.helper_docstring
+    assert r'=IF(A1="\n",1,0)' in prepared.helper_docstring
 
 
 def test_prepare_cluster_refactor_response_locks_helper_name_and_injects_return_type() -> (

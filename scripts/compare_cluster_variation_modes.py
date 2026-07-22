@@ -27,7 +27,12 @@ from src.formula_clustering import (  # noqa: E402
     structural_fingerprint,
 )
 from src.workbook_addresses import ProjectionColumnLayout  # noqa: E402
-from src.pipeline_config import load_pipeline_config, validate_pipeline_config  # noqa: E402
+from src.pipeline_config import (  # noqa: E402
+    add_clustering_mode_argument,
+    apply_clustering_mode_cli_override,
+    load_pipeline_config,
+    validate_pipeline_config,
+)
 from src.pipeline_context import activate_pipeline_config  # noqa: E402
 from src.refactor_bindings import (  # noqa: E402
     build_address_to_series_id,
@@ -38,6 +43,36 @@ from src.subgraph_projection import build_refactor_projection  # noqa: E402
 
 IncludeSection = Literal["changes", "members", "fingerprints"]
 INCLUDE_SECTIONS: tuple[IncludeSection, ...] = ("changes", "members", "fingerprints")
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compare formula buckets for independent vs dominant_key_only "
+            "variation_mode on the configured workbook."
+        )
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass on-disk graph, projection, and codegen caches for this run.",
+    )
+    add_clustering_mode_argument(parser)
+    parser.add_argument(
+        "--include",
+        nargs="+",
+        choices=INCLUDE_SECTIONS,
+        default=[],
+        metavar="SECTION",
+        help=(
+            "Optional detail sections to print (default: quiet summary only). "
+            "Available: changes (per-cell membership diffs), "
+            "members (per-bucket member lists), "
+            "fingerprints (per-bucket formula-like skeleton with literal scalars and ref_N[dims]). "
+            "Example: --include changes fingerprints"
+        ),
+    )
+    return parser.parse_args(argv)
 
 
 def _cluster_by_mode(
@@ -273,36 +308,12 @@ def _print_fingerprints(
     print()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Compare formula buckets for independent vs dominant_key_only "
-            "variation_mode on the configured workbook."
-        )
-    )
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Bypass on-disk graph and projection caches for this run.",
-    )
-    parser.add_argument(
-        "--include",
-        nargs="+",
-        choices=INCLUDE_SECTIONS,
-        default=[],
-        metavar="SECTION",
-        help=(
-            "Optional detail sections to print (default: quiet summary only). "
-            "Available: changes (per-cell membership diffs), "
-            "members (per-bucket member lists), "
-            "fingerprints (per-bucket formula-like skeleton with literal scalars and ref_N[dims]). "
-            "Example: --include changes fingerprints"
-        ),
-    )
-    args = parser.parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     include: Sequence[str] = args.include
 
     config = load_pipeline_config()
+    config = apply_clustering_mode_cli_override(config, args.clustering_mode)
     validate_pipeline_config(config)
     activate_pipeline_config(config)
 
@@ -356,7 +367,8 @@ def main() -> None:
     )
     print(
         f"clustering_mode={config.clustering_mode!r} "
-        "(compares variation_mode only; scheduled slices use compute_refactor_schedule)"
+        "(override with --clustering-mode; compares variation_mode under that mode; "
+        "scheduled slices use compute_refactor_schedule)"
     )
     print()
 

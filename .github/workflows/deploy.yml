@@ -1,18 +1,31 @@
 name: Deploy generated package
 
+# Publish the committed dist/ package to its standalone package repository.
+# Generation is deliberately NOT run here: the extraction pipeline calls LLM
+# providers and can take hours, so it is run locally and dist/ is committed to
+# this repository. This workflow only rsyncs the committed dist/ into the
+# configured target repository and pushes it.
+
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
-  generate-and-deploy:
+  publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify committed dist/
+        run: |
+          if [ ! -d dist ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
+            echo "No committed dist/ to publish. Generate the package locally" \
+              "and commit dist/ before dispatching this workflow (see README" \
+              "'Deploying the generated package')." >&2
+            exit 1
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -21,37 +34,36 @@ jobs:
         run: uv python install
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --no-dev
 
-      - name: Install Git LFS
+      - name: Resolve deploy target from workbook config
+        id: target
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq git-lfs
-
-      - name: Run export pipeline (with cached results)
-        env:
-          # Match local .env model routing so LLM cache keys hit without API keys.
-          DOCSTRING_MODEL: deepseek-v4-pro
-          SECTION_REWRITE_MODEL: gpt-5.5
-          REFACTOR_MODEL: deepseek-v4-pro
-          SEMANTIC_LABEL_MODEL: deepseek-v4-pro
-          DEEPSEEK_THINKING: "1"
-        run: uv run python -m src.extraction_pipeline
+          slug="$(uv run python -c "from src.pipeline_config import load_pipeline_config; print(load_pipeline_config().dist_metadata.repository_slug() or '')")"
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+          if [ -n "${slug}" ]; then
+            echo "Deploy target: ${slug}"
+          else
+            echo "No GitHub repository_url configured in DIST_METADATA; skipping package-repo publish."
+          fi
 
       - name: Checkout target repository
+        if: steps.target.outputs.slug != ''
         uses: actions/checkout@v6
         with:
-          repository: Teal-Insights/py-tiny-dsa
+          repository: ${{ steps.target.outputs.slug }}
           token: ${{ secrets.DEPLOY_TOKEN }}
-          path: py-tiny-dsa
+          path: target-repo
 
       - name: Sync dist to target repository
-        run: rsync -a --delete --exclude ".git/" dist/ py-tiny-dsa/
+        if: steps.target.outputs.slug != ''
+        run: rsync -a --delete --exclude ".git/" dist/ target-repo/
 
       - name: Commit and push changes
+        if: steps.target.outputs.slug != ''
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-        working-directory: py-tiny-dsa
+        working-directory: target-repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -67,5 +79,11 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Deploy tiny-dsa artifacts from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git commit -m "Deploy generated package from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
           git push origin HEAD:main
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-package
+          path: dist/

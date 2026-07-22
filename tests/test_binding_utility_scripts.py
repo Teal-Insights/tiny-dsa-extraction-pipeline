@@ -46,10 +46,16 @@ from src.internal_binding_coverage import (
     group_unbound_cells_by_sheet_row,
     suggested_layout_for_row,
 )
+from src.bindings_validation_cache import COMMITTED_BINDINGS_VALIDATION_CACHE_DIR
 from src.pipeline_config import PipelineConfig
+from src.series_resolution_cache import COMMITTED_SERIES_RESOLUTION_CACHE_DIR
 from tests.fixtures.synthetic_pipeline import (
     synthetic_pipeline_config,
     write_synthetic_workbook,
+)
+from tests.fixtures.test_state import (
+    REPO_BINDINGS_VALIDATION_CACHE_DIR,
+    REPO_SERIES_RESOLUTION_CACHE_DIR,
 )
 
 _SPARSE_YEARS_SERIES: dict[str, Any] = {
@@ -98,10 +104,52 @@ def _monkeypatch_temp_graph_cache(
     cache_dir: Path,
     config: PipelineConfig,
     patch_audit_cli: bool = False,
-) -> None:
-    import src.graph_cache as graph_cache
+    series_cache_dir: Path | None = None,
+    validation_cache_dir: Path | None = None,
+) -> Path:
+    """Redirect graph + series/validation committed caches away from the repo.
 
+    ``regenerate_graph_cache(force=True)`` clears and rewrites
+    ``COMMITTED_SERIES_RESOLUTION_CACHE_DIR`` and
+    ``COMMITTED_BINDINGS_VALIDATION_CACHE_DIR``; tests that only redirect the
+    graph cache would wipe the committed artifacts used by session fixtures.
+    """
+    import src.bindings_validation_cache as bindings_validation_cache
+    import src.graph_cache as graph_cache
+    import src.series_resolution_cache as series_resolution_cache
+
+    resolved_series_cache_dir = (
+        series_cache_dir
+        if series_cache_dir is not None
+        else cache_dir.parent / "series-resolution"
+    )
+    resolved_validation_cache_dir = (
+        validation_cache_dir
+        if validation_cache_dir is not None
+        else cache_dir.parent / "bindings-validation"
+    )
     monkeypatch.setattr(graph_cache, "DEFAULT_GRAPH_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(graph_cache, "COMMITTED_GRAPH_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(
+        series_resolution_cache,
+        "DEFAULT_SERIES_RESOLUTION_CACHE_DIR",
+        resolved_series_cache_dir,
+    )
+    monkeypatch.setattr(
+        series_resolution_cache,
+        "COMMITTED_SERIES_RESOLUTION_CACHE_DIR",
+        resolved_series_cache_dir,
+    )
+    monkeypatch.setattr(
+        bindings_validation_cache,
+        "DEFAULT_BINDINGS_VALIDATION_CACHE_DIR",
+        resolved_validation_cache_dir,
+    )
+    monkeypatch.setattr(
+        bindings_validation_cache,
+        "COMMITTED_BINDINGS_VALIDATION_CACHE_DIR",
+        resolved_validation_cache_dir,
+    )
     monkeypatch.setattr(
         "scripts.internal_binding_burndown.DEFAULT_GRAPH_CACHE_DIR",
         cache_dir,
@@ -109,6 +157,14 @@ def _monkeypatch_temp_graph_cache(
     monkeypatch.setattr(
         "scripts.regenerate_graph_cache.COMMITTED_GRAPH_CACHE_DIR",
         cache_dir,
+    )
+    monkeypatch.setattr(
+        "scripts.regenerate_graph_cache.COMMITTED_SERIES_RESOLUTION_CACHE_DIR",
+        resolved_series_cache_dir,
+    )
+    monkeypatch.setattr(
+        "scripts.regenerate_graph_cache.COMMITTED_BINDINGS_VALIDATION_CACHE_DIR",
+        resolved_validation_cache_dir,
     )
     monkeypatch.setattr(
         "scripts.regenerate_graph_cache.load_pipeline_config",
@@ -127,6 +183,7 @@ def _monkeypatch_temp_graph_cache(
             "scripts.binding_resolution_audit.validate_pipeline_config",
             lambda _config: None,
         )
+    return resolved_series_cache_dir
 
 
 def _prepare_sparse_years_audit_fixture(
@@ -230,8 +287,6 @@ def test_regenerate_graph_cache_builds_and_prunes_stale_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.graph_cache as graph_cache
-
     workbook_path = tmp_path / "workbook.xlsx"
     write_synthetic_workbook(workbook_path)
     config = synthetic_pipeline_config(workbook_path=workbook_path)
@@ -240,19 +295,7 @@ def test_regenerate_graph_cache_builds_and_prunes_stale_entries(
     (cache_dir / "stale-key.pkl.gz").write_bytes(b"stale")
     (cache_dir / "stale-key.meta.json").write_text("{}", encoding="utf-8")
 
-    monkeypatch.setattr(graph_cache, "COMMITTED_GRAPH_CACHE_DIR", cache_dir)
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.COMMITTED_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.load_pipeline_config",
-        lambda: config,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.validate_pipeline_config",
-        lambda _config: None,
-    )
+    _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
 
     current_keys = regenerate_graph_cache(force=True)
     assert current_keys
@@ -261,30 +304,72 @@ def test_regenerate_graph_cache_builds_and_prunes_stale_entries(
         assert load_dependency_graph(cache_key, cache_dir=cache_dir) is not None
 
 
-def test_committed_graph_cache_is_fresh_when_present(
+def test_regenerate_graph_cache_does_not_touch_committed_validation_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.graph_cache as graph_cache
+    """Synthetic regenerate must not clear or prune the repo validation cache."""
+    assert COMMITTED_BINDINGS_VALIDATION_CACHE_DIR == REPO_BINDINGS_VALIDATION_CACHE_DIR
+    REPO_BINDINGS_VALIDATION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    before = sorted(p.name for p in COMMITTED_BINDINGS_VALIDATION_CACHE_DIR.iterdir())
 
     workbook_path = tmp_path / "workbook.xlsx"
     write_synthetic_workbook(workbook_path)
     config = synthetic_pipeline_config(workbook_path=workbook_path)
     cache_dir = tmp_path / "dependency-graph"
+    _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
 
-    monkeypatch.setattr(graph_cache, "COMMITTED_GRAPH_CACHE_DIR", cache_dir)
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.COMMITTED_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.load_pipeline_config",
-        lambda: config,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.validate_pipeline_config",
-        lambda _config: None,
-    )
+    regenerate_graph_cache(force=True)
+
+    after = sorted(p.name for p in COMMITTED_BINDINGS_VALIDATION_CACHE_DIR.iterdir())
+    assert after == before
+
+
+def test_synthetic_regenerate_leaves_committed_series_resolution_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Synthetic force-regenerate must not wipe the repo series-resolution cache."""
+    assert COMMITTED_SERIES_RESOLUTION_CACHE_DIR == REPO_SERIES_RESOLUTION_CACHE_DIR
+
+    committed_series_dir = COMMITTED_SERIES_RESOLUTION_CACHE_DIR
+    committed_series_dir.mkdir(parents=True, exist_ok=True)
+    sentinel = committed_series_dir / "committed-sentinel.meta.json"
+    sentinel_created = False
+    if not sentinel.is_file():
+        sentinel.write_text("{}\n", encoding="utf-8")
+        sentinel_created = True
+    before = sorted(path.name for path in committed_series_dir.iterdir())
+
+    try:
+        workbook_path = tmp_path / "workbook.xlsx"
+        write_synthetic_workbook(workbook_path)
+        config = synthetic_pipeline_config(workbook_path=workbook_path)
+        cache_dir = tmp_path / "dependency-graph"
+        _monkeypatch_temp_graph_cache(
+            monkeypatch,
+            cache_dir=cache_dir,
+            config=config,
+        )
+        regenerate_graph_cache(force=True)
+
+        after = sorted(path.name for path in committed_series_dir.iterdir())
+        assert after == before
+    finally:
+        if sentinel_created:
+            sentinel.unlink(missing_ok=True)
+
+
+def test_committed_graph_cache_is_fresh_when_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workbook_path = tmp_path / "workbook.xlsx"
+    write_synthetic_workbook(workbook_path)
+    config = synthetic_pipeline_config(workbook_path=workbook_path)
+    cache_dir = tmp_path / "dependency-graph"
+
+    _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
 
     current_keys = regenerate_graph_cache(force=True)
     expected_key = dependency_graph_cache_key(
@@ -320,8 +405,6 @@ def test_internal_binding_burndown_groups_unbound_formula_cells(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.graph_cache as graph_cache
-
     workbook_path = tmp_path / "workbook.xlsx"
     write_synthetic_workbook(workbook_path)
     bindings_path = tmp_path / "bindings"
@@ -337,23 +420,7 @@ def test_internal_binding_burndown_groups_unbound_formula_cells(
     )
     cache_dir = tmp_path / "dependency-graph"
 
-    monkeypatch.setattr(graph_cache, "DEFAULT_GRAPH_CACHE_DIR", cache_dir)
-    monkeypatch.setattr(
-        "scripts.internal_binding_burndown.DEFAULT_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.COMMITTED_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.load_pipeline_config",
-        lambda: config,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.validate_pipeline_config",
-        lambda _config: None,
-    )
+    _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
     regenerate_graph_cache(force=True)
 
     graph, _cache_key = load_graph(config)
@@ -380,8 +447,6 @@ def test_internal_binding_burndown_warns_when_cached_graph_is_stale(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import src.graph_cache as graph_cache
-
     workbook_path = tmp_path / "workbook.xlsx"
     write_synthetic_workbook(workbook_path)
     bindings_path = tmp_path / "bindings"
@@ -401,23 +466,7 @@ def test_internal_binding_burndown_warns_when_cached_graph_is_stale(
     )
     cache_dir = tmp_path / "dependency-graph"
 
-    monkeypatch.setattr(graph_cache, "DEFAULT_GRAPH_CACHE_DIR", cache_dir)
-    monkeypatch.setattr(
-        "scripts.internal_binding_burndown.DEFAULT_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.COMMITTED_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.load_pipeline_config",
-        lambda: config,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.validate_pipeline_config",
-        lambda _config: None,
-    )
+    _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
     regenerate_graph_cache(force=True)
 
     internals_path = bindings_path / "internals.bindings.yaml"
@@ -855,8 +904,6 @@ def test_binding_resolution_audit_reports_duplicate_internal_cell_bindings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.graph_cache as graph_cache
-
     workbook_path = tmp_path / "workbook.xlsx"
     write_synthetic_workbook(workbook_path)
     bindings_path = tmp_path / "bindings"
@@ -899,23 +946,7 @@ def test_binding_resolution_audit_reports_duplicate_internal_cell_bindings(
         bindings_path=bindings_path,
     )
     cache_dir = tmp_path / "dependency-graph"
-    monkeypatch.setattr(graph_cache, "DEFAULT_GRAPH_CACHE_DIR", cache_dir)
-    monkeypatch.setattr(
-        "scripts.internal_binding_burndown.DEFAULT_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.COMMITTED_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.load_pipeline_config",
-        lambda: config,
-    )
-    monkeypatch.setattr(
-        "scripts.regenerate_graph_cache.validate_pipeline_config",
-        lambda _config: None,
-    )
+    _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
     regenerate_graph_cache(force=True)
     graph, _ = load_graph(config)
     bindings = load_series_bindings(bindings_path)

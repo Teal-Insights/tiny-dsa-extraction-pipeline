@@ -11,23 +11,42 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.env_utils import env_float
 from src.llm_json import generate_validated_json
 from src.llm_providers import (
-    build_client_if_configured,
     model_from_env,
     provider_for_model,
 )
 from src.logging_config import configure_logging
-from src.pipeline_config import PipelineConfig, discover_public_api_symbols
-from src.qmd_python_validation import PublicApiPolicy, validate_qmd_files
+from src.pipeline_config import (
+    PipelineConfig,
+    RunnableCellRule,
+    discover_public_api_symbols,
+)
+from src.qmd_python_validation import (
+    PublicApiPolicy,
+    extract_python_cells,
+    validate_qmd_files,
+)
 
 SECTION_REWRITE_MODEL_ENV = "SECTION_REWRITE_MODEL"
-SECTION_REWRITE_PROMPT_VERSION = 7
-MAX_SECTION_REWRITE_ATTEMPTS = 3
+SECTION_REWRITE_PROMPT_VERSION = 9
+MAX_SECTION_REWRITE_ATTEMPTS = 4
 VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
+# Great Docs strips numeric prefixes when publishing user-guide pages, so the
+# landing-page link must use the published slug rather than the source filename.
+VALIDATION_PAGE_LINK = "user-guide/excel-parity-validation.qmd"
+# Keep section-rewrite prompts well inside common context windows even when the
+# source Functional Overview section is large. Measured prompts with
+# signature-only API context land far below this ceiling.
+MAX_SECTION_REWRITE_PROMPT_CHARS = 350_000
+REWRITE_API_EXCLUDE_PREFIXES: tuple[str, ...] = ("list_",)
+SECTION_REWRITE_REQUEST_TIMEOUT_ENV = "SECTION_REWRITE_REQUEST_TIMEOUT"
+DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT = 300.0
 
 SETTER_INPUT_SHAPE_GUIDANCE = (
     "Setter input shapes: single-cell setters accept a bare scalar (not a "
@@ -38,11 +57,12 @@ SETTER_INPUT_SHAPE_GUIDANCE = (
     "length for the series, or prefer keyed records / a single record when "
     "updating only some keys. Never wrap a single scenario scalar in a "
     "one-element list for a multi-key series setter. Do not call a profile-table "
-    "series setter merely to set the selected country's value; use the scalar "
-    "selector (for example set_country_name) unless the example is intentionally "
-    "rewriting the table. Reuse ctx = make_context() across runnable cells. "
-    "Tabulate compute_* results with Polars, selecting the measure column with "
-    "a clear alias as shown in the canonical_api_usage reference."
+    "series setter merely to set the selected entity's value; use the scalar "
+    "selector (for example set_example_selector) unless the example is "
+    "intentionally rewriting the table. Reuse ctx = make_context() across "
+    "runnable cells. Tabulate compute_* results with Polars, selecting the "
+    "measure column with a clear alias as shown in the canonical_api_usage "
+    "reference."
 )
 
 
@@ -84,6 +104,39 @@ def introduction_focus_instructions(config: PipelineConfig) -> str:
         repo_hint=repo_hint,
         library_name=metadata.library_name,
     )
+
+
+_INSTALL_FENCE_COMMAND = re.compile(
+    r"(```(?:bash|sh|shell|zsh)?\n)"
+    r"((?:uv add|python -m pip install|pip install)[^\n]+)"
+    r"(\n```)"
+)
+
+
+def ensure_introduction_install_recommendation(
+    markdown: str, *, install_command: str
+) -> str:
+    """Guarantee the landing page recommends the configured install command."""
+    if install_command in markdown:
+        return markdown
+
+    if _INSTALL_FENCE_COMMAND.search(markdown):
+        return _INSTALL_FENCE_COMMAND.sub(
+            rf"\g<1>{install_command}\g<3>",
+            markdown,
+            count=1,
+        )
+
+    section = (
+        "### Installation\n\n"
+        "Install the package directly from the GitHub repository:\n\n"
+        f"```bash\n{install_command}\n```\n"
+    )
+    getting_started = re.search(r"^### Getting started\s*$", markdown, re.MULTILINE)
+    if getting_started is not None:
+        idx = getting_started.start()
+        return f"{markdown[:idx]}{section}\n{markdown[idx:]}"
+    return f"{markdown.rstrip()}\n\n{section}"
 
 
 def functional_overview_focus_instructions(config: PipelineConfig) -> str:
@@ -186,11 +239,33 @@ def render_validation_page(
     *,
     library_name: str,
     package_name: str,
+    evidence_kind: str = "exported_library",
 ) -> str:
     """Render the deterministic GreatDocs page for Excel parity validation."""
     passed = f"{summary.passed:,}"
     total = f"{summary.total_comparisons:,}"
     failed = f"{summary.failed:,}"
+    if evidence_kind == "dependency_graph":
+        what_tested = (
+            f"The current reference evidence is **dependency-graph parity**: the "
+            f"extracted `{package_name}` evaluation graph was compared against "
+            f"Microsoft Excel through `xlwings` across the configured scenario "
+            f"sweep. Exported-library reference reports were not present, so this "
+            f"page summarizes the graph-oracle result until those reports are "
+            f"refreshed on Windows."
+        )
+        report_path = "`data/differential/graph/differential_report.txt`"
+        harness = "`tests/differential/differential_test_graph.py`"
+    else:
+        what_tested = (
+            f"The validation checks the exported standalone library, not just the "
+            f"extraction graph. It imports `{package_name}.api`, creates a fresh "
+            f"context for each scenario, sets inputs through the records-shaped "
+            f"public setters, computes the exported output series, and compares "
+            f"those values against the workbook's calculated output cells."
+        )
+        report_path = "`tests/results/reference/parity_report.txt`"
+        harness = "`tests/differential/differential_test_exported_library.py`"
     return f"""---
 title: "Excel parity validation"
 ---
@@ -198,8 +273,8 @@ title: "Excel parity validation"
 {library_name} includes an exported validation bundle that checks the generated
 `{package_name}` package against the source Excel workbook. The test drives
 the workbook with Microsoft Excel through `xlwings`, applies the same inputs
-through the package's public `set_*` functions, and compares the public
-`compute_*` outputs cell by cell.
+through the package's public `set_*` functions, and compares calculated outputs
+cell by cell.
 
 ## Current reference result
 
@@ -212,16 +287,13 @@ cell-level comparisons passed at `{summary.tolerance}`.
 - Failed: **{failed}**
 - Pass rate: **{summary.pass_rate}**
 - Acceptance bar: **{summary.acceptance_bar}**
+- Evidence: **{evidence_kind}**
 
 The sweep covers **{total}** cell-level comparisons against Excel.
 
 ## What Was Tested
 
-The validation checks the exported standalone library, not just the extraction
-graph. It imports `{package_name}.api`, creates a fresh context for each scenario,
-sets inputs through the records-shaped public setters, computes the exported
-output series, and compares those values against the workbook's calculated
-output cells.
+{what_tested}
 
 ## Inspect Or Re-run
 
@@ -229,11 +301,11 @@ The validation bundle is shipped in the source repository under `tests/`.
 Because the golden-master oracle uses Microsoft Excel through COM automation,
 reruns require Windows with Microsoft Excel installed.
 
-- Reference parity report: `tests/results/reference/parity_report.txt`
+- Reference parity report: {report_path}
 - Validation bundle README: `tests/README.md`
-- Differential test harness: `tests/differential/differential_test_exported_library.py`
+- Differential test harness: {harness}
 
-To re-run the validation from the exported project:
+To re-run exported-library validation from the exported project:
 
 ```pwsh
 uv run --project . --group validation python -m tests.differential.differential_test_exported_library --layout exported
@@ -245,7 +317,7 @@ def render_introduction_validation_note() -> str:
     """Return a short deterministic landing-page pointer to validation evidence."""
     return (
         "For correctness evidence, see "
-        f"[Excel parity validation]({VALIDATION_PAGE_FILENAME}), which summarizes "
+        f"[Excel parity validation]({VALIDATION_PAGE_LINK}), which summarizes "
         "the exported-library differential test against the source workbook."
     )
 
@@ -259,16 +331,32 @@ def write_validation_page(*, config: PipelineConfig) -> None:
     readme_path = config.dist_root / "tests" / "README.md"
     if not readme_path.is_file():
         raise FileNotFoundError(f"Validation README not found: {readme_path}")
-    if not report_path.is_file():
-        raise FileNotFoundError(f"Reference parity report not found: {report_path}")
 
-    summary = parse_parity_report(report_path.read_text(encoding="utf-8"))
+    evidence_kind = "exported_library"
+    if report_path.is_file():
+        report_text = report_path.read_text(encoding="utf-8")
+    else:
+        graph_report = (
+            config.repo_root
+            / config.differential_graph_report_dir_rel
+            / "differential_report.txt"
+        )
+        if not graph_report.is_file():
+            raise FileNotFoundError(
+                f"Reference parity report not found: {report_path} "
+                f"(graph fallback also missing: {graph_report})"
+            )
+        report_text = graph_report.read_text(encoding="utf-8")
+        evidence_kind = "dependency_graph"
+
+    summary = parse_parity_report(report_text)
     user_guide_root.mkdir(parents=True, exist_ok=True)
     (user_guide_root / VALIDATION_PAGE_FILENAME).write_text(
         render_validation_page(
             summary,
             library_name=config.dist_metadata.library_name,
             package_name=config.dist_metadata.package_name,
+            evidence_kind=evidence_kind,
         ),
         encoding="utf-8",
     )
@@ -295,7 +383,13 @@ def save_rewrite_cache(config: PipelineConfig, cache: dict[str, str]) -> None:
 
 
 def extract_markdown_section(markdown_text: str, heading: str) -> str:
-    pattern = rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)"
+    """Return the body under a ``##`` heading.
+
+    Optional Markdown footnote markers after the heading (for example
+    ``[^1]``) are accepted so guide extracts stay stable across PDF-derived
+    heading variants.
+    """
+    pattern = rf"^## {re.escape(heading)}(?:\[\^[^\]]+\])?\n(.*?)(?=^## |\Z)"
     match = re.search(pattern, markdown_text, flags=re.DOTALL | re.MULTILINE)
     if not match:
         raise ValueError(f"Could not find markdown heading: {heading}")
@@ -324,20 +418,76 @@ def canonical_api_context(config: PipelineConfig) -> dict[str, str]:
     }
 
 
-def extract_api_signatures(api_path: Path, symbol_names: list[str]) -> str:
+def extract_api_signatures(
+    api_path: Path,
+    symbol_names: list[str],
+    *,
+    include_body: bool = True,
+    exclude_prefixes: tuple[str, ...] = (),
+) -> str:
+    """Extract public API snippets for prompt context.
+
+    When ``include_body`` is false, only the function signature and docstring are
+    kept so large generated modules (and introspection helpers that return giant
+    literals) cannot dominate section-rewrite prompts.
+    """
     source = api_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     blocks: list[str] = []
     lines = source.splitlines()
     wanted = set(symbol_names)
+    seen: set[str] = set()
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in wanted:
-            start = node.lineno - 1
+        if not isinstance(node, ast.FunctionDef) or node.name not in wanted:
+            continue
+        if any(node.name.startswith(prefix) for prefix in exclude_prefixes):
+            continue
+        if node.name in seen:
+            continue
+        seen.add(node.name)
+        start = node.lineno - 1
+        if include_body:
             end = node.end_lineno
-            blocks.append("\n".join(lines[start:end]))
+        elif (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            end = node.body[0].end_lineno
+        else:
+            end = node.lineno
+        if end is None:
+            continue
+        blocks.append("\n".join(lines[start:end]))
     if not blocks:
         raise ValueError(f"No signatures found for symbols: {symbol_names}")
     return "\n\n".join(blocks)
+
+
+def rewrite_api_signatures(api_path: Path, symbol_names: list[str]) -> str:
+    """API context for guide rewrites: signatures + docstrings, no bodies."""
+    return extract_api_signatures(
+        api_path,
+        symbol_names,
+        include_body=False,
+        exclude_prefixes=REWRITE_API_EXCLUDE_PREFIXES,
+    )
+
+
+def estimate_prompt_chars(prompt: str) -> int:
+    return len(prompt)
+
+
+def validate_section_rewrite_prompt_budget(prompt: str) -> None:
+    """Fail loudly when a section-rewrite prompt exceeds the configured budget."""
+    size = estimate_prompt_chars(prompt)
+    if size > MAX_SECTION_REWRITE_PROMPT_CHARS:
+        raise ValueError(
+            f"section rewrite prompt budget exceeded: {size:,} chars > "
+            f"{MAX_SECTION_REWRITE_PROMPT_CHARS:,} chars. Slim API context or "
+            "chunk the source section before calling the model."
+        )
 
 
 def build_section_prompt(
@@ -469,6 +619,7 @@ def sync_validated_pages_to_rewrite_cache(
     user_guide_root = _user_guide_root(config)
     cache_path = _rewrite_cache_path(config)
 
+    rewrite_signatures = rewrite_api_signatures(config.api_module_path, api_symbols)
     functional_key = rewrite_cache_key(
         section_id="functional_overview",
         source_section_markdown=extract_markdown_section(
@@ -476,7 +627,7 @@ def sync_validated_pages_to_rewrite_cache(
         ),
         python_focus_instructions=functional_overview_focus_instructions(config),
         pipeline_context_blocks=api_context,
-        api_signatures=extract_api_signatures(config.api_module_path, api_symbols),
+        api_signatures=rewrite_signatures,
         response_schema=response_schema,
     )
     illustrative_key = rewrite_cache_key(
@@ -486,7 +637,7 @@ def sync_validated_pages_to_rewrite_cache(
         ),
         python_focus_instructions=illustrative_example_focus_instructions(config),
         pipeline_context_blocks=api_context,
-        api_signatures=extract_api_signatures(config.api_module_path, api_symbols),
+        api_signatures=rewrite_signatures,
         response_schema=response_schema,
     )
 
@@ -541,8 +692,36 @@ def validate_rewritten_markdown_fences(markdown: str) -> None:
         )
 
 
-def _validate_section_rewrite(parsed: SectionRewriteResponse) -> SectionRewriteResponse:
+def validate_rewritten_runnable_api_usage(
+    markdown: str,
+    *,
+    rules: tuple[RunnableCellRule, ...] = (),
+) -> None:
+    """Reject runnable cells whose source matches a configured forbidden pattern.
+
+    Docs may still describe fragile APIs in prose or non-executable
+    `` ```python `` fences; only executable `` ```{python} `` cells are checked.
+    Rules come from ``workbook_config.RUNNABLE_CELL_RULES``, so each derived
+    repository can pin its own allowlist of runnable-safe APIs.
+    """
+    for cell in extract_python_cells(markdown):
+        for rule in rules:
+            if re.search(rule.pattern, cell.source):
+                raise ValueError(
+                    f"runnable cell matches forbidden pattern {rule.pattern!r}: "
+                    f"{rule.message}"
+                )
+
+
+def _validate_section_rewrite(
+    parsed: SectionRewriteResponse,
+    *,
+    runnable_cell_rules: tuple[RunnableCellRule, ...] = (),
+) -> SectionRewriteResponse:
     validate_rewritten_markdown_fences(parsed.rewritten_markdown)
+    validate_rewritten_runnable_api_usage(
+        parsed.rewritten_markdown, rules=runnable_cell_rules
+    )
     return parsed
 
 
@@ -587,6 +766,13 @@ def rewrite_guide_section(
         api_signatures=api_signatures,
         response_schema=response_schema,
     )
+    validate_section_rewrite_prompt_budget(prompt)
+
+    def post_validate(parsed: SectionRewriteResponse) -> SectionRewriteResponse:
+        return _validate_section_rewrite(
+            parsed, runnable_cell_rules=config.runnable_cell_rules
+        )
+
     model = section_rewrite_model()
     parsed, content = generate_validated_json(
         client=client,
@@ -601,7 +787,7 @@ def rewrite_guide_section(
         ),
         user_prompt=prompt,
         response_model=SectionRewriteResponse,
-        post_validate=_validate_section_rewrite,
+        post_validate=post_validate,
         max_attempts=MAX_SECTION_REWRITE_ATTEMPTS,
     )
     cache[cache_key] = content
@@ -625,10 +811,13 @@ def configure_great_docs_yml(config: PipelineConfig) -> None:
     content = great_docs_yml.read_text(encoding="utf-8")
     content = content.replace("# module: yaml12", f"module: {package_module}")
 
-    great_docs_settings = [
+    great_docs_settings: list[tuple[str, str]] = [
         ("display_name", config.dist_metadata.library_name),
         ("homepage", "user_guide"),
+        ("site_url", f'"{config.dist_metadata.documentation_url}"'),
     ]
+    if config.dist_metadata.repository_url is not None:
+        great_docs_settings.append(("repo", config.dist_metadata.repository_url))
     insert_lines = [
         f"{key}: {value}"
         for key, value in great_docs_settings
@@ -653,15 +842,21 @@ def run_cmd(
     *,
     cwd: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> None:
     command_env = os.environ.copy()
     if extra_env is not None:
         command_env.update(extra_env)
+    # Force UTF-8 stdio for great-docs/Quarto children on Windows (cp1252/charmap).
+    command_env["PYTHONIOENCODING"] = "utf-8"
+    command_env["PYTHONUTF8"] = "1"
     subprocess.run(
         args,
         check=True,
         env=command_env,
         cwd=str(cwd) if cwd is not None else None,
+        input=input_text,
+        text=True if input_text is not None else None,
     )
 
 
@@ -671,17 +866,38 @@ def write_introduction_page(
     guide_text: str,
 ) -> None:
     user_guide_root = _user_guide_root(config)
-    introduction_source = extract_markdown_section(guide_text, "I. Introduction[^1]")
+    introduction_source = extract_markdown_section(guide_text, "I. Introduction")
+    focus_instructions = introduction_focus_instructions(config)
     introduction_rewrite = rewrite_guide_section(
         config=config,
         client=client,
         section_id="introduction",
         section_name="Introduction",
         source_section_markdown=introduction_source,
-        python_focus_instructions=introduction_focus_instructions(config),
+        python_focus_instructions=focus_instructions,
         pipeline_context_blocks={},
         api_signatures=_no_api_signatures(),
     )
+    install_command = config.dist_metadata.resolved_install_command()
+    rewritten_markdown = ensure_introduction_install_recommendation(
+        introduction_rewrite.rewritten_markdown,
+        install_command=install_command,
+    )
+    if rewritten_markdown != introduction_rewrite.rewritten_markdown:
+        introduction_rewrite = introduction_rewrite.model_copy(
+            update={"rewritten_markdown": rewritten_markdown}
+        )
+        cache = load_rewrite_cache(config)
+        cache_key = rewrite_cache_key(
+            section_id="introduction",
+            source_section_markdown=introduction_source,
+            python_focus_instructions=focus_instructions,
+            pipeline_context_blocks={},
+            api_signatures=_no_api_signatures(),
+            response_schema=SectionRewriteResponse.model_json_schema(),
+        )
+        cache[cache_key] = introduction_rewrite.model_dump_json(indent=2)
+        save_rewrite_cache(config, cache)
     user_guide_root.mkdir(parents=True, exist_ok=True)
     landing_page_output = user_guide_root / "index.qmd"
     landing_page_qmd = f"""---
@@ -700,13 +916,11 @@ def write_rewritten_guide_pages(config: PipelineConfig, client: OpenAI | None) -
     api_symbols = list(discover_public_api_symbols(config.api_module_path))
     api_context = canonical_api_context(config)
 
+    rewrite_signatures = rewrite_api_signatures(config.api_module_path, api_symbols)
+
     functional_overview_source = extract_markdown_section(
         guide_text,
         "II. Functional Overview",
-    )
-    functional_overview_api = extract_api_signatures(
-        config.api_module_path,
-        api_symbols,
     )
     functional_overview_rewrite = rewrite_guide_section(
         config=config,
@@ -716,16 +930,12 @@ def write_rewritten_guide_pages(config: PipelineConfig, client: OpenAI | None) -
         source_section_markdown=functional_overview_source,
         python_focus_instructions=functional_overview_focus_instructions(config),
         pipeline_context_blocks=api_context,
-        api_signatures=functional_overview_api,
+        api_signatures=rewrite_signatures,
     )
 
     illustrative_example_source = extract_markdown_section(
         guide_text,
         "III. Illustrative Example",
-    )
-    illustrative_example_api = extract_api_signatures(
-        config.api_module_path,
-        api_symbols,
     )
     illustrative_example_rewrite = rewrite_guide_section(
         config=config,
@@ -735,7 +945,7 @@ def write_rewritten_guide_pages(config: PipelineConfig, client: OpenAI | None) -
         source_section_markdown=illustrative_example_source,
         python_focus_instructions=illustrative_example_focus_instructions(config),
         pipeline_context_blocks=api_context,
-        api_signatures=illustrative_example_api,
+        api_signatures=rewrite_signatures,
     )
 
     user_guide_root = _user_guide_root(config)
@@ -819,10 +1029,31 @@ jobs:
     docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
 
 
+def _section_rewrite_client(model: str) -> OpenAI | None:
+    """Build a docs-stage client with a longer timeout for large section rewrites."""
+    provider = provider_for_model(model)
+    api_key = os.environ.get(provider.api_key_env)
+    if not api_key:
+        return None
+    timeout = (
+        env_float(SECTION_REWRITE_REQUEST_TIMEOUT_ENV)
+        or DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT
+    )
+    return OpenAI(
+        api_key=api_key,
+        base_url=provider.base_url,
+        timeout=timeout,
+        max_retries=2,
+    )
+
+
 def run_documentation_pipeline(config: PipelineConfig) -> None:
     configure_logging()
+    load_dotenv(config.repo_root / ".env")
     great_docs_yml = _great_docs_yml(config)
     if not great_docs_yml.exists():
+        # great-docs init may prompt to append great-docs/ to .gitignore; answer
+        # non-interactively so unattended pipeline runs cannot stall on stdin.
         run_cmd(
             [
                 "uv",
@@ -835,13 +1066,14 @@ def run_documentation_pipeline(config: PipelineConfig) -> None:
                 "init",
                 "--project-path",
                 str(config.dist_root),
-            ]
+            ],
+            input_text="y\n",
         )
 
     configure_great_docs_yml(config)
 
     model = section_rewrite_model()
-    section_client, _ = build_client_if_configured(model)
+    section_client = _section_rewrite_client(model)
     guide_text = config.guide_path.read_text(encoding="utf-8")
     write_introduction_page(config, section_client, guide_text)
     write_rewritten_guide_pages(config, section_client)
@@ -857,7 +1089,7 @@ def run_documentation_pipeline(config: PipelineConfig) -> None:
         metadata=config.dist_metadata,
         client=section_client,
         model=model if section_client is not None else None,
-        api_signatures=extract_api_signatures(config.api_module_path, api_symbols),
+        api_signatures=rewrite_api_signatures(config.api_module_path, api_symbols),
     )
     sync_validated_pages_to_rewrite_cache(config=config, guide_text=guide_text)
     write_docs_deploy_workflow(config)

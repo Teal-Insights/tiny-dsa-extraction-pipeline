@@ -3,9 +3,9 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-
 from typing import cast
 
+import pytest
 from excel_grapher.exporter import BaseProjectionManifest, CodeGenerator
 from excel_grapher.exporter.codegen import GraphLike
 
@@ -29,6 +29,46 @@ def test_refactor_projection_preserves_targets_and_parallel_members(
     assert "Outputs!B1" in projection
     assert "Outputs!C1" in projection
     assert "Inputs!A1" in projection
+
+
+def test_build_refactor_projection_forwards_cache_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    synthetic_graph,
+) -> None:
+    """Opt-in smokes need to pin cache_dir past pytest's redirected default."""
+    captured: dict[str, object] = {}
+    sentinel_dir = Path("/tmp/repo-projection-cache")
+
+    def fake_get_or_build(
+        graph: object,
+        *,
+        graph_cache_key: str,
+        cache_dir: Path | None = None,
+        no_cache: bool = False,
+        force_rebuild: bool = False,
+    ) -> object:
+        del graph, no_cache, force_rebuild
+        captured["graph_cache_key"] = graph_cache_key
+        captured["cache_dir"] = cache_dir
+
+        class _Result:
+            projection = object()
+
+        return _Result()
+
+    monkeypatch.setattr(
+        "src.subgraph_projection.get_or_build_refactor_projection",
+        fake_get_or_build,
+    )
+
+    result = build_refactor_projection(
+        synthetic_graph,
+        graph_cache_key="test-graph-cache-key",
+        cache_dir=sentinel_dir,
+    )
+    assert result is not None
+    assert captured["graph_cache_key"] == "test-graph-cache-key"
+    assert captured["cache_dir"] == sentinel_dir
 
 
 def test_projected_codegen_preserves_public_series_api(

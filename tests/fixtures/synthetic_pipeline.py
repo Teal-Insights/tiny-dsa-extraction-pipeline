@@ -117,7 +117,7 @@ def synthetic_pipeline_config(
     return PipelineConfig(
         repo_root=root,
         workbook_path=workbook_path,
-        guide_path=root / "data" / "guide.md",
+        guide_path=FIXTURES_ROOT / "guide.md",
         bindings_path=FIXTURES_ROOT,
         dist_root=dist_root if dist_root is not None else root / "dist",
         targets=TARGETS,

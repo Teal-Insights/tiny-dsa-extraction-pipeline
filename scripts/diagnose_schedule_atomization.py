@@ -208,7 +208,7 @@ def main() -> None:
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="Bypass on-disk graph and projection caches for this run.",
+        help="Bypass on-disk graph, projection, and codegen caches for this run.",
     )
     parser.add_argument(
         "--top-families",

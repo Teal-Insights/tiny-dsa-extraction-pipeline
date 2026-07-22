@@ -5,6 +5,11 @@ closed-world call graph: runtime and internals function signatures already
 present in generated code, plus a small allowlisted map for ``xl_*`` helpers.
 Opaque ``xl_*`` passthroughs propagate ``CellValue``; export may narrow that
 hint when binding dtype metadata is available.
+
+Pass 1 keeps a shared callee-hint map and merges each newly applied helper's
+annotation via :func:`merge_callee_return_hints` so downstream units can
+propagate types through schedule-ordered collapses. Runtime source for that
+map commonly includes ``_readers.py`` (via ``_read_runtime_source``).
 """
 
 from __future__ import annotations
@@ -86,6 +91,18 @@ def function_return_hints_from_source(source: str) -> dict[str, str | None]:
     return hints
 
 
+def merge_callee_return_hints(
+    hints: dict[str, str],
+    *,
+    source: str,
+) -> dict[str, str]:
+    """Merge allowlisted return annotations from ``source`` into ``hints`` in place."""
+    for name, parsed in function_return_hints_from_source(source).items():
+        if parsed is not None:
+            hints[name] = parsed
+    return hints
+
+
 def build_callee_return_hints(
     *,
     runtime_source: str,
@@ -94,9 +111,7 @@ def build_callee_return_hints(
     """Map callee names to allowlisted return hints from generated sources."""
     hints = dict(KNOWN_RUNTIME_RETURN_HINTS)
     for source in (runtime_source, internals_source):
-        for name, parsed in function_return_hints_from_source(source).items():
-            if parsed is not None:
-                hints[name] = parsed
+        merge_callee_return_hints(hints, source=source)
     return hints
 
 
@@ -117,11 +132,19 @@ def _infer_expr_types(
     callees: Mapping[str, str],
 ) -> set[str] | None:
     if isinstance(node, ast.Constant):
+        if node.value is None:
+            # Empty IF branches compile to a literal None, a valid CellValue.
+            return {"CellValue"}
         literal = _literal_type_hint(node.value)
         return {literal} if literal is not None else None
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         callee_hint = callees.get(node.func.id)
-        return {callee_hint} if callee_hint is not None else None
+        if callee_hint is None:
+            return None
+        # Callee maps store allowlisted unions as a single "float | CellValue"
+        # string; expand to atomic parts so format_return_type_hint can order them.
+        parts = {part.strip() for part in callee_hint.split("|") if part.strip()}
+        return parts if parts else None
     if isinstance(node, ast.IfExp):
         body = _infer_expr_types(node.body, callees)
         orelse = _infer_expr_types(node.orelse, callees)
@@ -207,11 +230,16 @@ def infer_refactor_return_type_hint(
     runtime_source: str,
     internals_source: str,
     naming_hints: Mapping[str, object] | None = None,
+    callee_hints: Mapping[str, str] | None = None,
 ) -> str:
     """Infer an allowlisted helper return hint from mechanical member bodies."""
-    callees = build_callee_return_hints(
-        runtime_source=runtime_source,
-        internals_source=internals_source,
+    callees = (
+        dict(callee_hints)
+        if callee_hints is not None
+        else build_callee_return_hints(
+            runtime_source=runtime_source,
+            internals_source=internals_source,
+        )
     )
     hints: set[str] = set()
     for index, source in enumerate(python_sources):

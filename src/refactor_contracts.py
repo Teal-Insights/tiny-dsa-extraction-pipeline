@@ -42,7 +42,11 @@ from src.refactor_bindings import (
 )
 from src.workbook_addresses import ProjectionColumnLayout
 
-ClusterRefactorContract: TypeAlias = Literal["member_sweep", "dimension_aware"]
+ClusterRefactorContract: TypeAlias = Literal[
+    "member_sweep",
+    "dimension_aware",
+    "key_dispatch",
+]
 
 
 def concepts_with_multiple_dimensions(

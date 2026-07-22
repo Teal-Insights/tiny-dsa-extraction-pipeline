@@ -5,8 +5,11 @@ relations, per-member ref addresses/keys) plus the unpacked exemplar
 translations, and produces a parameterized helper body without any LLM
 involvement. The synthesizer only rewrites *read sites* — ``xl_cell`` /
 ``xl_eval`` literals, ``read_*`` accessor arguments, semantic-helper call
-arguments, and in-cluster self-recurrence — leaving every operator, coercion
-wrapper, literal, and lazy branch of the exemplar untouched.
+arguments, in-cluster self-recurrence, and the ref-info tuple of the constant
+range INDEX/MATCH family (issue #170) — leaving every operator, coercion
+wrapper, literal, and lazy branch of the exemplar untouched. Cluster-constant
+``xl_range`` reads pass through verbatim; ``xl_match`` is pure and never
+rewritten.
 
 Every rewrite is verified per member: the derived address or argument keys
 must equal the recorded refs for all members of the fingerprint group. Any
@@ -19,24 +22,31 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from fastpyxl.utils.cell import column_index_from_string
+
+from src.empty_if_rewrite import rewrite_empty_if_none_literals
 from src.refactor_bindings import BindingKeyValue, KeyConceptSpec
 from src.refactor_fingerprints import (
     ClusterFingerprintSummary,
     FingerprintGroup,
+    LookupKey,
     RefRelation,
+    _subset_routing_lookup,
 )
 
 _MECHANICAL_TEMP_PATTERN = re.compile(r"^_t\d+$")
 _ACCESSOR_PREFIX = "read_"
 _CELL_FUNCTION_PREFIX = "cell_"
 _POINT_READ_CALLEES = frozenset({"xl_cell", "xl_eval"})
-_UNSUPPORTED_READ_CALLEES = frozenset(
-    {"xl_range", "xl_range_rows", "xl_index_ref", "xl_offset", "xl_match"}
-)
+# xl_range_rows is a public boundary handler and never appears in cluster
+# bodies; xl_match is pure (consumes an already-read Range) and needs no
+# rewrite. xl_range / xl_offset / xl_index_ref are handled shape-by-shape in
+# _collect_read_sites (issue #170).
+_UNSUPPORTED_READ_CALLEES = frozenset({"xl_range_rows"})
 
 
 class MechanicalSynthesisError(Exception):
@@ -196,6 +206,7 @@ def synthesize_singleton_body(
         }
     )
     body = "\n".join(ast.unparse(statement) for statement in rewritten)
+    body = rewrite_empty_if_none_literals(body)
     indented = "\n".join(f"    {line}" for line in body.splitlines())
     try:
         ast.parse(f"def _draft(ctx):\n{indented}\n")
@@ -209,7 +220,9 @@ def synthesize_singleton_body(
     )
 
 
-def _sort_key(value: BindingKeyValue) -> tuple[int, object]:
+def _sort_key(value: LookupKey) -> tuple[int, object]:
+    if isinstance(value, tuple):
+        return (4, tuple(_sort_key(item) for item in value))
     if isinstance(value, bool):
         return (3, value)
     if isinstance(value, (int, float)):
@@ -219,17 +232,23 @@ def _sort_key(value: BindingKeyValue) -> tuple[int, object]:
     return (2, str(value))
 
 
+def _table_key_expr(key: LookupKey) -> ast.expr:
+    if isinstance(key, tuple):
+        return ast.Tuple(
+            elts=[ast.Constant(value=item) for item in key], ctx=ast.Load()
+        )
+    return ast.Constant(value=key)
+
+
 @dataclass
 class _TableRegistry:
     """Allocates deterministic names for mechanical lookup-table dict literals."""
 
-    tables: dict[str, dict[BindingKeyValue, BindingKeyValue]] = field(
-        default_factory=dict
-    )
+    tables: dict[str, dict[LookupKey, BindingKeyValue]] = field(default_factory=dict)
     order: list[str] = field(default_factory=list)
 
     def register(
-        self, base_name: str, content: Mapping[BindingKeyValue, BindingKeyValue]
+        self, base_name: str, content: Mapping[LookupKey, BindingKeyValue]
     ) -> str:
         frozen = dict(content)
         name = base_name
@@ -252,7 +271,7 @@ class _TableRegistry:
                 ast.Assign(
                     targets=[ast.Name(id=name, ctx=ast.Store())],
                     value=ast.Dict(
-                        keys=[ast.Constant(value=key) for key in keys],
+                        keys=[_table_key_expr(key) for key in keys],
                         values=[ast.Constant(value=content[key]) for key in keys],
                     ),
                 )
@@ -261,10 +280,24 @@ class _TableRegistry:
 
 
 @dataclass(frozen=True)
+class _IndexRefInfo:
+    """The recognized ``xl_offset(ctx, xl_index_ref((...), _tN, col), 0, 0)`` shape."""
+
+    index_ref_call: ast.Call
+    tuple_node: ast.Tuple
+    sheet: str
+    corners: tuple[int, int, int, int]
+    """The ref-info tuple's ``(row_start, col_start, row_end, col_end)`` literals."""
+
+
+@dataclass(frozen=True)
 class _ReadSite:
     node: ast.Call
     callee: str
     address: str | None
+    endpoints: tuple[str, str] | None = None
+    """Recorded-format endpoint addresses of a literal ``xl_range`` read."""
+    index_ref: _IndexRefInfo | None = None
 
 
 def _iter_calls(node: ast.AST) -> Iterator[ast.Call]:
@@ -282,11 +315,131 @@ def _call_address_literal(node: ast.Call) -> str | None:
     return None
 
 
+def _sheet_prefix(address: str) -> str | None:
+    """Return the ``Sheet!`` prefix of a sheet-qualified address, quotes kept."""
+    if address.startswith("'"):
+        i = 1
+        while i < len(address):
+            if address[i] == "'":
+                if address[i + 1 : i + 2] == "'":
+                    i += 2
+                    continue
+                break
+            i += 1
+        if address[i + 1 : i + 2] != "!":
+            return None
+        return address[: i + 2]
+    bang = address.rfind("!")
+    if bang < 0:
+        return None
+    return address[: bang + 1]
+
+
+def _range_literal_endpoints(address: str) -> tuple[str, str] | None:
+    """Split a literal range address into recorded-format endpoint addresses."""
+    if ":" not in address:
+        return None
+    start_text, end_text = address.split(":", 1)
+    prefix = _sheet_prefix(start_text)
+    if prefix is None:
+        return None
+    if _sheet_prefix(end_text) is not None:
+        return start_text, end_text
+    return start_text, prefix + end_text
+
+
+def _parse_endpoint_address(address: str) -> tuple[str, int, int] | None:
+    """Parse a recorded ref address into ``(sheet, row, column_index)``."""
+    if "!" not in address:
+        return None
+    sheet, colrow = address.split("!", 1)
+    if sheet.startswith("'") and sheet.endswith("'") and len(sheet) >= 2:
+        sheet = sheet[1:-1].replace("''", "'")
+    column = "".join(character for character in colrow if character.isalpha())
+    digits = "".join(character for character in colrow if character.isdigit())
+    if not column or not digits:
+        return None
+    try:
+        column_index = column_index_from_string(column)
+    except ValueError:
+        return None
+    return sheet, int(digits), column_index
+
+
+def _int_corner_literal(node: ast.expr) -> int | None:
+    if (
+        isinstance(node, ast.Constant)
+        and not isinstance(node.value, bool)
+        and isinstance(node.value, int)
+    ):
+        return node.value
+    return None
+
+
+def _is_zero_literal(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and not isinstance(node.value, bool)
+        and isinstance(node.value, (int, float))
+        and node.value == 0
+    )
+
+
+def _parse_index_offset_call(call: ast.Call) -> _IndexRefInfo | None:
+    """Recognize exactly the constant INDEX/MATCH reference shape (issue #170).
+
+    ``xl_offset(ctx, xl_index_ref((sheet, r1, c1, r2, c2), _tN, col), 0.0, 0.0)``
+    with literal zero offsets, no height/width, a literal ref-info tuple, a name
+    row argument, and a literal column argument. Any other shape returns None.
+    """
+    if call.keywords or len(call.args) != 4:
+        return None
+    if not (isinstance(call.args[0], ast.Name) and call.args[0].id == "ctx"):
+        return None
+    if not (_is_zero_literal(call.args[2]) and _is_zero_literal(call.args[3])):
+        return None
+    inner = call.args[1]
+    if not (
+        isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == "xl_index_ref"
+        and not inner.keywords
+        and len(inner.args) == 3
+    ):
+        return None
+    tuple_node, row_arg, col_arg = inner.args
+    if not isinstance(row_arg, ast.Name) or row_arg.id == "ctx":
+        return None
+    if not (
+        isinstance(col_arg, ast.Constant)
+        and not isinstance(col_arg.value, bool)
+        and isinstance(col_arg.value, (int, float))
+    ):
+        return None
+    if not (isinstance(tuple_node, ast.Tuple) and len(tuple_node.elts) == 5):
+        return None
+    sheet_node = tuple_node.elts[0]
+    if not (isinstance(sheet_node, ast.Constant) and isinstance(sheet_node.value, str)):
+        return None
+    row_start, col_start, row_end, col_end = (
+        _int_corner_literal(element) for element in tuple_node.elts[1:]
+    )
+    if row_start is None or col_start is None or row_end is None or col_end is None:
+        return None
+    return _IndexRefInfo(
+        index_ref_call=inner,
+        tuple_node=tuple_node,
+        sheet=sheet_node.value,
+        corners=(row_start, col_start, row_end, col_end),
+    )
+
+
 def _collect_read_sites(
     statements: Sequence[ast.stmt],
     semantic_helper_names: frozenset[str],
 ) -> list[_ReadSite]:
     sites: list[_ReadSite] = []
+    consumed_index_refs: set[int] = set()
     for statement in statements:
         for call in _iter_calls(statement):
             func = call.func
@@ -295,7 +448,34 @@ def _collect_read_sites(
             callee = func.id
             if callee in _UNSUPPORTED_READ_CALLEES:
                 raise MechanicalSynthesisError(f"unsupported_read_callee:{callee}")
-            if callee in _POINT_READ_CALLEES:
+            if callee == "xl_range":
+                address = _call_address_literal(call)
+                if address is None:
+                    raise MechanicalSynthesisError("non_literal_range_address")
+                endpoints = _range_literal_endpoints(address)
+                if endpoints is None:
+                    raise MechanicalSynthesisError(
+                        f"unparseable_range_address:{address}"
+                    )
+                sites.append(
+                    _ReadSite(
+                        node=call, callee=callee, address=address, endpoints=endpoints
+                    )
+                )
+            elif callee == "xl_offset":
+                info = _parse_index_offset_call(call)
+                if info is None:
+                    raise MechanicalSynthesisError("unsupported_offset_shape")
+                # _iter_calls walks outer-first, so the inner xl_index_ref is
+                # visited after this call and must not be re-collected.
+                consumed_index_refs.add(id(info.index_ref_call))
+                sites.append(
+                    _ReadSite(node=call, callee=callee, address=None, index_ref=info)
+                )
+            elif callee == "xl_index_ref":
+                if id(call) not in consumed_index_refs:
+                    raise MechanicalSynthesisError("unsupported_index_ref_shape")
+            elif callee in _POINT_READ_CALLEES:
                 sites.append(
                     _ReadSite(
                         node=call, callee=callee, address=_call_address_literal(call)
@@ -356,6 +536,8 @@ class _GroupSynthesizer:
         self.table_names: list[str] = []
         self.replacements: dict[int, ast.expr] = {}
         self.claim_counts: dict[int, int] = {}
+        self.index_verified_slots: set[int] = set()
+        self.template_claimed_slots: set[int] = set()
 
     # -- relation-derived key expressions and their mirror evaluation --------
 
@@ -366,7 +548,7 @@ class _GroupSynthesizer:
         return param
 
     def _register_table(
-        self, base_name: str, content: Mapping[BindingKeyValue, BindingKeyValue]
+        self, base_name: str, content: Mapping[LookupKey, BindingKeyValue]
     ) -> str:
         name = self.tables.register(base_name, content)
         if name not in self.table_names:
@@ -384,8 +566,21 @@ class _GroupSynthesizer:
             key_dim = relation.lookup_keys.get(dim)
             if key_dim is None:
                 raise MechanicalSynthesisError(f"lookup_without_key_dim:{dim}")
-            key_param = self._dim_param(key_dim)
             table = relation.lookups[dim]
+            if isinstance(key_dim, tuple):
+                key_params = [self._dim_param(key) for key in key_dim]
+                table_name = self._register_table(
+                    f"{dim.lower()}_by_{'_'.join(key_params)}", table
+                )
+                return ast.Subscript(
+                    value=_param_expr(table_name),
+                    slice=ast.Tuple(
+                        elts=[_param_expr(param) for param in key_params],
+                        ctx=ast.Load(),
+                    ),
+                    ctx=ast.Load(),
+                )
+            key_param = self._dim_param(key_dim)
             if dim in relation.lookup_bases:
                 table_name = self._register_table(
                     f"{self._dim_param(dim)}_lag_by_{key_param}", table
@@ -424,9 +619,18 @@ class _GroupSynthesizer:
             return value + relation.offsets[dim]
         if dim in relation.lookups:
             key_dim = relation.lookup_keys.get(dim)
-            if key_dim is None or key_dim not in member_keys:
+            if key_dim is None:
                 raise MechanicalSynthesisError(f"lookup_without_key_dim:{dim}")
             table = relation.lookups[dim]
+            if isinstance(key_dim, tuple):
+                if any(key not in member_keys for key in key_dim):
+                    raise MechanicalSynthesisError(f"lookup_without_key_dim:{dim}")
+                tuple_key: LookupKey = tuple(member_keys[key] for key in key_dim)
+                if tuple_key not in table:
+                    raise MechanicalSynthesisError(f"lookup_key_not_covered:{dim}")
+                return table[tuple_key]
+            if key_dim not in member_keys:
+                raise MechanicalSynthesisError(f"lookup_without_key_dim:{dim}")
             key_value = member_keys[key_dim]
             if key_value not in table:
                 raise MechanicalSynthesisError(f"lookup_key_not_covered:{dim}")
@@ -693,6 +897,12 @@ class _GroupSynthesizer:
         sites = _collect_read_sites(statements, semantic_helper_names)
         claimed: dict[int, int] = {}
         for site in sites:
+            if site.endpoints is not None:
+                self._claim_range_site(site)
+                continue
+            if site.index_ref is not None:
+                self._claim_index_site(site)
+                continue
             matching = [
                 slot
                 for slot in range(len(self.group.ref_relations))
@@ -704,6 +914,7 @@ class _GroupSynthesizer:
                 )
             slot = min(matching, key=lambda s: (self.claim_counts.get(s, 0), s))
             self.claim_counts[slot] = self.claim_counts.get(slot, 0) + 1
+            self.template_claimed_slots.add(slot)
             claimed[id(site.node)] = slot
             self._rewrite_site(site, slot)
 
@@ -743,6 +954,21 @@ class _GroupSynthesizer:
             if resolution.kind == "self_recurrence":
                 self.replacements[id(site.node)] = self._self_recurrence_call(slot)
                 return
+            if resolution.kind == "xl_cell":
+                address_expr = self._address_template_expr(slot)
+                if address_expr is not None:
+                    # Varying dependency addresses already carry an
+                    # address_template from fingerprint resolution. The
+                    # exemplar's cell_* callback is member-specific and cannot
+                    # be kept, so evaluate through xl_cell (resolver) with the
+                    # templated address — verified against recorded ref
+                    # addresses like xl_cell sites.
+                    self.replacements[id(site.node)] = ast.Call(
+                        func=ast.Name(id="xl_cell", ctx=ast.Load()),
+                        args=[site.node.args[0], address_expr],
+                        keywords=[],
+                    )
+                return
             slot_addresses = {
                 self.ref_addresses[member][slot] for member in self.group.members
             }
@@ -759,6 +985,148 @@ class _GroupSynthesizer:
         if replacement is not None:
             self.replacements[id(site.node)] = replacement
 
+    # -- range and INDEX ref-info sites (issue #170) ---------------------------
+
+    def _claim_range_site(self, site: _ReadSite) -> None:
+        """Claim both endpoint slots of a literal ``xl_range`` read.
+
+        Constant endpoints keep the call verbatim (no rewrite); a member whose
+        recorded endpoint differs makes the range member-varying, which is out
+        of scope until a workbook exercises it.
+        """
+        assert site.endpoints is not None
+        for address in site.endpoints:
+            try:
+                slot = self.exemplar_refs.index(address)
+            except ValueError:
+                raise MechanicalSynthesisError(
+                    f"unclaimed_read_site:{ast.unparse(site.node)}"
+                ) from None
+            self.claim_counts[slot] = self.claim_counts.get(slot, 0) + 1
+            for member in self.group.members:
+                if self.ref_addresses[member][slot] != address:
+                    raise MechanicalSynthesisError(f"range_endpoints_vary:slot_{slot}")
+
+    def _parsed_endpoint_slot(
+        self, sheet: str, row: int, column_index: int
+    ) -> int | None:
+        for slot, address in enumerate(self.exemplar_refs):
+            if _parse_endpoint_address(address) == (sheet, row, column_index):
+                return slot
+        return None
+
+    def _claim_index_site(self, site: _ReadSite) -> None:
+        """Parameterize the ref-info tuple of a recognized INDEX reference.
+
+        The tuple's corners must equal the exemplar's own parsed endpoint slot
+        addresses; each corner is then rederived per member from the recorded
+        slot addresses — constant corners stay literal, varying corners become
+        registered lookup tables keyed by routing member dimensions.
+        """
+        info = site.index_ref
+        assert info is not None
+        row_start, col_start, row_end, col_end = info.corners
+        start_slot = self._parsed_endpoint_slot(info.sheet, row_start, col_start)
+        end_slot = self._parsed_endpoint_slot(info.sheet, row_end, col_end)
+        if start_slot is None or end_slot is None:
+            raise MechanicalSynthesisError(
+                f"unclaimed_read_site:{ast.unparse(site.node)}"
+            )
+        for slot in (start_slot, end_slot):
+            self.claim_counts[slot] = self.claim_counts.get(slot, 0) + 1
+            self.index_verified_slots.add(slot)
+
+        corners_by_member: dict[str, tuple[int, int, int, int]] = {}
+        for member in self.group.members:
+            start = _parse_endpoint_address(self.ref_addresses[member][start_slot])
+            if start is None or start[0] != info.sheet:
+                raise MechanicalSynthesisError(
+                    f"index_ref_tuple_mismatch:slot_{start_slot}:{member}"
+                )
+            end = _parse_endpoint_address(self.ref_addresses[member][end_slot])
+            if end is None or end[0] != info.sheet:
+                raise MechanicalSynthesisError(
+                    f"index_ref_tuple_mismatch:slot_{end_slot}:{member}"
+                )
+            corners_by_member[member] = (start[1], start[2], end[1], end[2])
+
+        corner_slots = (start_slot, start_slot, end_slot, end_slot)
+        corner_names = ("row_start", "col_start_index", "row_end", "col_end_index")
+        elements: list[ast.expr] = [ast.Constant(value=info.sheet)]
+        for position, (base_name, slot) in enumerate(
+            zip(corner_names, corner_slots, strict=True)
+        ):
+            values_by_member = {
+                member: corners[position]
+                for member, corners in corners_by_member.items()
+            }
+            expression, derive = self._derived_corner_field(
+                base_name, values_by_member, slot
+            )
+            for member in self.group.members:
+                if derive(member) != values_by_member[member]:
+                    raise MechanicalSynthesisError(
+                        f"index_ref_tuple_mismatch:slot_{slot}:{member}"
+                    )
+            elements.append(expression)
+        self.replacements[id(info.tuple_node)] = ast.Tuple(
+            elts=elements, ctx=ast.Load()
+        )
+
+    def _derived_corner_field(
+        self,
+        base_name: str,
+        values_by_member: Mapping[str, int],
+        slot: int,
+    ) -> tuple[ast.expr, Callable[[str], BindingKeyValue | None]]:
+        """Return the corner's expression and its per-member mirror evaluator."""
+        values = set(values_by_member.values())
+        if len(values) == 1:
+            constant = next(iter(values))
+            return ast.Constant(value=constant), lambda member: constant
+        member_keys = {
+            member: dict(self.expected_member_keys.get(member, {}))
+            for member in self.group.members
+        }
+        routed = _subset_routing_lookup(
+            base_name,
+            self.group.members,
+            member_keys,
+            {member: {base_name: value} for member, value in values_by_member.items()},
+            self.varying_dims,
+        )
+        if routed is None:
+            raise MechanicalSynthesisError(f"index_ref_field_unroutable:slot_{slot}")
+        key_dims, table = routed
+        if isinstance(key_dims, tuple):
+            key_params = [self._dim_param(dim) for dim in key_dims]
+            table_name = self._register_table(
+                f"{base_name}_by_{'_'.join(key_params)}", table
+            )
+            expression: ast.expr = ast.Subscript(
+                value=_param_expr(table_name),
+                slice=ast.Tuple(
+                    elts=[_param_expr(param) for param in key_params], ctx=ast.Load()
+                ),
+                ctx=ast.Load(),
+            )
+            tuple_dims = key_dims
+
+            def derive(member: str) -> BindingKeyValue | None:
+                key: LookupKey = tuple(member_keys[member][dim] for dim in tuple_dims)
+                return table.get(key)
+
+            return expression, derive
+        key_param = self._dim_param(key_dims)
+        table_name = self._register_table(f"{base_name}_by_{key_param}", table)
+        expression = ast.Subscript(
+            value=_param_expr(table_name),
+            slice=_param_expr(key_param),
+            ctx=ast.Load(),
+        )
+        scalar_dim = key_dims
+        return expression, lambda member: table.get(member_keys[member][scalar_dim])
+
     def _verify_slot(self, slot: int) -> None:
         relation = self.group.ref_relations[slot]
         resolution = relation.resolution
@@ -773,11 +1141,16 @@ class _GroupSynthesizer:
         ):
             # Address templates verify against recorded addresses; keyword call
             # rewrites verify against recorded ref keys. Both hold for accessor
-            # reads whose resolution predicted an xl_cell template.
+            # reads whose resolution predicted an xl_cell template. Slots
+            # claimed only by an INDEX ref-info tuple were already verified
+            # against parsed endpoint coordinates and need no axis tables.
             slot_addresses = {
                 self.ref_addresses[member][slot] for member in self.group.members
             }
-            if len(slot_addresses) > 1:
+            if len(slot_addresses) > 1 and (
+                slot not in self.index_verified_slots
+                or slot in self.template_claimed_slots
+            ):
                 self._verify_templated_slot_address(slot)
         self._verify_derived_keys(slot)
 
@@ -986,6 +1359,9 @@ def synthesize_cluster_body(
     module = ast.Module(body=body_statements, type_ignores=[])
     ast.fix_missing_locations(module)
     body = "\n".join(ast.unparse(statement) for statement in module.body)
+    # Exemplars from excel-grapher < 3.15.3 still emit None for empty IF arms;
+    # lower those to 0.0 so helpers match xl_cell's numeric-blank coercion.
+    body = rewrite_empty_if_none_literals(body)
 
     params = ", ".join(sorted(param_by_dim[dim] for dim in varying_dims))
     indented = "\n".join(f"    {line}" for line in body.splitlines())

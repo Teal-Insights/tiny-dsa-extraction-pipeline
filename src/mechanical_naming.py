@@ -11,6 +11,9 @@ never a semantic change.
 from __future__ import annotations
 
 import ast
+import copy
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -195,3 +198,90 @@ class _NameRenamer(ast.NodeTransformer):
         if replacement is not None:
             return ast.Name(id=replacement, ctx=node.ctx)
         return node
+
+
+@dataclass(frozen=True)
+class NamingUnit:
+    """One mechanically synthesized helper awaiting a naming response apply."""
+
+    helper_name: str
+    draft: MechanicalBodyDraft
+    response: ClusterNamingLLMResponse
+    parameter_names: frozenset[str]
+    forbidden_names: frozenset[str]
+
+
+def apply_naming_responses_to_module(
+    source: str,
+    units: Sequence[NamingUnit],
+) -> str:
+    """Apply a batch of naming responses to their helpers in a module.
+
+    Each unit names one mechanically synthesized helper: its renames are applied
+    to the draft body via :func:`apply_cluster_naming_response`, and the helper's
+    body and docstring are replaced in ``source`` while keeping its signature
+    (including type hints). Application is commutative — helpers are rewritten in
+    source order regardless of the order of ``units`` — so two callers passing
+    the same units in different orders produce byte-identical output.
+    """
+    unit_by_name: dict[str, NamingUnit] = {}
+    for unit in units:
+        if unit.helper_name in unit_by_name:
+            raise ValueError(f"duplicate naming unit for helper {unit.helper_name!r}")
+        unit_by_name[unit.helper_name] = unit
+
+    module = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    replacements: list[tuple[int, int, str]] = []
+    for node in module.body:
+        if not isinstance(node, ast.FunctionDef) or node.name not in unit_by_name:
+            continue
+        unit = unit_by_name[node.name]
+        if unit.response.symbol_docstring is None:
+            raise ValueError(
+                f"naming response for {node.name!r} must include a docstring"
+            )
+        named_body = apply_cluster_naming_response(
+            unit.response,
+            unit.draft,
+            parameter_names=unit.parameter_names,
+            forbidden_names=unit.forbidden_names,
+        )
+        rebuilt = _rebuild_named_function(
+            node,
+            docstring=unit.response.symbol_docstring,
+            body=named_body,
+        )
+        # ``FunctionDef.lineno`` is the ``def`` line; include decorators so a
+        # rewrite does not leave an orphaned ``@xl_memoize`` above the unparsed
+        # replacement (which re-emits ``decorator_list``).
+        start_lineno = (
+            min(decorator.lineno for decorator in node.decorator_list)
+            if node.decorator_list
+            else node.lineno
+        )
+        start = start_lineno - 1
+        end = node.end_lineno if node.end_lineno is not None else node.lineno
+        replacements.append((start, end, rebuilt))
+
+    for start, end, rebuilt in sorted(
+        replacements, key=lambda item: item[0], reverse=True
+    ):
+        block = rebuilt if rebuilt.endswith("\n") else rebuilt + "\n"
+        lines[start:end] = [block]
+    return "".join(lines)
+
+
+def _rebuild_named_function(
+    node: ast.FunctionDef,
+    *,
+    docstring: str,
+    body: str,
+) -> str:
+    """Return the unparsed helper with a new docstring and renamed body."""
+    rebuilt = copy.deepcopy(node)
+    docstring_stmt = ast.Expr(value=ast.Constant(value=docstring))
+    body_statements = ast.parse(body).body
+    rebuilt.body = [docstring_stmt, *body_statements]
+    ast.fix_missing_locations(rebuilt)
+    return ast.unparse(rebuilt)

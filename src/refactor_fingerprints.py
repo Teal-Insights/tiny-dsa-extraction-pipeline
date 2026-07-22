@@ -4,6 +4,15 @@ Under ``series_ast`` clustering, members of one refactor unit share a structural
 skeleton and differ only in which concrete cells fill each ref slot. A complete
 description of the cluster is therefore: one exemplar translation + a per-ref
 relation matrix relating each slot's binding keys to the member's own keys.
+
+When a shared skeleton still mixes binding series behind any ``ref_N`` (regime
+boundaries inside one owning series), members are partitioned into separate
+fingerprint groups so each group keeps a uniform ``series_id`` per slot.
+
+Incomplete ``address_to_series_id`` maps leave unbound operands under regime
+``None``. Those mates stay together only when they share operand sheet/row
+geometry; mixed unbound geometry falls back rather than emitting one semantic
+group.
 """
 
 from __future__ import annotations
@@ -11,8 +20,11 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+
+import fastpyxl.utils.cell as xl_cell_utils
 
 from src.formula_clustering import (
     BoundAddressKeys,
@@ -39,6 +51,8 @@ class SemanticDependencyRef:
 
 
 KeyCombo = tuple[tuple[str, BindingKeyValue], ...]
+LookupKey = BindingKeyValue | tuple[BindingKeyValue, ...]
+"""A lookup-table key: one member key value, or a tuple of them (issue #163)."""
 RelationTier = Literal["constant", "identity", "offset", "lookup", "explicit"]
 ResolutionKind = Literal["semantic_helper", "xl_cell", "self_recurrence", "unresolved"]
 
@@ -66,7 +80,7 @@ class RefRelation:
     fixed_keys: dict[str, BindingKeyValue]
     identity_dims: tuple[str, ...]
     offsets: dict[str, int]
-    lookups: dict[str, dict[BindingKeyValue, BindingKeyValue]]
+    lookups: dict[str, dict[LookupKey, BindingKeyValue]]
     explicit: tuple[tuple[KeyCombo, KeyCombo], ...] | None
     resolution: RefResolution
     lookup_bases: dict[str, str] = field(default_factory=dict)
@@ -76,12 +90,13 @@ class RefRelation:
     member dimension that is lagged (usually the same as ``dim``). Absent for
     direct value lookups (``ref.d == table[member.k]``).
     """
-    lookup_keys: dict[str, str] = field(default_factory=dict)
-    """Map ref-dim -> member dim whose value indexes ``lookups[dim]``.
+    lookup_keys: dict[str, str | tuple[str, ...]] = field(default_factory=dict)
+    """Map ref-dim -> member dim(s) whose value indexes ``lookups[dim]``.
 
     For a lag lookup this is the dimension whose value selects the lag delta;
     for a direct value lookup it is the dimension whose value selects the ref
-    key. Present for every entry in ``lookups``.
+    key. A tuple names jointly determining dimensions whose value tuple keys
+    ``lookups[dim]`` (issue #163). Present for every entry in ``lookups``.
     """
 
 
@@ -170,6 +185,62 @@ def _single_valued_table(
     return table
 
 
+def _as_lookup_table(
+    table: Mapping[BindingKeyValue, BindingKeyValue],
+) -> dict[LookupKey, BindingKeyValue]:
+    """Widen a scalar-keyed table to the ``LookupKey``-keyed schema."""
+    widened: dict[LookupKey, BindingKeyValue] = {}
+    for key, value in table.items():
+        widened[key] = value
+    return widened
+
+
+def _subset_routing_lookup(
+    dimension_id: str,
+    addresses: Sequence[str],
+    member_keys: Mapping[str, Mapping[str, BindingKeyValue]],
+    ref_keys_by_member: Mapping[str, Mapping[str, BindingKeyValue]],
+    member_dims: Sequence[str],
+) -> tuple[str | tuple[str, ...], dict[LookupKey, BindingKeyValue]] | None:
+    """Find the smallest member-dim subset whose value table routes ``dimension_id``.
+
+    Fallback for ref dims the strict single-dim tiers cannot express (issue
+    #163): search subsets of ascending arity for a single-valued table over the
+    recorded per-member ref keys — the ground truth for how the original graph
+    routed each call site. Unlike the strict search, restating tables are
+    accepted; per-member verification in mechanical synthesis keeps them exact.
+    Returns ``(key_dims, table)`` with a scalar key dim (and scalar-keyed
+    table) at arity 1, tuples otherwise; ``None`` when even the full member
+    tuple is not single-valued (duplicate member key combos with conflicting
+    refs).
+    """
+    usable_dims = [
+        dim
+        for dim in member_dims
+        if all(dim in member_keys[address] for address in addresses)
+    ]
+    for arity in range(1, len(usable_dims) + 1):
+        for combo in combinations(usable_dims, arity):
+            table: dict[LookupKey, BindingKeyValue] = {}
+            single_valued = True
+            for address in addresses:
+                key: LookupKey = (
+                    member_keys[address][combo[0]]
+                    if arity == 1
+                    else tuple(member_keys[address][dim] for dim in combo)
+                )
+                value = ref_keys_by_member[address][dimension_id]
+                existing = table.get(key)
+                if existing is None:
+                    table[key] = value
+                elif existing != value:
+                    single_valued = False
+                    break
+            if single_valued:
+                return (combo[0] if arity == 1 else combo), table
+    return None
+
+
 def classify_ref_relation(
     ref_index: int,
     member_keys: Mapping[str, Mapping[str, BindingKeyValue]],
@@ -196,9 +267,9 @@ def classify_ref_relation(
     fixed_keys: dict[str, BindingKeyValue] = {}
     identity_dims: list[str] = []
     offsets: dict[str, int] = {}
-    lookups: dict[str, dict[BindingKeyValue, BindingKeyValue]] = {}
+    lookups: dict[str, dict[LookupKey, BindingKeyValue]] = {}
     lookup_bases: dict[str, str] = {}
-    lookup_keys: dict[str, str] = {}
+    lookup_keys: dict[str, str | tuple[str, ...]] = {}
     needs_explicit = False
 
     for dimension_id in ref_dims:
@@ -256,7 +327,7 @@ def classify_ref_relation(
                         lag_candidates.append((key_dim, table))
                 if len(lag_candidates) == 1:
                     key_dim, table = lag_candidates[0]
-                    lookups[dimension_id] = table
+                    lookups[dimension_id] = _as_lookup_table(table)
                     lookup_bases[dimension_id] = dimension_id
                     lookup_keys[dimension_id] = key_dim
                     continue
@@ -283,7 +354,7 @@ def classify_ref_relation(
                 value_candidates.append((key_dim, table))
         if len(value_candidates) == 1:
             key_dim, table = value_candidates[0]
-            lookups[dimension_id] = table
+            lookups[dimension_id] = _as_lookup_table(table)
             lookup_keys[dimension_id] = key_dim
             continue
         if len(value_candidates) > 1:
@@ -291,11 +362,20 @@ def classify_ref_relation(
             non_self = [c for c in value_candidates if c[0] != dimension_id]
             if len(non_self) == 1:
                 key_dim, table = non_self[0]
-                lookups[dimension_id] = table
+                lookups[dimension_id] = _as_lookup_table(table)
                 lookup_keys[dimension_id] = key_dim
                 continue
-            needs_explicit = True
-            break
+
+        # No (unambiguous) single-dim relation: search member-dim subsets of
+        # ascending arity for a single-valued routing table (issue #163).
+        subset = _subset_routing_lookup(
+            dimension_id, addresses, member_keys, ref_keys_by_member, member_dims
+        )
+        if subset is not None:
+            key_dims, routing_table = subset
+            lookups[dimension_id] = routing_table
+            lookup_keys[dimension_id] = key_dims
+            continue
 
         needs_explicit = True
         break
@@ -360,6 +440,86 @@ def _series_id_for_refs(
     }
     if len(series_ids) == 1:
         return next(iter(series_ids))
+    return None
+
+
+def _ref_series_regime_key(
+    ref_addresses: Sequence[str],
+    address_to_series_id: Mapping[str, str] | None,
+) -> tuple[str | None, ...]:
+    """Per-slot series identity for one member (``None`` when unbound/unknown)."""
+    if not address_to_series_id:
+        return tuple(None for _ in ref_addresses)
+    return tuple(address_to_series_id.get(address) for address in ref_addresses)
+
+
+def _partition_members_by_ref_series_regime(
+    group_members: Sequence[MemberContext],
+    refs_by_address: Mapping[str, tuple[str, ...]],
+    address_to_series_id: Mapping[str, str] | None,
+) -> tuple[tuple[MemberContext, ...], ...]:
+    """Split skeleton-mates whose ref slots land in different binding series.
+
+    Mechanical synthesis and LLM prompts assume each fingerprint group has one
+    series behind each ``ref_N``. When AST clustering keeps regime boundaries
+    together, partition here so each group gets uniform ``series_id`` / reads.
+
+    Unbound / incomplete maps: slots whose ``series_id`` is ``None`` are not
+    further partitioned here. Callers must reject groups whose unbound members
+    disagree on operand ``(sheet, row)`` geometry — see
+    ``_unbound_ref_slot_geometry_conflict``. Same-geometry unbound mates (for
+    example a column sweep on one row) may remain one group.
+    """
+    if not address_to_series_id or len(group_members) < 2:
+        return (tuple(group_members),)
+
+    partitions: dict[tuple[str | None, ...], list[MemberContext]] = {}
+    order: list[tuple[str | None, ...]] = []
+    for member in group_members:
+        regime = _ref_series_regime_key(
+            refs_by_address[member.address], address_to_series_id
+        )
+        if regime not in partitions:
+            partitions[regime] = []
+            order.append(regime)
+        partitions[regime].append(member)
+    return tuple(tuple(partitions[regime]) for regime in order)
+
+
+def _unbound_ref_slot_geometry_conflict(
+    group_members: Sequence[MemberContext],
+    refs_by_address: Mapping[str, tuple[str, ...]],
+    address_to_series_id: Mapping[str, str] | None,
+) -> str | None:
+    """Return a fallback reason when unbound ref slots mix sheet/row geometry.
+
+    Regime split keys only on ``series_id`` (``None`` when the operand is
+    missing from ``address_to_series_id``). After that split, a multi-member
+    group whose unbound slot operands disagree on ``(sheet, row)`` is unsafe
+    to treat as one semantic helper — fall back. Column variation on a shared
+    sheet/row is allowed. Applies only when a series map is present; a
+    missing/empty map leaves prior behavior unchanged.
+    """
+    if not address_to_series_id or len(group_members) < 2:
+        return None
+
+    regime = _ref_series_regime_key(
+        refs_by_address[group_members[0].address], address_to_series_id
+    )
+    for slot_index, series_id in enumerate(regime):
+        if series_id is not None:
+            continue
+        geometries: set[tuple[str, int]] = set()
+        for member in group_members:
+            sheet, _column, row = parse_workbook_address(
+                refs_by_address[member.address][slot_index]
+            )
+            geometries.add((sheet, row))
+        if len(geometries) > 1:
+            return (
+                "unbound_ref_slot_geometry_conflict:"
+                f"ref_{slot_index} mixes sheet/row among unbound operands"
+            )
     return None
 
 
@@ -574,89 +734,110 @@ def build_cluster_fingerprint_summary(
         groups_by_skeleton[skeleton].append(member)
 
     group_records: list[FingerprintGroup] = []
-    for skeleton, group_members in groups_by_skeleton.items():
-        member_addresses = tuple(member.address for member in group_members)
-        member_keys = {
-            address: dict(expected_member_keys.get(address, {}))
-            for address in member_addresses
-        }
-        relation_member_keys = member_keys
-
-        ref_count = len(refs_by_address[member_addresses[0]])
-        if any(
-            len(refs_by_address[address]) != ref_count for address in member_addresses
-        ):
-            return _fallback_summary(
-                "ref_count_mismatch",
-                members=members,
-                expected_member_keys=expected_member_keys,
-                layout=layout,
+    for skeleton, skeleton_members in groups_by_skeleton.items():
+        member_partitions = _partition_members_by_ref_series_regime(
+            skeleton_members,
+            refs_by_address,
+            address_to_series_id,
+        )
+        for group_members in member_partitions:
+            geometry_conflict = _unbound_ref_slot_geometry_conflict(
+                group_members,
+                refs_by_address,
+                address_to_series_id,
             )
-
-        ref_values_by_member: dict[str, list[dict[str, BindingKeyValue]]] = {}
-        for address in member_addresses:
-            ref_values = _ref_position_key_values(
-                address,
-                formula_by_address[address],
-                bound_address_keys,
-                workbook_path=workbook_path,
-                layout=layout,
-                key_cache=key_cache,
-            )
-            if ref_values is None:
+            if geometry_conflict is not None:
                 return _fallback_summary(
-                    "missing_ref_key_values",
+                    geometry_conflict,
                     members=members,
                     expected_member_keys=expected_member_keys,
                     layout=layout,
                 )
-            ref_values_by_member[address] = ref_values
 
-        relations: list[RefRelation] = []
-        for ref_index in range(ref_count):
-            ref_keys_by_member = {
-                address: ref_values_by_member[address][ref_index]
+            member_addresses = tuple(member.address for member in group_members)
+            member_keys = {
+                address: dict(expected_member_keys.get(address, {}))
                 for address in member_addresses
             }
-            ref_addresses = {
-                address: refs_by_address[address][ref_index]
+            relation_member_keys = member_keys
+
+            ref_count = len(refs_by_address[member_addresses[0]])
+            if any(
+                len(refs_by_address[address]) != ref_count
                 for address in member_addresses
-            }
-            series_id = _series_id_for_refs(
-                tuple(ref_addresses.values()), address_to_series_id
-            )
-            resolution = _resolve_ref(
-                ref_addresses,
-                cluster_member_addresses=cluster_addresses,
-                semantic_dependencies=semantic_dependencies,
-                member_keys=relation_member_keys,
-            )
-            relations.append(
-                classify_ref_relation(
-                    ref_index,
-                    relation_member_keys,
-                    ref_keys_by_member,
-                    series_id=series_id,
-                    resolution=resolution,
+            ):
+                return _fallback_summary(
+                    "ref_count_mismatch",
+                    members=members,
+                    expected_member_keys=expected_member_keys,
+                    layout=layout,
+                )
+
+            ref_values_by_member: dict[str, list[dict[str, BindingKeyValue]]] = {}
+            for address in member_addresses:
+                ref_values = _ref_position_key_values(
+                    address,
+                    formula_by_address[address],
+                    bound_address_keys,
+                    workbook_path=workbook_path,
+                    layout=layout,
+                    key_cache=key_cache,
+                )
+                if ref_values is None:
+                    return _fallback_summary(
+                        "missing_ref_key_values",
+                        members=members,
+                        expected_member_keys=expected_member_keys,
+                        layout=layout,
+                    )
+                ref_values_by_member[address] = ref_values
+
+            relations: list[RefRelation] = []
+            for ref_index in range(ref_count):
+                ref_keys_by_member = {
+                    address: ref_values_by_member[address][ref_index]
+                    for address in member_addresses
+                }
+                ref_addresses = {
+                    address: refs_by_address[address][ref_index]
+                    for address in member_addresses
+                }
+                series_id = _series_id_for_refs(
+                    tuple(ref_addresses.values()), address_to_series_id
+                )
+                resolution = _resolve_ref(
+                    ref_addresses,
+                    cluster_member_addresses=cluster_addresses,
+                    semantic_dependencies=semantic_dependencies,
+                    member_keys=relation_member_keys,
+                )
+                relations.append(
+                    classify_ref_relation(
+                        ref_index,
+                        relation_member_keys,
+                        ref_keys_by_member,
+                        series_id=series_id,
+                        resolution=resolution,
+                    )
+                )
+
+            exemplar = group_members[0]
+            group_records.append(
+                FingerprintGroup(
+                    skeleton_text=format_structural_skeleton(skeleton),
+                    members=member_addresses,
+                    exemplar=exemplar,
+                    ref_relations=tuple(relations),
+                    ref_addresses_by_member=tuple(
+                        (address, refs_by_address[address])
+                        for address in member_addresses
+                    ),
+                    ref_keys_by_member=tuple(
+                        (address, tuple(ref_values_by_member[address]))
+                        for address in member_addresses
+                    ),
                 )
             )
-
-        exemplar = group_members[0]
-        group_records.append(
-            FingerprintGroup(
-                skeleton_text=format_structural_skeleton(skeleton),
-                members=member_addresses,
-                exemplar=exemplar,
-                ref_relations=tuple(relations),
-                ref_addresses_by_member=tuple(
-                    (address, refs_by_address[address]) for address in member_addresses
-                ),
-                ref_keys_by_member=tuple(
-                    (address, tuple(ref_values_by_member[address]))
-                    for address in member_addresses
-                ),
-            )
-        )
 
     key_space = _key_space_from_expected(expected_member_keys)
     key_to_column = _key_to_column_from_layout(key_space, layout)
@@ -675,7 +856,9 @@ def build_cluster_fingerprint_summary(
     return summary
 
 
-def _format_key_value(value: BindingKeyValue) -> str:
+def _format_key_value(value: LookupKey) -> str:
+    if isinstance(value, tuple):
+        return "(" + ", ".join(_format_key_value(item) for item in value) + ")"
     if isinstance(value, str):
         return value
     if isinstance(value, bool):
@@ -683,9 +866,24 @@ def _format_key_value(value: BindingKeyValue) -> str:
     return str(value)
 
 
-def _format_mapping(table: Mapping[BindingKeyValue, object]) -> str:
+def _format_mapping(table: Mapping[LookupKey, object]) -> str:
     items = ", ".join(
         f"{_format_key_value(key)}: {value}" for key, value in table.items()
+    )
+    return "{" + items + "}"
+
+
+def _format_col_letter_with_index(letter: str) -> str:
+    """Format an Excel column letter with its 1-based index for geometry tuples."""
+    index = xl_cell_utils.column_index_from_string(letter)
+    return f"{letter}={index}"
+
+
+def _format_col_by_mapping(table: Mapping[LookupKey, str]) -> str:
+    """Format ``col by`` maps as ``{key: Letter=N, ...}`` for ``xl_index_ref``."""
+    items = ", ".join(
+        f"{_format_key_value(key)}: {_format_col_letter_with_index(str(value))}"
+        for key, value in table.items()
     )
     return "{" + items + "}"
 
@@ -706,7 +904,7 @@ def _format_key_space_line(
         span = "[" + ", ".join(_format_key_value(value) for value in values) + "]"
     suffix = ""
     if key_to_column and any(value in key_to_column for value in values):
-        engine = {
+        engine: dict[LookupKey, object] = {
             value: key_to_column[value] for value in values if value in key_to_column
         }
         suffix = f"   (engine columns: {_format_mapping(engine)})"
@@ -744,8 +942,13 @@ def _format_ref_relation_lines(relation: RefRelation) -> list[str]:
             key_dim_candidates = [
                 dim for dim in relation.identity_dims if dim != dimension_id
             ]
-            key_label = relation.lookup_keys.get(
+            key_dims = relation.lookup_keys.get(
                 dimension_id, key_dim_candidates[0] if key_dim_candidates else "keys"
+            )
+            key_label = (
+                "(" + ", ".join(key_dims) + ")"
+                if isinstance(key_dims, tuple)
+                else key_dims
             )
             parts.append(
                 f"{dimension_id} = table[{key_label}] {_format_mapping(table)}"
@@ -778,7 +981,7 @@ def _format_ref_relation_lines(relation: RefRelation) -> list[str]:
         for dim, pairs in resolution.row_by_dim:
             extras.append(f"row by {dim} {_format_mapping(dict(pairs))}")
         for dim, pairs in resolution.col_by_dim:
-            extras.append(f"col by {dim} {_format_mapping(dict(pairs))}")
+            extras.append(f"col by {dim} {_format_col_by_mapping(dict(pairs))}")
         if extras:
             detail += ", " + ", ".join(extras)
         lines.append(detail)

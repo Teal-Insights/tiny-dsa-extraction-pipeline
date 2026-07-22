@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import TypeVar
 
 from openai import AsyncOpenAI, Omit, OpenAI, OpenAIError, omit
@@ -27,6 +28,51 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ATTEMPTS = 3
 
 T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class ValidationAttemptRecord:
+    """One validation failure inside :func:`generate_validated_json`."""
+
+    attempt: int
+    raw_content: str
+    error: str
+
+
+class ValidatedJsonFailure(RuntimeError):
+    """Raised when every validation attempt fails.
+
+    Carries the full chat ``messages`` list (system + initial user prompt + each
+    assistant/correction turn) and per-attempt raw content / validation errors so
+    callers can dump the whole retry conversation for offline diagnosis.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        messages: Sequence[ChatCompletionMessageParam],
+        attempts: Sequence[ValidationAttemptRecord],
+        last_error: Exception | None,
+    ) -> None:
+        super().__init__(message)
+        self.messages = list(messages)
+        self.attempts = list(attempts)
+        self.last_error = last_error
+
+
+def _validation_feedback_message(error: Exception) -> ChatCompletionMessageParam:
+    return {
+        "role": "user",
+        "content": (
+            "Your previous response failed validation with these "
+            f"errors:\n{error}\n\n"
+            "Return corrected JSON matching the response schema "
+            "exactly. Use the exact field names from the schema, "
+            "include every required field, and satisfy all stated "
+            "constraints."
+        ),
+    }
 
 
 def _request_json(
@@ -178,8 +224,10 @@ def generate_validated_json(
         ``parsed.model_dump_json()`` instead of the raw content.
 
     Raises:
-        RuntimeError: If the model returns empty content, or if no attempt
-            produces a valid response within ``max_attempts``.
+        RuntimeError: If the model returns empty content.
+        ValidatedJsonFailure: If no attempt produces a valid response within
+            ``max_attempts``. Subclasses ``RuntimeError`` and includes the full
+            conversation and per-attempt validation errors.
     """
     resolved_provider = provider if provider is not None else provider_for_model(model)
     use_structured_outputs = (
@@ -190,6 +238,7 @@ def generate_validated_json(
         {"role": "user", "content": user_prompt},
     ]
     last_error: Exception | None = None
+    attempt_records: list[ValidationAttemptRecord] = []
     for attempt in range(max_attempts):
         logger.debug(
             "requesting %s from %s (attempt %d/%d)",
@@ -228,6 +277,13 @@ def generate_validated_json(
                 parsed = post_validate(parsed)
         except (ValidationError, ValueError) as error:
             last_error = error
+            attempt_records.append(
+                ValidationAttemptRecord(
+                    attempt=attempt + 1,
+                    raw_content=content,
+                    error=str(error),
+                )
+            )
             logger.warning(
                 "%s failed validation (attempt %d/%d), re-prompting: %s",
                 response_model.__name__,
@@ -236,19 +292,7 @@ def generate_validated_json(
                 error,
             )
             messages.append({"role": "assistant", "content": content})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Your previous response failed validation with these "
-                        f"errors:\n{error}\n\n"
-                        "Return corrected JSON matching the response schema "
-                        "exactly. Use the exact field names from the schema, "
-                        "include every required field, and satisfy all stated "
-                        "constraints."
-                    ),
-                }
-            )
+            messages.append(_validation_feedback_message(error))
             continue
         logger.debug(
             "%s validated on attempt %d/%d",
@@ -257,9 +301,12 @@ def generate_validated_json(
             max_attempts,
         )
         return parsed, content
-    raise RuntimeError(
+    raise ValidatedJsonFailure(
         f"LLM failed to return a valid {response_model.__name__} response after "
-        f"{max_attempts} attempts"
+        f"{max_attempts} attempts",
+        messages=messages,
+        attempts=attempt_records,
+        last_error=last_error,
     ) from last_error
 
 
@@ -293,6 +340,7 @@ async def generate_validated_json_async(
     ]
     limiter = semaphore if semaphore is not None else get_llm_semaphore()
     last_error: Exception | None = None
+    attempt_records: list[ValidationAttemptRecord] = []
     for attempt in range(max_attempts):
         logger.debug(
             "requesting %s from %s (attempt %d/%d, async)",
@@ -332,6 +380,13 @@ async def generate_validated_json_async(
                 parsed = post_validate(parsed)
         except (ValidationError, ValueError) as error:
             last_error = error
+            attempt_records.append(
+                ValidationAttemptRecord(
+                    attempt=attempt + 1,
+                    raw_content=content,
+                    error=str(error),
+                )
+            )
             logger.warning(
                 "%s failed validation (attempt %d/%d, async), re-prompting: %s",
                 response_model.__name__,
@@ -340,19 +395,7 @@ async def generate_validated_json_async(
                 error,
             )
             messages.append({"role": "assistant", "content": content})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Your previous response failed validation with these "
-                        f"errors:\n{error}\n\n"
-                        "Return corrected JSON matching the response schema "
-                        "exactly. Use the exact field names from the schema, "
-                        "include every required field, and satisfy all stated "
-                        "constraints."
-                    ),
-                }
-            )
+            messages.append(_validation_feedback_message(error))
             continue
         logger.debug(
             "%s validated on attempt %d/%d (async)",
@@ -361,7 +404,10 @@ async def generate_validated_json_async(
             max_attempts,
         )
         return parsed, content
-    raise RuntimeError(
+    raise ValidatedJsonFailure(
         f"LLM failed to return a valid {response_model.__name__} response after "
-        f"{max_attempts} attempts"
+        f"{max_attempts} attempts",
+        messages=messages,
+        attempts=attempt_records,
+        last_error=last_error,
     ) from last_error

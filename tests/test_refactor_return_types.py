@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from textwrap import dedent
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from src.refactor_return_types import (
     build_callee_return_hints,
     infer_refactor_return_type_hint,
+    merge_callee_return_hints,
     narrow_return_type_hint_for_export,
     normalize_return_type_hint_for_allowlist,
     validate_scalar_return_type_hint,
@@ -49,6 +51,98 @@ def test_build_callee_return_hints_uses_allowlisted_runtime_annotations() -> Non
     assert hints["shock_active"] == "bool"
 
 
+def test_read_runtime_source_includes_readers_annotations_in_callee_hints(
+    tmp_path: Path,
+) -> None:
+    """Pass 1 loads runtime+_readers via _read_runtime_source for callee hints."""
+    from src.internals_refactor import _read_runtime_source
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "runtime.py").write_text(RUNTIME_STUB + "\n", encoding="utf-8")
+    (package / "_readers.py").write_text(
+        dedent(
+            """
+            def read_demography_scenario(ctx: EvalContext) -> CellValue:
+                return xl_cell(ctx, "Dashboard!C17")
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "internals.py").write_text("# placeholder\n", encoding="utf-8")
+
+    runtime_source = _read_runtime_source(package / "internals.py")
+    hints = build_callee_return_hints(
+        runtime_source=runtime_source,
+        internals_source="",
+    )
+    assert hints["read_demography_scenario"] == "CellValue"
+    assert hints["xl_cell"] == "CellValue"
+
+
+def test_merge_callee_return_hints_updates_from_helper_source() -> None:
+    hints = build_callee_return_hints(
+        runtime_source=RUNTIME_STUB,
+        internals_source="",
+    )
+    merge_callee_return_hints(
+        hints,
+        source=dedent(
+            """
+            def demography_total_population_medium(ctx, time_period: int) -> float:
+                return 1.0
+            """
+        ).strip(),
+    )
+    assert hints["demography_total_population_medium"] == "float"
+    assert hints["xl_cell"] == "CellValue"
+
+
+def test_infer_refactor_return_type_hint_after_upstream_helper_merge() -> None:
+    """IF over sibling series helpers plus a string else merges to float | str."""
+    hints = build_callee_return_hints(
+        runtime_source=RUNTIME_STUB,
+        internals_source="",
+    )
+    for name in (
+        "demography_total_population_medium",
+        "demography_total_population_high",
+        "demography_total_population_low",
+    ):
+        merge_callee_return_hints(
+            hints,
+            source=f"def {name}(ctx, time_period: int) -> float:\n    return 1.0\n",
+        )
+    source = dedent(
+        """
+        def cell_demography_bi4(ctx):
+            return (
+                demography_total_population_medium(ctx, time_period=2008)
+                if xl_compare("=", xl_cell(ctx, "Demography!B8"), xl_cell(ctx, "Demography!B8"))
+                else (
+                    demography_total_population_high(ctx, time_period=2008)
+                    if xl_compare("=", xl_cell(ctx, "Demography!B9"), xl_cell(ctx, "Demography!B9"))
+                    else (
+                        demography_total_population_low(ctx, time_period=2008)
+                        if xl_compare("=", xl_cell(ctx, "Demography!B10"), xl_cell(ctx, "Demography!B10"))
+                        else '"'
+                    )
+                )
+            )
+        """
+    ).strip()
+    assert (
+        infer_refactor_return_type_hint(
+            python_sources=(source,),
+            runtime_source=RUNTIME_STUB,
+            internals_source="",
+            callee_hints=hints,
+        )
+        == "float | str"
+    )
+
+
 def test_infer_refactor_return_type_hint_from_annotated_callee() -> None:
     source = dedent(
         """
@@ -63,6 +157,49 @@ def test_infer_refactor_return_type_hint_from_annotated_callee() -> None:
             internals_source=INTERNALS_WITH_ANNOTATED_HELPER,
         )
         == "bool"
+    )
+
+
+def test_infer_refactor_return_type_hint_propagates_union_callee_annotation() -> None:
+    """Passthrough of an upstream helper with a union return.
+
+    ``merge_callee_return_hints`` stores allowlisted unions as a single
+    ``\"float | CellValue\"`` string. Inference must split that back into
+    atomic parts; wrapping the whole string as one set member makes
+    ``format_return_type_hint`` emit ``''`` and fail validation.
+    """
+    hints = build_callee_return_hints(
+        runtime_source=RUNTIME_STUB,
+        internals_source="",
+    )
+    merge_callee_return_hints(
+        hints,
+        source=dedent(
+            """
+            def baseline_engine_indicators(
+                ctx, indicator: str, time_period: int
+            ) -> float | CellValue:
+                return 0.0
+            """
+        ).strip(),
+    )
+    assert hints["baseline_engine_indicators"] == "float | CellValue"
+    source = dedent(
+        """
+        def cell_hot_adapted_aa43(ctx):
+            return baseline_engine_indicators(
+                ctx, indicator='interest_expenditure_pct_gdp', time_period=2032
+            )
+        """
+    ).strip()
+    assert (
+        infer_refactor_return_type_hint(
+            python_sources=(source,),
+            runtime_source=RUNTIME_STUB,
+            internals_source="",
+            callee_hints=hints,
+        )
+        == "float | CellValue"
     )
 
 
@@ -107,6 +244,31 @@ def test_infer_refactor_return_type_hint_from_if_expression_literals() -> None:
             internals_source="",
         )
         == "float"
+    )
+
+
+def test_infer_refactor_return_type_hint_treats_none_literal_as_cellvalue() -> None:
+    source = dedent(
+        """
+        def cell_baseline_x42(ctx):
+            return (
+                (0.0)
+                if (_t2 := xl_compare("=", xl_cell(ctx, "Dashboard!C33"), "No"))
+                else (
+                    (xl_cell(ctx, "Baseline!X47"))
+                    if (_t1 := xl_compare("=", xl_cell(ctx, "Baseline!X46"), xl_cell(ctx, "Baseline!B47")))
+                    else (None)
+                )
+            )
+        """
+    ).strip()
+    assert (
+        infer_refactor_return_type_hint(
+            python_sources=(source,),
+            runtime_source=RUNTIME_STUB,
+            internals_source="",
+        )
+        == "float | CellValue"
     )
 
 

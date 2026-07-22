@@ -14,7 +14,7 @@ from src.mechanical_body import (
     synthesize_cluster_body,
     synthesize_singleton_body,
 )
-from src.refactor_bindings import KeyConceptSpec
+from src.refactor_bindings import BindingKeyValue, KeyConceptSpec
 from src.refactor_fingerprints import build_cluster_fingerprint_summary
 
 TIME_PERIOD_VOCAB = (
@@ -85,6 +85,106 @@ def test_identity_sweep_xl_cell_reads_become_column_lookup() -> None:
     assert "column_by_time_period = {4: 'E', 5: 'F', 6: 'G'}" in draft.body
     assert "xl_cell(ctx, f'Data!{column_by_time_period[time_period]}4')" in draft.body
     assert "column_by_time_period" in draft.lookup_table_names
+    _assert_body_compiles(draft, ("time_period",))
+
+
+def test_identity_sweep_xl_eval_reads_become_column_lookup() -> None:
+    """Varying xl_eval addresses use the same templates as xl_cell (issue #67).
+
+    The per-member ``cell_*`` callback cannot be kept as a single exemplar name,
+    so the rewrite evaluates through ``xl_cell`` (resolver) with the templated
+    address — same verification against recorded ref addresses.
+    """
+    members = (
+        _member(
+            "Data!E20",
+            "=Data!E4",
+            "_t1 = xl_eval(ctx, 'Data!E4', cell_data_e4)\nreturn xl_number(_t1)",
+        ),
+        _member(
+            "Data!F20",
+            "=Data!F4",
+            "_t1 = xl_eval(ctx, 'Data!F4', cell_data_f4)\nreturn xl_number(_t1)",
+        ),
+        _member(
+            "Data!G20",
+            "=Data!G4",
+            "_t1 = xl_eval(ctx, 'Data!G4', cell_data_g4)\nreturn xl_number(_t1)",
+        ),
+    )
+    bound_keys = {
+        "Data!E20": {"TIME_PERIOD": 4},
+        "Data!F20": {"TIME_PERIOD": 5},
+        "Data!G20": {"TIME_PERIOD": 6},
+        "Data!E4": {"TIME_PERIOD": 4},
+        "Data!F4": {"TIME_PERIOD": 5},
+        "Data!G4": {"TIME_PERIOD": 6},
+    }
+    expected = {
+        "Data!E20": {"TIME_PERIOD": 4},
+        "Data!F20": {"TIME_PERIOD": 5},
+        "Data!G20": {"TIME_PERIOD": 6},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+    )
+    assert summary.fallback_reason is None
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=TIME_PERIOD_VOCAB,
+        expected_member_keys=expected,
+        helper_name="observed_value",
+    )
+    assert "column_by_time_period = {4: 'E', 5: 'F', 6: 'G'}" in draft.body
+    assert "xl_cell(ctx, f'Data!{column_by_time_period[time_period]}4')" in draft.body
+    assert "xl_eval(" not in draft.body
+    assert "column_by_time_period" in draft.lookup_table_names
+    _assert_body_compiles(draft, ("time_period",))
+
+
+def test_constant_address_xl_eval_dependency_is_left_alone() -> None:
+    """Shared xl_eval dependency address stays an xl_eval call (issue #67)."""
+    members = (
+        _member(
+            "Data!E20",
+            "=Data!A1",
+            "_t1 = xl_eval(ctx, 'Data!A1', cell_data_a1)\nreturn xl_number(_t1)",
+        ),
+        _member(
+            "Data!F20",
+            "=Data!A1",
+            "_t1 = xl_eval(ctx, 'Data!A1', cell_data_a1)\nreturn xl_number(_t1)",
+        ),
+    )
+    bound_keys = {
+        "Data!E20": {"TIME_PERIOD": 4},
+        "Data!F20": {"TIME_PERIOD": 5},
+        "Data!A1": {"TIME_PERIOD": 1},
+    }
+    expected = {
+        "Data!E20": {"TIME_PERIOD": 4},
+        "Data!F20": {"TIME_PERIOD": 5},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+    )
+    assert summary.fallback_reason is None
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=TIME_PERIOD_VOCAB,
+        expected_member_keys=expected,
+        helper_name="const_dep",
+    )
+    assert "xl_eval(ctx, 'Data!A1', cell_data_a1)" in draft.body
+    assert "xl_cell(" not in draft.body
     _assert_body_compiles(draft, ("time_period",))
 
 
@@ -200,6 +300,186 @@ def test_self_recurrence_with_anchor_group_routes_by_period() -> None:
     _assert_body_compiles(draft, ("time_period",))
 
 
+def test_tuple_lookup_accessor_read_becomes_tuple_subscript() -> None:
+    """A ref key jointly determined by two member dims routes via a tuple table."""
+    vocabulary = (
+        KeyConceptSpec(
+            dimension_id="INDICATOR",
+            concept="INDICATOR",
+            dtype="str",
+            suggested_param_name="indicator",
+        ),
+        KeyConceptSpec(
+            dimension_id="TIME_PERIOD",
+            concept="TIME_PERIOD",
+            dtype="int",
+            suggested_param_name="time_period",
+        ),
+    )
+    members = (
+        _member(
+            "Data!B10",
+            "=Hist!B2",
+            "_t1 = read_hist(ctx, indicator_year='1991_nominal')\n"
+            "return xl_number(_t1)",
+        ),
+        _member(
+            "Data!B11",
+            "=Hist!B3",
+            "_t1 = read_hist(ctx, indicator_year='1991_real')\nreturn xl_number(_t1)",
+        ),
+        _member(
+            "Data!C10",
+            "=Hist!C2",
+            "_t1 = read_hist(ctx, indicator_year='1992_nominal')\n"
+            "return xl_number(_t1)",
+        ),
+        _member(
+            "Data!C11",
+            "=Hist!C3",
+            "_t1 = read_hist(ctx, indicator_year='1992_real')\nreturn xl_number(_t1)",
+        ),
+    )
+    bound_keys = {
+        "Data!B10": {"INDICATOR": "nominal_gdp", "TIME_PERIOD": 1},
+        "Data!B11": {"INDICATOR": "real_gdp", "TIME_PERIOD": 1},
+        "Data!C10": {"INDICATOR": "nominal_gdp", "TIME_PERIOD": 2},
+        "Data!C11": {"INDICATOR": "real_gdp", "TIME_PERIOD": 2},
+        "Hist!B2": {"INDICATOR_YEAR": "1991_nominal"},
+        "Hist!B3": {"INDICATOR_YEAR": "1991_real"},
+        "Hist!C2": {"INDICATOR_YEAR": "1992_nominal"},
+        "Hist!C3": {"INDICATOR_YEAR": "1992_real"},
+    }
+    expected = {
+        address: bound_keys[address]
+        for address in ("Data!B10", "Data!B11", "Data!C10", "Data!C11")
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id={
+            "Hist!B2": "hist",
+            "Hist!B3": "hist",
+            "Hist!C2": "hist",
+            "Hist!C3": "hist",
+        },
+    )
+    assert summary.fallback_reason is None
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=vocabulary,
+        expected_member_keys=expected,
+        helper_name="historical_value",
+    )
+    assert (
+        "indicator_year_by_indicator_time_period = "
+        "{('nominal_gdp', 1): '1991_nominal', ('nominal_gdp', 2): '1992_nominal', "
+        "('real_gdp', 1): '1991_real', ('real_gdp', 2): '1992_real'}"
+    ) in draft.body
+    assert (
+        "read_hist(ctx, indicator_year="
+        "indicator_year_by_indicator_time_period[indicator, time_period])"
+    ) in draft.body
+    assert "indicator_year_by_indicator_time_period" in draft.lookup_table_names
+    _assert_body_compiles(draft, ("indicator", "time_period"))
+
+
+def test_self_recurrence_with_tuple_derived_period_routes_by_pair() -> None:
+    """Self-recurrence whose target period depends on (scenario, period) pairs."""
+    vocabulary = (
+        KeyConceptSpec(
+            dimension_id="SCENARIO",
+            concept="SCENARIO",
+            dtype="str",
+            suggested_param_name="scenario",
+        ),
+        KeyConceptSpec(
+            dimension_id="TIME_PERIOD",
+            concept="TIME_PERIOD",
+            dtype="int",
+            suggested_param_name="time_period",
+        ),
+    )
+    members = (
+        _member("Data!C20", "=Data!C4", "return xl_number(xl_cell(ctx, 'Data!C4'))"),
+        _member("Data!C21", "=Data!C5", "return xl_number(xl_cell(ctx, 'Data!C5'))"),
+        _member(
+            "Data!D20",
+            "=Data!C20+1",
+            "_t1 = xl_eval(ctx, 'Data!C20', cell_data_c20)\n"
+            "return (xl_number(_t1) + xl_number(1.0))",
+        ),
+        _member(
+            "Data!D21",
+            "=Data!C21+1",
+            "_t1 = xl_eval(ctx, 'Data!C21', cell_data_c21)\n"
+            "return (xl_number(_t1) + xl_number(1.0))",
+        ),
+        _member(
+            "Data!E20",
+            "=Data!D20+1",
+            "_t1 = xl_eval(ctx, 'Data!D20', cell_data_d20)\n"
+            "return (xl_number(_t1) + xl_number(1.0))",
+        ),
+        _member(
+            "Data!E21",
+            "=Data!C21+1",
+            "_t1 = xl_eval(ctx, 'Data!C21', cell_data_c21)\n"
+            "return (xl_number(_t1) + xl_number(1.0))",
+        ),
+    )
+    bound_keys = {
+        "Data!C20": {"SCENARIO": "A", "TIME_PERIOD": 1},
+        "Data!C21": {"SCENARIO": "B", "TIME_PERIOD": 1},
+        "Data!D20": {"SCENARIO": "A", "TIME_PERIOD": 2},
+        "Data!D21": {"SCENARIO": "B", "TIME_PERIOD": 2},
+        "Data!E20": {"SCENARIO": "A", "TIME_PERIOD": 3},
+        "Data!E21": {"SCENARIO": "B", "TIME_PERIOD": 3},
+        "Data!C4": {"SCENARIO": "A", "TIME_PERIOD": 1},
+        "Data!C5": {"SCENARIO": "B", "TIME_PERIOD": 1},
+    }
+    expected = {
+        address: bound_keys[address]
+        for address in (
+            "Data!C20",
+            "Data!C21",
+            "Data!D20",
+            "Data!D21",
+            "Data!E20",
+            "Data!E21",
+        )
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+    )
+    assert summary.fallback_reason is None
+    assert len(summary.groups) == 2
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=vocabulary,
+        expected_member_keys=expected,
+        helper_name="debt_path",
+    )
+    assert "if time_period == 1:" in draft.body
+    assert (
+        "time_period_by_scenario_time_period = "
+        "{('A', 2): 1, ('A', 3): 2, ('B', 2): 1, ('B', 3): 1}"
+    ) in draft.body
+    assert (
+        "debt_path(ctx, scenario=scenario, "
+        "time_period=time_period_by_scenario_time_period[scenario, time_period])"
+    ) in draft.body
+    assert "time_period_by_scenario_time_period" in draft.lookup_table_names
+    _assert_body_compiles(draft, ("scenario", "time_period"))
+
+
 def test_unmatched_read_site_fails_synthesis() -> None:
     members = (
         _member(
@@ -241,24 +521,20 @@ def test_unmatched_read_site_fails_synthesis() -> None:
         )
 
 
-def test_range_reads_fail_synthesis() -> None:
+# --- Constant-range INDEX/MATCH lookup family (issue #170) -------------------
+
+
+def _constant_range_summary(bodies: tuple[str, str]):
+    """Two members sharing one =SUM(Data!A1:B2) formula with custom bodies."""
     members = (
-        _member(
-            "Data!E20",
-            "=Data!E4",
-            "return xl_number(xl_range(ctx, 'Data!A1:B2'))",
-        ),
-        _member(
-            "Data!F20",
-            "=Data!F4",
-            "return xl_number(xl_range(ctx, 'Data!A1:B2'))",
-        ),
+        _member("Data!E20", "=SUM(Data!A1:B2)", bodies[0]),
+        _member("Data!F20", "=SUM(Data!A1:B2)", bodies[1]),
     )
     bound_keys = {
         "Data!E20": {"TIME_PERIOD": 4},
         "Data!F20": {"TIME_PERIOD": 5},
-        "Data!E4": {"TIME_PERIOD": 4},
-        "Data!F4": {"TIME_PERIOD": 5},
+        "Data!A1": {"LABEL_ROW": 1},
+        "Data!B2": {"LABEL_ROW": 2},
     }
     expected = {
         "Data!E20": {"TIME_PERIOD": 4},
@@ -272,12 +548,308 @@ def test_range_reads_fail_synthesis() -> None:
         layout=None,
     )
     assert summary.fallback_reason is None
-    with pytest.raises(MechanicalSynthesisError):
+    return summary, expected
+
+
+def test_constant_range_read_passes_through_verbatim() -> None:
+    body = "return xl_number(xl_range(ctx, 'Data!A1:B2'))"
+    summary, expected = _constant_range_summary((body, body))
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=TIME_PERIOD_VOCAB,
+        expected_member_keys=expected,
+        helper_name="observed_value",
+    )
+    assert "xl_range(ctx, 'Data!A1:B2')" in draft.body
+    assert draft.lookup_table_names == ()
+    _assert_body_compiles(draft, ("time_period",))
+
+
+def test_non_literal_range_address_fails_synthesis() -> None:
+    body = "_t1 = read_label(ctx)\nreturn xl_number(xl_range(ctx, _t1))"
+    summary, expected = _constant_range_summary((body, body))
+    with pytest.raises(MechanicalSynthesisError, match="non_literal_range_address"):
         synthesize_cluster_body(
             summary,
             key_vocabulary=TIME_PERIOD_VOCAB,
             expected_member_keys=expected,
             helper_name="observed_value",
+        )
+
+
+def test_range_rows_reads_stay_unsupported() -> None:
+    body = "return xl_range_rows(ctx, 'Data!A1:B2')"
+    summary, expected = _constant_range_summary((body, body))
+    with pytest.raises(
+        MechanicalSynthesisError, match="unsupported_read_callee:xl_range_rows"
+    ):
+        synthesize_cluster_body(
+            summary,
+            key_vocabulary=TIME_PERIOD_VOCAB,
+            expected_member_keys=expected,
+            helper_name="observed_value",
+        )
+
+
+def test_varying_range_endpoints_fail_synthesis() -> None:
+    members = (
+        _member(
+            "Data!E20",
+            "=SUM(Data!A1:B2)",
+            "return xl_number(xl_range(ctx, 'Data!A1:B2'))",
+        ),
+        _member(
+            "Data!F20",
+            "=SUM(Data!C1:D2)",
+            "return xl_number(xl_range(ctx, 'Data!C1:D2'))",
+        ),
+    )
+    bound_keys = {
+        "Data!E20": {"TIME_PERIOD": 4},
+        "Data!F20": {"TIME_PERIOD": 5},
+        "Data!A1": {"TIME_PERIOD": 4},
+        "Data!B2": {"TIME_PERIOD": 4},
+        "Data!C1": {"TIME_PERIOD": 5},
+        "Data!D2": {"TIME_PERIOD": 5},
+    }
+    expected = {
+        "Data!E20": {"TIME_PERIOD": 4},
+        "Data!F20": {"TIME_PERIOD": 5},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+    )
+    assert summary.fallback_reason is None
+    with pytest.raises(MechanicalSynthesisError, match="range_endpoints_vary"):
+        synthesize_cluster_body(
+            summary,
+            key_vocabulary=TIME_PERIOD_VOCAB,
+            expected_member_keys=expected,
+            helper_name="observed_value",
+        )
+
+
+def _index_family_body(c1: int, c2: int, *, trailing: str = "0.0, 0.0") -> str:
+    return (
+        "_t1 = read_label(ctx)\n"
+        "_t2 = xl_range(ctx, 'DB!A2:A4')\n"
+        "_t3 = xl_match(_t1, _t2, 0.0)\n"
+        f"return xl_offset(ctx, xl_index_ref(('DB', 2, {c1}, 4, {c2}), _t3, 1.0)"
+        f", {trailing})"
+    )
+
+
+def _index_family_summary(
+    formulas: tuple[str, str, str],
+    bodies: tuple[str, str, str],
+    *,
+    base_bound_keys: dict[str, dict[str, BindingKeyValue]],
+):
+    members = tuple(
+        _member(address, formula, body)
+        for address, formula, body in zip(
+            ("Data!B10", "Data!C10", "Data!D10"), formulas, bodies, strict=True
+        )
+    )
+    bound_keys: dict[str, dict[str, BindingKeyValue]] = {
+        "Data!B10": {"TIME_PERIOD": 1},
+        "Data!C10": {"TIME_PERIOD": 2},
+        "Data!D10": {"TIME_PERIOD": 3},
+        "Data!A1": {"COUNTRY": "chile"},
+        "DB!A2": {"LABEL_ROW": 2},
+        "DB!A4": {"LABEL_ROW": 4},
+    }
+    bound_keys.update(base_bound_keys)
+    expected = {
+        "Data!B10": {"TIME_PERIOD": 1},
+        "Data!C10": {"TIME_PERIOD": 2},
+        "Data!D10": {"TIME_PERIOD": 3},
+    }
+    # Bind INDEX corners so same-sheet column sweeps stay one group under the
+    # unbound sheet/row geometry guard (mixed unbound geometry falls back).
+    address_to_series_id = {
+        "Data!A1": "label",
+        "DB!A2": "label_range",
+        "DB!A4": "label_range",
+        "Data!B10": "climate_lookup",
+        "Data!C10": "climate_lookup",
+        "Data!D10": "climate_lookup",
+    }
+    for address in base_bound_keys:
+        address_to_series_id.setdefault(address, "index_range")
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id=address_to_series_id,
+    )
+    assert summary.fallback_reason is None
+    return summary, expected
+
+
+def test_index_match_column_sweep_synthesizes_tuple_lookup_tables() -> None:
+    """The qcraft member shape: constant label range + per-member column sweep."""
+    summary, expected = _index_family_summary(
+        (
+            "=INDEX(DB!C2:E4,MATCH(Data!A1,DB!A2:A4,0),1)",
+            "=INDEX(DB!D2:F4,MATCH(Data!A1,DB!A2:A4,0),1)",
+            "=INDEX(DB!E2:G4,MATCH(Data!A1,DB!A2:A4,0),1)",
+        ),
+        (
+            _index_family_body(3, 5),
+            _index_family_body(4, 6),
+            _index_family_body(5, 7),
+        ),
+        base_bound_keys={
+            "DB!C2": {"TIME_PERIOD": 1},
+            "DB!D2": {"TIME_PERIOD": 2},
+            "DB!E2": {"TIME_PERIOD": 3},
+            "DB!E4": {"TIME_PERIOD": 1},
+            "DB!F4": {"TIME_PERIOD": 2},
+            "DB!G4": {"TIME_PERIOD": 3},
+        },
+    )
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=TIME_PERIOD_VOCAB,
+        expected_member_keys=expected,
+        helper_name="climate_lookup",
+    )
+    assert "xl_range(ctx, 'DB!A2:A4')" in draft.body
+    assert "xl_match(_t1, _t2, 0.0)" in draft.body
+    assert "col_start_index_by_time_period = {1: 3, 2: 4, 3: 5}" in draft.body
+    assert "col_end_index_by_time_period = {1: 5, 2: 6, 3: 7}" in draft.body
+    assert (
+        "xl_offset(ctx, xl_index_ref(('DB', 2, "
+        "col_start_index_by_time_period[time_period], 4, "
+        "col_end_index_by_time_period[time_period]), _t3, 1.0), 0.0, 0.0)"
+    ) in draft.body
+    assert "col_start_index_by_time_period" in draft.lookup_table_names
+    assert "col_end_index_by_time_period" in draft.lookup_table_names
+    _assert_body_compiles(draft, ("time_period",))
+
+
+def test_index_ref_tuple_sheet_mismatch_fails_fingerprint() -> None:
+    """Cross-sheet unbound INDEX corners fall back under sheet/row geometry policy.
+
+    With a non-empty ``address_to_series_id``, mixed sheet/row among unbound
+    ref-slot operands is rejected at fingerprint time (before synthesis).
+    """
+    members = tuple(
+        _member(address, formula, body)
+        for address, formula, body in zip(
+            ("Data!B10", "Data!C10", "Data!D10"),
+            (
+                "=INDEX(DB!C2:E4,MATCH(Data!A1,DB!A2:A4,0),1)",
+                "=INDEX(Other!D2:F4,MATCH(Data!A1,DB!A2:A4,0),1)",
+                "=INDEX(DB!E2:G4,MATCH(Data!A1,DB!A2:A4,0),1)",
+            ),
+            (
+                _index_family_body(3, 5),
+                _index_family_body(4, 6),
+                _index_family_body(5, 7),
+            ),
+            strict=True,
+        )
+    )
+    bound_keys: dict[str, dict[str, BindingKeyValue]] = {
+        "Data!B10": {"TIME_PERIOD": 1},
+        "Data!C10": {"TIME_PERIOD": 2},
+        "Data!D10": {"TIME_PERIOD": 3},
+        "Data!A1": {"COUNTRY": "chile"},
+        "DB!A2": {"LABEL_ROW": 2},
+        "DB!A4": {"LABEL_ROW": 4},
+        "DB!C2": {"TIME_PERIOD": 1},
+        "Other!D2": {"TIME_PERIOD": 2},
+        "DB!E2": {"TIME_PERIOD": 3},
+        "DB!E4": {"TIME_PERIOD": 1},
+        "Other!F4": {"TIME_PERIOD": 2},
+        "DB!G4": {"TIME_PERIOD": 3},
+    }
+    expected = {
+        "Data!B10": {"TIME_PERIOD": 1},
+        "Data!C10": {"TIME_PERIOD": 2},
+        "Data!D10": {"TIME_PERIOD": 3},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id={"Data!A1": "label"},
+    )
+    assert summary.fallback_reason is not None
+    assert "unbound_ref_slot_geometry_conflict" in summary.fallback_reason
+    assert summary.groups == ()
+
+
+def test_nonzero_offset_trailing_args_fail_synthesis() -> None:
+    bodies = (
+        _index_family_body(3, 5, trailing="1.0, 0.0"),
+        _index_family_body(4, 6, trailing="1.0, 0.0"),
+        _index_family_body(5, 7, trailing="1.0, 0.0"),
+    )
+    summary, expected = _index_family_summary(
+        (
+            "=INDEX(DB!C2:E4,MATCH(Data!A1,DB!A2:A4,0),1)",
+            "=INDEX(DB!D2:F4,MATCH(Data!A1,DB!A2:A4,0),1)",
+            "=INDEX(DB!E2:G4,MATCH(Data!A1,DB!A2:A4,0),1)",
+        ),
+        bodies,
+        base_bound_keys={
+            "DB!C2": {"TIME_PERIOD": 1},
+            "DB!D2": {"TIME_PERIOD": 2},
+            "DB!E2": {"TIME_PERIOD": 3},
+            "DB!E4": {"TIME_PERIOD": 1},
+            "DB!F4": {"TIME_PERIOD": 2},
+            "DB!G4": {"TIME_PERIOD": 3},
+        },
+    )
+    with pytest.raises(MechanicalSynthesisError, match="unsupported_offset_shape"):
+        synthesize_cluster_body(
+            summary,
+            key_vocabulary=TIME_PERIOD_VOCAB,
+            expected_member_keys=expected,
+            helper_name="climate_lookup",
+        )
+
+
+def test_bare_index_ref_fails_synthesis() -> None:
+    body = (
+        "_t1 = read_label(ctx)\n"
+        "_t2 = xl_range(ctx, 'DB!A2:A4')\n"
+        "_t3 = xl_match(_t1, _t2, 0.0)\n"
+        "return xl_index_ref(('DB', 2, 3, 4, 5), _t3, 1.0)"
+    )
+    summary, expected = _index_family_summary(
+        (
+            "=INDEX(DB!C2:E4,MATCH(Data!A1,DB!A2:A4,0),1)",
+            "=INDEX(DB!D2:F4,MATCH(Data!A1,DB!A2:A4,0),1)",
+            "=INDEX(DB!E2:G4,MATCH(Data!A1,DB!A2:A4,0),1)",
+        ),
+        (body, body, body),
+        base_bound_keys={
+            "DB!C2": {"TIME_PERIOD": 1},
+            "DB!D2": {"TIME_PERIOD": 2},
+            "DB!E2": {"TIME_PERIOD": 3},
+            "DB!E4": {"TIME_PERIOD": 1},
+            "DB!F4": {"TIME_PERIOD": 2},
+            "DB!G4": {"TIME_PERIOD": 3},
+        },
+    )
+    with pytest.raises(MechanicalSynthesisError, match="unsupported_index_ref_shape"):
+        synthesize_cluster_body(
+            summary,
+            key_vocabulary=TIME_PERIOD_VOCAB,
+            expected_member_keys=expected,
+            helper_name="climate_lookup",
         )
 
 
@@ -384,3 +956,125 @@ def test_singleton_rejects_bare_cell_reference() -> None:
             "def cell_a_b1(ctx):\n    return apply(cell_a_b2, ctx)\n",
             inline_replacements={"cell_a_b2": "helper(ctx)"},
         )
+
+
+def test_mixed_ref_series_regimes_split_then_synthesize() -> None:
+    """Shared skeleton with mixed ``ref_1`` series → regime groups then synthesize.
+
+    Without the split, fingerprinting collapses three operand series into one
+    ``table[TIME_PERIOD]`` and mechanical synthesis fails with
+    ``slots_without_read_sites``. After the split each regime synthesizes with
+    its own accessor and multi-group routing selects by ``TIME_PERIOD``.
+
+    The inflation_path band uses ≥2 members so synthesis must derive the
+    header offset (``+27``) rather than hard-coding the ``2055`` key.
+    """
+    members = (
+        _member(
+            "Rate!B19",
+            "=(1+Anchor!B5/100)*(1+Macro!AE15/100)*100-100",
+            "_t1 = xl_number(xl_cell(ctx, 'Anchor!B5'))\n"
+            "_t2 = xl_number("
+            "read_macrofiscal_gdp_deflator_growth(ctx, time_period=2029))\n"
+            "return (1 + _t1 / 100) * (1 + _t2 / 100) * 100 - 100",
+        ),
+        _member(
+            "Rate!C19",
+            "=(1+Anchor!B5/100)*(1+Inflation!B9/100)*100-100",
+            "_t1 = xl_number(xl_cell(ctx, 'Anchor!B5'))\n"
+            "_t2 = xl_number("
+            "read_inflation_convergence_trajectory(ctx, time_period=2002))\n"
+            "return (1 + _t1 / 100) * (1 + _t2 / 100) * 100 - 100",
+        ),
+        _member(
+            "Rate!D19",
+            "=(1+Anchor!B5/100)*(1+Inflation!C9/100)*100-100",
+            "_t1 = xl_number(xl_cell(ctx, 'Anchor!B5'))\n"
+            "_t2 = xl_number("
+            "read_inflation_convergence_trajectory(ctx, time_period=2003))\n"
+            "return (1 + _t1 / 100) * (1 + _t2 / 100) * 100 - 100",
+        ),
+        _member(
+            "Rate!E19",
+            "=(1+Anchor!B5/100)*(1+Inflation!BC3/100)*100-100",
+            "_t1 = xl_number(xl_cell(ctx, 'Anchor!B5'))\n"
+            "_t2 = xl_number(read_inflation_path(ctx, time_period=2055))\n"
+            "return (1 + _t1 / 100) * (1 + _t2 / 100) * 100 - 100",
+        ),
+        _member(
+            "Rate!F19",
+            "=(1+Anchor!B5/100)*(1+Inflation!BD3/100)*100-100",
+            "_t1 = xl_number(xl_cell(ctx, 'Anchor!B5'))\n"
+            "_t2 = xl_number(read_inflation_path(ctx, time_period=2056))\n"
+            "return (1 + _t1 / 100) * (1 + _t2 / 100) * 100 - 100",
+        ),
+    )
+    bound_keys = {
+        "Rate!B19": {"TIME_PERIOD": 2002},
+        "Rate!C19": {"TIME_PERIOD": 2003},
+        "Rate!D19": {"TIME_PERIOD": 2004},
+        "Rate!E19": {"TIME_PERIOD": 2028},
+        "Rate!F19": {"TIME_PERIOD": 2029},
+        "Anchor!B5": {},
+        "Macro!AE15": {"TIME_PERIOD": 2029},
+        "Inflation!B9": {"TIME_PERIOD": 2002},
+        "Inflation!C9": {"TIME_PERIOD": 2003},
+        "Inflation!BC3": {"TIME_PERIOD": 2055},
+        "Inflation!BD3": {"TIME_PERIOD": 2056},
+    }
+    expected = {
+        "Rate!B19": {"TIME_PERIOD": 2002},
+        "Rate!C19": {"TIME_PERIOD": 2003},
+        "Rate!D19": {"TIME_PERIOD": 2004},
+        "Rate!E19": {"TIME_PERIOD": 2028},
+        "Rate!F19": {"TIME_PERIOD": 2029},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id={
+            "Anchor!B5": "anchor_series",
+            "Macro!AE15": "macrofiscal_gdp_deflator_growth",
+            "Inflation!B9": "inflation_convergence_trajectory",
+            "Inflation!C9": "inflation_convergence_trajectory",
+            "Inflation!BC3": "inflation_path",
+            "Inflation!BD3": "inflation_path",
+        },
+    )
+    assert summary.fallback_reason is None
+    assert len(summary.groups) == 3
+    series_by_members = {
+        group.members: group.ref_relations[1].series_id for group in summary.groups
+    }
+    assert series_by_members[("Rate!B19",)] == "macrofiscal_gdp_deflator_growth"
+    assert (
+        series_by_members[("Rate!C19", "Rate!D19")]
+        == "inflation_convergence_trajectory"
+    )
+    assert series_by_members[("Rate!E19", "Rate!F19")] == "inflation_path"
+    path_group = next(
+        group for group in summary.groups if group.members == ("Rate!E19", "Rate!F19")
+    )
+    assert path_group.ref_relations[1].tier == "offset"
+    assert path_group.ref_relations[1].offsets == {"TIME_PERIOD": 27}
+
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=TIME_PERIOD_VOCAB,
+        expected_member_keys=expected,
+        helper_name="interest_rate_long_run_real_interest_rate",
+    )
+    assert "if time_period == 2002:" in draft.body
+    assert "read_macrofiscal_gdp_deflator_growth(" in draft.body
+    assert (
+        "read_inflation_convergence_trajectory(ctx, time_period=time_period - 1)"
+        in draft.body
+    )
+    assert "read_inflation_path(ctx, time_period=time_period + 27)" in draft.body
+    assert "time_period=2055" not in draft.body
+    # Must not collapse regimes into one literal 2028→2055 helper key table.
+    assert "2028: 2055" not in draft.body
+    _assert_body_compiles(draft, ("time_period",))

@@ -2,7 +2,27 @@
 
 Author `inputs.bindings.yaml`, `outputs.bindings.yaml`, and `internals.bindings.yaml` here before running the pipeline.
 
-Use schema version `1.8.0` and the prompt in [templates/binding-authoring-prompt.txt](../templates/binding-authoring-prompt.txt).
+Use schema version `1.10.0` and the prompt in [templates/binding-authoring-prompt.txt](../templates/binding-authoring-prompt.txt).
+
+## Output compute helpers
+
+When an internals helper covers a published output series' leaves, declare
+`output.compute.helper` so generated `compute_*` calls the helper from record
+dims instead of `xl_cell(address)` (excel-grapher schema 1.10.0):
+
+```yaml
+output:
+  compute:
+    name: compute_scenario_primary_expenditure_pct_gdp
+    helper:
+      name: scenario_primary_expenditure_pct_gdp_hot
+      dims: [TIME_PERIOD]
+```
+
+`dims` defaults to the series `key` when omitted. Leaves without helper coverage
+still use `xl_cell`. Declare helper blocks in the binding catalog for every
+output series id that matches a same-named function in the generated
+`internals.py`; `scripts/author_bindings.py` passes them through verbatim.
 
 After authoring (or when export fails in codegen), run
 `uv run python -m scripts.binding_resolution_audit`

@@ -17,7 +17,7 @@ Binding schema and conventions:
       .read_text(encoding="utf-8")
   )
 
-- Use schema_version: 1.8.0.
+- Use schema_version: 1.10.0.
 - Create a bindings/ directory with three files:
   - inputs.bindings.yaml for public input setters.
   - outputs.bindings.yaml for public output compute functions.

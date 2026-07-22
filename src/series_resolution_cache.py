@@ -25,6 +25,7 @@ SERIES_RESOLUTION_CACHE_SCHEMA_VERSION = "1.0.0"
 DEFAULT_SERIES_RESOLUTION_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "series-resolution"
 )
+COMMITTED_SERIES_RESOLUTION_CACHE_DIR = DEFAULT_SERIES_RESOLUTION_CACHE_DIR
 
 SeriesResolutionList = Sequence[Mapping[str, Any]]
 
@@ -243,3 +244,24 @@ def clear_series_resolution_cache(
     for path in cache_dir.iterdir():
         if path.is_file():
             path.unlink()
+
+
+def prune_stale_series_resolution_cache_entries(
+    current_keys: set[str],
+    *,
+    cache_dir: Path | None = None,
+) -> list[str]:
+    """Delete cache files whose keys are not in ``current_keys``."""
+    resolved_cache_dir = _series_resolution_cache_dir(cache_dir)
+    if not resolved_cache_dir.is_dir():
+        return []
+    pruned: list[str] = []
+    for path in sorted(resolved_cache_dir.iterdir()):
+        if not path.is_file():
+            continue
+        cache_key = path.name.split(".", 1)[0]
+        if cache_key in current_keys:
+            continue
+        path.unlink()
+        pruned.append(path.name)
+    return pruned

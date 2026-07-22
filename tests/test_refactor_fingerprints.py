@@ -8,11 +8,13 @@ from src.internals_refactor import MemberContext
 from src.refactor_fingerprints import (
     ClusterFingerprintSummary,
     RefRelation,
+    RefResolution,
     build_cluster_fingerprint_summary,
     classify_ref_relation,
     estimate_fingerprint_dump_tokens,
     estimate_legacy_dump_tokens,
     format_cluster_fingerprint_dump,
+    _format_ref_relation_lines,
 )
 from src.workbook_addresses import ProjectionColumnLayout
 
@@ -128,25 +130,148 @@ def test_classify_ragged_lag_lookup_by_row_dim() -> None:
     assert relation.lookup_keys == {"TIME_PERIOD": "REF_AREA"}
 
 
-def test_classify_irregular_falls_back_to_explicit() -> None:
+def test_classify_tuple_lookup_for_jointly_determined_ref_key() -> None:
+    """A ref key jointly determined by two member dims becomes a tuple lookup.
+
+    No single member dimension yields a single-valued table (TIME_PERIOD 1 maps
+    to both 1991_nominal and 1991_real; INDICATOR nominal_gdp maps to both
+    1991_nominal and 1992_nominal), but the (INDICATOR, TIME_PERIOD) pair
+    routes every member unambiguously.
+    """
+    member_keys = {
+        "Sheet!B10": {"TIME_PERIOD": 1, "INDICATOR": "nominal_gdp"},
+        "Sheet!B11": {"TIME_PERIOD": 1, "INDICATOR": "real_gdp"},
+        "Sheet!C10": {"TIME_PERIOD": 2, "INDICATOR": "nominal_gdp"},
+        "Sheet!C11": {"TIME_PERIOD": 2, "INDICATOR": "real_gdp"},
+    }
+    ref_keys_by_member = {
+        "Sheet!B10": {"INDICATOR_YEAR": "1991_nominal"},
+        "Sheet!B11": {"INDICATOR_YEAR": "1991_real"},
+        "Sheet!C10": {"INDICATOR_YEAR": "1992_nominal"},
+        "Sheet!C11": {"INDICATOR_YEAR": "1992_real"},
+    }
+    relation = classify_ref_relation(0, member_keys, ref_keys_by_member)
+    assert relation.tier == "lookup"
+    assert relation.lookup_keys == {"INDICATOR_YEAR": ("INDICATOR", "TIME_PERIOD")}
+    assert relation.lookups == {
+        "INDICATOR_YEAR": {
+            ("nominal_gdp", 1): "1991_nominal",
+            ("real_gdp", 1): "1991_real",
+            ("nominal_gdp", 2): "1992_nominal",
+            ("real_gdp", 2): "1992_real",
+        }
+    }
+    assert relation.lookup_bases == {}
+    assert relation.explicit is None
+
+
+def test_dump_renders_tuple_lookup_table() -> None:
+    members = (
+        _member("Data!B10", "=Hist!B2"),
+        _member("Data!B11", "=Hist!B3"),
+        _member("Data!C10", "=Hist!C2"),
+        _member("Data!C11", "=Hist!C3"),
+    )
+    bound_keys = {
+        "Data!B10": {"INDICATOR": "nominal_gdp", "TIME_PERIOD": 1},
+        "Data!B11": {"INDICATOR": "real_gdp", "TIME_PERIOD": 1},
+        "Data!C10": {"INDICATOR": "nominal_gdp", "TIME_PERIOD": 2},
+        "Data!C11": {"INDICATOR": "real_gdp", "TIME_PERIOD": 2},
+        "Hist!B2": {"INDICATOR_YEAR": "1991_nominal"},
+        "Hist!B3": {"INDICATOR_YEAR": "1991_real"},
+        "Hist!C2": {"INDICATOR_YEAR": "1992_nominal"},
+        "Hist!C3": {"INDICATOR_YEAR": "1992_real"},
+    }
+    expected = {
+        address: bound_keys[address]
+        for address in ("Data!B10", "Data!B11", "Data!C10", "Data!C11")
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+    )
+    assert summary.fallback_reason is None
+    assert summary.relation_tiers == ("lookup",)
+    dump = format_cluster_fingerprint_dump(summary)
+    assert "INDICATOR_YEAR = table[(INDICATOR, TIME_PERIOD)]" in dump
+    assert "(nominal_gdp, 1): 1991_nominal" in dump
+
+
+def test_classify_same_dimension_lookup_for_cross_reads() -> None:
+    """Cross-reads along the members' own dimension derive a same-dim lookup.
+
+    The strict single-dim search rejects the table because it merely restates a
+    unique-per-member key; the subset fallback accepts it since the recorded
+    routing is ground truth for synthesis.
+    """
+    member_keys = {
+        "Sheet!B10": {"INDICATOR": "debt"},
+        "Sheet!B11": {"INDICATOR": "revenue"},
+        "Sheet!B12": {"INDICATOR": "expenditure"},
+    }
+    ref_keys_by_member = {
+        "Sheet!B10": {"INDICATOR": "revenue"},
+        "Sheet!B11": {"INDICATOR": "gdp"},
+        "Sheet!B12": {"INDICATOR": "gdp"},
+    }
+    relation = classify_ref_relation(0, member_keys, ref_keys_by_member)
+    assert relation.tier == "lookup"
+    assert relation.lookup_keys == {"INDICATOR": "INDICATOR"}
+    assert relation.lookups == {
+        "INDICATOR": {"debt": "revenue", "revenue": "gdp", "expenditure": "gdp"}
+    }
+    assert relation.explicit is None
+
+
+def test_classify_irregular_routing_derives_smallest_single_valued_subset() -> None:
+    """The previously-explicit irregular fixture now derives scalar lookups.
+
+    TIME_PERIOD is unique per member, so single-dim tables keyed by it are
+    single-valued but non-compressing; the strict search rejects them and the
+    subset fallback accepts them (smallest subset first, so no tuple needed).
+    """
     member_keys = {
         "Sheet!B10": {"TIME_PERIOD": 1, "REF_AREA": "USA"},
         "Sheet!C10": {"TIME_PERIOD": 2, "REF_AREA": "USA"},
         "Sheet!D10": {"TIME_PERIOD": 3, "REF_AREA": "FRA"},
     }
-    # No consistent relation (neither offset nor single-dim lookup).
     ref_keys_by_member = {
         "Sheet!B10": {"TIME_PERIOD": 9, "REF_AREA": "JPN"},
         "Sheet!C10": {"TIME_PERIOD": 1, "REF_AREA": "CAN"},
         "Sheet!D10": {"TIME_PERIOD": 7, "REF_AREA": "MEX"},
     }
     relation = classify_ref_relation(0, member_keys, ref_keys_by_member)
+    assert relation.tier == "lookup"
+    assert relation.lookup_keys == {
+        "REF_AREA": "TIME_PERIOD",
+        "TIME_PERIOD": "TIME_PERIOD",
+    }
+    assert relation.lookups["REF_AREA"] == {1: "JPN", 2: "CAN", 3: "MEX"}
+    assert relation.lookups["TIME_PERIOD"] == {1: 9, 2: 1, 3: 7}
+    assert relation.explicit is None
+
+
+def test_classify_irregular_falls_back_to_explicit() -> None:
+    # Two members share the same key combo but route to different refs, so no
+    # table over member dims — not even the full tuple — is single-valued.
+    member_keys = {
+        "Sheet!B10": {"TIME_PERIOD": 1},
+        "Sheet!C10": {"TIME_PERIOD": 1},
+    }
+    ref_keys_by_member = {
+        "Sheet!B10": {"REF_AREA": "JPN"},
+        "Sheet!C10": {"REF_AREA": "CAN"},
+    }
+    relation = classify_ref_relation(0, member_keys, ref_keys_by_member)
     assert relation.tier == "explicit"
     assert relation.explicit is not None
-    assert len(relation.explicit) == 3
+    assert len(relation.explicit) == 2
     first_member, first_ref = relation.explicit[0]
-    assert ("REF_AREA", "USA") in first_member
     assert ("TIME_PERIOD", 1) in first_member
+    assert ("REF_AREA", "JPN") in first_ref
 
 
 def test_build_summary_uniform_sweep_single_group() -> None:
@@ -299,3 +424,233 @@ def test_token_estimates_fingerprint_smaller_than_legacy_for_large_cluster() -> 
     fingerprint = estimate_fingerprint_dump_tokens(summary)
     assert fingerprint < legacy
     assert isinstance(summary.groups[0].ref_relations[0], RefRelation)
+
+
+def test_format_ref_relation_col_by_includes_numeric_indices() -> None:
+    """Geometry hints must expose 1-based indices matching xl_index_ref tuples."""
+    relation = RefRelation(
+        ref_index=0,
+        tier="constant",
+        series_id=None,
+        fixed_keys={},
+        identity_dims=(),
+        offsets={},
+        lookups={},
+        explicit=None,
+        resolution=RefResolution(
+            kind="xl_cell",
+            sheet="Climate Database",
+            address_template="'Climate Database'!{col}26",
+            col_by_dim=(
+                (
+                    "TIME_PERIOD",
+                    ((2029, "Q"), (2030, "R"), (2039, "AA"), (2090, "BZ")),
+                ),
+            ),
+        ),
+    )
+    text = "\n".join(_format_ref_relation_lines(relation))
+    assert "col by TIME_PERIOD" in text
+    assert "2029: Q=17" in text
+    assert "2030: R=18" in text
+    assert "2039: AA=27" in text
+    assert "2090: BZ=78" in text
+    assert "2029: Q," not in text
+    assert "2029: Q}" not in text
+
+
+def test_build_summary_splits_groups_when_ref_slot_series_mix() -> None:
+    """Members sharing a skeleton but landing in different ref series are split.
+
+    Mirrors cluster 236 / ``interest_rate_long_run_real_interest_rate``: one
+    formula shape, three ``ref_1`` operand regimes. Without a split the dump
+    emits one mixed ``table[TIME_PERIOD]`` and no ``series`` / ``reads`` line.
+    """
+    members = (
+        _member(
+            "Rate!B19",
+            "=(1+Anchor!B5/100)*(1+Macro!AE15/100)*100-100",
+        ),
+        _member(
+            "Rate!C19",
+            "=(1+Anchor!B5/100)*(1+Inflation!B9/100)*100-100",
+        ),
+        _member(
+            "Rate!D19",
+            "=(1+Anchor!B5/100)*(1+Inflation!BC3/100)*100-100",
+        ),
+    )
+    bound_keys = {
+        "Rate!B19": {"TIME_PERIOD": 2002},
+        "Rate!C19": {"TIME_PERIOD": 2003},
+        "Rate!D19": {"TIME_PERIOD": 2028},
+        "Anchor!B5": {},
+        "Macro!AE15": {"TIME_PERIOD": 2029},
+        "Inflation!B9": {"TIME_PERIOD": 2002},
+        "Inflation!BC3": {"TIME_PERIOD": 2055},
+    }
+    expected = {
+        "Rate!B19": {"TIME_PERIOD": 2002},
+        "Rate!C19": {"TIME_PERIOD": 2003},
+        "Rate!D19": {"TIME_PERIOD": 2028},
+    }
+    address_to_series_id = {
+        "Anchor!B5": "anchor_series",
+        "Macro!AE15": "macrofiscal_gdp_deflator_growth",
+        "Inflation!B9": "inflation_convergence_trajectory",
+        "Inflation!BC3": "inflation_path",
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id=address_to_series_id,
+    )
+    assert summary.fallback_reason is None
+    assert len(summary.groups) == 3
+    members_by_group = {group.members: group for group in summary.groups}
+    assert set(members_by_group) == {
+        ("Rate!B19",),
+        ("Rate!C19",),
+        ("Rate!D19",),
+    }
+    assert (
+        members_by_group[("Rate!B19",)].ref_relations[1].series_id
+        == "macrofiscal_gdp_deflator_growth"
+    )
+    assert (
+        members_by_group[("Rate!C19",)].ref_relations[1].series_id
+        == "inflation_convergence_trajectory"
+    )
+    assert (
+        members_by_group[("Rate!D19",)].ref_relations[1].series_id == "inflation_path"
+    )
+    for group in summary.groups:
+        ref1 = group.ref_relations[1]
+        assert ref1.series_id is not None
+        # No group may keep a helper-oriented table that spans regimes.
+        period_lookup = ref1.lookups.get("TIME_PERIOD", {})
+        assert not ({2002, 2028} <= set(period_lookup))
+
+    dump = format_cluster_fingerprint_dump(summary)
+    assert "2002: 2029" not in dump
+    assert "2028: 2055" not in dump
+    assert "table[TIME_PERIOD]" not in dump
+    assert "series macrofiscal_gdp_deflator_growth" in dump
+    assert "series inflation_convergence_trajectory" in dump
+    assert "series inflation_path" in dump
+
+
+def test_build_summary_keeps_uniform_ref_series_together() -> None:
+    """Same skeleton + same per-slot series stays one fingerprint group."""
+    members = (
+        _member("Rate!C19", "=(1+Anchor!B5/100)*(1+Inflation!B9/100)*100-100"),
+        _member("Rate!D19", "=(1+Anchor!B5/100)*(1+Inflation!C9/100)*100-100"),
+    )
+    bound_keys = {
+        "Rate!C19": {"TIME_PERIOD": 2003},
+        "Rate!D19": {"TIME_PERIOD": 2004},
+        "Anchor!B5": {},
+        "Inflation!B9": {"TIME_PERIOD": 2002},
+        "Inflation!C9": {"TIME_PERIOD": 2003},
+    }
+    expected = {
+        "Rate!C19": {"TIME_PERIOD": 2003},
+        "Rate!D19": {"TIME_PERIOD": 2004},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id={
+            "Anchor!B5": "anchor_series",
+            "Inflation!B9": "inflation_convergence_trajectory",
+            "Inflation!C9": "inflation_convergence_trajectory",
+        },
+    )
+    assert summary.fallback_reason is None
+    assert len(summary.groups) == 1
+    assert summary.groups[0].members == ("Rate!C19", "Rate!D19")
+    assert (
+        summary.groups[0].ref_relations[1].series_id
+        == "inflation_convergence_trajectory"
+    )
+    assert summary.groups[0].ref_relations[1].tier == "offset"
+    assert summary.groups[0].ref_relations[1].offsets == {"TIME_PERIOD": -1}
+
+
+def test_build_summary_falls_back_when_unbound_refs_mix_sheet_row() -> None:
+    """Incomplete series maps: unbound mates with mixed sheet/row → fallback.
+
+    Members whose operands are all unbound share regime ``(None,)`` and would
+    otherwise stay one fingerprint group even when they land on different
+    sheets / latent series.
+    """
+    members = (
+        _member("Result!B1", "=X!A1"),
+        _member("Result!C1", "=W!A1"),
+        _member("Result!D1", "=Y!A1"),
+    )
+    bound_keys = {
+        "Result!B1": {"TIME_PERIOD": 2002},
+        "Result!C1": {"TIME_PERIOD": 2003},
+        "Result!D1": {"TIME_PERIOD": 2004},
+        "X!A1": {"TIME_PERIOD": 2002},
+        "W!A1": {"TIME_PERIOD": 2003},
+        "Y!A1": {"TIME_PERIOD": 2004},
+    }
+    expected = {
+        "Result!B1": {"TIME_PERIOD": 2002},
+        "Result!C1": {"TIME_PERIOD": 2003},
+        "Result!D1": {"TIME_PERIOD": 2004},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        # Only Y is bound; X and W share regime (None,) after series partition.
+        address_to_series_id={"Y!A1": "ya"},
+    )
+    assert summary.fallback_reason is not None
+    assert "unbound_ref_slot_geometry_conflict" in summary.fallback_reason
+    assert summary.groups == ()
+
+
+def test_build_summary_keeps_same_geometry_unbound_refs_together() -> None:
+    """Unbound column-sweep mates that share sheet/row stay one group."""
+    members = (
+        _member("Result!B1", "=X!A1"),
+        _member("Result!C1", "=X!B1"),
+    )
+    bound_keys = {
+        "Result!B1": {"TIME_PERIOD": 2002},
+        "Result!C1": {"TIME_PERIOD": 2003},
+        "X!A1": {"TIME_PERIOD": 2002},
+        "X!B1": {"TIME_PERIOD": 2003},
+    }
+    expected = {
+        "Result!B1": {"TIME_PERIOD": 2002},
+        "Result!C1": {"TIME_PERIOD": 2003},
+    }
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        # Partial map: neither operand bound, but geometry agrees on (X, 1).
+        address_to_series_id={
+            "Result!B1": "result_series",
+            "Result!C1": "result_series",
+        },
+    )
+    assert summary.fallback_reason is None
+    assert len(summary.groups) == 1
+    assert summary.groups[0].members == ("Result!B1", "Result!C1")
+    assert summary.groups[0].ref_relations[0].series_id is None

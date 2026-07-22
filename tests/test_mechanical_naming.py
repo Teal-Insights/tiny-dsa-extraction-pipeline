@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import ast
+from textwrap import dedent
+
 import pytest
 
 from src.mechanical_body import MechanicalBodyDraft
 from src.mechanical_naming import (
     ClusterNamingLLMResponse,
     LocalRename,
+    NamingUnit,
     apply_cluster_naming_response,
+    apply_naming_responses_to_module,
 )
 
 
@@ -118,3 +123,66 @@ def test_error_response_requires_null_success_fields() -> None:
         error_reason="cannot document",
     )
     assert response.error is True
+
+
+def _xl_memoize_decorator_count(source: str, function_name: str) -> int:
+    module = ast.parse(source)
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return sum(
+                1
+                for decorator in node.decorator_list
+                if isinstance(decorator, ast.Name) and decorator.id == "xl_memoize"
+            )
+    raise AssertionError(f"function {function_name!r} not found")
+
+
+def test_naming_applier_preserves_single_xl_memoize_decorator() -> None:
+    """Pass-2 rewrite must not stack a second @xl_memoize on mechanical helpers.
+
+    ``FunctionDef.lineno`` points at the ``def`` line, so a slice that starts
+    there leaves the existing decorator in place while ``ast.unparse`` emits
+    another, matching the duplicates on synthesized helpers in internals.py.
+    """
+    module = dedent(
+        '''
+        from __future__ import annotations
+
+        @xl_memoize
+        def helper_a(ctx: EvalContext) -> float:
+            """Mechanically synthesized helper.
+
+            Args:
+                ctx: Workbook evaluation context.
+
+            Returns:
+                Cell value.
+            """
+            _t1 = xl_number(ctx)
+            return _t1
+        '''
+    ).strip()
+    assert _xl_memoize_decorator_count(module, "helper_a") == 1
+
+    named = apply_naming_responses_to_module(
+        module,
+        (
+            NamingUnit(
+                helper_name="helper_a",
+                draft=MechanicalBodyDraft(
+                    body="_t1 = xl_number(ctx)\nreturn _t1",
+                    renameable_locals=("_t1",),
+                    lookup_table_names=(),
+                    group_count=1,
+                ),
+                response=_response(
+                    (LocalRename(original="_t1", replacement="numeric_value"),)
+                ),
+                parameter_names=frozenset(),
+                forbidden_names=frozenset({"xl_number", "helper_a"}),
+            ),
+        ),
+    )
+
+    assert "numeric_value = xl_number(ctx)" in named
+    assert _xl_memoize_decorator_count(named, "helper_a") == 1

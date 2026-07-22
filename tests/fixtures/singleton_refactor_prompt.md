@@ -59,7 +59,11 @@ Return only JSON matching the response schema:
 ## Body
 
 - Emit `symbol_body` for one self-contained function; no nested helpers or imports.
-- Name local temporaries with domain-meaningful `snake_case` informed by naming hints.
+- Mechanical codegen may already hoist nested `xl_*` calls into statement-level `_tN` temporaries. Rename every `_tN` (numbers may be large / non-local across the module) to domain-meaningful `snake_case` informed by naming hints. Do not leave opaque `_tN` names in the refactored body.
+- Preserve evaluation order of those statement temps. Do not re-nest them into a single return expression.
+- Preserve lazy / short-circuit shapes left nested by codegen (`IF` / `CHOOSE` / `IFERROR` thunks, `IS*` lambdas, DIV-guard lambdas). Do not eagerly evaluate them.
+- Deduping repeated identical `_tN = xl_cell(ctx, 'Same!Addr')` loads into one semantic local is fine.
+- Residual inline `xl_number(...)` / arithmetic on the return line is OK for readability.
 - Call only runtime symbols from the original translation and, if necessary, Python stdlib functions/operators.
 - Preserve dependency function names and signatures.
 - Where appropriate, call dependencies using pass-through parameters, e.g. `shock_active(ctx, time_period=time_period)`.
@@ -67,22 +71,24 @@ Return only JSON matching the response schema:
 
 ## Example:
 
-Refactor will mostly consist of unpacking nested calls and assigning to local temporaries for readability. For example, suppose you are assigned to refactor the following function with locked `helper_name=united_states_excess_deaths`:
+Mechanical source may already contain `_tN = …` statements. Your primary job is to rename those temps, preserve evaluation order, and clarify semantics — not to invent a different unpacking. For example, suppose you are assigned to refactor the following function with locked `helper_name=united_states_excess_deaths`:
 
 ```python
 def cell_some_sheet_z22(ctx):
     '''Formula: =AnotherSheet!Z20-AnotherSheet!Z6.'''
-    return (xl_number(united_states_total_deaths(ctx)) - xl_number(united_states_expected_deaths(ctx)))
+    _t1 = united_states_total_deaths(ctx)
+    _t2 = united_states_expected_deaths(ctx)
+    return (xl_number(_t1) - xl_number(_t2))
 ```
 
-In this case, to reduce line length, you could assign `total_deaths = xl_number(united_states_total_deaths(ctx))` and `expected_deaths = xl_number(united_states_expected_deaths(ctx))` and then return `total_deaths - expected_deaths`.
+Rename `_t1` / `_t2` to domain-meaningful locals and keep the residual `xl_number(...)` coercions on the return line:
 
 You will be provided a cell metadata block with `helper_name`, `binding_keys`, and `binding_record` naming hints for the current cell, plus signatures and docstrings for all dependencies. Document the locked helper using those hints (for example `TABLE: United States Vital Statistics` and `INDICATOR: excess_deaths`).
 
 ```json
 {
   "symbol_docstring": "Excess deaths for the United States: total deaths less expected deaths.\n\nArgs:\n    ctx: Workbook evaluation context.\n\nReturns:\n    Excess deaths for the United States.",
-  "symbol_body": "total_deaths = xl_number(united_states_total_deaths(ctx))\nexpected_deaths = xl_number(united_states_expected_deaths(ctx))\nreturn total_deaths - expected_deaths",
+  "symbol_body": "total_deaths = united_states_total_deaths(ctx)\nexpected_deaths = united_states_expected_deaths(ctx)\nreturn (xl_number(total_deaths) - xl_number(expected_deaths))",
   "error": null,
   "error_reason": null
 }

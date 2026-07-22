@@ -19,8 +19,14 @@ from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
+from src.codegen_cache import (
+    get_or_build_codegen_modules,
+    guide_fingerprint,
+    write_generated_modules,
+)
 from src.docstring_callback import configure_docstring_callback
 from src.extraction_pipeline import build_pipeline_graph
+from src.projection_cache import projection_cache_key
 from src.pipeline_config import (
     PipelineConfig,
     add_clustering_mode_argument,
@@ -229,9 +235,10 @@ def _cluster_contract_and_skip_reason(
         workbook_path=workbook_path,
         layout=layout,
     )
+    formula_nodes = formula_nodes_for_clustering(graph)
     contract = select_cluster_refactor_contract(
         cluster,
-        formula_nodes_for_clustering(graph),
+        formula_nodes,
         bound_address_keys,
         varying,
         key_vocabulary=key_vocabulary,
@@ -239,7 +246,24 @@ def _cluster_contract_and_skip_reason(
         layout=layout,
     )
     if contract is None:
-        return None, "operand_level_variation_unsupported"
+        from src.key_dispatch_synthesis import plan_key_dispatch
+        from src.refactor_bindings import expected_member_keys_for_cluster
+
+        member_keys = expected_member_keys_for_cluster(
+            cluster.members,
+            bound_address_keys=bound_address_keys,
+            workbook_path=workbook_path,
+            layout=layout,
+        )
+        plan = plan_key_dispatch(
+            cluster,
+            formula_nodes,
+            member_keys,
+            helper_name="key_dispatch_probe",
+        )
+        if plan is None:
+            return None, "operand_level_variation_unsupported"
+        return "key_dispatch", None
     return contract, None
 
 
@@ -258,32 +282,47 @@ def export_generated_modules(
     graph_cache_key: str,
     series_bindings: WorkbookSeriesBindings,
     no_cache: bool = False,
+    force_rebuild: bool = False,
 ) -> Path:
     """Write generated package modules through codegen, stopping before refactor."""
     refactor_projection = build_refactor_projection(
         graph,
         graph_cache_key=graph_cache_key,
         no_cache=no_cache,
+        force_rebuild=force_rebuild,
     )
-    callback_name = configure_docstring_callback(config)
+    proj_cache_key = projection_cache_key(graph_cache_key=graph_cache_key)
+    targets = list(config.targets)
+    unpack_return = True
+    docstring_renderer = "google"
+    callback_name = config.docstring_callback_name
 
-    with CodeGenerator(
-        cast(GraphLike, refactor_projection), unpack_return=True
-    ) as generator:
-        modules = generator.generate_modules(
-            list(config.targets),
-            series_bindings=series_bindings,
-            bindings_workbook=config.workbook_path,
-            series_docstring_callback=callback_name,
-            docstring_renderer="google",
-        )
+    def _build_modules() -> dict[str, str]:
+        configure_docstring_callback(config)
+        with CodeGenerator(
+            cast(GraphLike, refactor_projection), unpack_return=unpack_return
+        ) as generator:
+            return generator.generate_modules(
+                targets,
+                series_bindings=series_bindings,
+                bindings_workbook=config.workbook_path,
+                series_docstring_callback=callback_name,
+                docstring_renderer=docstring_renderer,
+            )
 
+    codegen_result = get_or_build_codegen_modules(
+        projection_cache_key=proj_cache_key,
+        targets=targets,
+        unpack_return=unpack_return,
+        docstring_renderer=docstring_renderer,
+        series_docstring_callback=callback_name,
+        guide_sha256=guide_fingerprint(config.guide_path),
+        build_modules=_build_modules,
+        no_cache=no_cache,
+        force_rebuild=force_rebuild,
+    )
     package_root = config.package_root
-    package_root.mkdir(parents=True, exist_ok=True)
-    for filepath, code in modules.items():
-        output_path = package_root / filepath
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(code, encoding="utf-8", newline="\n")
+    write_generated_modules(package_root, codegen_result.modules)
 
     return package_root / "internals.py"
 
@@ -768,7 +807,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="Bypass on-disk graph and projection caches for this run.",
+        help=("Bypass on-disk graph, projection, and codegen caches for this run."),
     )
     add_variation_mode_argument(parser)
     add_clustering_mode_argument(parser)

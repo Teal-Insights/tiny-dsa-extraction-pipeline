@@ -15,10 +15,7 @@ from excel_grapher.grapher import (
 )
 from excel_grapher.exporter import CodeGenerator
 from excel_grapher.exporter.codegen import GraphLike
-from excel_grapher.series_bindings import (
-    load_series_bindings,
-    validate_series_bindings,
-)
+from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
 from src.dependency_graph_viz import (
@@ -28,12 +25,22 @@ from src.dependency_graph_viz import (
 )
 from src.internal_bindings import binding_node_labels, build_internal_binding_index
 from src.internal_binding_coverage import enforce_internal_binding_coverage
+from src.soft_error_compute_codegen import (
+    ensure_xl_error_exception_import,
+    rewrite_compute_measure_assignment,
+)
+from src.codegen_cache import (
+    get_or_build_codegen_modules,
+    guide_fingerprint,
+    write_generated_modules,
+)
 from src.docstring_callback import configure_docstring_callback
 from src.differential_validation import run_post_refactor_differential
 from src.export_validation_assets import (
     export_reference_reports,
     seed_validation_harness,
 )
+from src.projection_cache import projection_cache_key
 from src.logging_config import configure_logging
 from src.pipeline_config import (
     PipelineConfig,
@@ -57,6 +64,7 @@ from src.qmd_python_validation import (
     render_dist_pyproject_toml,
     write_dist_readme,
 )
+from src.bindings_validation_cache import get_or_build_bindings_validation
 from src.graph_cache import get_or_build_dependency_graph
 from src.series_resolution_cache import get_or_build_series_resolution
 from src.subgraph_projection import build_refactor_projection
@@ -332,11 +340,15 @@ def build_pipeline_graph(
         graph_cache_key = graph_result.cache_key
 
     with stage("validate_series_bindings"):
-        binding_validation_report = validate_series_bindings(
+        validation_result = get_or_build_bindings_validation(
             graph,
             series_bindings,
-            workbook=config.workbook_path,
+            workbook_path=config.workbook_path,
+            graph_cache_key=graph_cache_key,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
         )
+        binding_validation_report = validation_result.report
         if not binding_validation_report["ok"]:
             raise ValueError(
                 f"Invalid series bindings: {binding_validation_report['issues']!r}"
@@ -418,30 +430,55 @@ def run_export_stage(
         no_cache=no_cache,
         force_rebuild=force_rebuild,
     )
-    callback_name = configure_docstring_callback(config)
+    proj_cache_key = projection_cache_key(graph_cache_key=graph_cache_key)
+    targets = list(config.targets)
+    unpack_return = True
+    docstring_renderer = "google"
+    callback_name = config.docstring_callback_name
 
-    with CodeGenerator(
-        cast(GraphLike, refactor_projection), unpack_return=True
-    ) as generator:
-        modules = generator.generate_modules(
-            list(config.targets),
-            series_bindings=series_bindings,
-            bindings_workbook=config.workbook_path,
-            series_docstring_callback=callback_name,
-            docstring_renderer="google",
+    def _build_modules() -> dict[str, str]:
+        configure_docstring_callback(config)
+        with CodeGenerator(
+            cast(GraphLike, refactor_projection), unpack_return=unpack_return
+        ) as generator:
+            return generator.generate_modules(
+                targets,
+                series_bindings=series_bindings,
+                bindings_workbook=config.workbook_path,
+                series_docstring_callback=callback_name,
+                docstring_renderer=docstring_renderer,
+            )
+
+    codegen_result = get_or_build_codegen_modules(
+        projection_cache_key=proj_cache_key,
+        targets=targets,
+        unpack_return=unpack_return,
+        docstring_renderer=docstring_renderer,
+        series_docstring_callback=callback_name,
+        guide_sha256=guide_fingerprint(config.guide_path),
+        build_modules=_build_modules,
+        no_cache=no_cache,
+        force_rebuild=force_rebuild,
+    )
+    modules = dict(codegen_result.modules)
+    api_source = modules.get("api.py")
+    if api_source is not None:
+        # Capture Excel error codes in OBS_VALUE instead of aborting the series.
+        # No-op on excel-grapher 3.17+ output, which emits soft-capture natively
+        # (Teal-Insights/excel-grapher#436); still repairs older cached api.py.
+        rewritten = "\n".join(
+            rewrite_compute_measure_assignment(api_source.splitlines())
         )
+        if api_source.endswith("\n"):
+            rewritten += "\n"
+        modules["api.py"] = ensure_xl_error_exception_import(rewritten)
 
     package_root = config.package_root
-    package_root.mkdir(parents=True, exist_ok=True)
+    write_generated_modules(package_root, modules)
 
     generated_module_names = frozenset(
         {"__init__.py", "api.py", "data.py", "runtime.py", "internals.py"}
     )
-
-    for filepath, code in modules.items():
-        output_path = package_root / filepath
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(code, encoding="utf-8", newline="\n")
 
     for stale_module in generated_module_names:
         stale_path = config.dist_root / stale_module
@@ -469,6 +506,10 @@ tests/results/local/
     write_dist_readme(config.dist_root, metadata=config.dist_metadata)
 
     seed_validation_harness(config=config)
+    print(
+        f"codegen: {len(modules)} modules ({codegen_result.elapsed_seconds:.1f}s)",
+        flush=True,
+    )
 
     return ExportStageState(
         config=config,
@@ -500,6 +541,8 @@ def run_refactor_stage(state: ExportStageState) -> RefactorStageState:
         output_series=graph_result.output_series,
         input_series=graph_result.input_series,
     )
+    print("clustering: partitioning formulas…", flush=True)
+    clustering_started = time.perf_counter()
     formula_clusters = cluster_graph_formulas(
         state.refactor_projection,
         bound_address_keys=bound_address_keys,
@@ -509,6 +552,17 @@ def run_refactor_stage(state: ExportStageState) -> RefactorStageState:
         workbook_path=config.workbook_path,
         layout=config.projection_layout,
     )
+    formula_count = sum(len(cluster.members) for cluster in formula_clusters)
+    print(
+        f"clustering: {formula_count} formulas → {len(formula_clusters)} clusters "
+        f"({time.perf_counter() - clustering_started:.1f}s)",
+        flush=True,
+    )
+    print(
+        f"internals_refactor: rewriting {len(formula_clusters)} clusters…",
+        flush=True,
+    )
+    refactor_started = time.perf_counter()
     refactor_internals_all_clusters(
         state.refactor_projection,
         formula_clusters,
@@ -520,12 +574,20 @@ def run_refactor_stage(state: ExportStageState) -> RefactorStageState:
         workbook_path=config.workbook_path,
         address_to_series_id=address_to_series_id,
     )
+    print(
+        f"internals_refactor: done ({time.perf_counter() - refactor_started:.1f}s)",
+        flush=True,
+    )
     return RefactorStageState(config=config)
 
 
-def run_validate_stage(state: RefactorStageState) -> None:
+def run_validate_stage(
+    state: RefactorStageState,
+    *,
+    no_cache: bool = False,
+) -> None:
     """Run post-refactor differential and ship reference reports into dist/."""
-    run_post_refactor_differential(config=state.config)
+    run_post_refactor_differential(config=state.config, no_cache=no_cache)
     export_reference_reports(config=state.config)
 
 
@@ -563,7 +625,7 @@ def run_pipeline(
     if stop_after_stage == "refactor":
         return
 
-    run_validate_stage(refactor_state)
+    run_validate_stage(refactor_state, no_cache=no_cache)
     if stop_after_stage == "validate":
         return
 
@@ -609,8 +671,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--no-cache",
         action="store_true",
         help=(
-            "Bypass on-disk graph, projection, and series-resolution caches "
-            "for this run."
+            "Bypass on-disk graph, projection, series-resolution, codegen, "
+            "and exported-library differential caches for this run."
         ),
     )
     add_variation_mode_argument(parser)

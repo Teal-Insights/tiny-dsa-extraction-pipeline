@@ -18,6 +18,7 @@ from src.series_resolution_cache import (
     clear_series_resolution_cache,
     get_or_build_series_resolution,
     load_series_resolution_payload,
+    prune_stale_series_resolution_cache_entries,
     series_resolution_cache_key,
 )
 from tests.fixtures.synthetic_pipeline import (
@@ -255,6 +256,26 @@ def test_clear_series_resolution_cache_removes_entries(
     assert payload_path.is_file()
     clear_series_resolution_cache(cache_dir=series_cache_dir)
     assert not payload_path.is_file()
+
+
+def test_prune_stale_series_resolution_cache_entries_removes_only_stale_keys(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "series-resolution"
+    cache_dir.mkdir()
+    keep = cache_dir / "keep.pkl.gz"
+    drop = cache_dir / "drop.pkl.gz"
+    keep.write_bytes(b"keep")
+    drop.write_bytes(b"drop")
+
+    pruned = prune_stale_series_resolution_cache_entries(
+        {"keep"},
+        cache_dir=cache_dir,
+    )
+
+    assert pruned == ["drop.pkl.gz"]
+    assert keep.is_file()
+    assert not drop.is_file()
 
 
 def test_build_pipeline_graph_uses_series_resolution_cache(

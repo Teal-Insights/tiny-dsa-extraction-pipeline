@@ -1,0 +1,26 @@
+# Normalize all text files to LF in the repository. Working-tree checkouts
+# follow Git's usual text=auto conversion; the committed form is always LF so
+# `git diff --check` does not treat CR as trailing whitespace.
+* text=auto eol=lf
+
+# Binary assets must not be line-ending normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.xlsx binary
+*.xlsm binary
+*.xls binary
+*.pkl binary
+*.pkl.gz binary
+*.gz binary
+*.zip binary
+*.whl binary
+*.pyc binary
+*.pyo binary
+*.so binary
+*.dll binary
+*.pyd binary

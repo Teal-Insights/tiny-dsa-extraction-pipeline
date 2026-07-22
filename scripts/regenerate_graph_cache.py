@@ -1,15 +1,20 @@
-"""Regenerate the committed dependency-graph cache in ``.cache/dependency-graph``.
+"""Regenerate committed dependency-graph, series-resolution, and validation caches.
 
-Warm pytest and CI runs can read this cache to skip cold graph builds. The cache
-key fingerprints the workbook, bindings YAML, targets/constraints, and the
-excel-grapher version. Rerun after changing the workbook, ``bindings/*.bindings.yaml``,
-``workbook_config.py`` targets/constraints, or upgrading excel-grapher:
+Warm pytest and CI runs can read these caches to skip cold graph builds,
+``derive_*_series`` work, and ``validate_series_bindings``. Cache keys
+fingerprint the workbook, bindings YAML, targets/constraints, and the
+excel-grapher version. Rerun after changing the workbook,
+``bindings/*.bindings.yaml``, ``workbook_config.py`` targets/constraints,
+or upgrading excel-grapher:
 
     uv run python -m scripts.regenerate_graph_cache
 
-Use ``--force`` to rebuild even when current entries already exist. Commit the
-updated ``.cache/dependency-graph`` artifacts when your downstream pipeline
-chooses to vendor the cache (override ``.gitignore`` for that directory).
+Use ``--force`` to rebuild even when current entries already exist. Force also
+clears ``.cache/series-resolution`` and ``.cache/bindings-validation`` before
+rebuilding and pruning them to keys derived from the current graph cache keys.
+Commit the updated ``.cache/dependency-graph`` artifacts when your downstream
+pipeline chooses to vendor the cache (override ``.gitignore`` for that
+directory).
 """
 
 from __future__ import annotations
@@ -24,7 +29,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from excel_grapher.grapher import DynamicRefConfig  # noqa: E402
+from excel_grapher.series_bindings import load_series_bindings  # noqa: E402
 
+from src.bindings_validation_cache import (  # noqa: E402
+    COMMITTED_BINDINGS_VALIDATION_CACHE_DIR,
+    bindings_validation_cache_key,
+    clear_bindings_validation_cache,
+    get_or_build_bindings_validation,
+    prune_stale_bindings_validation_cache_entries,
+)
 from src.graph_cache import (  # noqa: E402
     COMMITTED_GRAPH_CACHE_DIR,
     get_or_build_dependency_graph,
@@ -33,6 +46,12 @@ from src.graph_cache import (  # noqa: E402
 from src.pipeline_config import (  # noqa: E402
     load_pipeline_config,
     validate_pipeline_config,
+)
+from src.series_resolution_cache import (  # noqa: E402
+    COMMITTED_SERIES_RESOLUTION_CACHE_DIR,
+    clear_series_resolution_cache,
+    prune_stale_series_resolution_cache_entries,
+    series_resolution_cache_key,
 )
 
 
@@ -51,8 +70,18 @@ def regenerate_graph_cache(
     config = load_pipeline_config()
     validate_pipeline_config(config)
     dynamic_refs = DynamicRefConfig.from_constraints(config.constraints, {})
+    bindings = load_series_bindings(config.bindings_path)
+
+    if force:
+        clear_series_resolution_cache(
+            cache_dir=COMMITTED_SERIES_RESOLUTION_CACHE_DIR,
+        )
+        clear_bindings_validation_cache(
+            cache_dir=COMMITTED_BINDINGS_VALIDATION_CACHE_DIR,
+        )
 
     current_keys: set[str] = set()
+    default_graph_result = None
     for label, targets in graph_cache_target_bundles(config):
         result = get_or_build_dependency_graph(
             workbook_path=config.workbook_path,
@@ -66,6 +95,8 @@ def regenerate_graph_cache(
             force_rebuild=force,
         )
         current_keys.add(result.cache_key)
+        if label == "default graph":
+            default_graph_result = result
         print(
             f"{label}: key={result.cache_key[:12]} nodes={len(result.graph)} "
             f"cache_hit={result.cache_hit}"
@@ -76,17 +107,60 @@ def regenerate_graph_cache(
         cache_dir=COMMITTED_GRAPH_CACHE_DIR,
     ):
         print(f"pruned stale cache entry: {filename}")
+
+    if default_graph_result is None:
+        raise RuntimeError("default graph bundle did not run")
+
+    validation_result = get_or_build_bindings_validation(
+        default_graph_result.graph,
+        bindings,
+        workbook_path=config.workbook_path,
+        graph_cache_key=default_graph_result.cache_key,
+        cache_dir=COMMITTED_BINDINGS_VALIDATION_CACHE_DIR,
+        force_rebuild=force,
+    )
+    print(
+        "bindings validation: "
+        f"key={validation_result.cache_key[:12]} "
+        f"ok={validation_result.report['ok']} "
+        f"issues={len(validation_result.report['issues'])} "
+        f"cache_hit={validation_result.cache_hit}"
+    )
+    validation_keys = {
+        bindings_validation_cache_key(graph_cache_key=cache_key)
+        for cache_key in current_keys
+    }
+    for filename in prune_stale_bindings_validation_cache_entries(
+        validation_keys,
+        cache_dir=COMMITTED_BINDINGS_VALIDATION_CACHE_DIR,
+    ):
+        print(f"pruned stale bindings-validation cache entry: {filename}")
+
+    series_keys = {
+        series_resolution_cache_key(graph_cache_key=cache_key)
+        for cache_key in current_keys
+    }
+    for filename in prune_stale_series_resolution_cache_entries(
+        series_keys,
+        cache_dir=COMMITTED_SERIES_RESOLUTION_CACHE_DIR,
+    ):
+        print(f"pruned stale series-resolution cache entry: {filename}")
     return current_keys
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Regenerate the committed dependency-graph cache."
+        description=(
+            "Regenerate the committed dependency-graph, series-resolution, "
+            "and bindings-validation caches."
+        )
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Rebuild graphs even when the cache already has current entries.",
+        help=(
+            "Rebuild graphs/validation even when the cache already has current entries."
+        ),
     )
     args = parser.parse_args(argv)
     regenerate_graph_cache(force=args.force)

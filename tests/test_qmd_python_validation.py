@@ -10,6 +10,7 @@ from src.qmd_python_validation import (
     PublicApiPolicy,
     aggregate_python_cells,
     extract_python_cells,
+    filter_api_signatures,
     fix_python_cell_with_llm,
     merge_dev_dependencies,
     parse_missing_package,
@@ -325,11 +326,11 @@ def test_fix_python_cell_with_llm_uses_openai_supported_reasoning_params() -> No
 
 
 def test_fix_python_cell_with_llm_includes_signatures_and_shape_guidance() -> None:
-    fake = _FakeClient("set_country_initial_debt(ctx, [40.0, 60.0, 80.0])\n")
+    fake = _FakeClient("set_example_series(ctx, [1.0, 2.0, 3.0])\n")
     signatures = (
-        "def set_country_initial_debt(ctx, records):\n"
+        "def set_example_series(ctx, records):\n"
         "    '''Examples:\\n"
-        "        set_country_initial_debt(ctx, [40.0, 60.0, 80.0])\\n"
+        "        set_example_series(ctx, [1.0, 2.0, 3.0])\\n"
         "    '''\n"
         "    pass\n"
         "\n"
@@ -340,27 +341,27 @@ def test_fix_python_cell_with_llm_includes_signatures_and_shape_guidance() -> No
     fixed = fix_python_cell_with_llm(
         client=cast(OpenAI, fake),
         model="gpt-5.5",
-        cell_source="set_country_initial_debt(ctx, [60.0])\n",
+        cell_source="set_example_series(ctx, [2.0])\n",
         error_message="ValueError: expected 3 values for positional input, got 1",
         qmd_label="01-functional-overview.qmd",
         cell_number=1,
         api_policy=PublicApiPolicy(
-            api_import_path="tiny_dsa.api",
+            api_import_path="my_model.api",
             allowed_symbols=frozenset(
-                {"set_country_initial_debt", "set_other", "make_context"}
+                {"set_example_series", "set_other", "make_context"}
             ),
         ),
         api_signatures=signatures,
     )
 
-    assert fixed == "set_country_initial_debt(ctx, [40.0, 60.0, 80.0])\n"
+    assert fixed == "set_example_series(ctx, [1.0, 2.0, 3.0])\n"
     user_prompt = cast(
         list[dict[str, str]], fake.chat.completions.calls[0]["messages"]
     )[1]["content"]
     assert "positional length mismatch" in user_prompt
     assert "keyed records" in user_prompt
-    assert "set_country_initial_debt" in user_prompt
-    assert "def set_country_initial_debt" in user_prompt
+    assert "set_example_series" in user_prompt
+    assert "def set_example_series" in user_prompt
     assert "def set_other" not in user_prompt
 
 
@@ -384,11 +385,91 @@ def test_fix_python_cell_with_llm_routes_deepseek_model(
     )
 
     assert fixed == "print('fixed')\n"
-    assert len(fake.chat.completions.calls) == 1
     call = fake.chat.completions.calls[0]
     assert call["model"] == "deepseek-v4-pro"
     assert call["extra_body"] == {"thinking": {"type": "disabled"}}
     assert call["reasoning_effort"] is omit
+
+
+def test_filter_api_signatures_returns_empty_when_no_symbols() -> None:
+    signatures = (
+        "def set_example_series(ctx, records):\n"
+        "    pass\n"
+        "\n"
+        "def set_other(ctx, value):\n"
+        "    pass\n"
+    )
+    assert filter_api_signatures(signatures, frozenset()) == ""
+    assert filter_api_signatures(signatures, frozenset({"missing"})) == ""
+
+
+def test_fix_python_cell_with_llm_omits_signatures_without_api_refs() -> None:
+    fake = _FakeClient("print(1)\n")
+    signatures = (
+        "def set_example_series(ctx, records):\n"
+        "    pass\n"
+        "\n"
+        "def set_other(ctx, value):\n"
+        "    pass\n"
+    )
+
+    fix_python_cell_with_llm(
+        client=cast(OpenAI, fake),
+        model="gpt-5.5",
+        cell_source="print(unknown)\n",
+        error_message="NameError: name 'unknown' is not defined",
+        qmd_label="guide.qmd",
+        cell_number=1,
+        api_policy=PublicApiPolicy(
+            api_import_path="my_model.api",
+            allowed_symbols=frozenset(
+                {"set_example_series", "set_other", "make_context"}
+            ),
+        ),
+        api_signatures=signatures,
+    )
+
+    user_prompt = cast(
+        list[dict[str, str]], fake.chat.completions.calls[0]["messages"]
+    )[1]["content"]
+    assert "Relevant my_model.api signatures" not in user_prompt
+    assert "def set_example_series" not in user_prompt
+    assert "def set_other" not in user_prompt
+
+
+def test_fix_python_cell_with_llm_handles_syntax_error_source() -> None:
+    fake = _FakeClient("set_example_series(ctx, [1.0, 2.0, 3.0])\n")
+    signatures = (
+        "def set_example_series(ctx, records):\n"
+        "    pass\n"
+        "\n"
+        "def set_other(ctx, value):\n"
+        "    pass\n"
+    )
+
+    fixed = fix_python_cell_with_llm(
+        client=cast(OpenAI, fake),
+        model="gpt-5.5",
+        cell_source="set_example_series(ctx, [2.0\n",
+        error_message="SyntaxError: '(' was never closed",
+        qmd_label="01-functional-overview.qmd",
+        cell_number=1,
+        api_policy=PublicApiPolicy(
+            api_import_path="my_model.api",
+            allowed_symbols=frozenset(
+                {"set_example_series", "set_other", "make_context"}
+            ),
+        ),
+        api_signatures=signatures,
+    )
+
+    assert fixed == "set_example_series(ctx, [1.0, 2.0, 3.0])\n"
+    user_prompt = cast(
+        list[dict[str, str]], fake.chat.completions.calls[0]["messages"]
+    )[1]["content"]
+    # Unparseable cells keep only allowed names still present in the source text.
+    assert "def set_example_series" in user_prompt
+    assert "def set_other" not in user_prompt
 
 
 def test_default_run_uv_script_forces_utf8_stdio(

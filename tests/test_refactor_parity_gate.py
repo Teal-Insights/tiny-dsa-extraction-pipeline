@@ -8,6 +8,7 @@ triggering an LLM re-prompt) when the values diverge.
 
 from __future__ import annotations
 
+import logging
 import shutil
 from collections.abc import Iterator
 from dataclasses import replace
@@ -200,7 +201,8 @@ CLUSTER_INPUTS = [
 @pytest.fixture(scope="module")
 def parity_gate_dist_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("parity_gate_dist")
-    package_root = root / "tiny_dsa"
+    package_name = load_pipeline_config().dist_metadata.package_name
+    package_root = root / package_name
     package_root.mkdir(parents=True)
     fixture_runtime = (
         Path(__file__).resolve().parent / "fixtures" / "parity_gate_runtime.py"
@@ -358,6 +360,147 @@ def test_cluster_gate_surfaces_missing_symbol_as_retryable_parity_error() -> Non
     message = str(excinfo.value)
     assert "refactored symbol combined_input_passthrough could not be loaded" in message
     assert "KeyError" in message
+
+
+def _mechanical_cluster_module(helper_source: str) -> str:
+    return RUNTIME_IMPORT + "\n" + helper_source + "\n" + RESOLVER_SECTION
+
+
+def test_batched_mechanical_parity_passes_for_correct_units() -> None:
+    from src.refactor_parity_gate import (
+        MechanicalParityUnit,
+        check_batched_mechanical_parity,
+    )
+
+    units = (
+        MechanicalParityUnit(
+            unit_id="cluster:1",
+            helper_name="combined_input_passthrough",
+            kind="cluster",
+            member_checks=(
+                ("Engine!C6", {"time_period": 1}),
+                ("Engine!D6", {"time_period": 2}),
+            ),
+        ),
+    )
+    check_batched_mechanical_parity(
+        pristine_source=PRISTINE_CLUSTER,
+        mechanical_source=_mechanical_cluster_module(CORRECT_CLUSTER_SOURCE),
+        units=units,
+        input_vectors=CLUSTER_INPUTS,
+    )
+
+
+def test_batched_mechanical_parity_names_failing_unit() -> None:
+    from src.refactor_parity_gate import (
+        MechanicalParityUnit,
+        check_batched_mechanical_parity,
+    )
+
+    units = (
+        MechanicalParityUnit(
+            unit_id="cluster:1",
+            helper_name="combined_input_passthrough",
+            kind="cluster",
+            member_checks=(
+                ("Engine!C6", {"time_period": 1}),
+                ("Engine!D6", {"time_period": 2}),
+            ),
+        ),
+    )
+    with pytest.raises(ParityError) as excinfo:
+        check_batched_mechanical_parity(
+            pristine_source=PRISTINE_CLUSTER,
+            mechanical_source=_mechanical_cluster_module(BROKEN_CLUSTER_SOURCE),
+            units=units,
+            input_vectors=CLUSTER_INPUTS,
+        )
+    assert "cluster:1" in str(excinfo.value)
+
+
+def _batched_cluster_unit():
+    from src.refactor_parity_gate import MechanicalParityUnit
+
+    return MechanicalParityUnit(
+        unit_id="cluster:1",
+        helper_name="combined_input_passthrough",
+        kind="cluster",
+        member_checks=(
+            ("Engine!C6", {"time_period": 1}),
+            ("Engine!D6", {"time_period": 2}),
+        ),
+    )
+
+
+def test_batched_mechanical_parity_logs_phases_and_completion(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from src.refactor_parity_gate import (
+        _golden_namespace,
+        check_batched_mechanical_parity,
+    )
+
+    _golden_namespace.cache_clear()
+    units = (_batched_cluster_unit(),)
+    planned_checks = 2 * len(CLUSTER_INPUTS)
+
+    with caplog.at_level(logging.INFO, logger="src.refactor_parity_gate"):
+        check_batched_mechanical_parity(
+            pristine_source=PRISTINE_CLUSTER,
+            mechanical_source=_mechanical_cluster_module(CORRECT_CLUSTER_SOURCE),
+            units=units,
+            input_vectors=CLUSTER_INPUTS,
+        )
+
+    messages = [record.message for record in caplog.records]
+    start = next(message for message in messages if "parity gate starting" in message)
+    assert "units=1" in start
+    assert "member_checks=2" in start
+    assert f"input_vectors={len(CLUSTER_INPUTS)}" in start
+    assert f"planned_checks={planned_checks}" in start
+    assert "atol=" in start
+    assert "pristine_chars=" in start
+    assert "mechanical_chars=" in start
+
+    assert any(
+        "golden exec" in message and "cache miss" in message for message in messages
+    )
+    assert any("candidate exec" in message for message in messages)
+    assert any("parity progress" in message for message in messages)
+
+    complete = next(
+        message for message in messages if "parity gate complete" in message
+    )
+    assert f"checks={planned_checks}" in complete
+    assert "mismatches=0" in complete
+    assert "eval=" in complete
+
+
+def test_batched_mechanical_parity_logs_failure_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from src.refactor_parity_gate import check_batched_mechanical_parity
+
+    units = (_batched_cluster_unit(),)
+    with (
+        caplog.at_level(logging.INFO, logger="src.refactor_parity_gate"),
+        pytest.raises(ParityError),
+    ):
+        check_batched_mechanical_parity(
+            pristine_source=PRISTINE_CLUSTER,
+            mechanical_source=_mechanical_cluster_module(BROKEN_CLUSTER_SOURCE),
+            units=units,
+            input_vectors=CLUSTER_INPUTS,
+        )
+
+    assert any("parity gate starting" in record.message for record in caplog.records)
+    failure = next(
+        record.message
+        for record in caplog.records
+        if "parity gate failed" in record.message
+    )
+    assert "cluster:1" in failure
+    assert "mismatches=" in failure
 
 
 SINGLETON_DOCSTRING = (
@@ -597,3 +740,167 @@ def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:
         seed=0,
     )
     assert vectors == again
+
+
+RECURRENCE_PRISTINE = (
+    RUNTIME_IMPORT
+    + '''
+# --- Formula cell functions ---
+def cell_engine_c10(ctx):
+    """Anchor year."""
+    return 1
+
+def cell_engine_d10(ctx):
+    return xl_number(xl_eval(ctx, 'Engine!C10', cell_engine_c10)) + 1
+
+def cell_engine_e10(ctx):
+    return xl_number(xl_eval(ctx, 'Engine!D10', cell_engine_d10)) + 1
+
+'''
+    + RESOLVER_SECTION
+)
+
+RECURRENCE_HELPER = '''\
+def accum_path(ctx, time_period: int):
+    """Accumulate one per period.
+
+    Args:
+        ctx: Workbook evaluation context.
+        time_period: Period index.
+
+    Returns:
+        Accumulated value.
+    """
+    if time_period <= 1:
+        return 1
+    return accum_path(ctx, time_period=time_period - 1) + 1
+'''
+
+
+def _recurrence_mechanical_module() -> str:
+    return (
+        RUNTIME_IMPORT
+        + "\n# --- Formula cell functions ---\n"
+        + RECURRENCE_HELPER
+        + "\n"
+        + RESOLVER_SECTION
+    )
+
+
+def test_batched_mechanical_parity_warm_recurrence_is_incremental() -> None:
+    """Late-horizon members must not re-walk O(years) under a warm EvalContext."""
+    from src.helper_memoization import memoize_namespace_helpers
+    from src.refactor_parity_gate import (
+        MechanicalParityUnit,
+        _runtime,
+        check_batched_mechanical_parity,
+        exec_internals_module,
+        make_eval_context,
+    )
+
+    runtime = _runtime()
+    horizon = 80
+    instrumented = '''\
+def accum_path(ctx, time_period: int):
+    """Accumulate one per period.
+
+    Args:
+        ctx: Workbook evaluation context.
+        time_period: Period index.
+
+    Returns:
+        Accumulated value.
+    """
+    ctx.inputs['__calls__'] = ctx.inputs.get('__calls__', 0) + 1
+    if time_period <= 1:
+        return 1
+    return accum_path(ctx, time_period=time_period - 1) + 1
+'''
+    module = (
+        RUNTIME_IMPORT
+        + "\n# --- Formula cell functions ---\n"
+        + instrumented
+        + "\n"
+        + RESOLVER_SECTION
+    )
+
+    bare_ns = exec_internals_module(module)
+    bare_ctx = make_eval_context(bare_ns, {"__calls__": 0})
+    assert bare_ns["accum_path"](bare_ctx, time_period=horizon) == horizon
+    bare_cold_calls = bare_ctx.inputs["__calls__"]
+    bare_ctx.inputs["__calls__"] = 0
+    assert bare_ns["accum_path"](bare_ctx, time_period=horizon + 1) == horizon + 1
+    bare_warm_calls = bare_ctx.inputs["__calls__"]
+    # Without memoization each call re-enters every prior year.
+    assert bare_cold_calls == horizon
+    assert bare_warm_calls == horizon + 1
+
+    memo_ns = exec_internals_module(module)
+    memoize_namespace_helpers(memo_ns, ("accum_path",), runtime=runtime)
+    memo_ctx = make_eval_context(memo_ns, {"__calls__": 0})
+    assert memo_ns["accum_path"](memo_ctx, time_period=horizon) == horizon
+    memo_cold_calls = memo_ctx.inputs["__calls__"]
+    memo_ctx.inputs["__calls__"] = 0
+    assert memo_ns["accum_path"](memo_ctx, time_period=horizon + 1) == horizon + 1
+    memo_warm_calls = memo_ctx.inputs["__calls__"]
+    assert memo_cold_calls == horizon
+    # Warm late-horizon step is one body entry, not another O(years) walk.
+    assert memo_warm_calls == 1
+
+    units = (
+        MechanicalParityUnit(
+            unit_id="cluster:recurrence",
+            helper_name="accum_path",
+            kind="cluster",
+            member_checks=(
+                ("Engine!C10", {"time_period": 1}),
+                ("Engine!D10", {"time_period": 2}),
+                ("Engine!E10", {"time_period": 3}),
+            ),
+        ),
+    )
+    check_batched_mechanical_parity(
+        pristine_source=RECURRENCE_PRISTINE,
+        mechanical_source=_recurrence_mechanical_module(),
+        units=units,
+        input_vectors=[{}],
+    )
+
+
+def test_batched_mechanical_parity_still_reports_recurrence_mismatch() -> None:
+    from src.refactor_parity_gate import (
+        MechanicalParityUnit,
+        check_batched_mechanical_parity,
+    )
+
+    broken = RECURRENCE_HELPER.replace(
+        "return accum_path(ctx, time_period=time_period - 1) + 1",
+        "return accum_path(ctx, time_period=time_period - 1) + 2",
+    )
+    mechanical = (
+        RUNTIME_IMPORT
+        + "\n# --- Formula cell functions ---\n"
+        + broken
+        + "\n"
+        + RESOLVER_SECTION
+    )
+    units = (
+        MechanicalParityUnit(
+            unit_id="cluster:recurrence",
+            helper_name="accum_path",
+            kind="cluster",
+            member_checks=(
+                ("Engine!C10", {"time_period": 1}),
+                ("Engine!D10", {"time_period": 2}),
+                ("Engine!E10", {"time_period": 3}),
+            ),
+        ),
+    )
+    with pytest.raises(ParityError) as excinfo:
+        check_batched_mechanical_parity(
+            pristine_source=RECURRENCE_PRISTINE,
+            mechanical_source=mechanical,
+            units=units,
+            input_vectors=[{}],
+        )
+    assert "cluster:recurrence" in str(excinfo.value)

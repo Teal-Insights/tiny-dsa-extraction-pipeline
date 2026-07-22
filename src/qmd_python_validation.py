@@ -302,7 +302,14 @@ def validate_runnable_cell_imports(
 
 def referenced_api_symbols(source: str, allowed: frozenset[str]) -> frozenset[str]:
     """Return allowed API symbols referenced by imports or calls in ``source``."""
-    module = ast.parse(source)
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        # Keep the LLM fix path open for unparseable cells, but only retain
+        # allowed names that still appear as identifiers in the source text.
+        return frozenset(
+            name for name in allowed if re.search(rf"\b{re.escape(name)}\b", source)
+        )
     found: set[str] = set()
     for node in ast.walk(module):
         if isinstance(node, ast.ImportFrom):
@@ -317,13 +324,17 @@ def referenced_api_symbols(source: str, allowed: frozenset[str]) -> frozenset[st
 
 
 def filter_api_signatures(api_signatures: str, symbols: frozenset[str]) -> str:
-    """Keep only function definitions whose names are in ``symbols``."""
+    """Keep only function definitions whose names are in ``symbols``.
+
+    Returns an empty string when there is nothing to filter to, so large public
+    APIs are never injected wholesale into cell-fix prompts.
+    """
     if not api_signatures.strip() or not symbols:
-        return api_signatures
+        return ""
     try:
         tree = ast.parse(api_signatures)
     except SyntaxError:
-        return api_signatures
+        return ""
     lines = api_signatures.splitlines()
     blocks: list[str] = []
     for node in tree.body:
@@ -332,7 +343,7 @@ def filter_api_signatures(api_signatures: str, symbols: frozenset[str]) -> str:
             if end is None:
                 continue
             blocks.append("\n".join(lines[node.lineno - 1 : end]))
-    return "\n\n".join(blocks) if blocks else api_signatures
+    return "\n\n".join(blocks)
 
 
 def fix_python_cell_with_llm(
@@ -346,20 +357,19 @@ def fix_python_cell_with_llm(
     api_policy: PublicApiPolicy,
     api_signatures: str = "",
 ) -> str:
+    allowed = ", ".join(sorted(api_policy.allowed_symbols))
     provider = provider_for_model(model)
     effort: ReasoningEffort | Omit = (
         "high" if provider.supports_reasoning_effort else omit
     )
-    allowed = ", ".join(sorted(api_policy.allowed_symbols))
-    relevant_symbols = referenced_api_symbols(cell_source, api_policy.allowed_symbols)
-    relevant_signatures = filter_api_signatures(api_signatures, relevant_symbols)
-    signatures_block = (
-        f"\nRelevant {api_policy.api_import_path} signatures "
-        "(authoritative for call shapes):\n"
-        f"{relevant_signatures}\n"
-        if relevant_signatures.strip()
-        else ""
-    )
+    referenced = referenced_api_symbols(cell_source, api_policy.allowed_symbols)
+    relevant_signatures = filter_api_signatures(api_signatures, referenced)
+    signatures_block = ""
+    if relevant_signatures.strip():
+        signatures_block = (
+            f"\n\nRelevant {api_policy.api_import_path} signatures "
+            f"(authoritative for call shapes):\n{relevant_signatures}"
+        )
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -382,18 +392,18 @@ Constraints:
 - Keep {api_policy.api_import_path} usage intact.
 - {api_policy.api_import_path} exports only: {allowed}.
 - Do not import Workbook or any other symbol from {api_policy.api_import_path}.
-- Return only valid Python source for the cell body.
 - If the error is a positional length mismatch, either expand the sequence to the
   full key-order length from the docstring, or switch to keyed records / a single
   record for partial updates. Prefer keyed records for one-entity scenario demos.
 - Do not wrap a single scenario scalar in a one-element list for a multi-key
   series setter; single-cell setters take a bare scalar.
-{signatures_block}
+- Return only valid Python source for the cell body.
+
 Execution error:
 {error_message}
 
 Cell source:
-{cell_source}
+{cell_source}{signatures_block}
 """.strip(),
             },
         ],
@@ -505,8 +515,8 @@ def validate_qmd_files(
     run_uv_script: Callable[..., ScriptRunResult] | None = None,
     client: OpenAI | None = None,
     model: str | None = None,
-    write_pyproject: bool = True,
     api_signatures: str = "",
+    write_pyproject: bool = True,
 ) -> list[str]:
     """Execute aggregated runnable cells and record extra dev dependencies."""
     if client is not None and model is None:

@@ -22,8 +22,10 @@ the member ``cell_*`` functions no longer exist after the collapse.
 from __future__ import annotations
 
 import ast
+import logging
 import random
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -34,11 +36,18 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, get_args, get
 
 from excel_grapher.core.cell_types import Between, RealBetween
 
+from src.helper_memoization import (
+    clear_side_helper_memos,
+    install_helper_memoization,
+    memoize_namespace_helpers,
+)
 from src.pipeline_context import require_pipeline_config
 from src.runtime_symbols import (
     discover_allowed_reader_symbols,
     discover_allowed_runtime_symbols,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.internals_refactor import (
@@ -52,6 +61,11 @@ PARITY_ATOL = 1e-6
 DEFAULT_SAMPLE_COUNT = 8
 DEFAULT_SAMPLE_SEED = 0
 _MAX_REPORTED_MISMATCHES = 10
+# Progress cadence for the batched mechanical gate. Full runs can check
+# ~150k member×vector combinations; log often enough for operators to see
+# movement without flooding (every N checks, every vector, or every M seconds).
+_BATCHED_PROGRESS_EVERY_CHECKS = 5_000
+_BATCHED_PROGRESS_EVERY_SECONDS = 30.0
 
 repo_root = Path(__file__).resolve().parents[1]
 
@@ -101,7 +115,19 @@ def _runtime() -> ModuleType:
     # string annotations via sys.modules[cls.__module__].
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    # Older embedded runtimes lack xl_helper; install a compatible polyfill so
+    # mechanical recurrence helpers can share work under a warm EvalContext.
+    install_helper_memoization(module)
     return module
+
+
+def clear_parity_runtime_caches() -> None:
+    """Drop cached runtime/oracle namespaces (e.g. after patching ``runtime.py``)."""
+    _runtime.cache_clear()
+    _readers_namespace.cache_clear()
+    _golden_namespace.cache_clear()
+    _dist_data.cache_clear()
+    clear_side_helper_memos()
 
 
 def _strip_package_relative_imports(source: str) -> str:
@@ -410,6 +436,258 @@ def check_singleton_parity(
         raise ParityError(
             _format_message(response.symbol_name, mismatches, len(input_vectors), atol)
         )
+
+
+@dataclass(frozen=True)
+class MechanicalParityUnit:
+    """A single mechanical helper to check against the pristine oracle.
+
+    ``member_checks`` pairs each covered cell address with the keyword arguments
+    used to invoke the helper for that member. A singleton has exactly one
+    member check with empty kwargs; a cluster has one per collapsed member.
+    """
+
+    unit_id: str
+    helper_name: str
+    kind: Literal["cluster", "singleton"]
+    member_checks: tuple[tuple[str, Mapping[str, object]], ...]
+
+
+def check_batched_mechanical_parity(
+    *,
+    pristine_source: str,
+    mechanical_source: str,
+    units: Sequence[MechanicalParityUnit],
+    input_vectors: Sequence[InputVector],
+    atol: float = PARITY_ATOL,
+) -> None:
+    """Verify every mechanically refactored helper against the pristine oracle.
+
+    Pass 1 rewrites all mechanical units into ``internals.py`` before any LLM
+    naming runs, so their behavioral parity can be checked in one batch: the
+    mechanical module is exec'd once and each unit's helper is compared against
+    the pristine cell semantics across all input vectors. A divergence is a
+    mechanical-synthesis defect, not an LLM mistake, so it raises loudly (naming
+    the failing units) with no retry.
+    """
+    if not units:
+        return
+
+    member_check_count = sum(len(unit.member_checks) for unit in units)
+    planned_checks = member_check_count * len(input_vectors)
+    gate_started = time.perf_counter()
+    logger.info(
+        "batched mechanical parity gate starting: units=%d member_checks=%d "
+        "input_vectors=%d planned_checks=%d pristine_chars=%d "
+        "mechanical_chars=%d atol=%g",
+        len(units),
+        member_check_count,
+        len(input_vectors),
+        planned_checks,
+        len(pristine_source),
+        len(mechanical_source),
+        atol,
+    )
+
+    runtime = _runtime()
+    cache_info_before = _golden_namespace.cache_info()
+    golden_started = time.perf_counter()
+    golden_ns = _golden_namespace(pristine_source)
+    golden_seconds = time.perf_counter() - golden_started
+    golden_cache_hit = _golden_namespace.cache_info().hits > cache_info_before.hits
+    logger.info(
+        "batched mechanical parity: golden exec %.3fs (%s)",
+        golden_seconds,
+        "cache hit" if golden_cache_hit else "cache miss",
+    )
+
+    candidate_started = time.perf_counter()
+    try:
+        candidate_ns = exec_internals_module(mechanical_source)
+    except Exception as error:
+        logger.error(
+            "batched mechanical parity gate failed: candidate exec raised "
+            "%s after %.3fs",
+            type(error).__name__,
+            time.perf_counter() - candidate_started,
+        )
+        raise ParityError(
+            "mechanically refactored internals.py could not be loaded: "
+            f"{type(error).__name__}: {error}. Mechanical synthesis must emit a "
+            "module that parses, imports, and execs cleanly."
+        ) from error
+    candidate_seconds = time.perf_counter() - candidate_started
+    logger.info(
+        "batched mechanical parity: candidate exec %.3fs",
+        candidate_seconds,
+    )
+
+    # Memoize candidate helpers so period-recurrence chains share work across
+    # member checks under each vector's EvalContext (library-visible xl_memoize).
+    memoize_namespace_helpers(
+        candidate_ns,
+        (unit.helper_name for unit in units),
+        runtime=runtime,
+    )
+
+    mismatches_by_unit: dict[str, list[_Mismatch]] = {}
+    total_checks = 0
+    eval_started = time.perf_counter()
+    golden_eval_seconds = 0.0
+    candidate_eval_seconds = 0.0
+    last_progress_at = eval_started
+    last_progress_checks = 0
+
+    def _log_progress(*, vector_index: int) -> None:
+        nonlocal last_progress_at, last_progress_checks
+        now = time.perf_counter()
+        eval_elapsed = now - eval_started
+        rate = total_checks / eval_elapsed if eval_elapsed > 0 else 0.0
+        logger.info(
+            "batched mechanical parity progress: checks=%d/%d "
+            "vectors=%d/%d units=%d elapsed=%.1fs rate=%.0f checks/s "
+            "golden_eval=%.3fs candidate_eval=%.3fs",
+            total_checks,
+            planned_checks,
+            vector_index + 1,
+            len(input_vectors),
+            len(units),
+            eval_elapsed,
+            rate,
+            golden_eval_seconds,
+            candidate_eval_seconds,
+        )
+        last_progress_at = now
+        last_progress_checks = total_checks
+
+    def _should_log_mid_vector_progress() -> bool:
+        checks_since_progress = total_checks - last_progress_checks
+        seconds_since_progress = time.perf_counter() - last_progress_at
+        return (
+            checks_since_progress >= _BATCHED_PROGRESS_EVERY_CHECKS
+            or seconds_since_progress >= _BATCHED_PROGRESS_EVERY_SECONDS
+        )
+
+    try:
+        for index, inputs in enumerate(input_vectors):
+            golden_ctx = make_eval_context(golden_ns, inputs)
+            candidate_ctx = make_eval_context(candidate_ns, inputs)
+            for unit in units:
+                helper = candidate_ns.get(unit.helper_name)
+                if helper is None:
+                    logger.error(
+                        "batched mechanical parity gate failed: missing helper "
+                        "%r for unit %r after %d checks",
+                        unit.helper_name,
+                        unit.unit_id,
+                        total_checks,
+                    )
+                    raise ParityError(
+                        f"mechanical helper {unit.helper_name!r} for unit "
+                        f"{unit.unit_id!r} is missing from the refactored module"
+                    )
+                for address, kwargs in unit.member_checks:
+                    total_checks += 1
+                    literals = dict(kwargs)
+                    golden_call_started = time.perf_counter()
+                    expected = _evaluate_golden(
+                        lambda eval_ctx=golden_ctx, addr=address: runtime.xl_cell(
+                            eval_ctx, addr
+                        )
+                    )
+                    golden_eval_seconds += time.perf_counter() - golden_call_started
+                    call = _format_call(unit.helper_name, literals)
+                    try:
+                        candidate_call_started = time.perf_counter()
+                        actual = _evaluate_candidate(
+                            lambda fn=helper, eval_ctx=candidate_ctx, kw=literals: fn(
+                                eval_ctx, **kw
+                            ),
+                            call=call,
+                        )
+                        candidate_eval_seconds += (
+                            time.perf_counter() - candidate_call_started
+                        )
+                    except ParityError as error:
+                        logger.error(
+                            "batched mechanical parity gate failed: unit %r raised "
+                            "during evaluation after %d checks",
+                            unit.unit_id,
+                            total_checks,
+                        )
+                        raise ParityError(
+                            f"mechanical unit {unit.unit_id!r}: {error}"
+                        ) from error
+                    if not _values_close(expected, actual, atol):
+                        mismatches_by_unit.setdefault(unit.unit_id, []).append(
+                            _Mismatch(
+                                address=address,
+                                call=call,
+                                expected=expected,
+                                actual=actual,
+                                vector_index=index,
+                            )
+                        )
+                    if _should_log_mid_vector_progress():
+                        _log_progress(vector_index=index)
+
+            # Always emit once per finished input vector so full runs show movement
+            # even when each vector stays under the mid-vector thresholds.
+            if total_checks != last_progress_checks:
+                _log_progress(vector_index=index)
+    finally:
+        clear_side_helper_memos()
+
+    eval_seconds = time.perf_counter() - eval_started
+    mismatch_count = sum(len(items) for items in mismatches_by_unit.values())
+    gate_elapsed = time.perf_counter() - gate_started
+
+    if mismatches_by_unit:
+        failing_unit_ids = sorted(mismatches_by_unit)
+        logger.error(
+            "batched mechanical parity gate failed: units=%s mismatches=%d "
+            "checks=%d golden_exec=%.3fs candidate_exec=%.3fs "
+            "golden_eval=%.3fs candidate_eval=%.3fs eval=%.3fs elapsed=%.3fs",
+            failing_unit_ids,
+            mismatch_count,
+            total_checks,
+            golden_seconds,
+            candidate_seconds,
+            golden_eval_seconds,
+            candidate_eval_seconds,
+            eval_seconds,
+            gate_elapsed,
+        )
+        lines = [
+            "mechanical refactor diverges from the original cell semantics for "
+            f"unit(s) {failing_unit_ids}:"
+        ]
+        for unit_id in failing_unit_ids:
+            for mismatch in mismatches_by_unit[unit_id][:_MAX_REPORTED_MISMATCHES]:
+                lines.append(
+                    f"  [{unit_id}] {mismatch.address} via {mismatch.call}: "
+                    f"got {mismatch.actual!r}, expected {mismatch.expected!r} "
+                    f"[input vector #{mismatch.vector_index}]"
+                )
+        lines.append(
+            f"Checked {total_checks} member/vector combinations (atol={atol:g}). "
+            "Mechanical synthesis must reproduce each cell's pristine value; this "
+            "is a synthesis defect, not an LLM naming error."
+        )
+        raise ParityError("\n".join(lines))
+
+    logger.info(
+        "batched mechanical parity gate complete: checks=%d mismatches=0 "
+        "golden_exec=%.3fs candidate_exec=%.3fs golden_eval=%.3fs "
+        "candidate_eval=%.3fs eval=%.3fs elapsed=%.3fs; next: disk flush / Pass 2",
+        total_checks,
+        golden_seconds,
+        candidate_seconds,
+        golden_eval_seconds,
+        candidate_eval_seconds,
+        eval_seconds,
+        gate_elapsed,
+    )
 
 
 @lru_cache(maxsize=1)

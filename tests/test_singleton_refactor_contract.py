@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from textwrap import dedent
+from typing import TypedDict
 
 import pytest
 
@@ -156,7 +157,13 @@ EXCESS_DEATHS_RUNTIME_STUB = dedent(
     '''
 ).strip()
 
-SINGLETON_PREPARE_KWARGS = {
+
+class SingletonPrepareKwargs(TypedDict):
+    runtime_source: str
+    internals_source: str
+
+
+SINGLETON_PREPARE_KWARGS: SingletonPrepareKwargs = {
     "runtime_source": EXCESS_DEATHS_RUNTIME_STUB,
     "internals_source": EXCESS_DEATHS_INTERNALS,
 }
@@ -287,6 +294,18 @@ def test_singleton_prompt_documents_error_escape_hatch() -> None:
     assert "error_reason" in required
 
 
+def test_singleton_prompt_teaches_renaming_mechanical_temporaries() -> None:
+    """Mechanical codegen already unpacks nested xl_* calls into _tN temps."""
+    prompt = load_singleton_refactor_prompt_fixed_portion()
+    assert "unpacking nested calls" not in prompt.lower()
+    assert "_tN" in prompt
+    assert "rename" in prompt.lower()
+    assert "do not re-nest" in prompt.lower()
+    assert "_t1 =" in prompt
+    assert "total_deaths =" in prompt
+    assert "lazy" in prompt.lower() or "short-circuit" in prompt.lower()
+
+
 def test_strip_python_string_delimiters_removes_triple_quotes() -> None:
     raw = '''"""
 Summary line.
@@ -331,31 +350,50 @@ def test_append_refactor_note_section_appends_covers_and_formula() -> None:
 
 
 def test_assemble_singleton_symbol_source_indents_body_and_wraps_docstring() -> None:
+    docstring = (
+        "Projected debt-to-GDP for period 1.\n\n"
+        "Args:\n    ctx: Workbook evaluation context.\n\n"
+        "Returns:\n    Projected debt-to-GDP ratio.\n\n"
+        "Note:\n    Covers Engine!C20. Excel: =1."
+    )
     assembled = assemble_singleton_symbol_source(
         signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
-        docstring=(
+        docstring=docstring,
+        body="return shock_active(ctx, time_period=1)",
+    )
+    assert assembled.startswith(
+        "def projected_debt_to_gdp(ctx: EvalContext) -> float:\n"
+    )
+    assert "    return shock_active(ctx, time_period=1)\n" in assembled
+    helper_def = ast.parse(assembled).body[0]
+    assert isinstance(helper_def, ast.FunctionDef)
+    embedded = helper_def.body[0]
+    assert isinstance(embedded, ast.Expr)
+    assert isinstance(embedded.value, ast.Constant)
+    assert embedded.value.value == docstring
+
+
+def test_assemble_singleton_symbol_source_roundtrips_escape_bearing_docstrings() -> (
+    None
+):
+    for formula in (r'=A1&"\n"', '=CONCAT("""")'):
+        docstring = (
             "Projected debt-to-GDP for period 1.\n\n"
             "Args:\n    ctx: Workbook evaluation context.\n\n"
             "Returns:\n    Projected debt-to-GDP ratio.\n\n"
-            "Note:\n    Covers Engine!C20. Excel: =1."
-        ),
-        body="return shock_active(ctx, time_period=1)",
-    )
-    assert assembled == (
-        "def projected_debt_to_gdp(ctx: EvalContext) -> float:\n"
-        '    """Projected debt-to-GDP for period 1.\n'
-        "\n"
-        "Args:\n"
-        "    ctx: Workbook evaluation context.\n"
-        "\n"
-        "Returns:\n"
-        "    Projected debt-to-GDP ratio.\n"
-        "\n"
-        "Note:\n"
-        "    Covers Engine!C20. Excel: =1.\n"
-        '    """\n'
-        "    return shock_active(ctx, time_period=1)\n"
-    )
+            f"Note:\n    Covers Engine!C20. Excel: {formula}."
+        )
+        assembled = assemble_singleton_symbol_source(
+            signature="def projected_debt_to_gdp(ctx: EvalContext) -> float:",
+            docstring=docstring,
+            body="return 1.0",
+        )
+        helper_def = ast.parse(assembled).body[0]
+        assert isinstance(helper_def, ast.FunctionDef)
+        embedded = helper_def.body[0]
+        assert isinstance(embedded, ast.Expr)
+        assert isinstance(embedded.value, ast.Constant)
+        assert embedded.value.value == docstring
 
 
 def test_validate_singleton_refactor_response_accepts_eval_context_type_hint() -> None:
@@ -444,7 +482,12 @@ def test_prepare_singleton_refactor_response_assembles_and_appends_note() -> Non
     assert "Note:\n    Covers Engine!C20. Excel: =Inputs!B6+Engine!C10." in (
         prepared.symbol_docstring
     )
-    assert prepared.symbol_docstring in prepared.symbol_source
+    helper_def = ast.parse(prepared.symbol_source).body[0]
+    assert isinstance(helper_def, ast.FunctionDef)
+    embedded = helper_def.body[0]
+    assert isinstance(embedded, ast.Expr)
+    assert isinstance(embedded.value, ast.Constant)
+    assert embedded.value.value == prepared.symbol_docstring
     assert "def projected_debt_to_gdp(ctx: EvalContext) -> float:" in (
         prepared.symbol_source
     )

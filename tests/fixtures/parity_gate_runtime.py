@@ -28,6 +28,8 @@ class EvalContextBase:
     iterate_count: int = 100
     iterate_delta: float = 0.001
     iteration_values: dict[str, CellValue] = field(default_factory=dict)
+    helper_cache: dict = field(default_factory=dict)
+    helper_computing: set = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -48,6 +50,9 @@ class EvalContext(EvalContextBase):
         """Invalidate cached values for the given addresses and their dependents."""
         to_visit = list(addresses)
         seen: set[str] = set()
+        if to_visit:
+            self.helper_cache.clear()
+            self.helper_computing.clear()
         while to_visit:
             addr = to_visit.pop()
             if addr in seen:
@@ -869,6 +874,68 @@ def xl_eval(
 ) -> CellValue:
     """Evaluate a known formula implementation under the given context."""
     return _evaluate_address(ctx, address, lambda: fn, preserve_structural_blank=False)
+
+
+def _freeze_helper_kwargs(
+    kwargs: Mapping[str, object],
+) -> tuple[tuple[str, object], ...]:
+    frozen: list[tuple[str, object]] = []
+    for name in sorted(kwargs):
+        value = kwargs[name]
+        try:
+            hash(value)
+        except TypeError as error:
+            raise TypeError(
+                f"xl_helper kwargs must be hashable for memoization; "
+                f"got {name}={value!r} of type {type(value).__name__}"
+            ) from error
+        frozen.append((name, value))
+    return tuple(frozen)
+
+
+def xl_helper(
+    ctx: EvalContextBase,
+    fn: Callable[..., CellValue],
+    /,
+    **kwargs: object,
+) -> CellValue:
+    """Evaluate a parameterized helper under ``ctx``, memoized by ``(fn, kwargs)``."""
+    key = (fn, _freeze_helper_kwargs(kwargs))
+    if key in ctx.helper_cache:
+        return _raise_if_error_value(ctx.helper_cache[key])
+    if key in ctx.helper_computing:
+        return xl_circular_reference()
+    ctx.helper_computing.add(key)
+    try:
+        try:
+            value = fn(ctx, **kwargs)
+        except XlErrorException as exc:
+            ctx.helper_cache[key] = exc.code
+            raise
+        ctx.helper_cache[key] = value
+        return _raise_if_error_value(value)
+    finally:
+        ctx.helper_computing.discard(key)
+
+
+def xl_memoize(fn: Callable[..., CellValue]) -> Callable[..., CellValue]:
+    """Decorator that routes a ``(ctx, **params)`` helper through :func:`xl_helper`."""
+    import functools
+    import inspect
+
+    @functools.wraps(fn)
+    def wrapper(ctx: EvalContextBase, /, *args: Any, **kwargs: Any) -> CellValue:
+        if args:
+            bound = inspect.signature(fn).bind(ctx, *args, **kwargs)
+            bound.apply_defaults()
+            param_kwargs = {
+                name: value for name, value in bound.arguments.items() if name != "ctx"
+            }
+            return xl_helper(ctx, fn, **param_kwargs)
+        return xl_helper(ctx, fn, **kwargs)
+
+    wrapper.__wrapped__ = fn  # type: ignore[attr-defined]
+    return wrapper
 
 
 def xl_index_ref(

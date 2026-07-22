@@ -76,19 +76,31 @@ Do not emit `parameters` or `member_keys`. The pipeline synthesizes both mechani
 - Call only runtime symbols from the exemplar translation and, if necessary, Python stdlib functions/operators.
 - Preserve dependency function names and signatures.
 - Where appropriate, directly pass through parameters in function calls; e.g. `prior_period_total(ctx, reporting_period=reporting_period)`.
-- Rename local temporaries to domain-meaningful `snake_case` informed by naming hints.
-- Leave `xl_cell(ctx, 'Sheet!Address')` calls unchanged; this helper reads input/constant values. (Assigning the return value to a semantic local temporary is okay!)
+- The exemplar translation may already contain statement-level `_tN` temporaries from mechanical codegen. Rename every `_tN` (numbers may be large / non-local) to domain-meaningful `snake_case` informed by naming hints. Do not leave opaque `_tN` names in the refactored body. Do not re-nest those temps into a single return expression.
+- Preserve lazy / short-circuit shapes left nested by codegen (`IF` / `CHOOSE` / `IFERROR` thunks, `IS*` lambdas, DIV-guard lambdas). Do not eagerly evaluate them.
+- Deduping repeated identical `_tN = xl_cell(ctx, 'Same!Addr')` loads into one semantic local is fine.
+- Leave `xl_cell(ctx, 'Sheet!Address')` call shapes intact aside from renaming and parameterization; this helper reads input/constant values.
 - Prefer concise lookup tables over verbose `if`/`elif` ladders.
 - Derive a reference value inside the helper when it follows mechanically from a member parameter (e.g. a fixed lag or period anchor switch). Never collapse two dimension ids onto one concept parameter.
 
 ## Example: bilateral flows with counterpart dimension ids
 
-Suppose the dump shows fingerprint `=ref_0[REF_AREA,TIME_PERIOD]-ref_1[COUNTERPART_REF_AREA,TIME_PERIOD]` with identity relations on each role dim, locked `helper_name=bilateral_trade_balance`, and exemplar metadata carrying `REF_AREA`, `COUNTERPART_REF_AREA`, and `TIME_PERIOD`. Both operand rows are selected by their own dimension-id parameter.
+Suppose the dump shows fingerprint `=ref_0[REF_AREA,TIME_PERIOD]-ref_1[COUNTERPART_REF_AREA,TIME_PERIOD]` with identity relations on each role dim, locked `helper_name=bilateral_trade_balance`, and exemplar metadata carrying `REF_AREA`, `COUNTERPART_REF_AREA`, and `TIME_PERIOD`. The exemplar already shows `_tN` statements; both operand rows are selected by their own dimension-id parameter:
+
+```python
+def cell_data_c10(ctx):
+    '''Formula: =Data!C4-Data!C6.'''
+    _t1 = xl_cell(ctx, 'Data!C4')
+    _t2 = xl_cell(ctx, 'Data!C6')
+    return (xl_number(_t1) - xl_number(_t2))
+```
+
+Generalize **and** rename those temps (role-specific row tables + period→column), rather than inventing a different unpacking:
 
 ```json
 {
   "symbol_docstring": "Return exports minus imports for a reporter-counterpart area pair in a period.\n\nArgs:\n    ctx: Workbook evaluation context.\n    time_period: Period index (1 through 2).\n    ref_area: Reporting area code ('USA' or 'DEU').\n    counterpart_ref_area: Counterpart area code ('CHN' or 'FRA').\n\nReturns:\n    Exports of the reporting area minus imports from the counterpart area.",
-  "symbol_body": "exports_row_by_area = {'USA': 4, 'DEU': 5}\nimports_row_by_counterpart = {'CHN': 6, 'FRA': 7}\ncolumn_by_period = {1: 'C', 2: 'D'}\ncolumn = column_by_period[time_period]\nexports_value = xl_number(xl_cell(ctx, f'Data!{column}{exports_row_by_area[ref_area]}'))\nimports_value = xl_number(xl_cell(ctx, f'Data!{column}{imports_row_by_counterpart[counterpart_ref_area]}'))\nreturn exports_value - imports_value",
+  "symbol_body": "exports_row_by_area = {'USA': 4, 'DEU': 5}\nimports_row_by_counterpart = {'CHN': 6, 'FRA': 7}\ncolumn_by_period = {1: 'C', 2: 'D'}\ncolumn = column_by_period[time_period]\nexports_value = xl_cell(ctx, f'Data!{column}{exports_row_by_area[ref_area]}')\nimports_value = xl_cell(ctx, f'Data!{column}{imports_row_by_counterpart[counterpart_ref_area]}')\nreturn (xl_number(exports_value) - xl_number(imports_value))",
   "error": null,
   "error_reason": null
 }

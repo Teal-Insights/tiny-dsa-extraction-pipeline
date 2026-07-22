@@ -4,7 +4,7 @@ import pytest
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict
 
-from src.llm_json import generate_validated_json
+from src.llm_json import ValidatedJsonFailure, generate_validated_json
 from src.llm_providers import ProviderConfig
 
 JSON_OBJECT_PROVIDER = ProviderConfig(
@@ -114,6 +114,37 @@ def test_retries_with_error_feedback_then_succeeds() -> None:
     assert "failed validation" in second_messages[-1]["content"]
 
 
+def test_post_validate_xl_index_ref_hint_appears_in_reprompt() -> None:
+    """Static xl_index_ref(xl_range(...)) rejection must surface in the retry prompt."""
+    from src.internals_refactor import XL_INDEX_REF_OF_XL_RANGE_HINT
+
+    first = '{"title": "bad", "body": "B"}'
+    second = '{"title": "ok", "body": "B"}'
+    client, fake = _make([first, second])
+
+    def reject_once(parsed: _Sample) -> _Sample:
+        if parsed.title == "bad":
+            raise ValueError(XL_INDEX_REF_OF_XL_RANGE_HINT)
+        return parsed
+
+    parsed, _ = generate_validated_json(
+        client=client,
+        model="m",
+        provider=JSON_OBJECT_PROVIDER,
+        system_prompt="sys",
+        user_prompt="usr",
+        response_model=_Sample,
+        post_validate=reject_once,
+    )
+
+    assert parsed.title == "ok"
+    retry_user = cast(list[dict[str, str]], fake.chat.completions.calls[1]["messages"])[
+        -1
+    ]["content"]
+    assert XL_INDEX_REF_OF_XL_RANGE_HINT in retry_user
+    assert "do not pass xl_range" in retry_user
+
+
 def test_post_validate_failure_triggers_retry() -> None:
     first = '{"title": "bad", "body": "B"}'
     second = '{"title": "ok", "body": "B"}'
@@ -198,6 +229,48 @@ def test_raises_after_exhausting_attempts() -> None:
     assert "after 2 attempts" in str(excinfo.value)
     assert excinfo.value.__cause__ is not None
     assert len(fake.chat.completions.calls) == 2
+
+
+def test_exhausted_attempts_raise_validated_json_failure_with_history() -> None:
+    first = '{"title": "T", "bodyy": "first"}'
+    second = '{"title": "T", "bodyy": "second"}'
+    third = '{"title": "T", "bodyy": "third"}'
+    client, fake = _make([first, second, third])
+
+    with pytest.raises(ValidatedJsonFailure) as excinfo:
+        generate_validated_json(
+            client=client,
+            model="m",
+            provider=JSON_OBJECT_PROVIDER,
+            system_prompt="sys",
+            user_prompt="usr",
+            response_model=_Sample,
+            max_attempts=3,
+        )
+
+    failure = excinfo.value
+    assert isinstance(failure, RuntimeError)
+    assert len(failure.attempts) == 3
+    assert [record.raw_content for record in failure.attempts] == [
+        first,
+        second,
+        third,
+    ]
+    assert all(record.error for record in failure.attempts)
+    assert failure.attempts[0].attempt == 1
+    assert failure.attempts[2].attempt == 3
+
+    roles = [message["role"] for message in failure.messages]
+    assert roles[0] == "system"
+    assert roles[1] == "user"
+    assert failure.messages[1]["content"] == "usr"
+    # Each failed attempt appends assistant content + a correction user turn.
+    assert roles[2:] == ["assistant", "user", "assistant", "user", "assistant", "user"]
+    assert failure.messages[2]["content"] == first
+    assert "failed validation" in str(failure.messages[3]["content"])
+    assert failure.messages[4]["content"] == second
+    assert failure.messages[6]["content"] == third
+    assert len(fake.chat.completions.calls) == 3
 
 
 def test_empty_content_raises_without_retry() -> None:
