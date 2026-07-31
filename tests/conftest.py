@@ -103,6 +103,7 @@ class SyntheticConfiguredPipeline:
     input_series: Sequence[Mapping[str, Any]]
     output_series: Sequence[Mapping[str, Any]]
     internal_series: Sequence[Mapping[str, Any]]
+    constant_series: Sequence[Mapping[str, Any]]
     leaf_classification: dict[str, str]
     binding_validation_report: Mapping[str, Any]
 
@@ -128,6 +129,7 @@ def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
         input_series=graph_result.input_series,
         output_series=graph_result.output_series,
         internal_series=graph_result.internal_series,
+        constant_series=graph_result.constant_series,
         leaf_classification=leaf_classification,
         binding_validation_report=binding_validation_report,
     )
@@ -137,9 +139,14 @@ def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
 def synthetic_configured_pipeline(
     synthetic_pipeline_config_fixture: PipelineConfig,
 ) -> SyntheticConfiguredPipeline:
-    graph, series_bindings, input_series, output_series, internal_series = (
-        build_synthetic_pipeline_graph(synthetic_pipeline_config_fixture)
-    )
+    (
+        graph,
+        series_bindings,
+        input_series,
+        output_series,
+        internal_series,
+        constant_series,
+    ) = build_synthetic_pipeline_graph(synthetic_pipeline_config_fixture)
     leaf_classification = classify_leaves_from_constraints(
         synthetic_pipeline_config_fixture.constraints,
         graph.leaf_keys(),
@@ -157,6 +164,7 @@ def synthetic_configured_pipeline(
         input_series=input_series,
         output_series=output_series,
         internal_series=internal_series,
+        constant_series=constant_series,
         leaf_classification=leaf_classification,
         binding_validation_report=binding_validation_report,
     )
@@ -187,6 +195,7 @@ def synthetic_bound_address_keys(
         synthetic_configured_pipeline.input_series,
         synthetic_configured_pipeline.output_series,
         synthetic_configured_pipeline.internal_series,
+        constant_series=synthetic_configured_pipeline.constant_series,
     )
 
 

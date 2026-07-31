@@ -105,6 +105,7 @@ def _export_generated_package_with_mocked_codegen(
             input_series=(),
             output_series=(),
             internal_series=(),
+            constant_series=(),
             graph_cache_key="cache-key",
         ),
     ):

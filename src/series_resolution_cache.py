@@ -15,13 +15,17 @@ from typing import Any, cast
 
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.series_bindings import (
+    derive_constant_series,
     derive_input_series,
     derive_internal_series,
     derive_output_series,
 )
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
-SERIES_RESOLUTION_CACHE_SCHEMA_VERSION = "1.0.0"
+from src.graph_cache import prune_cache_entries_for_other_excel_grapher_versions
+
+# 1.1.0: payload is (input, output, internal, constant); 1.0.0 was a 3-tuple.
+SERIES_RESOLUTION_CACHE_SCHEMA_VERSION = "1.1.0"
 DEFAULT_SERIES_RESOLUTION_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "series-resolution"
 )
@@ -65,6 +69,7 @@ def _write_series_resolution_meta(
     input_series_count: int,
     output_series_count: int,
     internal_series_count: int,
+    constant_series_count: int,
 ) -> None:
     meta = {
         "cache_schema_version": SERIES_RESOLUTION_CACHE_SCHEMA_VERSION,
@@ -73,6 +78,7 @@ def _write_series_resolution_meta(
         "input_series_count": input_series_count,
         "output_series_count": output_series_count,
         "internal_series_count": internal_series_count,
+        "constant_series_count": constant_series_count,
         "excel_grapher_version": version("excel-grapher"),
     }
     meta_path.write_text(
@@ -90,6 +96,7 @@ def save_series_resolution_payload(
     input_series: SeriesResolutionList,
     output_series: SeriesResolutionList,
     internal_series: SeriesResolutionList,
+    constant_series: SeriesResolutionList,
     *,
     cache_key: str,
     graph_cache_key: str,
@@ -99,7 +106,12 @@ def save_series_resolution_payload(
     payload_path, meta_path = _cache_paths(resolved_cache_dir, cache_key)
     with gzip.open(payload_path, "wb", compresslevel=1) as handle:
         pickle.dump(
-            (list(input_series), list(output_series), list(internal_series)),
+            (
+                list(input_series),
+                list(output_series),
+                list(internal_series),
+                list(constant_series),
+            ),
             handle,
             protocol=pickle.HIGHEST_PROTOCOL,
         )
@@ -110,6 +122,7 @@ def save_series_resolution_payload(
         input_series_count=len(input_series),
         output_series_count=len(output_series),
         internal_series_count=len(internal_series),
+        constant_series_count=len(constant_series),
     )
 
 
@@ -118,7 +131,12 @@ def load_series_resolution_payload(
     *,
     cache_dir: Path | None = None,
 ) -> (
-    tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], list[Mapping[str, Any]]]
+    tuple[
+        list[Mapping[str, Any]],
+        list[Mapping[str, Any]],
+        list[Mapping[str, Any]],
+        list[Mapping[str, Any]],
+    ]
     | None
 ):
     payload_path, _meta_path = _cache_paths(
@@ -132,14 +150,15 @@ def load_series_resolution_payload(
     except (OSError, EOFError, pickle.UnpicklingError):
         payload_path.unlink(missing_ok=True)
         return None
-    if not isinstance(payload, tuple) or len(payload) != 3:
+    if not isinstance(payload, tuple) or len(payload) != 4:
         payload_path.unlink(missing_ok=True)
         return None
-    input_series, output_series, internal_series = payload
+    input_series, output_series, internal_series, constant_series = payload
     if not (
         _is_series_list(input_series)
         and _is_series_list(output_series)
         and _is_series_list(internal_series)
+        and _is_series_list(constant_series)
     ):
         payload_path.unlink(missing_ok=True)
         return None
@@ -147,6 +166,7 @@ def load_series_resolution_payload(
         cast(list[Mapping[str, Any]], input_series),
         cast(list[Mapping[str, Any]], output_series),
         cast(list[Mapping[str, Any]], internal_series),
+        cast(list[Mapping[str, Any]], constant_series),
     )
 
 
@@ -155,6 +175,7 @@ class SeriesResolutionCacheResult:
     input_series: SeriesResolutionList
     output_series: SeriesResolutionList
     internal_series: SeriesResolutionList
+    constant_series: SeriesResolutionList
     cache_key: str
     cache_hit: bool
     elapsed_seconds: float
@@ -176,13 +197,17 @@ def get_or_build_series_resolution(
     if not no_cache and not force_rebuild:
         loaded = load_series_resolution_payload(cache_key, cache_dir=resolved_cache_dir)
         if loaded is not None:
-            input_series, output_series, internal_series = loaded
+            input_series, output_series, internal_series, constant_series = loaded
+            prune_cache_entries_for_other_excel_grapher_versions(
+                cache_dir=resolved_cache_dir,
+            )
             elapsed = time.perf_counter() - started
             print(f"derive_series: cache hit ({elapsed:.1f}s, key={cache_key[:12]})")
             return SeriesResolutionCacheResult(
                 input_series=input_series,
                 output_series=output_series,
                 internal_series=internal_series,
+                constant_series=constant_series,
                 cache_key=cache_key,
                 cache_hit=True,
                 elapsed_seconds=elapsed,
@@ -201,6 +226,10 @@ def get_or_build_series_resolution(
         SeriesResolutionList,
         derive_internal_series(graph, bindings, workbook=workbook_path),
     )
+    constant_series = cast(
+        SeriesResolutionList,
+        derive_constant_series(graph, bindings, workbook=workbook_path),
+    )
     build_elapsed = time.perf_counter() - build_started
 
     if not no_cache:
@@ -209,11 +238,15 @@ def get_or_build_series_resolution(
             input_series,
             output_series,
             internal_series,
+            constant_series,
             cache_key=cache_key,
             graph_cache_key=graph_cache_key,
             cache_dir=resolved_cache_dir,
         )
         save_elapsed = time.perf_counter() - save_started
+        prune_cache_entries_for_other_excel_grapher_versions(
+            cache_dir=resolved_cache_dir,
+        )
         print(
             "derive_series: cache miss "
             f"(build {build_elapsed:.1f}s, save {save_elapsed:.1f}s, key={cache_key[:12]})"
@@ -228,6 +261,7 @@ def get_or_build_series_resolution(
         input_series=input_series,
         output_series=output_series,
         internal_series=internal_series,
+        constant_series=constant_series,
         cache_key=cache_key,
         cache_hit=False,
         elapsed_seconds=time.perf_counter() - started,

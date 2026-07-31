@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from textwrap import dedent
 
@@ -11,6 +12,7 @@ from src.refactor_return_types import (
     build_callee_return_hints,
     infer_refactor_return_type_hint,
     merge_callee_return_hints,
+    merge_callee_return_hints_from_functions,
     narrow_return_type_hint_for_export,
     normalize_return_type_hint_for_allowlist,
     validate_scalar_return_type_hint,
@@ -408,3 +410,68 @@ def test_validate_scalar_return_type_hint_accepts_cellvalue() -> None:
 def test_validate_scalar_return_type_hint_rejects_unknown_type() -> None:
     with pytest.raises(ValueError, match="unsupported return type hint"):
         validate_scalar_return_type_hint("dict[str, float]")
+
+
+def test_infer_refactor_return_type_hint_falls_back_to_cellvalue_for_unknown_callee() -> (
+    None
+):
+    """A bare passthrough to a helper with no known return hint yields CellValue.
+
+    Reproduces the cluster-75 hard crash: a verified mechanical draft whose
+    member body calls a helper created earlier in the same pass (absent from the
+    stale callee-hint map) must not abort the pipeline. The safe opaque supertype
+    is used instead of raising.
+    """
+    source = dedent(
+        """
+        def cell_output_scenarios_d14(ctx):
+            return output_scenarios_debt_to_gdp_baseline_path(ctx, time_period=2050)
+        """
+    ).strip()
+    assert (
+        infer_refactor_return_type_hint(
+            python_sources=(source,),
+            runtime_source=RUNTIME_STUB,
+            internals_source="",
+        )
+        == "CellValue"
+    )
+
+
+def test_merge_callee_return_hints_from_functions_enables_intra_pass_callee() -> None:
+    """Refreshing hints from resealed defs lets a bare call to a pass-built helper type."""
+    member = dedent(
+        """
+        def cell_output_scenarios_d14(ctx):
+            return output_scenarios_debt_to_gdp_baseline_path(ctx, time_period=2050)
+        """
+    ).strip()
+    # Before the refresh the callee is unknown -> opaque fallback.
+    hints = build_callee_return_hints(runtime_source=RUNTIME_STUB, internals_source="")
+    assert (
+        infer_refactor_return_type_hint(
+            python_sources=(member,),
+            runtime_source=RUNTIME_STUB,
+            internals_source="",
+            callee_hints=hints,
+        )
+        == "CellValue"
+    )
+    # A later reseal exposes the helper's annotation (parsed defs, no re-parse).
+    module = ast.parse(
+        "def output_scenarios_debt_to_gdp_baseline_path(ctx, time_period: int)"
+        " -> float:\n    return 1.0\n"
+    )
+    functions = {
+        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
+    }
+    merge_callee_return_hints_from_functions(hints, functions)
+    assert (
+        infer_refactor_return_type_hint(
+            python_sources=(member,),
+            runtime_source=RUNTIME_STUB,
+            internals_source="",
+            callee_hints=hints,
+        )
+        == "float"
+    )

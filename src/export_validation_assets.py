@@ -11,6 +11,8 @@ DIFFERENTIAL_PACKAGE_DIR = Path("tests/differential")
 EXPORTED_DIFFERENTIAL_FILES = (
     "__init__.py",
     "differential_types.py",
+    "differential_excel.py",
+    "comparison_utils.py",
     "differential_test_exported_library.py",
 )
 REFERENCE_REPORT_FILES = ("parity_report.csv", "parity_report.txt")

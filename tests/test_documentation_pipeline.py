@@ -2,6 +2,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,8 +13,12 @@ from src.pipeline_config import (
     load_pipeline_config,
 )
 from src.documentation_pipeline import (
+    DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT,
+    MAX_SECTION_REWRITE_ATTEMPTS,
     MAX_SECTION_REWRITE_PROMPT_CHARS,
     SETTER_INPUT_SHAPE_GUIDANCE,
+    SectionRewriteResponse,
+    _section_rewrite_client,
     build_section_prompt,
     ensure_introduction_install_recommendation,
     estimate_prompt_chars,
@@ -25,7 +30,9 @@ from src.documentation_pipeline import (
     load_canonical_api_example,
     parse_parity_report,
     render_validation_page,
+    resolve_section_rewrite_deadline_seconds,
     rewrite_api_signatures,
+    rewrite_guide_section,
     run_cmd,
     validate_rewritten_markdown_fences,
     validate_rewritten_runnable_api_usage,
@@ -584,3 +591,157 @@ def test_section_focus_templates_are_workbook_overridable(
     assert config.repo_relative_posix_path(
         config.canonical_api_example_path
     ) in functional_overview_focus_instructions(config)
+
+
+def test_resolve_section_rewrite_deadline_defaults_to_timeout_times_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SECTION_REWRITE_DEADLINE", raising=False)
+    monkeypatch.delenv("SECTION_REWRITE_REQUEST_TIMEOUT", raising=False)
+    assert resolve_section_rewrite_deadline_seconds() == (
+        DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT * MAX_SECTION_REWRITE_ATTEMPTS
+    )
+
+
+def test_resolve_section_rewrite_deadline_honors_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SECTION_REWRITE_DEADLINE", "90")
+    assert resolve_section_rewrite_deadline_seconds() == 90.0
+
+
+def test_section_rewrite_client_disables_sdk_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SECTION_REWRITE_REQUEST_TIMEOUT", "12.5")
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "src.documentation_pipeline.OpenAI",
+        FakeOpenAI,
+    )
+    client = _section_rewrite_client("gpt-5.5")
+    assert client is not None
+    assert captured["timeout"] == 12.5
+    assert captured["max_retries"] == 0
+
+
+def test_rewrite_guide_section_passes_deadline_to_generate_validated_json(
+    synthetic_pipeline_config_fixture: PipelineConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = synthetic_pipeline_config_fixture
+    captured: dict[str, object] = {}
+
+    def fake_generate_validated_json(**kwargs: object):
+        captured.update(kwargs)
+        parsed = SectionRewriteResponse(
+            title="Title",
+            purpose="Purpose",
+            rewritten_markdown="Body",
+            api_symbols_used=[],
+            fidelity_notes=[],
+        )
+        return parsed, parsed.model_dump_json()
+
+    monkeypatch.setattr(
+        "src.documentation_pipeline.generate_validated_json",
+        fake_generate_validated_json,
+    )
+    monkeypatch.setattr(
+        "src.documentation_pipeline.load_rewrite_cache",
+        lambda _config: {},
+    )
+    monkeypatch.setattr(
+        "src.documentation_pipeline.save_rewrite_cache",
+        lambda _config, _cache: None,
+    )
+    monkeypatch.setattr(
+        "src.documentation_pipeline.validate_section_rewrite_prompt_budget",
+        lambda _prompt: None,
+    )
+    monkeypatch.setattr(
+        "src.documentation_pipeline.build_section_prompt",
+        lambda **_kwargs: "prompt",
+    )
+    monkeypatch.setenv("SECTION_REWRITE_DEADLINE", "42")
+
+    rewrite_guide_section(
+        config=config,
+        client=MagicMock(),
+        section_id="introduction",
+        section_name="Introduction",
+        source_section_markdown="source",
+        python_focus_instructions="focus",
+        pipeline_context_blocks={},
+        api_signatures="sigs",
+    )
+
+    assert captured["deadline_seconds"] == 42.0
+    assert captured["max_attempts"] == MAX_SECTION_REWRITE_ATTEMPTS
+
+
+def test_run_documentation_pipeline_uses_stall_watchdog(
+    synthetic_pipeline_config_fixture: PipelineConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src import documentation_pipeline as docs
+
+    guide_path = tmp_path / "guide.md"
+    guide_path.write_text("# Guide\n", encoding="utf-8")
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        guide_path=guide_path,
+    )
+    config.dist_root.mkdir(parents=True, exist_ok=True)
+    (config.dist_root / "great-docs.yml").write_text(
+        "module: yaml12\n", encoding="utf-8"
+    )
+    monitored: list[str] = []
+
+    class FakeTimer:
+        def stage(self, name: str):
+            from contextlib import nullcontext
+
+            monitored.append(name)
+            return nullcontext()
+
+    monkeypatch.setattr(docs, "StageTimer", FakeTimer)
+    monkeypatch.setattr(
+        docs,
+        "monitor_pipeline_stage",
+        lambda timer, stage, **_kwargs: timer.stage(stage),
+    )
+    monkeypatch.setattr(docs, "configure_great_docs_yml", lambda _config: None)
+    monkeypatch.setattr(docs, "section_rewrite_model", lambda: "gpt-5.5")
+    monkeypatch.setattr(docs, "_section_rewrite_client", lambda _model: None)
+    monkeypatch.setattr(
+        docs,
+        "write_introduction_page",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        docs,
+        "write_rewritten_guide_pages",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(docs, "write_validation_page", lambda **_kwargs: None)
+    monkeypatch.setattr(docs, "discover_public_api_symbols", lambda _path: [])
+    monkeypatch.setattr(docs, "rewrite_api_signatures", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(docs, "validate_qmd_files", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        docs,
+        "sync_validated_pages_to_rewrite_cache",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(docs, "write_docs_deploy_workflow", lambda _config: None)
+
+    docs.run_documentation_pipeline(config)
+
+    assert "document" in monitored

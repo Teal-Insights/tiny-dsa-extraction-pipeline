@@ -197,6 +197,9 @@ def get_or_build_dependency_graph(
     if not no_cache and not force_rebuild:
         remembered = _PROCESS_GRAPH_CACHE.get(process_slot)
         if remembered is not None:
+            prune_cache_entries_for_other_excel_grapher_versions(
+                cache_dir=resolved_cache_dir,
+            )
             elapsed = time.perf_counter() - started
             print(
                 "create_dependency_graph: process cache hit "
@@ -211,6 +214,9 @@ def get_or_build_dependency_graph(
         cached = load_dependency_graph(cache_key, cache_dir=resolved_cache_dir)
         if cached is not None:
             _PROCESS_GRAPH_CACHE[process_slot] = cached
+            prune_cache_entries_for_other_excel_grapher_versions(
+                cache_dir=resolved_cache_dir,
+            )
             elapsed = time.perf_counter() - started
             print(
                 f"create_dependency_graph: cache hit ({elapsed:.1f}s, key={cache_key[:12]})"
@@ -246,6 +252,9 @@ def get_or_build_dependency_graph(
         )
         save_elapsed = time.perf_counter() - save_started
         _PROCESS_GRAPH_CACHE[process_slot] = graph
+        prune_cache_entries_for_other_excel_grapher_versions(
+            cache_dir=resolved_cache_dir,
+        )
         print(
             "create_dependency_graph: cache miss "
             f"(build {build_elapsed:.1f}s, save {save_elapsed:.1f}s, key={cache_key[:12]})"
@@ -333,4 +342,37 @@ def prune_stale_graph_cache_entries(
             continue
         path.unlink()
         pruned.append(path.name)
+    return pruned
+
+
+def prune_cache_entries_for_other_excel_grapher_versions(
+    *,
+    cache_dir: Path,
+    keep_version: str | None = None,
+) -> list[str]:
+    """Delete cache entries whose meta ``excel_grapher_version`` differs.
+
+    Safe for directories that hold multiple current keys (e.g. default +
+    extra target-bundle graphs): only foreign-version siblings are removed.
+    """
+    if not cache_dir.is_dir():
+        return []
+    retained = keep_version if keep_version is not None else version("excel-grapher")
+    pruned: list[str] = []
+    for meta_path in sorted(cache_dir.glob("*.meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        recorded = meta.get("excel_grapher_version")
+        if recorded == retained:
+            continue
+        cache_key = meta_path.name.removesuffix(".meta.json")
+        for path in (
+            meta_path,
+            cache_dir / f"{cache_key}.pkl.gz",
+        ):
+            if path.is_file():
+                path.unlink()
+                pruned.append(path.name)
     return pruned

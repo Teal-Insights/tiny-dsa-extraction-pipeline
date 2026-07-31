@@ -285,6 +285,10 @@ The pipeline is ordered as `extract → export → refactor → validate → doc
 | `--stop-after-stage validate` | Post-refactor differential + shipped reports | Skip documentation website |
 | `--stop-after-stage document` (default) | Full pipeline | Release / complete run |
 
+When the default full run reaches `document` after a non-zero exported-library differential exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (timeouts, validation exhaustion, LLM errors) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
+
+Guide-rewrite LLM calls use `SECTION_REWRITE_REQUEST_TIMEOUT` (default 300s per request) and `SECTION_REWRITE_DEADLINE` (default timeout × 4 attempts) so a stuck rewrite cannot block the pipeline indefinitely. Set `PIPELINE_STALL_SECONDS` for heartbeat stack dumps during the document stage.
+
 ```bash
 uv run python -m src.extraction_pipeline --stop-after-stage export
 ```

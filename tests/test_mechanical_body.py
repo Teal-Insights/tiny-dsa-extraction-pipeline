@@ -15,7 +15,10 @@ from src.mechanical_body import (
     synthesize_singleton_body,
 )
 from src.refactor_bindings import BindingKeyValue, KeyConceptSpec
-from src.refactor_fingerprints import build_cluster_fingerprint_summary
+from src.refactor_fingerprints import (
+    SemanticDependencyRef,
+    build_cluster_fingerprint_summary,
+)
 
 TIME_PERIOD_VOCAB = (
     KeyConceptSpec(
@@ -1077,4 +1080,101 @@ def test_mixed_ref_series_regimes_split_then_synthesize() -> None:
     assert "time_period=2055" not in draft.body
     # Must not collapse regimes into one literal 2028→2055 helper key table.
     assert "2028: 2055" not in draft.body
+    _assert_body_compiles(draft, ("time_period",))
+
+
+def test_peel_boundary_lag_routes_to_sibling_helper_not_xl_cell() -> None:
+    """The later peel's first member lags into the sibling helper (issue #138).
+
+    ``paris_engine_indicators`` is peeled into two schedule units; this is the
+    later one (``paris_engine_indicators_2``). Its first member's ``t-1`` operand
+    was computed by the earlier unit, so its wrapper is already collapsed into a
+    literal ``paris_engine_indicators(ctx, time_period=2029)`` call, while every
+    other member lags into this unit itself. Both regimes must route through a
+    helper — a raw ``xl_cell`` read here defeats the refactor.
+    """
+    members = (
+        _member(
+            "Paris!E35",
+            "=Paris!D35*(1+Paris!E32/100)",
+            "_t1 = paris_engine_indicators(ctx, time_period=2029)\n"
+            "_t2 = paris_engine_weighted_interest_rate(ctx, time_period=2030)\n"
+            "return xl_number(_t1) * (xl_number(1.0) + xl_number(_t2) / 100.0)",
+        ),
+        _member(
+            "Paris!F35",
+            "=Paris!E35*(1+Paris!F32/100)",
+            "_t1 = xl_eval(ctx, 'Paris!E35', cell_paris_e35)\n"
+            "_t2 = paris_engine_weighted_interest_rate(ctx, time_period=2031)\n"
+            "return xl_number(_t1) * (xl_number(1.0) + xl_number(_t2) / 100.0)",
+        ),
+        _member(
+            "Paris!G35",
+            "=Paris!F35*(1+Paris!G32/100)",
+            "_t1 = xl_eval(ctx, 'Paris!F35', cell_paris_f35)\n"
+            "_t2 = paris_engine_weighted_interest_rate(ctx, time_period=2032)\n"
+            "return xl_number(_t1) * (xl_number(1.0) + xl_number(_t2) / 100.0)",
+        ),
+    )
+    bound_keys = {
+        "Paris!D35": {"TIME_PERIOD": 2029},
+        "Paris!E35": {"TIME_PERIOD": 2030},
+        "Paris!F35": {"TIME_PERIOD": 2031},
+        "Paris!G35": {"TIME_PERIOD": 2032},
+        "Paris!E32": {"TIME_PERIOD": 2030},
+        "Paris!F32": {"TIME_PERIOD": 2031},
+        "Paris!G32": {"TIME_PERIOD": 2032},
+    }
+    expected = {
+        "Paris!E35": {"TIME_PERIOD": 2030},
+        "Paris!F35": {"TIME_PERIOD": 2031},
+        "Paris!G35": {"TIME_PERIOD": 2032},
+    }
+    address_to_series_id = {
+        address: "paris_engine_indicators"
+        for address in ("Paris!D35", "Paris!E35", "Paris!F35", "Paris!G35")
+    } | {
+        address: "paris_engine_weighted_interest_rate"
+        for address in ("Paris!E32", "Paris!F32", "Paris!G32")
+    }
+    semantic_dependencies = (
+        SemanticDependencyRef(
+            helper_name="paris_engine_indicators",
+            call_form="paris_engine_indicators(ctx, time_period=time_period)",
+            address_template="Paris!{col}35",
+            addresses=("Paris!D35",),
+        ),
+        SemanticDependencyRef(
+            helper_name="paris_engine_weighted_interest_rate",
+            call_form=(
+                "paris_engine_weighted_interest_rate(ctx, time_period=time_period)"
+            ),
+            address_template="Paris!{col}32",
+            addresses=("Paris!E32", "Paris!F32", "Paris!G32"),
+        ),
+    )
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id=address_to_series_id,
+        semantic_dependencies=semantic_dependencies,
+    )
+    assert summary.fallback_reason is None
+    draft = synthesize_cluster_body(
+        summary,
+        key_vocabulary=TIME_PERIOD_VOCAB,
+        expected_member_keys=expected,
+        helper_name="paris_engine_indicators_2",
+    )
+    assert "if time_period == 2030:" in draft.body
+    assert "paris_engine_indicators(ctx, time_period=2029)" in draft.body
+    assert "paris_engine_indicators_2(ctx, time_period=time_period - 1)" in draft.body
+    assert (
+        "paris_engine_weighted_interest_rate(ctx, time_period=time_period)"
+        in draft.body
+    )
+    assert "xl_cell" not in draft.body
     _assert_body_compiles(draft, ("time_period",))

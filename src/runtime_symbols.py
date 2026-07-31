@@ -100,3 +100,15 @@ def allowed_runtime_symbols() -> tuple[str, ...]:
         _runtime_path_from_config(),
         _readers_path_from_config(),
     )
+
+
+@lru_cache(maxsize=1)
+def allowed_runtime_module_symbols() -> tuple[str, ...]:
+    """Cached allowlist restricted to symbols exported by ``runtime.py``.
+
+    :func:`allowed_runtime_symbols` unions in the ``_readers`` helpers, which
+    generated modules import from ``._readers``. Import maintenance that
+    rewrites the ``from .runtime import`` line needs this narrower set so
+    reader helpers are never merged into the runtime import bundle.
+    """
+    return discover_allowed_runtime_symbols(_runtime_path_from_config())

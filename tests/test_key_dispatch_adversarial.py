@@ -362,11 +362,17 @@ def test_unquoted_hyphenated_sheet_difference_is_recognized_or_rejected_loudly()
     )
 
 
-def test_trade_balance_unroutable_shape_still_skipped(
+def test_trade_balance_unroutable_shape_not_key_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """False-positive guard: bilateral REF_AREA trade-balance must not become key_dispatch."""
+    """False-positive guard: bilateral REF_AREA trade-balance must not become key_dispatch.
+
+    Since #132 the routing gate's rejection no longer skips the cluster outright
+    -- mechanical synthesis rescues it as ``member_sweep`` via a ``REF_AREA``
+    lookup. The guard this test protects is unchanged: key-dispatch planning must
+    not spuriously claim this shape.
+    """
     from tests.test_internals_refactor import (
         TRADE_BALANCE_CLUSTER,
         TRADE_BALANCE_SERIES_MAP,
@@ -398,7 +404,8 @@ def test_trade_balance_unroutable_shape_still_skipped(
         bindings_path=tmp_path / "bindings",
         address_to_series_id=TRADE_BALANCE_SERIES_MAP,
     )
-    assert ctx is None
+    assert ctx is not None
+    assert ctx.contract != "key_dispatch"
 
 
 def test_empty_sweep_dims_do_not_crash_pass1() -> None:

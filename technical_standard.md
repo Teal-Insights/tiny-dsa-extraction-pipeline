@@ -96,7 +96,7 @@ Golden-master parity (100% pass rate, precision policy, first-divergence reporti
 
 ### Known gaps/footguns
 
-- **Binding authoring needs a scaling strategy:** Larger workbooks need a structured discovery workflow (logical tables → series catalog → graph cross-check); the prompt pattern in the pipeline doc is the reference.
+- **Binding authoring needs a scaling strategy:** Larger workbooks need a structured discovery workflow (logical tables → series catalog → graph cross-check); the prompt pattern in the pipeline doc is the reference. When sharding outputs, share `compute_*` / `set_*` names only for intentional merges of complementary slices; uniquify names for distinct scenario/engine paths or export can leave most paths unreachable (see [bindings/README.md](bindings/README.md)).
 - **User override of formula cells is not currently allowed**: Currently we're enforcing that all input cells must be leaf nodes. However, there's at least one user-editable cell in the LIC DSF that is not a leaf node, so we will need to relax this constraint for the LIC DSF extraction.
 - **Synchronous LLM API calls slow down the pipeline**: Currently we're calling LLMs synchronously at each stage of the pipeline. For large workbooks, we will need to parallelize LLM calls to speed up the pipeline. (In some cases, sequencing is important, so we'll have to do this intelligently.)
 - **LLM-authored configs and docstrings are not currently validated**: We may want to run some evals over the AI-generated series bindings and docstrings to make sure this is really the API shape we want.
@@ -162,30 +162,66 @@ discovered later.
 This is the heart of the standard: the exact, ordered rule by which one output cell's
 golden value and SUT value are judged equal.
 
-#### 1.1 Absolute tolerance: `atol = 1e-6`
+#### 1.1 Hybrid numeric tolerance: `atol = 1e-6`, `rtol = 1e-12`
 
-The numeric acceptance criterion is **absolute** difference within `1e-6`:
+The numeric acceptance criterion is a **hybrid** of absolute and relative difference —
+a comparison passes when **either** bound holds:
 
 ```
-passed  ⇔  abs(golden - sut) <= 1e-6
+rel_diff = abs(golden - sut) / abs(golden)        (infinite when golden == 0)
+
+passed   ⇔  abs(golden - sut) <= 1e-6   or   rel_diff <= 1e-12
 ```
 
-It MUST be defined once as a single named constant and threaded through the run as
-configuration — never inlined at a comparison site, so a tool's tolerance is auditable
-in one place.
+The relative branch is measured against the golden value alone. When the golden value
+is `0`, `rel_diff` is infinite, so only the absolute branch can pass a zero-golden
+comparison. Both constants MUST be defined once as named constants and threaded through
+the run as configuration — never inlined at a comparison site, so a tool's tolerances
+are auditable in one place. The gate MUST be evaluated on the same `rel_diff` value that
+is written to the report, so a report reader can reproduce every verdict from the
+`abs_diff` and `rel_diff` columns alone.
 
-**Rationale.** Spreadsheets typically report values to ~6 decimals, and Excel and Python
-legitimately differ in the last few bits from floating-point rounding, not from a real
-defect. `1e-6` absorbs that rounding without masking a genuine divergence. In practice
-the observed absolute difference on a faithful extraction is `0.0` (bit-exact) across the
-passing domain — the tolerance is headroom, not a crutch.
+**Rationale — absolute branch.** Spreadsheets typically report values to ~6 decimals,
+and Excel and Python legitimately differ in the last few bits from floating-point
+rounding, not from a real defect. `1e-6` absorbs that rounding without masking a genuine
+divergence. In practice, on a faithful extraction, comparisons decided by the absolute
+branch are observed to be overwhelmingly `0.0` (bit-exact) — the tolerance is headroom,
+not a crutch. (Comparisons decided by the relative branch carry a nonzero absolute
+difference by construction; see the amendment record below.)
 
-**A relative difference is recorded but is NOT part of the pass/fail decision.** It is
-computed (`abs_diff / abs(golden)`, or infinite when the golden value is zero) and written
-to the report for triage only. The accept/reject gate is absolute tolerance alone. A new
-tool MUST NOT switch the gate to relative tolerance without an explicit, documented
-reason, because doing so changes what "parity" means and breaks comparability of reports
-across tools.
+**Rationale — relative branch.** An absolute bound stops measuring parity once values
+grow large: at magnitude `1e16` one unit in the last place (ULP) of an IEEE 754 double
+is ≈ 2, so `atol = 1e-6` is finer than the resolution of the number format itself and
+an absolute-only gate demands bit-identical operation ordering rather than computational
+agreement. `rtol = 1e-12` requires agreement to at least 12 significant digits — doubles
+carry ≈ 15.95 — tolerating ~4 digits of accumulated rounding across deep recursions
+while remaining orders of magnitude stricter than any genuine modeling divergence. As
+with the absolute branch, the tolerance is headroom, not a crutch.
+
+**Amendment record (2026-07-26) — gate widened from absolute-only to hybrid.** The gate
+was originally absolute-only, with `rel_diff` recorded for triage but never deciding.
+An absolute bound is structurally unsatisfiable once `|golden|` exceeds ≈ `8.6e9`, where
+one ULP of an IEEE 754 double already exceeds `atol = 1e-6`; at still-large magnitudes
+a few ULPs of accumulated rounding likewise exceed the absolute gate while remaining near
+machine epsilon in relative terms. `rtol = 1e-12` absorbs that format-limited rounding
+(agreement to ≥ 12 significant digits) without masking genuine modeling divergences,
+which are typically orders of magnitude larger. The hybrid gate is **strictly more
+permissive** than the absolute gate it replaces, so every comparison that passed under
+the prior policy still passes and historical reports remain comparable; the amendment
+changes only which *failures* are recognized as rounding noise. (For calibration:
+`math.isclose`'s conventional `rel_tol = 1e-9` is too loose for this contract and MUST
+NOT be substituted.)
+
+**What the relative branch does NOT excuse.** The hybrid gate exists to stop the
+comparison ladder from failing agreement the number format cannot express — it is not a
+license for loose parity. A divergence such as golden `51.14` vs SUT `1075.14`
+(typical of ULP-level differences in astronomically large intermediates surviving
+catastrophic cancellation at degenerate inputs) still fails under the hybrid gate, and
+MUST: ill-conditioned outputs at degenerate inputs are a scenario-design and
+model-validity question, not a tolerance question. Widening either constant — or
+changing the `rel_diff` denominator — to absorb such rows is prohibited without a
+further amendment to this section, because doing so changes what "parity" means and
+breaks comparability of reports across tools.
 
 #### 1.2 The ordered comparison ladder
 
@@ -199,7 +235,7 @@ tolerance check so a blank, an error, or a `NaN` never reaches the arithmetic.
 | 2 | exactly one side blank | **fail** | none |
 | 3 | value not numeric-coercible (e.g. a spreadsheet error) | pass **iff** the two sides are equal by typed identity | none |
 | 4 | numeric but non-finite (`NaN`, `±inf`) | pass **iff** exactly equal, **or** both `NaN` | none |
-| 5 | finite numbers | pass **iff** `abs(golden - sut) <= atol` | computed |
+| 5 | finite numbers | pass **iff** `abs(golden - sut) <= atol` **or** `rel_diff <= rtol` | computed |
 
 Rules 1–2 are the **blank rules** (§1.4). Rule 3 is **error-class equality** (§1.3).
 Rule 4 is the **`NaN` rule** (§1.4). Rule 5 is the **tolerance rule** (§1.1).
@@ -273,7 +309,7 @@ identifiers MUST be constructed so a per-axis pass-rate is recoverable by groupi
 Required content, in order:
 
 1. **Header:** title, generation timestamp (UTC, ISO-8601, seconds precision), workbook
-   identity, SUT identity, and the tolerance (`atol = 1e-06`).
+   identity, SUT identity, and both tolerances (`atol = 1e-06`, `rtol = 1e-12`).
 2. **Aggregate counts:** total comparisons, passed, failed, pass rate `%`.
 3. **The acceptance bar, printed literally:** `Acceptance bar: 100.00%`.
 4. **Result:** `PASS` or `FAIL`.
@@ -390,9 +426,9 @@ map** changes.
 
 **Held constant (do not re-derive per tool):**
 
-- The precision policy of §1 verbatim — same `atol = 1e-6`, same comparison ladder, same
-  error-class / blank / `NaN` rules. Keeping this identical is what makes a Q-CRAFT parity
-  report comparable to any other.
+- The precision policy of §1 verbatim — same hybrid `atol = 1e-6` / `rtol = 1e-12` gate,
+  same comparison ladder, same error-class / blank / `NaN` rules. Keeping this identical
+  is what makes a Q-CRAFT parity report comparable to any other.
 - The two-file parity-report convention (§2), the 100% bar and exit codes (§2.3), the
   first-divergence block (§3), and the three pre-flight checks (§4).
 
@@ -422,7 +458,8 @@ covers non-numeric outputs, so no new comparison rule is needed; only DDT's set 
 categorical values must be enumerated in its scenario design.
 
 **Conformance test for either tool:** a reviewer can confirm DDT/Q-CRAFT validation is "to
-standard" by checking that (a) `atol` is `1e-6` and centralized, (b) the comparison ladder
+standard" by checking that (a) `atol` is `1e-6`, `rtol` is `1e-12`, and both are
+centralized, (b) the comparison ladder
 matches §1.2 in order, (c) both report files exist with the §2 columns/sections, (d) the
 TXT prints a 100% acceptance bar and the process exit code honors it, (e) a forced failure
 produces a well-formed first-divergence block, (f) all three pre-flight checks run, and
@@ -457,10 +494,11 @@ the section it enforces. Any unchecked box = not conformant.
 
 #### Precision contract (§1)
 
-- [ ] `atol` is `1e-6`, defined **once** as a named constant and threaded as configuration —
-  not inlined at any comparison site (§1.1).
-- [ ] The pass/fail gate is **absolute** tolerance alone; `rel_diff` is recorded for triage but
-  does not decide pass/fail (§1.1).
+- [ ] `atol` is `1e-6` and `rtol` is `1e-12`, each defined **once** as a named constant and
+  threaded as configuration — not inlined at any comparison site (§1.1).
+- [ ] The pass/fail gate is the **hybrid** rule of §1.1 — pass iff `abs_diff <= atol` or
+  `rel_diff <= rtol` — evaluated on the same `rel_diff` written to the report; the relative
+  branch never decides a zero-golden comparison (§1.1).
 - [ ] The comparison ladder matches §1.2 **in order** — blank → error-class → NaN/non-finite →
   tolerance, first-match-wins, with `None`/non-finite checked before the arithmetic (§1.2).
 - [ ] Errors compare by **typed class** (`#DIV/0!` ≠ `#N/A`), via normalized typed error values

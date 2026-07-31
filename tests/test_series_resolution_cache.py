@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from importlib.metadata import version
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from excel_grapher.grapher import DynamicRefConfig
 from excel_grapher.series_bindings import (
+    derive_constant_series,
     derive_input_series,
     derive_internal_series,
     derive_output_series,
@@ -26,6 +29,25 @@ from tests.fixtures.synthetic_pipeline import (
     write_synthetic_workbook,
 )
 from tests.fixtures.test_state import REPO_SERIES_RESOLUTION_CACHE_DIR
+
+
+def _write_versioned_cache_pair(
+    cache_dir: Path,
+    cache_key: str,
+    *,
+    excel_grapher_version: str,
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / f"{cache_key}.pkl.gz").write_bytes(b"payload")
+    (cache_dir / f"{cache_key}.meta.json").write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "excel_grapher_version": excel_grapher_version,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture
@@ -96,8 +118,10 @@ def test_series_resolution_cache_roundtrip(
     assert first.input_series == second.input_series
     assert first.output_series == second.output_series
     assert first.internal_series == second.internal_series
+    assert first.constant_series == second.constant_series
     assert first.input_series
     assert first.output_series
+    assert list(first.constant_series) == []
 
 
 def test_series_resolution_cache_matches_live_derive(
@@ -121,6 +145,9 @@ def test_series_resolution_cache_matches_live_derive(
         graph_result.graph, bindings, workbook=synthetic_config.workbook_path
     )
     assert cached.internal_series == derive_internal_series(
+        graph_result.graph, bindings, workbook=synthetic_config.workbook_path
+    )
+    assert cached.constant_series == derive_constant_series(
         graph_result.graph, bindings, workbook=synthetic_config.workbook_path
     )
 
@@ -238,6 +265,37 @@ def test_corrupt_series_resolution_cache_is_rebuilt(
     assert payload_path.is_file()
 
 
+def test_legacy_three_tuple_series_resolution_cache_is_rebuilt(
+    synthetic_config,
+    graph_cache_dir: Path,
+    series_cache_dir: Path,
+) -> None:
+    """Schema 1.0.0 3-tuples must miss so constant_series is derived under 1.1.0."""
+    import gzip
+    import pickle
+
+    graph_result = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    bindings = _load_bindings(synthetic_config)
+    cache_key = series_resolution_cache_key(graph_cache_key=graph_result.cache_key)
+    series_cache_dir.mkdir(parents=True, exist_ok=True)
+    payload_path = series_cache_dir / f"{cache_key}.pkl.gz"
+    with gzip.open(payload_path, "wb", compresslevel=1) as handle:
+        pickle.dump(([], [], []), handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    result = get_or_build_series_resolution(
+        graph_result.graph,
+        bindings,
+        workbook_path=synthetic_config.workbook_path,
+        graph_cache_key=graph_result.cache_key,
+        cache_dir=series_cache_dir,
+    )
+    assert not result.cache_hit
+    assert hasattr(result, "constant_series")
+    loaded = load_series_resolution_payload(cache_key, cache_dir=series_cache_dir)
+    assert loaded is not None
+    assert len(loaded) == 4
+
+
 def test_clear_series_resolution_cache_removes_entries(
     synthetic_config,
     graph_cache_dir: Path,
@@ -278,6 +336,45 @@ def test_prune_stale_series_resolution_cache_entries_removes_only_stale_keys(
     assert not drop.is_file()
 
 
+def test_get_or_build_series_resolution_prunes_other_excel_grapher_versions(
+    synthetic_config,
+    graph_cache_dir: Path,
+    series_cache_dir: Path,
+) -> None:
+    graph_result = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    bindings = _load_bindings(synthetic_config)
+    first = get_or_build_series_resolution(
+        graph_result.graph,
+        bindings,
+        workbook_path=synthetic_config.workbook_path,
+        graph_cache_key=graph_result.cache_key,
+        cache_dir=series_cache_dir,
+    )
+    _write_versioned_cache_pair(
+        series_cache_dir, "stale-old-version", excel_grapher_version="0.0.1"
+    )
+    _write_versioned_cache_pair(
+        series_cache_dir,
+        "sibling-current-version",
+        excel_grapher_version=version("excel-grapher"),
+    )
+
+    second = get_or_build_series_resolution(
+        graph_result.graph,
+        bindings,
+        workbook_path=synthetic_config.workbook_path,
+        graph_cache_key=graph_result.cache_key,
+        cache_dir=series_cache_dir,
+    )
+
+    assert second.cache_hit
+    assert second.cache_key == first.cache_key
+    assert (series_cache_dir / f"{first.cache_key}.pkl.gz").is_file()
+    assert (series_cache_dir / "sibling-current-version.pkl.gz").is_file()
+    assert not (series_cache_dir / "stale-old-version.pkl.gz").is_file()
+    assert not (series_cache_dir / "stale-old-version.meta.json").is_file()
+
+
 def test_build_pipeline_graph_uses_series_resolution_cache(
     synthetic_config,
     series_cache_dir: Path,
@@ -296,6 +393,7 @@ def test_build_pipeline_graph_uses_series_resolution_cache(
     assert first.input_series == second.input_series
     assert first.output_series == second.output_series
     assert first.internal_series == second.internal_series
+    assert first.constant_series == second.constant_series
     assert list(series_cache_dir.glob("*.pkl.gz"))
 
 

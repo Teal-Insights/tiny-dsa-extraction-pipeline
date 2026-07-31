@@ -103,6 +103,24 @@ def merge_callee_return_hints(
     return hints
 
 
+def merge_callee_return_hints_from_functions(
+    hints: dict[str, str],
+    functions: Mapping[str, ast.FunctionDef],
+) -> dict[str, str]:
+    """Merge return annotations from already-parsed defs into ``hints`` in place.
+
+    Lets a long-running refactor pass refresh callee hints from a resealed
+    ``InternalsSourceIndex`` without re-parsing the multi-megabyte module, so a
+    later cluster whose member body is a bare call to a helper created earlier in
+    the same pass can infer its return type instead of failing.
+    """
+    for name, node in functions.items():
+        parsed = _annotation_to_allowlisted_hint(node.returns)
+        if parsed is not None:
+            hints[name] = parsed
+    return hints
+
+
 def build_callee_return_hints(
     *,
     runtime_source: str,
@@ -242,26 +260,20 @@ def infer_refactor_return_type_hint(
         )
     )
     hints: set[str] = set()
-    for index, source in enumerate(python_sources):
+    for _index, source in enumerate(python_sources):
         member_hints = _infer_function_return_types(source, callees)
         if member_hints is None:
-            binding_hints = _return_types_from_naming_hints(naming_hints)
-            if binding_hints is None:
-                raise RefactorReturnTypeInferenceError(
-                    "could not infer return type from mechanical member source "
-                    f"at index {index}; callee annotations and literals were "
-                    "insufficient"
-                )
-            member_hints = binding_hints
+            # A member whose body is a bare passthrough call to a helper whose
+            # return annotation is not (yet) known falls back to the opaque
+            # ``CellValue`` union rather than aborting the pass: the draft is
+            # already value-verified, and ``CellValue`` is the safe supertype
+            # (export can still narrow it via binding dtype hints).
+            member_hints = _return_types_from_naming_hints(naming_hints) or {
+                "CellValue"
+            }
         hints |= member_hints
     if not hints:
-        binding_hints = _return_types_from_naming_hints(naming_hints)
-        if binding_hints is None:
-            raise RefactorReturnTypeInferenceError(
-                "could not infer helper return type from mechanical sources or "
-                "binding dtype hints"
-            )
-        hints = binding_hints
+        hints = _return_types_from_naming_hints(naming_hints) or {"CellValue"}
     result = narrow_return_type_hint_for_export(
         format_return_type_hint(hints),
         naming_hints,

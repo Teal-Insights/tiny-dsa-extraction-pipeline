@@ -110,9 +110,18 @@ def build_bound_address_keys(
     input_series: Sequence[Mapping[str, Any]],
     output_series: Sequence[Mapping[str, Any]],
     internal_series: Sequence[Mapping[str, Any]] = (),
+    *,
+    constant_series: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, dict[str, BindingKeyValue]]:
+    """Index every bound cell address to its coerced cell-scope binding keys.
+
+    Constant series are folded in first (lowest priority) so a keyed reader-only
+    leaf still contributes its per-cell keys. Input/output/internal series
+    overwrite the constant baseline for any shared address so formula-bearing
+    ownership keeps precedence.
+    """
     index: dict[str, dict[str, BindingKeyValue]] = {}
-    for series_list in (input_series, output_series, internal_series):
+    for series_list in (constant_series, input_series, output_series, internal_series):
         for series in series_list:
             for cell in series["cells"]:
                 index[str(cell["address"])] = _coerce_binding_keys(cell["key"])
@@ -176,19 +185,22 @@ def build_address_to_series_id(
     *,
     output_series: Sequence[Mapping[str, Any]] = (),
     input_series: Sequence[Mapping[str, Any]] = (),
+    constant_series: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, str]:
     """Map cell addresses to refactor partition series ids.
 
     Internal ownership wins. Addresses without an internal owner fall back to
-    their public output binding series id, then input binding series id, so
-    ``series_ast`` / ``series`` clustering can keep time-sweep public series
-    together instead of treating missing internal ownership as a singleton.
+    constant (reader-only leaf), then public output, then input binding series
+    ids, so ``series_ast`` / ``series`` clustering can keep time-sweep public
+    series together and mechanical synthesis can claim ``read_<id>(ctx)`` sites
+    for constant operands.
     """
     address_to_series_id = _unique_series_id_by_address(
         internal_series,
         ownership_kind="internal",
     )
     for ownership_kind, series_list in (
+        ("constant", constant_series),
         ("output", output_series),
         ("input", input_series),
     ):

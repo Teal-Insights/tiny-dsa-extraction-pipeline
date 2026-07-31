@@ -78,6 +78,7 @@ def _seed_fingerprint_inputs(config: PipelineConfig) -> Path:
         "differential_test_exported_library.py",
         "differential_types.py",
         "differential_excel.py",
+        "comparison_utils.py",
         "workbook_labels.py",
         "differential_scenario_inputs.py",
     ):
@@ -215,6 +216,7 @@ def test_differential_cache_key_changes_when_workbook_changes(tmp_path: Path) ->
         "differential_test_exported_library.py",
         "differential_types.py",
         "differential_excel.py",
+        "comparison_utils.py",
         "workbook_labels.py",
         "differential_scenario_inputs.py",
     ],

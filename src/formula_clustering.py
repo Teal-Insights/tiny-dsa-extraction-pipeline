@@ -45,7 +45,7 @@ def _require_bound_address_keys(
             "bound_address_keys is required for formula clustering; "
             "configure series bindings in bindings/*.bindings.yaml, then build "
             "keys with build_bound_address_keys() from the loaded input, "
-            "output, and internal series"
+            "output, internal, and constant series"
         )
     return bound_address_keys
 
@@ -62,7 +62,7 @@ def _require_address_to_series_id(
             "address_to_series_id is required for formula clustering when "
             f"clustering_mode={clustering_mode!r}; build it with "
             "build_address_to_series_id() from derived internal series, "
-            "falling back to public output/input series"
+            "falling back to constant then public output/input series"
         )
     return address_to_series_id
 

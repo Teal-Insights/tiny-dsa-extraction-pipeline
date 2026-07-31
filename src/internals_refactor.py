@@ -46,6 +46,7 @@ from src.refactor_bindings import (
     BindingKeyValue,
     KeyConceptSpec,
     build_bound_address_keys,
+    dimension_id_to_param_name,
     engine_column_from_member_keys,
     expected_member_keys_for_cluster,
     format_binding_key_literal,
@@ -61,6 +62,7 @@ from src.refactor_return_types import (
     build_callee_return_hints,
     infer_refactor_return_type_hint,
     merge_callee_return_hints,
+    merge_callee_return_hints_from_functions,
     normalize_return_type_hint_for_allowlist,
     validate_scalar_return_type_hint,
 )
@@ -75,8 +77,9 @@ from src.refactor_fingerprints import (
     build_cluster_fingerprint_summary,
     format_cluster_fingerprint_dump,
 )
+from src.peel_entrypoint_dispatch import inject_peel_entrypoint_dispatch
 from src.refactor_order import compute_refactor_schedule, refactor_failure_target
-from src.runtime_symbols import allowed_runtime_symbols
+from src.runtime_symbols import allowed_runtime_module_symbols, allowed_runtime_symbols
 from src.semantic_naming import (
     BindingRecordHints,
     _is_semantic_helper_def,
@@ -1111,6 +1114,7 @@ def _default_bound_address_keys() -> dict[str, dict[str, BindingKeyValue]]:
         graph_result.input_series,
         graph_result.output_series,
         graph_result.internal_series,
+        constant_series=graph_result.constant_series,
     )
 
 
@@ -1153,6 +1157,7 @@ def build_cluster_refactor_context(
     layout: ProjectionColumnLayout | None = None,
     internals_index: InternalsSourceIndex | None = None,
     address_to_series_id: Mapping[str, str] | None = None,
+    address_to_helper_name: Mapping[str, str] | None = None,
     expected_helper_name: str | None = None,
     existing_helper_names: frozenset[str] | None = None,
 ) -> ClusterRefactorContext | None:
@@ -1245,6 +1250,7 @@ def build_cluster_refactor_context(
         layout=resolved_layout,
     )
     key_dispatch_plan: KeyDispatchPlan | None = None
+    gate_rejected_operand_variation = False
     if contract is None:
         planned_helper_name = expected_helper_name
         if planned_helper_name is None:
@@ -1263,19 +1269,23 @@ def build_cluster_refactor_context(
             helper_name=planned_helper_name,
         )
         if key_dispatch_plan is None:
-            logger.warning(
-                "cluster %s skipped: operand-level variation is not routable by the "
-                "declared binding dimension ids (operand_level_variation_unsupported)",
+            # #132: the operand-level routing gate predates the current
+            # mechanical-synthesis coverage (offsets/lags/lookups with per-member
+            # verification). Rather than skip outright, fall through as
+            # member_sweep and let verified synthesis be the arbiter (see the
+            # probe below). Genuinely unroutable clusters still fail synthesis and
+            # keep today's skip, so this only rescues clusters mechanical
+            # synthesis can actually reproduce -- no new LLM fallbacks.
+            gate_rejected_operand_variation = True
+            contract = "member_sweep"
+        else:
+            contract = "key_dispatch"
+            logger.info(
+                "cluster %s rescued as key_dispatch on %s (%d regimes)",
                 cluster.cluster_id,
+                key_dispatch_plan.dispatch_dimension_id,
+                len(key_dispatch_plan.regimes),
             )
-            return None
-        contract = "key_dispatch"
-        logger.info(
-            "cluster %s rescued as key_dispatch on %s (%d regimes)",
-            cluster.cluster_id,
-            key_dispatch_plan.dispatch_dimension_id,
-            len(key_dispatch_plan.regimes),
-        )
 
     external_dependency_addresses = sorted(
         {
@@ -1286,7 +1296,12 @@ def build_cluster_refactor_context(
         }
     )
     semantic_dependencies, unresolved = resolve_semantic_dependencies(
-        source, external_dependency_addresses, index=index
+        source,
+        external_dependency_addresses,
+        index=index,
+        address_to_series_id=address_to_series_id,
+        address_to_helper_name=address_to_helper_name,
+        bound_address_keys=resolved_bound_keys,
     )
     external_dependencies = tuple(
         sorted(
@@ -1335,6 +1350,41 @@ def build_cluster_refactor_context(
         expected_helper_name,
         existing_names=reserved_names - {expected_helper_name},
     )
+
+    if gate_rejected_operand_variation:
+        # Probe: keep this rescued cluster only if verified mechanical synthesis
+        # can reproduce it. Otherwise restore the routing gate's skip (#132).
+        from src.mechanical_body import (
+            MechanicalSynthesisError,
+            synthesize_cluster_body,
+        )
+
+        skip_reason: str | None = None
+        if fingerprint_summary.fallback_reason is not None:
+            skip_reason = f"fingerprint_fallback:{fingerprint_summary.fallback_reason}"
+        else:
+            try:
+                synthesize_cluster_body(
+                    fingerprint_summary,
+                    key_vocabulary=resolved_vocabulary,
+                    expected_member_keys=expected_member_keys,
+                    helper_name=expected_helper_name,
+                )
+            except MechanicalSynthesisError as error:
+                skip_reason = error.reason
+        if skip_reason is not None:
+            logger.info(
+                "cluster %s skipped: operand-level variation not routable and "
+                "mechanical synthesis unavailable (%s)",
+                cluster.cluster_id,
+                skip_reason,
+            )
+            return None
+        logger.info(
+            "cluster %s rescued to member_sweep: verified mechanical synthesis "
+            "covers operand-level variation the routing gate rejected",
+            cluster.cluster_id,
+        )
 
     return ClusterRefactorContext(
         cluster_id=cluster.cluster_id,
@@ -1410,6 +1460,8 @@ def build_singleton_refactor_context(
     internal_binding_index: InternalBindingIndex | None = None,
     internals_index: InternalsSourceIndex | None = None,
     address_to_series_id: Mapping[str, str] | None = None,
+    address_to_helper_name: Mapping[str, str] | None = None,
+    bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None = None,
     expected_helper_name: str | None = None,
     existing_helper_names: frozenset[str] | None = None,
 ) -> SingletonRefactorContext | None:
@@ -1432,7 +1484,12 @@ def build_singleton_refactor_context(
 
     dependency_addresses = tuple(sorted(projection.get_dependencies(address)))
     semantic_dependencies, unresolved = resolve_semantic_dependencies(
-        source, dependency_addresses, index=index
+        source,
+        dependency_addresses,
+        index=index,
+        address_to_series_id=address_to_series_id,
+        address_to_helper_name=address_to_helper_name,
+        bound_address_keys=bound_address_keys,
     )
     external_dependencies = tuple(
         sorted(
@@ -2310,6 +2367,17 @@ def validate_cluster_refactor_response(
     if source_docstring is None:
         raise ValueError("helper_source must include a docstring")
     validate_google_style_docstring(source_docstring)
+
+    validate_helper_serves_member_keys(
+        helper_def,
+        helper_name=response.helper_name,
+        parameter_names_by_dimension={
+            parameter.dimension_id: parameter.name for parameter in response.parameters
+        },
+        member_keys_by_address={
+            entry.address: entry.keys_dict() for entry in response.member_keys
+        },
+    )
 
     if require_semantic_locals:
         validate_semantic_local_names(helper_def)
@@ -3423,10 +3491,74 @@ def _helper_memo_runtime_imports(helper_source: str) -> set[str]:
     return needed
 
 
-def _cluster_runtime_imports(response: ClusterRefactorResponse) -> set[str]:
-    return _type_hint_runtime_imports(response.helper_source) | (
-        _helper_memo_runtime_imports(response.helper_source)
+def _runtime_module_symbols() -> frozenset[str]:
+    """Names exported by the packaged ``runtime`` module.
+
+    Empty when no pipeline configuration is active (isolated tooling and unit
+    tests), which leaves the type-hint and memoization scans as the only
+    contributors — the pre-existing behaviour.
+    """
+    try:
+        return frozenset(allowed_runtime_module_symbols())
+    except (RuntimeError, OSError):
+        return frozenset()
+
+
+def _bound_names(tree: ast.AST) -> set[str]:
+    """Names ``tree`` binds itself (assignments, parameters, defs, imports)."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.alias):
+            bound.add((node.asname or node.name).split(".", maxsplit=1)[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+            bound.add(node.name)
+    return bound
+
+
+def _free_names(source: str) -> set[str]:
+    """Names ``source`` reads without binding them, so they must be imported."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source))
+    loaded = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    return loaded - _bound_names(tree)
+
+
+def _referenced_runtime_imports(source: str) -> set[str]:
+    """Collect every runtime-exported symbol a refactored body actually calls.
+
+    Refactored bodies may introduce runtime calls the pristine module never
+    made (``xl_cell`` for reads that stay raw address reads, for example), so
+    the import bundle has to follow the body rather than a fixed symbol list.
+    """
+    candidates = _runtime_module_symbols()
+    if not candidates:
+        return set()
+    return set(candidates & _free_names(source))
+
+
+def _refactored_body_runtime_imports(source: str) -> set[str]:
+    """Runtime symbols a refactored helper/singleton body needs imported."""
+    return (
+        _type_hint_runtime_imports(source)
+        | _helper_memo_runtime_imports(source)
+        | _referenced_runtime_imports(source)
     )
+
+
+def _cluster_runtime_imports(response: ClusterRefactorResponse) -> set[str]:
+    return _refactored_body_runtime_imports(response.helper_source)
 
 
 def ensure_cluster_refactor_imports(
@@ -3441,9 +3573,7 @@ def ensure_cluster_refactor_imports(
 
 
 def _singleton_runtime_imports(response: SingletonRefactorResponse) -> set[str]:
-    return _type_hint_runtime_imports(response.symbol_source) | (
-        _helper_memo_runtime_imports(response.symbol_source)
-    )
+    return _refactored_body_runtime_imports(response.symbol_source)
 
 
 def _merge_runtime_imports(source: str, symbols: set[str]) -> str:
@@ -3617,6 +3747,56 @@ def _replace_function_definition(
     return source[:start] + replacement + source[end:]
 
 
+def _unify_peel_split_entrypoints(
+    source: str,
+    *,
+    scheduled_helper_by_address: Mapping[str, str],
+    address_to_series_id: Mapping[str, str],
+    bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None,
+    layout: ProjectionColumnLayout | None,
+) -> str:
+    """Make each peel-split published series' base helper span the full range (#143).
+
+    Derives every scheduled address's dispatch-key value (the projection period)
+    from ``bound_address_keys`` and delegates sibling-owned years from the base
+    (``series_id``) helper to the owning ``series_id_2`` sibling, so the api-layer
+    ``compute_*`` loop -- which only ever calls the bare series id -- no longer runs
+    the base regime for years it never covered. A no-op when binding keys are
+    unavailable or nothing was peeled.
+    """
+    if not bound_address_keys:
+        return source
+    projection_dimension_id = (
+        layout.projection_dimension_id if layout is not None else "TIME_PERIOD"
+    )
+    address_time_periods: dict[str, int] = {}
+    for address in scheduled_helper_by_address:
+        keys = bound_address_keys.get(address)
+        if not keys:
+            continue
+        period = keys.get(projection_dimension_id)
+        if period is None and projection_dimension_id != "TIME_PERIOD":
+            period = keys.get("TIME_PERIOD")
+        if isinstance(period, int):
+            address_time_periods[address] = period
+    if not address_time_periods:
+        return source
+    updated, rewritten = inject_peel_entrypoint_dispatch(
+        source,
+        scheduled_helper_by_address=scheduled_helper_by_address,
+        address_to_series_id=address_to_series_id,
+        address_time_periods=address_time_periods,
+    )
+    if rewritten:
+        logger.info(
+            "pass1 peel entry-point unify: %d base helper(s) now dispatch to "
+            "sibling peels: %s",
+            len(rewritten),
+            ", ".join(rewritten),
+        )
+    return updated
+
+
 def apply_singleton_refactor_plan(
     source: str,
     response: SingletonRefactorResponse,
@@ -3709,10 +3889,11 @@ def apply_cluster_collapses_batch(
     wrapper call sites inside newly inserted helpers are rewritten), then bindings
     and wrapper removals run against one shared AST.
 
-    Runtime import merges for type-hint symbols (``EvalContext``, ``CellValue``)
-    are applied once for the whole batch before inserts, and skipped entirely when
-    the symbols are already imported, so a typed helper batch does not re-parse the
-    module once per response.
+    Runtime import merges for the symbols the helper bodies reference (type
+    hints such as ``EvalContext``/``CellValue`` plus runtime callables such as
+    ``xl_cell``) are applied once for the whole batch before inserts, and
+    skipped entirely when the symbols are already imported, so a typed helper
+    batch does not re-parse the module once per response.
     """
     _ = ctx
     if not responses:
@@ -4007,8 +4188,27 @@ def resolve_semantic_dependencies(
     dependency_addresses: Iterable[str],
     *,
     index: InternalsSourceIndex | None = None,
+    address_to_series_id: Mapping[str, str] | None = None,
+    address_to_helper_name: Mapping[str, str] | None = None,
+    bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None = None,
 ) -> tuple[tuple[SemanticDependency, ...], tuple[str, ...]]:
-    """Resolve external ``cell_*`` dependencies to the semantic helpers wrapping them."""
+    """Resolve external ``cell_*`` dependencies to the semantic helpers wrapping them.
+
+    ``address_to_series_id`` lets a collapsed dependency resolve by its series id
+    (which equals its helper name) when its per-cell wrapper is gone and the
+    dispatch / docstring metadata cannot recover it — the stranded
+    identity-passthrough case that otherwise drops to ``slots_without_read_sites``.
+
+    ``address_to_helper_name`` maps each scheduled address to the helper name its
+    refactor unit was allocated. A peel-split series publishes several helpers
+    that all carry the same series id, so this is the only exact way to route an
+    operand that crosses a peel boundary (issue #138).
+
+    ``bound_address_keys`` bounds both routes: a helper whose literal key tables
+    or ``raise``-terminated dispatch chain provably cannot serve the dependency's
+    key is refused, so a multi-regime series never routes an out-of-regime year
+    into a partial helper (#139).
+    """
     resolved = index if index is not None else InternalsSourceIndex.from_source(source)
     defined_functions = resolved.functions
     grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
@@ -4027,7 +4227,12 @@ def resolve_semantic_dependencies(
             continue
 
         collapsed = _infer_collapsed_semantic_dependency(
-            source, address, index=resolved
+            source,
+            address,
+            index=resolved,
+            address_to_series_id=address_to_series_id,
+            address_to_helper_name=address_to_helper_name,
+            bound_address_keys=bound_address_keys,
         )
         if collapsed is None:
             unresolved.add(function_name)
@@ -4116,18 +4321,250 @@ def _address_in_docstring_range(docstring: str, address: str) -> bool:
     return False
 
 
-def _infer_collapsed_semantic_dependency(
-    source: str,
-    address: str,
+def _constant_key_values(node: ast.expr) -> tuple[BindingKeyValue, ...] | None:
+    """Return the constant members of a literal collection, or ``None``.
+
+    ``None`` means the literal is not made entirely of hashable constants, so no
+    key domain can be proven from it.
+    """
+    if isinstance(node, ast.Dict):
+        elements: list[ast.expr | None] = list(node.keys)
+    elif isinstance(node, ast.Set | ast.Tuple | ast.List):
+        elements = list(node.elts)
+    else:
+        return None
+    values: list[BindingKeyValue] = []
+    for element in elements:
+        if not isinstance(element, ast.Constant):
+            return None
+        value = element.value
+        if not isinstance(value, str | int | float | bool):
+            return None
+        values.append(value)
+    return tuple(values)
+
+
+def _literal_table_domains(
+    helper_def: ast.FunctionDef, parameter_name: str
+) -> frozenset[BindingKeyValue] | None:
+    """Key domain implied by literal lookup tables indexed by ``parameter_name``.
+
+    Only *unconditional* top-level statements are considered: a table read inside
+    a branch is reached by some keys and skipped by others, so it proves nothing
+    on its own. Likewise only a direct ``table[parameter]`` subscript counts — an
+    offset read such as ``table[time_period - 1]`` needs a different key than the
+    one the caller passes.
+    """
+    unconditional = [
+        statement for statement in helper_def.body if not isinstance(statement, ast.If)
+    ]
+    tables: dict[str, frozenset[BindingKeyValue]] = {}
+    for statement in unconditional:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        keys = _constant_key_values(statement.value)
+        if keys is None:
+            continue
+        tables[target.id] = frozenset(keys)
+
+    domains: list[frozenset[BindingKeyValue]] = []
+    for statement in unconditional:
+        for node in ast.walk(statement):
+            if not isinstance(node, ast.Subscript):
+                continue
+            if not isinstance(node.value, ast.Name):
+                continue
+            table = tables.get(node.value.id)
+            if table is None:
+                continue
+            if isinstance(node.slice, ast.Name) and node.slice.id == parameter_name:
+                domains.append(table)
+    if not domains:
+        return None
+    # Union, not intersection: a key only has to be in one of the tables reached
+    # on its path, and over-rejecting would strand dependencies the #134 fallback
+    # exists to rescue.
+    return frozenset().union(*domains)
+
+
+def _dispatch_branch_values(
+    test: ast.expr, parameter_name: str
+) -> tuple[BindingKeyValue, ...] | None:
+    """Key values selected by ``if <param> == k`` / ``if <param> in {..}``."""
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+        return None
+    left = test.left
+    if not isinstance(left, ast.Name) or left.id != parameter_name:
+        return None
+    operator = test.ops[0]
+    comparator = test.comparators[0]
+    if isinstance(operator, ast.Eq):
+        if not isinstance(comparator, ast.Constant) or not isinstance(
+            comparator.value, str | int | float | bool
+        ):
+            return None
+        return (comparator.value,)
+    if isinstance(operator, ast.In):
+        return _constant_key_values(comparator)
+    return None
+
+
+def _top_level_guarded_values(
+    helper_def: ast.FunctionDef, parameter_name: str
+) -> tuple[frozenset[BindingKeyValue], bool]:
+    """Keys selected by top-level ``if <param> == k`` / ``in {..}`` branches.
+
+    The second element is ``False`` when a top-level ``if`` branches on something
+    other than ``parameter_name``, which means keys the guards do not name may
+    still be served by that branch.
+    """
+    values: list[BindingKeyValue] = []
+    guards_are_exhaustive = True
+    for statement in helper_def.body:
+        if not isinstance(statement, ast.If):
+            continue
+        branch_values = _dispatch_branch_values(statement.test, parameter_name)
+        if branch_values is None:
+            guards_are_exhaustive = False
+            continue
+        values.extend(branch_values)
+    return frozenset(values), guards_are_exhaustive
+
+
+def helper_static_key_domain(
+    helper_def: ast.FunctionDef, parameter_name: str
+) -> frozenset[BindingKeyValue] | None:
+    """Return the key values ``helper_def`` can provably serve, or ``None``.
+
+    ``None`` means unbounded as far as static analysis can tell. A non-``None``
+    domain means every other key hard-fails inside the helper — a literal lookup
+    table raises ``KeyError``, and a ``raise``-terminated dispatch chain (the
+    shape ``synthesize_key_dispatch_body`` emits) raises ``ValueError`` — so
+    routing such a key there emits code that cannot run.
+
+    Keys picked off by a top-level ``if <param> == k`` guard count as served even
+    when the fall-through body's lookup tables omit them, so a special-cased
+    period is never reported as out of domain. A top-level branch on anything
+    else can serve keys this analysis cannot enumerate, so it forfeits the
+    domain entirely rather than guess.
+    """
+    if not parameter_name:
+        return None
+    guarded, guards_are_exhaustive = _top_level_guarded_values(
+        helper_def, parameter_name
+    )
+    if not guards_are_exhaustive:
+        return None
+    table_domain = _literal_table_domains(helper_def, parameter_name)
+    if table_domain is not None:
+        return table_domain | guarded
+    body = [
+        statement
+        for statement in helper_def.body
+        if not (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Constant)
+        )
+    ]
+    ends_in_raise = bool(body) and isinstance(body[-1], ast.Raise)
+    if ends_in_raise and guarded:
+        return guarded
+    return None
+
+
+def validate_helper_serves_member_keys(
+    helper_def: ast.FunctionDef,
     *,
-    index: InternalsSourceIndex | None = None,
-) -> tuple[str, str] | None:
-    resolved = index if index is not None else InternalsSourceIndex.from_source(source)
+    helper_name: str,
+    parameter_names_by_dimension: Mapping[str, str],
+    member_keys_by_address: Mapping[str, Mapping[str, BindingKeyValue]],
+) -> None:
+    """Reject a helper that cannot serve a key of a member it claims.
+
+    A multi-regime series (``Baseline!D12:CP12`` labour productivity growth) can
+    be refactored into a helper that implements one regime while still claiming
+    every member. The claimed keys outside the implemented regime then hard-fail
+    at evaluation — ``KeyError`` on a literal period table, ``ValueError`` on a
+    key-dispatch chain — so the mismatch has to be caught before the helper lands
+    (#139). Regimes belong in separate helpers or in explicit branches.
+    """
+    for dimension_id, parameter_name in sorted(parameter_names_by_dimension.items()):
+        domain = helper_static_key_domain(helper_def, parameter_name)
+        if domain is None:
+            continue
+        unserved = {
+            keys[dimension_id]
+            for keys in member_keys_by_address.values()
+            if dimension_id in keys and keys[dimension_id] not in domain
+        }
+        if not unserved:
+            continue
+        raise ValueError(
+            f"helper {helper_name!r} cannot serve member keys "
+            f"{sorted(unserved, key=repr)} on {dimension_id}: its lookup tables "
+            f"and key branches only cover {sorted(domain, key=repr)}"
+        )
+
+
+def _series_helper_serves_address(
+    resolved: InternalsSourceIndex,
+    helper_name: str,
+    parameter_name: str,
+    address: str,
+    bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None,
+) -> bool:
+    """Whether ``helper_name`` can serve ``address``'s bound key.
+
+    Only a *provable* mismatch returns ``False``; missing keys or an unbounded
+    helper keep the permissive #134 behaviour.
+    """
+    if not bound_address_keys or not parameter_name:
+        return True
+    keys = bound_address_keys.get(address)
+    if not keys:
+        return True
+    key_values = [
+        value
+        for dimension_id, value in keys.items()
+        if dimension_id_to_param_name(dimension_id) == parameter_name
+    ]
+    if len(key_values) != 1:
+        return True
+    helper_def = resolved.functions.get(helper_name)
+    if helper_def is None:
+        return True
+    domain = helper_static_key_domain(helper_def, parameter_name)
+    if domain is None:
+        return True
+    return key_values[0] in domain
+
+
+def _sole_helper_parameter(resolved: InternalsSourceIndex, helper_name: str) -> str:
+    """Return the helper's single non-``ctx`` parameter name, or ``""``."""
+    helper_def = resolved.functions.get(helper_name)
+    if helper_def is None:
+        return ""
+    parameter_names = [arg.arg for arg in helper_def.args.args if arg.arg != "ctx"]
+    return parameter_names[0] if len(parameter_names) == 1 else ""
+
+
+def _infer_collapsed_from_dispatch(
+    resolved: InternalsSourceIndex, address: str
+) -> tuple[str, str] | None | Literal[False]:
+    """Recover ``(helper_name, parameter)`` from the generated dispatch tables.
+
+    ``None`` means no dispatch entry claims the address (try the other
+    heuristics); ``False`` means one does but names something that is not a live
+    semantic helper, which stops resolution as it always has.
+    """
     dispatch = resolved.address_dispatch
     if address in dispatch:
         helper_name, key_kwargs = dispatch[address]
         if helper_name not in resolved.semantic_helper_names:
-            return None
+            return False
         if len(key_kwargs) == 1:
             return helper_name, next(iter(key_kwargs))
         return helper_name, next(iter(key_kwargs))
@@ -4136,9 +4573,15 @@ def _infer_collapsed_semantic_dependency(
     symbol_name = symbol_dispatch.get(address)
     if symbol_name is not None:
         if symbol_name not in resolved.semantic_helper_names:
-            return None
+            return False
         return symbol_name, ""
+    return None
 
+
+def _infer_collapsed_from_docstrings(
+    resolved: InternalsSourceIndex, address: str
+) -> tuple[str, str] | None:
+    """Recover ``(helper_name, parameter)`` from advertised docstring coverage."""
     defined_functions = resolved.functions
     matches: list[tuple[str, str]] = []
     for helper_name in sorted(resolved.semantic_helper_names):
@@ -4155,6 +4598,89 @@ def _infer_collapsed_semantic_dependency(
             matches.append((helper_name, ""))
     if len(matches) == 1:
         return matches[0]
+    return None
+
+
+def _infer_collapsed_semantic_dependency(
+    source: str,
+    address: str,
+    *,
+    index: InternalsSourceIndex | None = None,
+    address_to_series_id: Mapping[str, str] | None = None,
+    address_to_helper_name: Mapping[str, str] | None = None,
+    bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None = None,
+) -> tuple[str, str] | None:
+    resolved = index if index is not None else InternalsSourceIndex.from_source(source)
+    dispatched = _infer_collapsed_from_dispatch(resolved, address)
+    if dispatched is False:
+        return None
+    if dispatched is not None:
+        return dispatched
+
+    # The schedule locks one helper name per refactor unit before the pass
+    # (``allocate_schedule_helper_names``), so a peel-split series has an exact
+    # owner per address: the base series id for one unit, ``series_id_2`` for the
+    # next (issue #138). Prefer that owner over the coverage heuristics below,
+    # which cannot tell the peels apart and would route a later-peel address to
+    # the earlier peel's helper. Only trust it while it names a live helper: a
+    # unit that failed to refactor keeps its ``cell_*`` wrappers, and pass 2
+    # renames helpers. A scheduled owner that provably cannot serve the address's
+    # bound key is stale evidence, so it defers to the heuristics below (#139).
+    if address_to_helper_name:
+        scheduled_helper = address_to_helper_name.get(address)
+        if (
+            scheduled_helper is not None
+            and scheduled_helper in resolved.semantic_helper_names
+        ):
+            parameter_name = _sole_helper_parameter(resolved, scheduled_helper)
+            if _series_helper_serves_address(
+                resolved,
+                scheduled_helper,
+                parameter_name,
+                address,
+                bound_address_keys,
+            ):
+                return scheduled_helper, parameter_name
+            logger.info(
+                "scheduled owner declined for %s: %s cannot serve its bound key",
+                address,
+                scheduled_helper,
+            )
+
+    inferred = _infer_collapsed_from_docstrings(resolved, address)
+    if inferred is not None:
+        return inferred
+
+    # Fallback: helper names ARE series ids (``expected_helper_name =
+    # sole_series_id_for_addresses``), so a collapsed dependency whose series id
+    # is an existing semantic helper resolves even when its per-cell wrapper is
+    # gone and the dispatch / docstring metadata cannot recover it. This rescues
+    # stranded identity passthroughs (``=Baseline!AA33``) whose engine dependency
+    # was refactored out from under them, which otherwise strand as unresolved
+    # and drop the cluster to ``slots_without_read_sites`` / LLM fallback.
+    #
+    # The fallback carries no coverage evidence, so it must not route a key the
+    # helper provably cannot serve (#139): a series whose regimes were split
+    # across helpers (``Baseline!D12:CP12`` labour productivity) still maps every
+    # address to the one series id, and resolving the out-of-regime years there
+    # emits calls that raise ``KeyError`` on the helper's period tables.
+    if address_to_series_id:
+        series_id = address_to_series_id.get(address)
+        if series_id is not None and series_id in resolved.semantic_helper_names:
+            parameter_name = _sole_helper_parameter(resolved, series_id)
+            if _series_helper_serves_address(
+                resolved,
+                series_id,
+                parameter_name,
+                address,
+                bound_address_keys,
+            ):
+                return series_id, parameter_name
+            logger.info(
+                "series-id fallback declined for %s: %s cannot serve its bound key",
+                address,
+                series_id,
+            )
     return None
 
 
@@ -5300,7 +5826,10 @@ def refactor_internals_all_clusters(
     # the allowlist / parity gate see xl_helper before Pass 1 applies units.
     from src.helper_memoization import ensure_package_runtime_helper_memoization
     from src.refactor_parity_gate import clear_parity_runtime_caches
-    from src.runtime_symbols import allowed_runtime_symbols
+    from src.runtime_symbols import (
+        allowed_runtime_module_symbols,
+        allowed_runtime_symbols,
+    )
 
     runtime_file = internals_path.parent / "runtime.py"
     if runtime_file.is_file() and ensure_package_runtime_helper_memoization(
@@ -5308,6 +5837,7 @@ def refactor_internals_all_clusters(
     ):
         clear_parity_runtime_caches()
         allowed_runtime_symbols.cache_clear()
+        allowed_runtime_module_symbols.cache_clear()
         logger.info(
             "pass1 patched package runtime with helper memoization: path=%s",
             runtime_file,
@@ -5332,6 +5862,15 @@ def refactor_internals_all_clusters(
         existing_names=existing_helper_names,
     )
     allocated_name_set = frozenset(allocated_helper_names)
+    # Helper names are locked for every unit up front, so each scheduled address
+    # has an exact owning helper even when its series is peeled across units
+    # (``series_id`` / ``series_id_2``). Dependency resolution needs that owner to
+    # route reads which cross a peel boundary (issue #138).
+    scheduled_helper_by_address = {
+        address: name
+        for unit, name in zip(ordered_units, allocated_helper_names, strict=True)
+        for address in unit.members
+    }
     results: list[ClusterRefactorApplyResult] = []
     pending_semantic: list[_PendingSemanticUnit] = []
     pending_cluster_applies: list[_PendingMechanicalClusterApply] = []
@@ -5374,6 +5913,13 @@ def refactor_internals_all_clusters(
             return 0.0
         seal_started = time.perf_counter()
         internals_index = InternalsSourceIndex.from_source(current_source)
+        # Refresh callee return hints from the resealed module so a later cluster
+        # whose member body is a bare call to a helper created earlier in this
+        # pass can infer its return type (reuses the just-parsed defs; no extra
+        # full-module parse).
+        merge_callee_return_hints_from_functions(
+            callee_hints, internals_index.functions
+        )
         seal_seconds = time.perf_counter() - seal_started
         pass1_reindex_count += 1
         pass1_reindex_seconds += seal_seconds
@@ -5558,6 +6104,8 @@ def refactor_internals_all_clusters(
                 internal_binding_index=internal_binding_index,
                 internals_index=internals_index,
                 address_to_series_id=address_to_series_id,
+                address_to_helper_name=scheduled_helper_by_address,
+                bound_address_keys=bound_address_keys,
                 expected_helper_name=helper_name,
                 existing_helper_names=reserved_for_others,
             )
@@ -5718,6 +6266,7 @@ def refactor_internals_all_clusters(
             layout=layout,
             internals_index=internals_index,
             address_to_series_id=address_to_series_id,
+            address_to_helper_name=scheduled_helper_by_address,
             expected_helper_name=helper_name,
             existing_helper_names=reserved_for_others,
         )
@@ -5918,6 +6467,13 @@ def refactor_internals_all_clusters(
         source = internals_path.read_text(encoding="utf-8")
         updated, phase_c_pruned = apply_phase_c(source)
         updated = rehome_unrefactored_cell_functions(updated)
+        updated = _unify_peel_split_entrypoints(
+            updated,
+            scheduled_helper_by_address=scheduled_helper_by_address,
+            address_to_series_id=address_to_series_id,
+            bound_address_keys=bound_address_keys,
+            layout=layout,
+        )
         validate_refactored_internals(updated)
         internals_path.write_text(updated, encoding="utf-8", newline="\n")
         if results:

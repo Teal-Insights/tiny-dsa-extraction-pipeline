@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from importlib.metadata import version
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,25 @@ from tests.fixtures.synthetic_pipeline import (
     write_synthetic_workbook,
 )
 from tests.fixtures.test_state import REPO_BINDINGS_VALIDATION_CACHE_DIR
+
+
+def _write_versioned_cache_pair(
+    cache_dir: Path,
+    cache_key: str,
+    *,
+    excel_grapher_version: str,
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / f"{cache_key}.pkl.gz").write_bytes(b"payload")
+    (cache_dir / f"{cache_key}.meta.json").write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "excel_grapher_version": excel_grapher_version,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture
@@ -268,6 +289,45 @@ def test_prune_stale_bindings_validation_cache_entries_removes_only_stale_keys(
     assert pruned == ["drop.pkl.gz"]
     assert keep.is_file()
     assert not drop.is_file()
+
+
+def test_get_or_build_bindings_validation_prunes_other_excel_grapher_versions(
+    synthetic_config,
+    graph_cache_dir: Path,
+    validation_cache_dir: Path,
+) -> None:
+    graph_result = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    bindings = _load_bindings(synthetic_config)
+    first = get_or_build_bindings_validation(
+        graph_result.graph,
+        bindings,
+        workbook_path=synthetic_config.workbook_path,
+        graph_cache_key=graph_result.cache_key,
+        cache_dir=validation_cache_dir,
+    )
+    _write_versioned_cache_pair(
+        validation_cache_dir, "stale-old-version", excel_grapher_version="0.0.1"
+    )
+    _write_versioned_cache_pair(
+        validation_cache_dir,
+        "sibling-current-version",
+        excel_grapher_version=version("excel-grapher"),
+    )
+
+    second = get_or_build_bindings_validation(
+        graph_result.graph,
+        bindings,
+        workbook_path=synthetic_config.workbook_path,
+        graph_cache_key=graph_result.cache_key,
+        cache_dir=validation_cache_dir,
+    )
+
+    assert second.cache_hit
+    assert second.cache_key == first.cache_key
+    assert (validation_cache_dir / f"{first.cache_key}.pkl.gz").is_file()
+    assert (validation_cache_dir / "sibling-current-version.pkl.gz").is_file()
+    assert not (validation_cache_dir / "stale-old-version.pkl.gz").is_file()
+    assert not (validation_cache_dir / "stale-old-version.meta.json").is_file()
 
 
 def test_build_pipeline_graph_uses_bindings_validation_cache(

@@ -11,6 +11,14 @@
 # Anti-pattern: one series with data_range covering H3:K5 and column_header
 # without fill — only the labeled start columns resolve; mixed measures share
 # the same (SCENARIO, TIME_PERIOD) key.
+#
+# Shared vs unique compute_/set_ names across shards:
+# - Share the same name when shards are complementary slices of one logical
+#   public series (this file: Gap columns for 2050/2075 → one compute_gap_milestones).
+# - Uniquify per shard when each shard is a distinct scenario/engine path
+#   (e.g. compute_scenario_primary_expenditure_pct_gdp_paris vs _moderate).
+#   Sharing a name across those paths merges definitions at export and can
+#   leave most scenario paths unreachable in the exported library.
 schema_version: 1.10.0
 workbook: workbook.xlsx
 
@@ -32,7 +40,9 @@ concept_scheme:
 
 outputs:
   series:
-    # Shared compute name → export merges shards into one public function.
+    # Shared compute name → export merges complementary Gap milestone shards
+    # into one public function. Do not reuse this pattern for distinct
+    # scenario/engine sheets; uniquify those compute names instead.
     - id: gap_milestones_2050
       sheet: Summary
       data_range: Summary!H3:H5
@@ -70,6 +80,7 @@ outputs:
       notes: >
         Gap measure column for the 2050 triplet. Year sits on the triplet start
         column; fill: true propagates TIME_PERIOD onto this Gap column.
+        Shares compute_gap_milestones with the 2075 shard intentionally.
 
     - id: gap_milestones_2075
       sheet: Summary
@@ -108,6 +119,7 @@ outputs:
       notes: >
         Gap measure column for the 2075 triplet. Widen workbook_config.TARGETS
         (and any overlapping internals) through column K so these cells are on-graph.
+        Shares compute_gap_milestones with the 2050 shard intentionally.
 
 internals:
   series:

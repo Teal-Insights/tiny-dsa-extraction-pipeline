@@ -76,11 +76,12 @@ from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_addres
 REFACTOR_BUCKETS_SCHEMA_VERSION = "1.4.0"
 
 SERIES_PARTITION_NOTE = (
-    "Refactor partitions use internal series ids first, then public output/input "
-    "binding series ids. Cells with no internal-series owner are not automatically "
-    "singleton refactor units: a multi-member public binding series (for example an "
-    "output time sweep) remains one cluster refactor unit so collapse can emit "
-    "_ADDRESS_DISPATCH entries keyed by binding parameters such as TIME_PERIOD."
+    "Refactor partitions use internal series ids first, then constant (reader-only) "
+    "leaf series ids, then public output/input binding series ids. Cells with no "
+    "internal-series owner are not automatically singleton refactor units: a "
+    "multi-member public binding series (for example an output time sweep) remains "
+    "one cluster refactor unit so collapse can emit _ADDRESS_DISPATCH entries keyed "
+    "by binding parameters such as TIME_PERIOD."
 )
 DEFAULT_JSON_OUTPUT = Path("artifacts/refactor-buckets.json")
 DEFAULT_MARKDOWN_OUTPUT = Path("artifacts/refactor-buckets.md")
@@ -262,7 +263,11 @@ def _cluster_contract_and_skip_reason(
             helper_name="key_dispatch_probe",
         )
         if plan is None:
-            return None, "operand_level_variation_unsupported"
+            # #132: the routing gate's rejection is no longer a hard skip. The
+            # context builder now routes these as member_sweep and lets verified
+            # mechanical synthesis decide, so report them as member_sweep rather
+            # than as an operand_level_variation_unsupported skip bucket.
+            return "member_sweep", None
         return "key_dispatch", None
     return contract, None
 
@@ -407,6 +412,7 @@ def record_refactor_buckets(
                     internals_path,
                     internal_binding_index=internal_binding_index,
                     address_to_series_id=resolved_address_to_series_id,
+                    bound_address_keys=resolved_bound_keys,
                     expected_helper_name=helper_name,
                     existing_helper_names=reserved_for_others,
                 )
@@ -742,11 +748,13 @@ def run_record_refactor_buckets(
         graph_result.input_series,
         graph_result.output_series,
         graph_result.internal_series,
+        constant_series=graph_result.constant_series,
     )
     address_to_series_id = build_address_to_series_id(
         graph_result.internal_series,
         output_series=graph_result.output_series,
         input_series=graph_result.input_series,
+        constant_series=graph_result.constant_series,
     )
     records = record_refactor_buckets(
         config,

@@ -28,7 +28,6 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
-import math
 import shutil
 import sys
 import tempfile
@@ -38,15 +37,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .differential_excel import (
-    coerce_excel_error,
     matched_error_values,
     parity_exit_code,
     read_cell_value,
 )
+from .comparison_utils import values_match
 from .differential_scenario_inputs import collect_scenario_input_addresses
-from .differential_types import ATOL, Axis, AxisPoint, Scenario
+from .differential_types import ATOL, RTOL, Axis, AxisPoint, Scenario
 
-from excel_grapher import XlError
 from excel_grapher.core.address_keys import normalize_key, parse_address
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import (
@@ -71,6 +69,7 @@ class GraphDifferentialConfig:
     constraints: dict[str, object]
     library_name: str
     atol: float = ATOL
+    rtol: float = RTOL
     allow_matched_errors: bool = False
 
 
@@ -187,6 +186,7 @@ def resolve_config(
         constraints=defaults.constraints,
         library_name=defaults.library_name,
         atol=ATOL,
+        rtol=RTOL,
         allow_matched_errors=allow_matched_errors,
     )
 
@@ -203,35 +203,7 @@ def config_from_args(
     )
 
 
-def values_match(
-    golden: Any, mvp: Any, *, atol: float
-) -> tuple[bool, float | None, float | None, str]:
-    """Compare golden vs graph oracle. Returns (match, abs_diff, rel_diff, note)."""
-    golden = coerce_excel_error(golden)
-    mvp = coerce_excel_error(mvp)
-
-    if isinstance(golden, XlError) or isinstance(mvp, XlError):
-        if isinstance(golden, XlError) and isinstance(mvp, XlError) and golden == mvp:
-            return True, None, None, f"both error: {golden}"
-        return False, None, None, f"error mismatch (golden={golden!r}, mvp={mvp!r})"
-
-    if golden is None and mvp is None:
-        return True, None, None, "both None"
-    if golden is None or mvp is None:
-        return False, None, None, "one side None"
-
-    if isinstance(golden, bool) and isinstance(mvp, bool):
-        return (golden == mvp), None, None, "bool"
-
-    if isinstance(golden, int | float) and isinstance(mvp, int | float):
-        golden_f, mvp_f = float(golden), float(mvp)
-        if math.isnan(golden_f) and math.isnan(mvp_f):
-            return True, None, None, "both NaN"
-        abs_diff = abs(golden_f - mvp_f)
-        rel_diff = abs_diff / max(abs(golden_f), abs(mvp_f), 1e-15)
-        return (abs_diff <= atol), abs_diff, rel_diff, ""
-
-    return (golden == mvp), None, None, "exact"
+# values_match is imported from comparison_utils and re-exported for harness unit tests.
 
 
 class GoldenDriver:
@@ -457,7 +429,7 @@ def write_txt_summary(
         "Oracles:   Excel via xlwings [golden] vs "
         "excel-grapher graph + FormulaEvaluator [mvp]"
     )
-    lines.append(f"Tolerance: atol = {config.atol:g}")
+    lines.append(f"Tolerance: atol = {config.atol:g}, rtol = {config.rtol:g}")
     lines.append(f"Trials:    {total} cell-level comparisons")
     if missing_inputs_in_graph:
         lines.append(
@@ -618,6 +590,7 @@ def run_sweep(config: GraphDifferentialConfig) -> tuple[list[Trial], list[str]]:
                             golden_value,
                             mvp_value,
                             atol=config.atol,
+                            rtol=config.rtol,
                         )
                         matched_error = matched_error_values(golden_value, mvp_value)
                         flagged_matched_error = (

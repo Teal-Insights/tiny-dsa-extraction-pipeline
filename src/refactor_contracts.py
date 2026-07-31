@@ -15,8 +15,12 @@ dimension must be *covered* — its value must be a constant offset of the
 member's own key for some member dimension sharing the concept. Positions
 covered only by the dimension itself are derivable in the helper body
 (Contract A); positions needing a counterpart dimension id require Contract
-B; an uncovered position makes the cluster unroutable and it is skipped as
-``operand_level_variation_unsupported``.
+B; an uncovered position returns ``None`` (historically labeled
+``operand_level_variation_unsupported``). Since #132 a ``None`` here is a routing
+hint rather than a hard skip: the caller (``build_cluster_refactor_context``)
+attempts key-dispatch and then a verified member_sweep mechanical draft before
+skipping, so a cluster this selector cannot route may still be refactored when
+mechanical synthesis reproduces it (e.g. via an operand lookup/lag).
 
 ``variation_mode`` controls whether dimension-aware clusters are even formed
 (``dominant_key_only`` splits them away); the contract itself is always
@@ -155,8 +159,9 @@ def select_cluster_refactor_contract(
     lags/offsets), ``"dimension_aware"`` (Contract B) when some operand
     positions instead route through counterpart dimension ids sharing the
     concept, and ``None`` when any operand position cannot be routed by the
-    declared bindings (the cluster must be skipped as
-    ``operand_level_variation_unsupported``).
+    declared bindings. Since #132 a ``None`` is a routing hint, not a verdict:
+    the caller may still refactor the cluster if verified mechanical synthesis
+    reproduces it (see this module's docstring).
     """
     flagged = _dimensions_with_operand_variation(
         cluster,

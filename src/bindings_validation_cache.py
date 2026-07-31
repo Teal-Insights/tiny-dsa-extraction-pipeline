@@ -19,6 +19,8 @@ from excel_grapher.series_bindings.types import (
     WorkbookSeriesBindings,
 )
 
+from src.graph_cache import prune_cache_entries_for_other_excel_grapher_versions
+
 BINDINGS_VALIDATION_CACHE_SCHEMA_VERSION = "1.0.0"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BINDINGS_VALIDATION_CACHE_DIR = _REPO_ROOT / ".cache" / "bindings-validation"
@@ -171,6 +173,9 @@ def get_or_build_bindings_validation(
             cache_key, cache_dir=resolved_cache_dir
         )
         if loaded is not None:
+            prune_cache_entries_for_other_excel_grapher_versions(
+                cache_dir=resolved_cache_dir,
+            )
             elapsed = time.perf_counter() - started
             print(
                 "validate_series_bindings: cache hit "
@@ -200,6 +205,9 @@ def get_or_build_bindings_validation(
             cache_dir=resolved_cache_dir,
         )
         save_elapsed = time.perf_counter() - save_started
+        prune_cache_entries_for_other_excel_grapher_versions(
+            cache_dir=resolved_cache_dir,
+        )
         print(
             "validate_series_bindings: cache miss "
             f"(build {build_elapsed:.1f}s, save {save_elapsed:.1f}s, "

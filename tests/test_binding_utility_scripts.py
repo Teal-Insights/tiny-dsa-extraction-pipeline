@@ -617,6 +617,27 @@ def test_measure_shard_pattern_catalog_emits_filled_gap_column_shards() -> None:
     assert set(internals[0]["key"]) == {"SCENARIO", "TIME_PERIOD", "MEASURE"}
 
 
+def test_binding_guidance_documents_unique_vs_shared_compute_names() -> None:
+    """Authoring materials teach when shared names merge vs when they mask paths."""
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / "bindings" / "README.md").read_text(encoding="utf-8")
+    prompt = (root / "templates" / "binding-authoring-prompt.txt").read_text(
+        encoding="utf-8"
+    )
+    example = (
+        root / "templates" / "binding-pattern-measure-shards.example.yaml"
+    ).read_text(encoding="utf-8")
+
+    for text in (readme, prompt, example):
+        lowered = text.lower()
+        assert "unreachable" in lowered
+        assert "unique" in lowered or "uniquify" in lowered
+        assert "share" in lowered or "shared" in lowered
+
+    assert "output.compute.name" in readme
+    assert "compute_/set_" in prompt or "compute_" in prompt
+
+
 def test_emit_bindings_from_catalog_validates_against_synthetic_workbook(
     tmp_path: Path,
 ) -> None:

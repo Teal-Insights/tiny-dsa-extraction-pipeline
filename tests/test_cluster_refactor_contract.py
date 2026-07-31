@@ -7,6 +7,8 @@ from pathlib import Path
 from textwrap import dedent
 from typing import TypedDict
 
+import pytest
+
 from src.internals_refactor import (
     ClusterRefactorContext,
     ClusterRefactorLLMResponse,
@@ -716,6 +718,107 @@ def test_ensure_cluster_refactor_imports_injects_cellvalue() -> None:
     )
     assert "CellValue" in import_line
     assert "EvalContext" in import_line
+
+
+def test_ensure_cluster_refactor_imports_injects_referenced_runtime_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_module_symbols",
+        lambda: ("XlError", "xl_cell", "xl_offset", "xl_raise"),
+    )
+    response = ClusterRefactorResponse(
+        helper_name="lagged_debt_stock",
+        helper_docstring="Lagged debt stock.\n\nArgs:\n    ctx: Context.",
+        parameters=(
+            HelperParameter(
+                name="reporting_period",
+                dimension_id="REPORTING_PERIOD",
+                dtype="int",
+            ),
+        ),
+        helper_source=dedent(
+            '''
+            def lagged_debt_stock(ctx: EvalContext, reporting_period: int) -> CellValue:
+                """Lagged debt stock."""
+                columns = {1: "B", 2: "C"}
+                anchor = xl_cell(ctx, f"Baseline!{columns[reporting_period]}35")
+                return xl_offset(ctx, anchor, -1, 0)
+            '''
+        ).strip(),
+        member_keys=(),
+    )
+    updated = ensure_cluster_refactor_imports(
+        INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
+        response,
+    )
+    import_line = next(
+        line for line in updated.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "xl_cell" in import_line
+    assert "xl_offset" in import_line
+    # Unreferenced runtime symbols stay out of the bundle.
+    assert "xl_raise" not in import_line
+
+
+def test_ensure_cluster_refactor_imports_skips_reader_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reader helpers live in ``._readers`` and must not join the runtime bundle."""
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_module_symbols",
+        lambda: ("xl_cell", "xl_number"),
+    )
+    response = ClusterRefactorResponse(
+        helper_name="shock_type_flag",
+        helper_docstring="Shock type flag.\n\nArgs:\n    ctx: Context.",
+        parameters=(),
+        helper_source=dedent(
+            '''
+            def shock_type_flag(ctx: EvalContext) -> float:
+                """Shock type flag."""
+                return xl_number(read_shock_type(ctx))
+            '''
+        ).strip(),
+        member_keys=(),
+    )
+    updated = ensure_cluster_refactor_imports(
+        INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
+        response,
+    )
+    import_line = next(
+        line for line in updated.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "xl_number" in import_line
+    assert "read_shock_type" not in import_line
+
+
+def test_apply_cluster_collapse_imports_referenced_runtime_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_module_symbols",
+        lambda: ("xl_cell", "xl_offset"),
+    )
+    response = prepare_cluster_refactor_response(
+        GROWTH_THRESHOLD_LLM_RESPONSE,
+        GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+        **CLUSTER_PREPARE_KWARGS,
+    )
+    internals = INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT.replace(
+        "from .runtime import xl_cell",
+        "from .runtime import xl_number",
+    )
+    applied, _rewrite_count = apply_cluster_collapse(
+        internals,
+        response,
+        GROWTH_THRESHOLD_CLUSTER_CONTEXT,
+    )
+    import_line = next(
+        line for line in applied.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "xl_cell" in import_line
+    ast.parse(applied)
 
 
 def test_strip_python_string_delimiters_shared_with_singleton() -> None:

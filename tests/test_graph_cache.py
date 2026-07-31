@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
+from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated, cast
 from unittest.mock import patch
@@ -20,6 +22,7 @@ from src.graph_cache import (
     dependency_graph_cache_key,
     get_or_build_dependency_graph,
     load_dependency_graph,
+    prune_cache_entries_for_other_excel_grapher_versions,
 )
 from src.projection_cache import (
     DEFAULT_PROJECTION_CACHE_DIR,
@@ -44,6 +47,25 @@ from tests.fixtures.test_state import (
     REPO_PROJECTION_CACHE_DIR,
     REPO_SERIES_RESOLUTION_CACHE_DIR,
 )
+
+
+def _write_versioned_cache_pair(
+    cache_dir: Path,
+    cache_key: str,
+    *,
+    excel_grapher_version: str,
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / f"{cache_key}.pkl.gz").write_bytes(b"payload")
+    (cache_dir / f"{cache_key}.meta.json").write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "excel_grapher_version": excel_grapher_version,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_pytest_uses_isolated_pipeline_disk_cache() -> None:
@@ -96,6 +118,55 @@ def test_dependency_graph_cache_roundtrip(
     assert first.cache_key == second.cache_key
     assert len(first.graph) == len(second.graph)
     assert first.graph.leaf_keys() == second.graph.leaf_keys()
+
+
+def test_prune_cache_entries_for_other_excel_grapher_versions_keeps_current(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "dependency-graph"
+    current = version("excel-grapher")
+    _write_versioned_cache_pair(
+        cache_dir, "keep-current", excel_grapher_version=current
+    )
+    _write_versioned_cache_pair(
+        cache_dir, "keep-other-current", excel_grapher_version=current
+    )
+    _write_versioned_cache_pair(cache_dir, "drop-old", excel_grapher_version="0.0.1")
+
+    pruned = prune_cache_entries_for_other_excel_grapher_versions(
+        cache_dir=cache_dir,
+    )
+
+    assert sorted(pruned) == ["drop-old.meta.json", "drop-old.pkl.gz"]
+    assert (cache_dir / "keep-current.pkl.gz").is_file()
+    assert (cache_dir / "keep-other-current.pkl.gz").is_file()
+    assert not (cache_dir / "drop-old.pkl.gz").is_file()
+    assert not (cache_dir / "drop-old.meta.json").is_file()
+
+
+def test_get_or_build_dependency_graph_prunes_other_excel_grapher_versions(
+    synthetic_config,
+    graph_cache_dir: Path,
+) -> None:
+    first = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    clear_process_dependency_graph_cache(cache_dir=graph_cache_dir)
+    _write_versioned_cache_pair(
+        graph_cache_dir, "stale-old-version", excel_grapher_version="0.0.1"
+    )
+    _write_versioned_cache_pair(
+        graph_cache_dir,
+        "sibling-current-version",
+        excel_grapher_version=version("excel-grapher"),
+    )
+
+    second = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+
+    assert second.cache_hit
+    assert second.cache_key == first.cache_key
+    assert (graph_cache_dir / f"{first.cache_key}.pkl.gz").is_file()
+    assert (graph_cache_dir / "sibling-current-version.pkl.gz").is_file()
+    assert not (graph_cache_dir / "stale-old-version.pkl.gz").is_file()
+    assert not (graph_cache_dir / "stale-old-version.meta.json").is_file()
 
 
 def test_dependency_graph_cache_force_rebuild(

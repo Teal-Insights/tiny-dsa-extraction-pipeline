@@ -9,6 +9,7 @@ from src.refactor_fingerprints import (
     ClusterFingerprintSummary,
     RefRelation,
     RefResolution,
+    SemanticDependencyRef,
     build_cluster_fingerprint_summary,
     classify_ref_relation,
     estimate_fingerprint_dump_tokens,
@@ -583,6 +584,91 @@ def test_build_summary_keeps_uniform_ref_series_together() -> None:
     assert summary.groups[0].ref_relations[1].offsets == {"TIME_PERIOD": -1}
 
 
+def test_build_summary_splits_groups_when_ref_slot_helper_mix() -> None:
+    """Same series published as two helpers must split into helper-uniform groups.
+
+    Reproduces the live cluster-28 failure: a passthrough sweep (``=Baseline!D33``
+    ...) whose operand series ``baseline_interest_rate`` was peeled by the
+    scheduler into two helpers (``baseline_interest_rate`` for early years,
+    ``baseline_interest_rate_2`` for later years). ``address_to_series_id`` reports
+    one series for every operand, so keying the partition on series alone keeps
+    them in one group whose slot spans two helpers — ``_resolve_ref`` then can't
+    pick one helper (every member ref must be ⊆ one dependency) and falls back to
+    ``xl_cell``, which mechanical synthesis rejects as ``slots_without_read_sites``.
+    Partitioning by the resolved helper splits the group so each slot resolves.
+    """
+    members = (
+        _member("HotAdapted!D32", "=Baseline!D33"),
+        _member("HotAdapted!E32", "=Baseline!E33"),
+        _member("HotAdapted!F32", "=Baseline!F33"),
+        _member("HotAdapted!G32", "=Baseline!G33"),
+    )
+    bound_keys = {
+        "HotAdapted!D32": {"TIME_PERIOD": 2009},
+        "HotAdapted!E32": {"TIME_PERIOD": 2010},
+        "HotAdapted!F32": {"TIME_PERIOD": 2030},
+        "HotAdapted!G32": {"TIME_PERIOD": 2031},
+        "Baseline!D33": {"TIME_PERIOD": 2009},
+        "Baseline!E33": {"TIME_PERIOD": 2010},
+        "Baseline!F33": {"TIME_PERIOD": 2030},
+        "Baseline!G33": {"TIME_PERIOD": 2031},
+    }
+    expected = {
+        "HotAdapted!D32": {"TIME_PERIOD": 2009},
+        "HotAdapted!E32": {"TIME_PERIOD": 2010},
+        "HotAdapted!F32": {"TIME_PERIOD": 2030},
+        "HotAdapted!G32": {"TIME_PERIOD": 2031},
+    }
+    # One binding series, but two published helpers (scheduler peel).
+    address_to_series_id = {
+        "Baseline!D33": "baseline_interest_rate",
+        "Baseline!E33": "baseline_interest_rate",
+        "Baseline!F33": "baseline_interest_rate",
+        "Baseline!G33": "baseline_interest_rate",
+    }
+    semantic_dependencies = (
+        SemanticDependencyRef(
+            helper_name="baseline_interest_rate",
+            call_form="baseline_interest_rate(ctx, time_period=time_period)",
+            address_template="Baseline!{col}33",
+            addresses=("Baseline!D33", "Baseline!E33"),
+        ),
+        SemanticDependencyRef(
+            helper_name="baseline_interest_rate_2",
+            call_form="baseline_interest_rate_2(ctx, time_period=time_period)",
+            address_template="Baseline!{col}33",
+            addresses=("Baseline!F33", "Baseline!G33"),
+        ),
+    )
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id=address_to_series_id,
+        semantic_dependencies=semantic_dependencies,
+    )
+    assert summary.fallback_reason is None
+    assert len(summary.groups) == 2
+    helper_by_members = {
+        group.members: group.ref_relations[0].resolution for group in summary.groups
+    }
+    assert set(helper_by_members) == {
+        ("HotAdapted!D32", "HotAdapted!E32"),
+        ("HotAdapted!F32", "HotAdapted!G32"),
+    }
+    early = helper_by_members[("HotAdapted!D32", "HotAdapted!E32")]
+    late = helper_by_members[("HotAdapted!F32", "HotAdapted!G32")]
+    assert early.kind == "semantic_helper"
+    assert early.helper_name == "baseline_interest_rate"
+    assert late.kind == "semantic_helper"
+    assert late.helper_name == "baseline_interest_rate_2"
+    # Both groups still carry the single binding series id.
+    for group in summary.groups:
+        assert group.ref_relations[0].series_id == "baseline_interest_rate"
+
+
 def test_build_summary_falls_back_when_unbound_refs_mix_sheet_row() -> None:
     """Incomplete series maps: unbound mates with mixed sheet/row → fallback.
 
@@ -654,3 +740,88 @@ def test_build_summary_keeps_same_geometry_unbound_refs_together() -> None:
     assert len(summary.groups) == 1
     assert summary.groups[0].members == ("Result!B1", "Result!C1")
     assert summary.groups[0].ref_relations[0].series_id is None
+
+
+def test_build_summary_splits_peel_boundary_lag_from_self_recurrence() -> None:
+    """A lag that crosses the peel boundary must not share a group with self-lags.
+
+    Issue #138: an engine series peeled into two schedule units publishes two
+    helpers (``paris_engine_indicators`` for the early years,
+    ``paris_engine_indicators_2`` for the rest). Inside the later unit the first
+    member's ``t-1`` operand lives in the *sibling* helper while every other
+    member's lag is in-cluster self-recurrence. Both regimes key on the same
+    binding series id, so partitioning on the series alone kept them in one
+    group whose slot is neither wholly in-cluster nor wholly inside one
+    dependency — ``_resolve_ref`` fell back to ``xl_cell``, leaving a raw
+    ``xl_cell(ctx, 'Paris!{col}35')`` read in the generated helper.
+    """
+    members = (
+        _member("Paris!E35", "=Paris!D35*(1+Paris!E32/100)"),
+        _member("Paris!F35", "=Paris!E35*(1+Paris!F32/100)"),
+        _member("Paris!G35", "=Paris!F35*(1+Paris!G32/100)"),
+    )
+    bound_keys = {
+        "Paris!D35": {"TIME_PERIOD": 2029},
+        "Paris!E35": {"TIME_PERIOD": 2030},
+        "Paris!F35": {"TIME_PERIOD": 2031},
+        "Paris!G35": {"TIME_PERIOD": 2032},
+        "Paris!E32": {"TIME_PERIOD": 2030},
+        "Paris!F32": {"TIME_PERIOD": 2031},
+        "Paris!G32": {"TIME_PERIOD": 2032},
+    }
+    expected = {
+        "Paris!E35": {"TIME_PERIOD": 2030},
+        "Paris!F35": {"TIME_PERIOD": 2031},
+        "Paris!G35": {"TIME_PERIOD": 2032},
+    }
+    # One binding series for every row-35 cell, peeled into two schedule units.
+    address_to_series_id = {
+        "Paris!D35": "paris_engine_indicators",
+        "Paris!E35": "paris_engine_indicators",
+        "Paris!F35": "paris_engine_indicators",
+        "Paris!G35": "paris_engine_indicators",
+        "Paris!E32": "paris_engine_weighted_interest_rate",
+        "Paris!F32": "paris_engine_weighted_interest_rate",
+        "Paris!G32": "paris_engine_weighted_interest_rate",
+    }
+    semantic_dependencies = (
+        SemanticDependencyRef(
+            helper_name="paris_engine_indicators",
+            call_form="paris_engine_indicators(ctx, time_period=time_period)",
+            address_template="Paris!{col}35",
+            addresses=("Paris!D35",),
+        ),
+        SemanticDependencyRef(
+            helper_name="paris_engine_weighted_interest_rate",
+            call_form=(
+                "paris_engine_weighted_interest_rate(ctx, time_period=time_period)"
+            ),
+            address_template="Paris!{col}32",
+            addresses=("Paris!E32", "Paris!F32", "Paris!G32"),
+        ),
+    )
+    summary = build_cluster_fingerprint_summary(
+        members,
+        expected_member_keys=expected,
+        bound_address_keys=bound_keys,
+        workbook_path=None,
+        layout=None,
+        address_to_series_id=address_to_series_id,
+        semantic_dependencies=semantic_dependencies,
+    )
+    assert summary.fallback_reason is None
+    resolutions = {
+        group.members: group.ref_relations[0].resolution for group in summary.groups
+    }
+    assert set(resolutions) == {("Paris!E35",), ("Paris!F35", "Paris!G35")}
+    boundary = resolutions[("Paris!E35",)]
+    assert boundary.kind == "semantic_helper"
+    assert boundary.helper_name == "paris_engine_indicators"
+    assert resolutions[("Paris!F35", "Paris!G35")].kind == "self_recurrence"
+    # The interest-rate slot stays one helper for every member.
+    for group in summary.groups:
+        assert group.ref_relations[1].resolution.kind == "semantic_helper"
+        assert (
+            group.ref_relations[1].resolution.helper_name
+            == "paris_engine_weighted_interest_rate"
+        )

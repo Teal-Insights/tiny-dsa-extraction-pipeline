@@ -1,10 +1,16 @@
+from collections.abc import Callable
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict
 
-from src.llm_json import ValidatedJsonFailure, generate_validated_json
+from src.llm_json import (
+    ValidatedJsonFailure,
+    ValidatedJsonTimeout,
+    generate_validated_json,
+)
 from src.llm_providers import ProviderConfig
 
 JSON_OBJECT_PROVIDER = ProviderConfig(
@@ -47,27 +53,50 @@ class _FakeResponse:
 
 
 class _FakeCompletions:
-    def __init__(self, contents: list[str | None]) -> None:
+    def __init__(
+        self,
+        contents: list[str | None],
+        *,
+        after_create: Callable[[], None] | None = None,
+    ) -> None:
         self._contents = list(contents)
         self.calls: list[dict[str, object]] = []
+        self._after_create = after_create
 
     def create(self, **kwargs: object) -> _FakeResponse:
         self.calls.append(kwargs)
-        return _FakeResponse(self._contents.pop(0))
+        response = _FakeResponse(self._contents.pop(0))
+        if self._after_create is not None:
+            self._after_create()
+        return response
 
 
 class _FakeChat:
-    def __init__(self, contents: list[str | None]) -> None:
-        self.completions = _FakeCompletions(contents)
+    def __init__(
+        self,
+        contents: list[str | None],
+        *,
+        after_create: Callable[[], None] | None = None,
+    ) -> None:
+        self.completions = _FakeCompletions(contents, after_create=after_create)
 
 
 class FakeClient:
-    def __init__(self, contents: list[str | None]) -> None:
-        self.chat = _FakeChat(contents)
+    def __init__(
+        self,
+        contents: list[str | None],
+        *,
+        after_create: Callable[[], None] | None = None,
+    ) -> None:
+        self.chat = _FakeChat(contents, after_create=after_create)
 
 
-def _make(contents: list[str | None]) -> tuple[OpenAI, FakeClient]:
-    fake = FakeClient(contents)
+def _make(
+    contents: list[str | None],
+    *,
+    after_create: Callable[[], None] | None = None,
+) -> tuple[OpenAI, FakeClient]:
+    fake = FakeClient(contents, after_create=after_create)
     return cast(OpenAI, fake), fake
 
 
@@ -409,3 +438,75 @@ def test_structured_opt_out_uses_json_object_on_structured_provider() -> None:
     calls = fake.chat.completions.calls
     assert len(calls) == 1
     assert calls[0]["response_format"] == {"type": "json_object"}
+
+
+def test_deadline_exceeded_before_next_attempt_raises_timeout() -> None:
+    bad = '{"title": "T", "bodyy": "B"}'
+    clock = {"now": 0.0}
+
+    def advance_past_deadline() -> None:
+        clock["now"] = 10.0
+
+    client, fake = _make([bad, bad, bad], after_create=advance_past_deadline)
+
+    with patch("src.llm_json.time.perf_counter", side_effect=lambda: clock["now"]):
+        with pytest.raises(ValidatedJsonTimeout, match="deadline"):
+            generate_validated_json(
+                client=client,
+                model="m",
+                provider=JSON_OBJECT_PROVIDER,
+                system_prompt="sys",
+                user_prompt="usr",
+                response_model=_Sample,
+                max_attempts=3,
+                deadline_seconds=5.0,
+            )
+
+    assert len(fake.chat.completions.calls) == 1
+
+
+def test_deadline_allows_retries_while_under_budget() -> None:
+    bad = '{"title": "T", "bodyy": "B"}'
+    valid = '{"title": "T", "body": "B"}'
+    clock = {"now": 0.0}
+
+    def advance_one_second() -> None:
+        clock["now"] += 1.0
+
+    client, fake = _make([bad, valid], after_create=advance_one_second)
+
+    with patch("src.llm_json.time.perf_counter", side_effect=lambda: clock["now"]):
+        parsed, _ = generate_validated_json(
+            client=client,
+            model="m",
+            provider=JSON_OBJECT_PROVIDER,
+            system_prompt="sys",
+            user_prompt="usr",
+            response_model=_Sample,
+            max_attempts=3,
+            deadline_seconds=5.0,
+        )
+
+    assert parsed == _Sample(title="T", body="B")
+    assert len(fake.chat.completions.calls) == 2
+
+
+def test_attempt_start_is_logged_at_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    valid = '{"title": "T", "body": "B"}'
+    client, _ = _make([valid])
+
+    with caplog.at_level("INFO", logger="src.llm_json"):
+        generate_validated_json(
+            client=client,
+            model="m",
+            provider=JSON_OBJECT_PROVIDER,
+            system_prompt="sys",
+            user_prompt="usr",
+            response_model=_Sample,
+        )
+
+    assert any(
+        "requesting _Sample from m (attempt 1/3)" in r.message for r in caplog.records
+    )

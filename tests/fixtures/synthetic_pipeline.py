@@ -58,6 +58,7 @@ def build_synthetic_pipeline_graph(
     Sequence[Mapping[str, Any]],
     Sequence[Mapping[str, Any]],
     Sequence[Mapping[str, Any]],
+    Sequence[Mapping[str, Any]],
 ]:
     """Build the dependency graph through the same path as production export."""
     graph_result = build_pipeline_graph(config)
@@ -67,6 +68,7 @@ def build_synthetic_pipeline_graph(
         graph_result.input_series,
         graph_result.output_series,
         graph_result.internal_series,
+        graph_result.constant_series,
     )
 
 

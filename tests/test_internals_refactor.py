@@ -47,6 +47,7 @@ from src.internals_refactor import (
     collapse_bindings_for_response,
     complete_cluster_member_keys_from_expected,
     extract_function_source,
+    helper_static_key_domain,
     llm_refactor_cluster,
     llm_refactor_singleton,
     load_cluster_refactor_prompt_fixed_portion,
@@ -57,6 +58,7 @@ from src.internals_refactor import (
     refactor_cache_key,
     refactor_internals_all_clusters,
     refactor_internals_singleton,
+    resolve_semantic_dependencies,
     sample_indices_for_prompt,
     singleton_prompt_payload,
     substitute_collapse_bindings,
@@ -1190,6 +1192,79 @@ def test_validate_cluster_rejects_duplicate_member_key_combinations() -> None:
             )
 
 
+# --- RED: a helper must serve every member key it claims (#139) ---------------
+#
+# `Baseline!D12:CP12` (labour productivity growth) interleaves two formula
+# regimes — `D12:Q12` / `Y12:CP12` read `Productivity!*6`, `R12:X12` is the
+# GDP/employment ratio. A refactor that claims the whole series but implements
+# one regime emits a helper whose literal period tables (or key-dispatch chain)
+# cannot serve the other regime's years, and the call raises `KeyError` /
+# `ValueError` the first time a caller asks for one. The claimed member keys are
+# already in the context, so the mismatch is provable before the helper lands.
+
+
+def test_validate_cluster_rejects_helper_that_cannot_serve_a_member_key() -> None:
+    helper_source = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    columns = {{1: 'C'}}
+    column = columns[time_period]
+    return xl_cell(ctx, f'Inputs!{{column}}1')
+'''
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        with pytest.raises(ValueError, match="cannot serve member keys"):
+            validate_cluster_refactor_response(
+                CLUSTER_CONTEXT,
+                _cluster_response(helper_source=helper_source),
+                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+                internals_source=PRISTINE_CLUSTER,
+            )
+
+
+def test_validate_cluster_rejects_key_dispatch_chain_missing_a_member_key() -> None:
+    helper_source = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    if time_period == 1:
+        return xl_cell(ctx, 'Inputs!C1')
+    raise ValueError(time_period)
+'''
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        with pytest.raises(ValueError, match="cannot serve member keys"):
+            validate_cluster_refactor_response(
+                CLUSTER_CONTEXT,
+                _cluster_response(helper_source=helper_source),
+                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+                internals_source=PRISTINE_CLUSTER,
+            )
+
+
+def test_validate_cluster_accepts_member_key_handled_by_a_guard_branch() -> None:
+    """A period special-cased before the lookup table is served, not missing."""
+    helper_source = f'''def combined_input_passthrough(ctx, time_period):
+    """{CLUSTER_DOCSTRING}"""
+    if time_period == 2:
+        return xl_cell(ctx, 'Inputs!D1')
+    columns = {{1: 'C'}}
+    column = columns[time_period]
+    return xl_cell(ctx, f'Inputs!{{column}}1')
+'''
+    with patch(
+        "src.internals_refactor._resolved_projection_layout",
+        return_value=TEST_LAYOUT,
+    ):
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(helper_source=helper_source),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
+
+
 def test_validate_cluster_accepts_eval_context_type_hint() -> None:
     helper_source = f'''def combined_input_passthrough(ctx: EvalContext, time_period: int) -> float:
     """{CLUSTER_DOCSTRING}"""
@@ -2157,6 +2232,327 @@ def cell_engine_c10(ctx):
     assert pruned >= 1
     assert "def cell_engine_c10" not in updated
     assert "_ADDRESS_DISPATCH" in updated
+
+
+# --- RED: stranded identity-passthrough dependency resolution -----------------
+#
+# Live failure mode (full-pipeline run, clusters 28/49/67/33/34): each cluster is
+# a single-slot identity passthrough onto a Baseline engine cell, e.g.
+#
+#     def cell_hot_adapted_aa32(ctx):
+#         '''Formula: =Baseline!AA33.'''
+#         return xl_eval(ctx, 'Baseline!AA33', cell_baseline_aa33)
+#
+# In isolation these synthesize fine — the xl_eval point-read matches the slot by
+# address. But by the time they are scheduled (orders 117-122), the Baseline
+# engine family has already been collapsed into the `baseline_interest_rate` /
+# `baseline_engine_indicators` semantic helpers: `cell_baseline_aa33` is gone and
+# the caller body has been rewritten to a bare helper call. `resolve_semantic_
+# dependencies` then fails to map `Baseline!AA33` back to its helper (the docstring
+# "Covers" heuristic does not name the address, or two helpers match ambiguously),
+# so the fingerprint slot stays `xl_cell`, `_collect_read_sites` finds nothing to
+# claim it, and mechanical synthesis raises `slots_without_read_sites:[0]` -> LLM
+# fallback (which also fails: #VALUE! / KeyError).
+#
+# `address_to_series_id` already maps `Baseline!AA33` -> `baseline_interest_rate`,
+# and helper names *are* series ids, so resolution should never strand a
+# dependency whose series is an existing semantic helper — regardless of whether
+# the docstring/dispatch heuristics happen to recover it.
+
+
+def test_resolve_semantic_dependencies_resolves_stranded_passthrough_by_series_id() -> (
+    None
+):
+    """A collapsed passthrough dependency resolves via its series id even when the
+    helper's advertised coverage does not name the address."""
+    source = (
+        RUNTIME_IMPORT
+        + '''
+# --- Formula cell functions ---
+
+def baseline_interest_rate(ctx, time_period):
+    """Return the baseline interest rate for the period.
+
+    Note:
+        Covers Baseline!C33:H33.
+    """
+    return 0.0
+'''
+        + RESOLVER_SECTION
+    )
+    # cell_baseline_aa33 has been collapsed away; column AA (index 27) is outside
+    # the advertised C33:H33 coverage, so the docstring heuristic cannot recover
+    # it and the dependency strands as unresolved.
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Baseline!AA33"],
+        address_to_series_id={"Baseline!AA33": "baseline_interest_rate"},
+    )
+    assert unresolved == ()
+    assert [dependency.helper_name for dependency in resolved] == [
+        "baseline_interest_rate"
+    ]
+    assert "Baseline!AA33" in resolved[0].addresses
+
+
+def test_resolve_semantic_dependencies_resolves_stranded_passthrough_when_ambiguous() -> (  # noqa: E501
+    None
+):
+    """When two helpers advertise overlapping coverage of the dependency's row the
+    docstring heuristic is ambiguous (returns None); the series id disambiguates."""
+    source = (
+        RUNTIME_IMPORT
+        + '''
+# --- Formula cell functions ---
+
+def baseline_interest_rate(ctx, time_period):
+    """Note: Covers Baseline!A33:BZ33."""
+    return 0.0
+
+def baseline_real_interest_rate(ctx, time_period):
+    """Note: Covers Baseline!A33:BZ33."""
+    return 0.0
+'''
+        + RESOLVER_SECTION
+    )
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Baseline!AA33"],
+        address_to_series_id={"Baseline!AA33": "baseline_interest_rate"},
+    )
+    assert unresolved == ()
+    assert [dependency.helper_name for dependency in resolved] == [
+        "baseline_interest_rate"
+    ]
+
+
+# --- RED: series-id fallback must respect the helper's provable key domain (#139)
+#
+# Live failure mode: `Baseline!D12:CP12` (labour productivity growth) is one
+# output series with two formula regimes — `D12:Q12` reads `Productivity!J6:W6`,
+# `R12:CP12` is the GDP/employment ratio. Only the ratio regime becomes the
+# `baseline_labour_productivity_growth` helper, so the helper serves 2023-2099
+# while `address_to_series_id` still maps `Baseline!D12` (2009) to it.
+#
+# The #134 series-id fallback then resolves the stranded `Baseline!D12` read to
+# `baseline_labour_productivity_growth(ctx, time_period=2009)`. That helper (and
+# everything it calls, down to `demography_working_age_population`, whose
+# period->column tables start at 2021) indexes literal period tables, so the
+# generated call raises `KeyError: 2009` at evaluation time.
+#
+# The fallback has no coverage evidence at all, so it must at least refuse a
+# helper that *provably* cannot serve the dependency's key.
+
+_PERIOD_TABLE_HELPER = '''
+def demography_working_age_population_low(ctx, time_period):
+    """Working-age population, low variant.
+
+    Note:
+        Covers Demography!BV10:EV10.
+    """
+    start_col = {2021: 74, 2022: 75, 2023: 76}
+    end_col = {2021: 224, 2022: 225, 2023: 226}
+    return xl_number(start_col[time_period] + end_col[time_period])
+'''
+
+
+def test_resolve_semantic_dependencies_rejects_series_id_helper_outside_key_domain() -> (
+    None
+):
+    """The series-id fallback refuses a helper whose literal key tables cannot
+    serve the dependency's bound key, rather than emitting a KeyError call."""
+    source = RUNTIME_IMPORT + _PERIOD_TABLE_HELPER + RESOLVER_SECTION
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Demography!BJ10"],
+        address_to_series_id={
+            "Demography!BJ10": "demography_working_age_population_low"
+        },
+        bound_address_keys={"Demography!BJ10": {"TIME_PERIOD": 2009}},
+    )
+    assert resolved == ()
+    assert unresolved == ("cell_demography_bj10",)
+
+
+def test_resolve_semantic_dependencies_keeps_series_id_helper_inside_key_domain() -> (
+    None
+):
+    """A dependency whose bound key is in the helper's literal tables still
+    resolves through the series-id fallback."""
+    source = RUNTIME_IMPORT + _PERIOD_TABLE_HELPER + RESOLVER_SECTION
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Demography!BX10"],
+        address_to_series_id={
+            "Demography!BX10": "demography_working_age_population_low"
+        },
+        bound_address_keys={"Demography!BX10": {"TIME_PERIOD": 2023}},
+    )
+    assert unresolved == ()
+    assert [dependency.helper_name for dependency in resolved] == [
+        "demography_working_age_population_low"
+    ]
+
+
+def test_resolve_semantic_dependencies_rejects_out_of_domain_key_dispatch_helper() -> (
+    None
+):
+    """A ``raise``-terminated equality dispatch is just as provable as a literal
+    lookup table: keys outside its branches must not route to the helper."""
+    source = (
+        RUNTIME_IMPORT
+        + '''
+def baseline_labour_productivity_growth(ctx, time_period):
+    """Note: Covers Baseline!R12:S12."""
+    if time_period == 2023:
+        return xl_number(1.0)
+    if time_period == 2024:
+        return xl_number(2.0)
+    raise ValueError(time_period)
+'''
+        + RESOLVER_SECTION
+    )
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Baseline!D12"],
+        address_to_series_id={"Baseline!D12": "baseline_labour_productivity_growth"},
+        bound_address_keys={"Baseline!D12": {"TIME_PERIOD": 2009}},
+    )
+    assert resolved == ()
+    assert unresolved == ("cell_baseline_d12",)
+
+
+def test_resolve_semantic_dependencies_keeps_series_id_helper_without_key_tables() -> (
+    None
+):
+    """#134 regression: a helper with no provable key domain still resolves, even
+    when its advertised coverage does not name the address."""
+    source = (
+        RUNTIME_IMPORT
+        + '''
+def baseline_interest_rate(ctx, time_period):
+    """Note: Covers Baseline!C33:H33."""
+    return xl_number(0.0)
+'''
+        + RESOLVER_SECTION
+    )
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Baseline!AA33"],
+        address_to_series_id={"Baseline!AA33": "baseline_interest_rate"},
+        bound_address_keys={"Baseline!AA33": {"TIME_PERIOD": 2035}},
+    )
+    assert unresolved == ()
+    assert [dependency.helper_name for dependency in resolved] == [
+        "baseline_interest_rate"
+    ]
+
+
+def test_resolve_semantic_dependencies_ignores_key_domain_without_bound_keys() -> None:
+    """Without ``bound_address_keys`` there is no key to check, so the #134
+    fallback behaviour is unchanged."""
+    source = RUNTIME_IMPORT + _PERIOD_TABLE_HELPER + RESOLVER_SECTION
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Demography!BJ10"],
+        address_to_series_id={
+            "Demography!BJ10": "demography_working_age_population_low"
+        },
+    )
+    assert unresolved == ()
+    assert [dependency.helper_name for dependency in resolved] == [
+        "demography_working_age_population_low"
+    ]
+
+
+def test_helper_static_key_domain_reads_literal_period_tables() -> None:
+    helper_def = _single_function_def(_PERIOD_TABLE_HELPER)
+    assert helper_def is not None
+    assert helper_static_key_domain(helper_def, "time_period") == frozenset(
+        {2021, 2022, 2023}
+    )
+
+
+def test_helper_static_key_domain_unions_membership_dispatch_branches() -> None:
+    helper_def = _single_function_def(
+        '''
+def helper(ctx, time_period):
+    """Note: Covers Baseline!D12:F12."""
+    if time_period in {2009, 2010}:
+        return xl_number(1.0)
+    if time_period == 2011:
+        return xl_number(2.0)
+    raise ValueError(time_period)
+'''
+    )
+    assert helper_def is not None
+    assert helper_static_key_domain(helper_def, "time_period") == frozenset(
+        {2009, 2010, 2011}
+    )
+
+
+def test_helper_static_key_domain_is_unbounded_with_a_fallthrough_return() -> None:
+    """A dispatch chain that falls through to a default body serves every key."""
+    helper_def = _single_function_def(
+        '''
+def helper(ctx, time_period):
+    """Note: Covers Baseline!D11:CP11."""
+    if time_period in {2022, 2023}:
+        return xl_number(1.0)
+    return xl_number(2.0)
+'''
+    )
+    assert helper_def is not None
+    assert helper_static_key_domain(helper_def, "time_period") is None
+
+
+def test_helper_static_key_domain_is_unbounded_behind_a_non_parameter_branch() -> None:
+    """`*_engine_indicators` guards on ``(indicator, time_period)`` tuples before
+    its fall-through body; keys routed through those branches never reach the
+    table, so no domain can be proven for either parameter."""
+    helper_def = _single_function_def(
+        '''
+def engine_indicators(ctx, indicator, time_period):
+    """Note: Covers Engine!C18:D26."""
+    if (indicator, time_period) in {('gross_debt_lcu', 2030)}:
+        return xl_number(1.0)
+    columns = {'interest_expenditure_pct_gdp': 'C'}
+    return xl_cell(ctx, f'Engine!{columns[indicator]}18')
+'''
+    )
+    assert helper_def is not None
+    assert helper_static_key_domain(helper_def, "indicator") is None
+    assert helper_static_key_domain(helper_def, "time_period") is None
+
+
+def test_helper_static_key_domain_ignores_tables_inside_a_branch() -> None:
+    """A table read only some keys reach proves nothing about the rest."""
+    helper_def = _single_function_def(
+        '''
+def helper(ctx, time_period):
+    """Note: Covers Baseline!D11:CP11."""
+    if time_period == 2022:
+        columns = {2022: 'Q'}
+        return xl_cell(ctx, f'Baseline!{columns[time_period]}11')
+    return xl_number(0.0)
+'''
+    )
+    assert helper_def is not None
+    assert helper_static_key_domain(helper_def, "time_period") is None
+
+
+def test_helper_static_key_domain_ignores_tables_indexed_by_an_offset() -> None:
+    """A lagged read cannot prove which key the caller needs, so stay unbounded."""
+    helper_def = _single_function_def(
+        '''
+def helper(ctx, time_period):
+    """Note: Covers Baseline!D11:CP11."""
+    start_col = {2021: 74, 2022: 75}
+    return xl_number(start_col[time_period - 1])
+'''
+    )
+    assert helper_def is not None
+    assert helper_static_key_domain(helper_def, "time_period") is None
 
 
 def test_rehome_unrefactored_cell_functions_moves_residuals_out_of_alias_section() -> (
@@ -3324,6 +3720,76 @@ def _write_trade_balance_internals(tmp_path: Path) -> Path:
     return internals_path
 
 
+# A single-operand fixed-lag cluster (#132): each member reads the prior
+# period's source cell, a relation mechanical synthesis reproduces cleanly. Used
+# to prove that a cluster the operand-routing gate rejects is still rescued to
+# member_sweep when verified synthesis covers it.
+LAG_CLUSTER = FormulaCluster(
+    cluster_id=9,
+    members=("Engine!B2", "Engine!C2", "Engine!D2"),
+    canonical_template="=Inputs!A1",
+    row=2,
+)
+
+LAG_FORMULAS = {
+    "Engine!B2": "=Inputs!A1",
+    "Engine!C2": "=Inputs!B1",
+    "Engine!D2": "=Inputs!C1",
+}
+
+LAG_SERIES_MAP = {
+    "Engine!B2": "lagged_series",
+    "Engine!C2": "lagged_series",
+    "Engine!D2": "lagged_series",
+    "Inputs!A1": "source_series",
+    "Inputs!B1": "source_series",
+    "Inputs!C1": "source_series",
+}
+
+LAG_OPERAND_KEYS: dict[str, dict[str, BindingKeyValue]] = {
+    "Inputs!A1": {"TIME_PERIOD": 1},
+    "Inputs!B1": {"TIME_PERIOD": 2},
+    "Inputs!C1": {"TIME_PERIOD": 3},
+    "Engine!B2": {"TIME_PERIOD": 2},
+    "Engine!C2": {"TIME_PERIOD": 3},
+    "Engine!D2": {"TIME_PERIOD": 4},
+}
+
+LAG_INTERNALS = (
+    RUNTIME_IMPORT
+    + """
+# --- Formula cell functions ---
+
+def cell_engine_b2(ctx):
+    return xl_cell(ctx, 'Inputs!A1')
+
+def cell_engine_c2(ctx):
+    return xl_cell(ctx, 'Inputs!B1')
+
+def cell_engine_d2(ctx):
+    return xl_cell(ctx, 'Inputs!C1')
+"""
+)
+
+
+def _lag_projection() -> ProjectionResult:
+    dependencies = {
+        "Engine!B2": ("Inputs!A1",),
+        "Engine!C2": ("Inputs!B1",),
+        "Engine!D2": ("Inputs!C1",),
+    }
+    return cast(
+        ProjectionResult,
+        _ClusterProjectionStub(LAG_FORMULAS, dependencies),
+    )
+
+
+def _write_lag_internals(tmp_path: Path) -> Path:
+    internals_path = tmp_path / "internals.py"
+    internals_path.write_text(LAG_INTERNALS, encoding="utf-8")
+    return internals_path
+
+
 def _guard_internals_path_reads(
     monkeypatch: pytest.MonkeyPatch,
     internals_path: Path,
@@ -3371,11 +3837,19 @@ def _block_internals_index_from_source() -> Iterator[None]:
         yield
 
 
-def test_build_cluster_refactor_context_skips_unroutable_operand_variation(
+def test_build_cluster_refactor_context_rescues_gate_rejection_via_lookup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without counterpart dimension ids the cluster keeps today's skip."""
+    """#132: the routing gate's rejection is a hint, not a hard skip.
+
+    ``select_cluster_refactor_contract`` returns ``None`` for the variable
+    country-pair cluster (no counterpart dimension id to route the second
+    operand), and key-dispatch cannot rescue it either. Mechanical synthesis,
+    however, reproduces every member via a ``REF_AREA`` lookup
+    (``{US: CN, DE: FR, JP: KR}``), so the context builder now routes it as
+    ``member_sweep`` instead of leaving ``cell_*`` wrappers behind.
+    """
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_symbols",
         lambda: ALLOWED_RUNTIME_SYMBOLS,
@@ -3395,6 +3869,82 @@ def test_build_cluster_refactor_context_skips_unroutable_operand_variation(
         workbook_path=tmp_path / "workbook.xlsx",
         bindings_path=tmp_path / "bindings",
         address_to_series_id=TRADE_BALANCE_SERIES_MAP,
+    )
+    assert ctx is not None
+    assert ctx.contract == "member_sweep"
+
+
+def test_build_cluster_refactor_context_rescues_gate_rejection_offset_lag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#132: a gate-rejected fixed-lag cluster is rescued to member_sweep.
+
+    With the gate and key-dispatch forced to reject, the context builder still
+    attempts mechanical synthesis; the single-operand ``t-1`` offset verifies,
+    so the cluster routes as ``member_sweep`` rather than being skipped.
+    """
+    import src.internals_refactor as module
+
+    monkeypatch.setattr(
+        module, "allowed_runtime_symbols", lambda: ALLOWED_RUNTIME_SYMBOLS
+    )
+    monkeypatch.setattr(
+        module, "select_cluster_refactor_contract", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(module, "plan_key_dispatch", lambda *_a, **_k: None)
+
+    ctx = build_cluster_refactor_context(
+        _lag_projection(),
+        LAG_CLUSTER,
+        _write_lag_internals(tmp_path),
+        bound_address_keys=LAG_OPERAND_KEYS,
+        key_vocabulary=(KEY_VOCABULARY[0],),
+        workbook_path=tmp_path / "workbook.xlsx",
+        bindings_path=tmp_path / "bindings",
+        address_to_series_id=LAG_SERIES_MAP,
+    )
+    assert ctx is not None
+    assert ctx.contract == "member_sweep"
+    assert ctx.expected_helper_name == "lagged_series"
+
+
+def test_build_cluster_refactor_context_keeps_skip_when_gate_rejection_fails_synthesis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#132: the rescue probe restores the skip when synthesis cannot verify.
+
+    When the routing gate and key-dispatch both reject a cluster and mechanical
+    synthesis also raises, the builder returns ``None`` -- the probe only
+    rescues clusters verified synthesis can reproduce, so genuinely unroutable
+    clusters keep today's skip rather than being forced onto a broken body.
+    """
+    import src.internals_refactor as module
+    from src.mechanical_body import MechanicalSynthesisError
+
+    monkeypatch.setattr(
+        module, "allowed_runtime_symbols", lambda: ALLOWED_RUNTIME_SYMBOLS
+    )
+    monkeypatch.setattr(
+        module, "select_cluster_refactor_contract", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(module, "plan_key_dispatch", lambda *_a, **_k: None)
+
+    def _fail_synthesis(*_args: object, **_kwargs: object) -> object:
+        raise MechanicalSynthesisError("forced_synthesis_failure")
+
+    monkeypatch.setattr("src.mechanical_body.synthesize_cluster_body", _fail_synthesis)
+
+    ctx = build_cluster_refactor_context(
+        _lag_projection(),
+        LAG_CLUSTER,
+        _write_lag_internals(tmp_path),
+        bound_address_keys=LAG_OPERAND_KEYS,
+        key_vocabulary=(KEY_VOCABULARY[0],),
+        workbook_path=tmp_path / "workbook.xlsx",
+        bindings_path=tmp_path / "bindings",
+        address_to_series_id=LAG_SERIES_MAP,
     )
     assert ctx is None
 
@@ -5627,3 +6177,102 @@ def test_refactor_prompt_omits_readers_when_readers_module_missing(
 
     dependencies = dump.split("Dependencies:", 1)[1]
     assert "def read_primary_balance_baseline(" not in dependencies
+
+
+def test_resolve_semantic_dependencies_prefers_scheduled_owner_over_series_id() -> None:
+    """A peel-split series resolves to the unit that owns the address (issue #138).
+
+    ``allocate_schedule_helper_names`` locks one helper name per schedule unit
+    before the pass, so when a series is peeled the base name goes to one unit and
+    ``_2`` to the other. The series-id fallback (#134) only knows the bare series
+    id, so it would send an address owned by the later peel to the earlier peel's
+    helper — a silently wrong read. The scheduled owner is authoritative.
+    """
+    source = (
+        RUNTIME_IMPORT
+        + '''
+# --- Formula cell functions ---
+
+def baseline_engine_indicators(ctx, time_period):
+    """Note: Covers Baseline!D36:X36."""
+    columns = {2028: 'W', 2029: 'X'}
+    return xl_cell(ctx, f'Baseline!{columns[time_period]}36')
+
+def baseline_engine_indicators_2(ctx, time_period):
+    """Note: Covers Baseline!E42:X42."""
+    columns = {2028: 'W', 2029: 'X'}
+    return xl_cell(ctx, f'Baseline!{columns[time_period]}42')
+'''
+        + RESOLVER_SECTION
+    )
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Baseline!X42"],
+        address_to_series_id={"Baseline!X42": "baseline_engine_indicators"},
+        address_to_helper_name={"Baseline!X42": "baseline_engine_indicators_2"},
+        # Both peels can serve 2029, so the #139 key-domain guard passes and the
+        # scheduled owner decides which one is read.
+        bound_address_keys={"Baseline!X42": {"TIME_PERIOD": 2029}},
+    )
+    assert unresolved == ()
+    assert [dependency.helper_name for dependency in resolved] == [
+        "baseline_engine_indicators_2"
+    ]
+    assert resolved[0].addresses == ("Baseline!X42",)
+
+
+def test_resolve_semantic_dependencies_ignores_scheduled_owner_not_yet_published() -> (
+    None
+):
+    """A planned helper name that no longer exists must not shadow the fallbacks.
+
+    Units that fail to refactor keep their ``cell_*`` wrappers, and pass 2 renames
+    helpers, so a scheduled name is only trusted while it names a live helper.
+    """
+    source = (
+        RUNTIME_IMPORT
+        + '''
+# --- Formula cell functions ---
+
+def baseline_interest_rate(ctx, time_period):
+    """Note: Covers Baseline!C33:H33."""
+    return 0.0
+'''
+        + RESOLVER_SECTION
+    )
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Baseline!AA33"],
+        address_to_series_id={"Baseline!AA33": "baseline_interest_rate"},
+        address_to_helper_name={"Baseline!AA33": "baseline_interest_rate_2"},
+    )
+    assert unresolved == ()
+    assert [dependency.helper_name for dependency in resolved] == [
+        "baseline_interest_rate"
+    ]
+
+
+def test_resolve_semantic_dependencies_declines_scheduled_owner_outside_key_domain() -> (
+    None
+):
+    """The scheduled owner is still bounded by the helper's provable key domain.
+
+    The schedule says which unit owns an address, not which keys the published
+    helper ended up serving, so a stale owner must not emit a call the helper's
+    literal tables would raise ``KeyError`` on (#139). Nothing else claims the
+    address here, so the dependency stays unresolved.
+    """
+    source = RUNTIME_IMPORT + _PERIOD_TABLE_HELPER + RESOLVER_SECTION
+    resolved, unresolved = resolve_semantic_dependencies(
+        source,
+        ["Demography!BJ10"],
+        address_to_series_id={
+            "Demography!BJ10": "demography_working_age_population_low"
+        },
+        address_to_helper_name={
+            "Demography!BJ10": "demography_working_age_population_low"
+        },
+        bound_address_keys={"Demography!BJ10": {"TIME_PERIOD": 2009}},
+    )
+    assert resolved == ()
+    assert unresolved == ("cell_demography_bj10",)

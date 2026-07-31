@@ -59,11 +59,22 @@ but fail at output/input codegen:
    public series key is only something like `(SCENARIO, TIME_PERIOD)`.
    Columns from different measures then collide on the same key, or only a
    subset of columns resolve. Prefer either:
-   - **one shard per measure column** (or per milestone column), sharing the
-     same `output.compute.name` / `input.setter.name` when export should merge
-     shards into one public function; or
+   - **one shard per measure column** (or per milestone column); or
    - a **richer key** that includes the measure dimension (common for
      internals that triangulate the whole triplet table).
+
+   When you shard, choose `output.compute.name` / `input.setter.name`
+   deliberately:
+
+   | Choice | When | Effect |
+   |---|---|---|
+   | **Share** the same name across shards | Shards are complementary slices of one logical public series (e.g. Gap columns for 2050 / 2075 that should become one `compute_gap_milestones`) | Export merges shards into one public function |
+   | **Uniquify** per shard | Each shard is a distinct scenario / engine path (e.g. Paris vs Moderate expenditure rows on separate sheets) | Each path keeps its own `compute_*` / `set_*` |
+
+   Sharing a name across distinct engine paths is the failure mode: export
+   merges the colliding definitions, so most scenario paths become
+   **unreachable** in the exported library even though every shard still
+   looks valid in YAML. Share only when a merge is intentional.
 
 3. **`workbook_config.TARGETS` (and overlapping internal ranges) must cover
    every bound data cell.** Sharding a “gap-only” column that sits past the
@@ -73,6 +84,9 @@ but fail at output/input codegen:
 
 Pedagogical catalog fragment (not used by the synthetic smoke workbook):
 [templates/binding-pattern-measure-shards.example.yaml](../templates/binding-pattern-measure-shards.example.yaml).
+The example shows the intentional **shared-name** merge for milestone Gap
+columns; see its header comments for the **unique-name** alternative used
+for per-scenario engine shards.
 
 ## Dimension `id` vs `concept`
 

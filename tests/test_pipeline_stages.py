@@ -74,6 +74,7 @@ def test_run_export_stage_prints_codegen_stage_boundary(
                 input_series=(),
                 output_series=(),
                 internal_series=(),
+                constant_series=(),
                 graph_cache_key="cache-key",
             ),
         ),
@@ -126,6 +127,7 @@ def test_run_refactor_stage_prints_clustering_and_refactor_boundaries(
             input_series=(),
             output_series=(),
             internal_series=(),
+            constant_series=(),
         ),
         refactor_projection=MagicMock(),
         internal_binding_index=MagicMock(),
@@ -374,3 +376,103 @@ def test_main_rejects_extract_graph_with_stop_after_stage(
     ):
         with pytest.raises(SystemExit):
             main(["--extract-graph", "--stop-after-stage", "export"])
+
+
+def test_run_pipeline_skips_document_when_differential_failed(
+    synthetic_pipeline_config_fixture,
+) -> None:
+    export_state = object()
+    refactor_state = object()
+    with (
+        patch(
+            "src.extraction_pipeline.run_export_stage",
+            return_value=export_state,
+        ),
+        patch(
+            "src.extraction_pipeline.run_refactor_stage",
+            return_value=refactor_state,
+        ),
+        patch(
+            "src.extraction_pipeline.run_validate_stage",
+            return_value=1,
+        ) as validate,
+        patch("src.documentation_pipeline.run_documentation_pipeline") as document,
+    ):
+        run_pipeline(synthetic_pipeline_config_fixture)
+
+    validate.assert_called_once_with(refactor_state, no_cache=False)
+    document.assert_not_called()
+
+
+def test_run_pipeline_force_document_runs_docs_after_differential_failure(
+    synthetic_pipeline_config_fixture,
+) -> None:
+    export_state = object()
+    refactor_state = object()
+    with (
+        patch(
+            "src.extraction_pipeline.run_export_stage",
+            return_value=export_state,
+        ),
+        patch(
+            "src.extraction_pipeline.run_refactor_stage",
+            return_value=refactor_state,
+        ),
+        patch(
+            "src.extraction_pipeline.run_validate_stage",
+            return_value=1,
+        ),
+        patch("src.documentation_pipeline.run_documentation_pipeline") as document,
+    ):
+        run_pipeline(
+            synthetic_pipeline_config_fixture,
+            force_document=True,
+        )
+
+    document.assert_called_once_with(synthetic_pipeline_config_fixture)
+
+
+def test_run_pipeline_document_failure_raises_document_stage_error(
+    synthetic_pipeline_config_fixture,
+) -> None:
+    from src.extraction_pipeline import DocumentStageError
+
+    export_state = object()
+    refactor_state = object()
+    with (
+        patch(
+            "src.extraction_pipeline.run_export_stage",
+            return_value=export_state,
+        ),
+        patch(
+            "src.extraction_pipeline.run_refactor_stage",
+            return_value=refactor_state,
+        ),
+        patch(
+            "src.extraction_pipeline.run_validate_stage",
+            return_value=0,
+        ) as validate,
+        patch(
+            "src.documentation_pipeline.run_documentation_pipeline",
+            side_effect=RuntimeError("guide rewrite hung"),
+        ),
+    ):
+        with pytest.raises(DocumentStageError, match="document stage failed"):
+            run_pipeline(synthetic_pipeline_config_fixture)
+
+    validate.assert_called_once()
+
+
+def test_main_force_document_flag_is_passed(
+    synthetic_pipeline_config_fixture,
+) -> None:
+    with patch(
+        "src.extraction_pipeline.load_pipeline_config",
+        return_value=synthetic_pipeline_config_fixture,
+    ):
+        with patch("src.extraction_pipeline.validate_pipeline_config"):
+            with patch("src.extraction_pipeline.activate_pipeline_config"):
+                with patch("src.extraction_pipeline.run_pipeline") as pipeline:
+                    main(["--force-document"])
+
+    assert pipeline.call_args.kwargs["force_document"] is True

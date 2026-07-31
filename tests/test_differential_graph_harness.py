@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +18,9 @@ def _load_harness_module():
 
 def test_values_match_passes_within_atol() -> None:
     harness = _load_harness_module()
-    match, abs_diff, rel_diff, note = harness.values_match(1.0000001, 1.0, atol=1e-6)
+    match, abs_diff, rel_diff, note = harness.values_match(
+        1.0000001, 1.0, atol=1e-6, rtol=1e-12
+    )
     assert match is True
     assert abs_diff is not None and abs_diff <= 1e-6
     assert rel_diff is not None
@@ -26,7 +29,7 @@ def test_values_match_passes_within_atol() -> None:
 
 def test_values_match_fails_outside_atol() -> None:
     harness = _load_harness_module()
-    match, abs_diff, _, _ = harness.values_match(1.01, 1.0, atol=1e-6)
+    match, abs_diff, _, _ = harness.values_match(1.01, 1.0, atol=1e-6, rtol=1e-12)
     assert match is False
     assert abs_diff == pytest.approx(0.01)
 
@@ -37,11 +40,106 @@ def test_values_match_treats_matching_errors_as_pass() -> None:
         "#DIV/0!",
         XlError.DIV,
         atol=1e-6,
+        rtol=1e-12,
     )
     assert match is True
     assert abs_diff is None
     assert rel_diff is None
     assert "both error" in note
+
+
+def test_values_match_passes_relative_branch_at_extreme_magnitude() -> None:
+    """§1.1 hybrid gate: ULP-scale rounding on huge values passes via rtol."""
+    harness = _load_harness_module()
+    match, abs_diff, rel_diff, note = harness.values_match(
+        1.0e16, 1.0e16 + 2.0, atol=1e-6, rtol=1e-12
+    )
+    assert match is True
+    assert abs_diff == pytest.approx(2.0)
+    assert rel_diff is not None and rel_diff <= 1e-12
+    assert note == ""
+
+
+def test_values_match_fails_when_both_tolerance_branches_fail() -> None:
+    """A genuine divergence exemplar fails the hybrid gate."""
+    harness = _load_harness_module()
+    match, _, rel_diff, _ = harness.values_match(
+        51.137230546619406, 1075.1372305466193, atol=1e-6, rtol=1e-12
+    )
+    assert match is False
+    assert rel_diff is not None and rel_diff > 1e-12
+
+
+def test_values_match_relative_branch_never_decides_zero_golden() -> None:
+    harness = _load_harness_module()
+    match, _, rel_diff, _ = harness.values_match(0.0, 1e-5, atol=1e-6, rtol=1e-12)
+    assert match is False
+    assert rel_diff == math.inf
+
+
+def test_values_match_zero_golden_passes_only_by_absolute_branch() -> None:
+    harness = _load_harness_module()
+    match, _, rel_diff, _ = harness.values_match(0.0, 5e-7, atol=1e-6, rtol=1e-12)
+    assert match is True
+    assert rel_diff == math.inf
+
+
+def test_values_match_relative_branch_uses_golden_magnitude_for_negatives() -> None:
+    harness = _load_harness_module()
+    match, _, rel_diff, _ = harness.values_match(
+        -1.0e16, -(1.0e16 + 2.0), atol=1e-6, rtol=1e-12
+    )
+    assert match is True
+    assert rel_diff is not None and 0 < rel_diff <= 1e-12
+
+
+def test_values_match_relative_branch_boundary_is_inclusive() -> None:
+    harness = _load_harness_module()
+    match, _, rel_diff, _ = harness.values_match(
+        1.0e15, 1.0e15 + 1000.0, atol=1e-6, rtol=1e-12
+    )
+    assert match is True
+    assert rel_diff == 1e-12
+
+
+def test_values_match_decides_out_of_double_range_ints_exactly() -> None:
+    harness = _load_harness_module()
+    match, abs_diff, rel_diff, note = harness.values_match(
+        10**400, 10**400, atol=1e-6, rtol=1e-12
+    )
+    assert match is True
+    assert abs_diff is None and rel_diff is None
+    assert "double range" in note
+
+    mismatch, *_ = harness.values_match(10**400, 10**400 + 1, atol=1e-6, rtol=1e-12)
+    assert mismatch is False
+
+
+def test_graph_harness_exports_rtol_constant() -> None:
+    harness = _load_harness_module()
+    assert harness.RTOL == 1e-12
+
+
+def test_graph_config_defaults_thread_hybrid_tolerances(tmp_path: Path) -> None:
+    config = _graph_config(tmp_path)
+    assert config.atol == 1e-6
+    assert config.rtol == 1e-12
+
+
+def test_graph_txt_summary_header_reports_both_tolerances(tmp_path: Path) -> None:
+    harness = _load_harness_module()
+    config = _graph_config(tmp_path)
+    report_path = tmp_path / "differential_report.txt"
+
+    harness.write_txt_summary(
+        [_matched_error_trial(harness)],
+        report_path,
+        config=config,
+        missing_inputs_in_graph=[],
+    )
+
+    text = report_path.read_text(encoding="utf-8")
+    assert "Tolerance: atol = 1e-06, rtol = 1e-12" in text
 
 
 def _graph_config(tmp_path: Path, **overrides):
@@ -193,3 +291,114 @@ def test_absent_input_preflight_uses_normalized_keys() -> None:
         cell for cell in all_input_cells if normalize_key(cell) not in known_keys
     )
     assert missing == ["Missing!A1"]
+
+
+class _FakeGolden:
+    def __init__(self, values: dict[str, float]) -> None:
+        self._values = values
+
+    def record_input_baselines(self, cells: frozenset[str]) -> None:
+        pass
+
+    def reset_inputs(self) -> None:
+        pass
+
+    def set_inputs(self, inputs: dict[str, object]) -> None:
+        pass
+
+    def read(self, cell: str) -> object:
+        return self._values[cell]
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeMvp:
+    def __init__(self, values: dict[str, float]) -> None:
+        self._values = values
+        self._known_keys = frozenset(values)
+        self.missing_cells: set[str] = set()
+
+    def record_input_baselines(self, cells: frozenset[str]) -> None:
+        pass
+
+    def reset_inputs(self) -> None:
+        pass
+
+    def set_inputs(self, inputs: dict[str, object]) -> None:
+        pass
+
+    def read(self, cell: str) -> object:
+        return self._values[cell]
+
+
+def _two_scenario_hooks(harness):
+    from tests.differential.differential_types import Axis, AxisPoint, Scenario
+
+    first = Scenario(id="first", inputs={"value": 1.0})
+    second = Scenario(id="second", inputs={"value": 2.0})
+    axes = (
+        Axis(
+            "scenarios",
+            (
+                AxisPoint(label="first", scenario=first),
+                AxisPoint(label="second", scenario=second),
+            ),
+        ),
+    )
+    writes = {"first": {"Inputs!A1": 1.0}, "second": {"Inputs!B1": 2.0}}
+    return (
+        patch.object(harness, "build_axes", return_value=axes),
+        patch.object(harness, "output_cell_labels", return_value=(("out", "Out!C1"),)),
+        patch.object(
+            harness,
+            "inputs_for_excel",
+            side_effect=lambda scenario: writes[scenario.id],
+        ),
+    )
+
+
+def _sweep_config(harness, tmp_path: Path):
+    return harness.GraphDifferentialConfig(
+        repo_root=tmp_path,
+        workbook_path=tmp_path / "workbook.xlsx",
+        report_dir=tmp_path / "reports",
+        targets=("Out!C1",),
+        constraints={"Inputs!A1": float},
+        library_name="Example",
+    )
+
+
+def _run_sweep_with_output_values(
+    harness, tmp_path: Path, golden_out: float, mvp_out: float
+):
+    golden = _FakeGolden({"Out!C1": golden_out, "Inputs!A1": 1.0, "Inputs!B1": 2.0})
+    mvp = _FakeMvp({"Out!C1": mvp_out, "Inputs!A1": 1.0, "Inputs!B1": 2.0})
+
+    hook_patches = _two_scenario_hooks(harness)
+    with (
+        hook_patches[0],
+        hook_patches[1],
+        hook_patches[2],
+        patch.object(harness, "GoldenDriver", lambda path: golden),
+        patch.object(harness, "MvpGraphDriver", lambda path, **kwargs: mvp),
+    ):
+        return harness.run_sweep(_sweep_config(harness, tmp_path))
+
+
+def test_run_sweep_threads_config_rtol_to_the_gate(tmp_path: Path) -> None:
+    """1-ULP noise at 1e16 (abs_diff=2.0 >> atol) matches only if run_sweep
+    hands config.rtol to values_match — pins the §1.1 threading end-to-end."""
+    harness = _load_harness_module()
+    trials, _ = _run_sweep_with_output_values(harness, tmp_path, 1.0e16, 1.0e16 + 2.0)
+    assert trials and all(trial.match for trial in trials)
+
+
+def test_run_sweep_fails_divergence_between_rtol_and_atol_scales(
+    tmp_path: Path,
+) -> None:
+    """rel err 1e-9 must not match: kills a rtol=config.atol transposition at
+    the values_match call site, under which 1e-9 <= 1e-6 would silently pass."""
+    harness = _load_harness_module()
+    trials, _ = _run_sweep_with_output_values(harness, tmp_path, 1.0e16, 1.0e16 + 1.0e7)
+    assert trials and not any(trial.match for trial in trials)

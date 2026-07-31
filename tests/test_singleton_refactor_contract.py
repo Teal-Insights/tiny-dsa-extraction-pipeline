@@ -766,6 +766,88 @@ def test_apply_singleton_refactor_plan_injects_eval_context_import() -> None:
     assert "def united_states_excess_deaths(ctx: EvalContext) -> float:" in applied
 
 
+def test_ensure_singleton_refactor_imports_injects_referenced_runtime_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_module_symbols",
+        lambda: ("XlError", "xl_cell", "xl_number", "xl_raise"),
+    )
+    updated = ensure_singleton_refactor_imports(
+        INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
+        CELLVALUE_REFACTOR_RESPONSE,
+    )
+    import_line = next(
+        line for line in updated.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "xl_cell" in import_line
+    assert "CellValue" in import_line
+    assert "EvalContext" in import_line
+    # Unreferenced runtime symbols stay out of the bundle.
+    assert "xl_raise" not in import_line
+    ast.parse(updated)
+
+
+def test_ensure_singleton_refactor_imports_ignores_docstring_mentions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A symbol named only in prose is not a reference and needs no import."""
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_module_symbols",
+        lambda: ("xl_cell", "xl_number"),
+    )
+    response = SingletonRefactorResponse(
+        symbol_name="inputs_c1",
+        symbol_docstring="Inputs cell C1.",
+        symbol_source=dedent(
+            '''
+            def inputs_c1(ctx: EvalContext) -> CellValue:
+                """Inputs cell C1, formerly read through xl_cell."""
+                return 1.0
+            '''
+        ).strip(),
+    )
+    updated = ensure_singleton_refactor_imports(
+        INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
+        response,
+    )
+    import_line = next(
+        line for line in updated.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "xl_cell" not in import_line
+
+
+def test_ensure_singleton_refactor_imports_ignores_locally_bound_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A local that shadows a runtime name is not an unresolved reference."""
+    monkeypatch.setattr(
+        "src.internals_refactor.allowed_runtime_module_symbols",
+        lambda: ("as_scalar", "xl_cell"),
+    )
+    response = SingletonRefactorResponse(
+        symbol_name="inputs_c1",
+        symbol_docstring="Inputs cell C1.",
+        symbol_source=dedent(
+            '''
+            def inputs_c1(ctx: EvalContext) -> CellValue:
+                """Inputs cell C1."""
+                as_scalar = xl_cell(ctx, "Inputs!C1")
+                return as_scalar
+            '''
+        ).strip(),
+    )
+    updated = ensure_singleton_refactor_imports(
+        INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
+        response,
+    )
+    import_line = next(
+        line for line in updated.splitlines() if line.startswith("from .runtime import")
+    )
+    assert "xl_cell" in import_line
+    assert "as_scalar" not in import_line
+
+
 def test_ensure_singleton_refactor_imports_injects_cellvalue() -> None:
     updated = ensure_singleton_refactor_imports(
         INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,

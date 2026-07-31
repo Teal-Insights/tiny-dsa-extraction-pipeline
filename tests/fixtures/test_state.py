@@ -105,9 +105,13 @@ def restore_pipeline_disk_cache() -> None:
 
 
 def clear_runtime_caches() -> None:
-    from src.runtime_symbols import allowed_runtime_symbols
+    from src.runtime_symbols import (
+        allowed_runtime_module_symbols,
+        allowed_runtime_symbols,
+    )
 
     allowed_runtime_symbols.cache_clear()
+    allowed_runtime_module_symbols.cache_clear()
     try:
         from src.refactor_parity_gate import clear_parity_runtime_caches
 

@@ -32,6 +32,8 @@ The reusable pattern:
 
 Fingerprint formula clusters group cells by AST shape only; they are not always valid atomic refactor nodes. When cross-period lag edges create inter-cluster cycles on an acyclic cell graph, the refactor pipeline schedules **refactor units** (member subsets of fingerprint families) via `compute_refactor_schedule` instead of hard-failing cluster ordering.
 
+Shared `compute_*` / `set_*` names across output/input shards are a deliberate merge signal for complementary slices of one logical public series (for example Gap milestone columns). The same pattern is wrong for distinct scenario or engine-sheet shards: export merges the colliding definitions and most paths become unreachable even though every shard still looks valid in YAML. Uniquify public names per path unless a merge is intentional; see [bindings/README.md](bindings/README.md).
+
 The cookie-cutter for tool #3 should make these defaults hard to skip. The best automation is "make the next missing decision visible."
 
 ## Approach For DDT/Q-CRAFT v2

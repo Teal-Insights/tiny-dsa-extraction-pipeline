@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
@@ -59,6 +60,23 @@ class ValidatedJsonFailure(RuntimeError):
         self.messages = list(messages)
         self.attempts = list(attempts)
         self.last_error = last_error
+
+
+class ValidatedJsonTimeout(RuntimeError):
+    """Raised when a wall-clock deadline elapses before a valid response."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        elapsed_seconds: float,
+        deadline_seconds: float,
+        attempts_completed: int,
+    ) -> None:
+        super().__init__(message)
+        self.elapsed_seconds = elapsed_seconds
+        self.deadline_seconds = deadline_seconds
+        self.attempts_completed = attempts_completed
 
 
 def _validation_feedback_message(error: Exception) -> ChatCompletionMessageParam:
@@ -185,6 +203,7 @@ def generate_validated_json(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     reasoning_effort: ReasoningEffort = "high",
     structured: bool = True,
+    deadline_seconds: float | None = None,
 ) -> tuple[T, str]:
     """Call the LLM for JSON, validate it, and retry on validation failure.
 
@@ -217,6 +236,9 @@ def generate_validated_json(
             when ``response_model`` has a schema that strict structured outputs
             reject (e.g. open-ended ``dict`` fields). Ignored for providers that
             do not support structured outputs.
+        deadline_seconds: Optional wall-clock budget for the whole retry loop.
+            When set, a new attempt is not started once elapsed time meets or
+            exceeds this budget; raises :class:`ValidatedJsonTimeout`.
 
     Returns:
         A tuple of the validated model and the raw JSON content string from the
@@ -225,6 +247,8 @@ def generate_validated_json(
 
     Raises:
         RuntimeError: If the model returns empty content.
+        ValidatedJsonTimeout: If ``deadline_seconds`` elapses before a valid
+            response is produced.
         ValidatedJsonFailure: If no attempt produces a valid response within
             ``max_attempts``. Subclasses ``RuntimeError`` and includes the full
             conversation and per-attempt validation errors.
@@ -239,8 +263,20 @@ def generate_validated_json(
     ]
     last_error: Exception | None = None
     attempt_records: list[ValidationAttemptRecord] = []
+    started = time.perf_counter()
     for attempt in range(max_attempts):
-        logger.debug(
+        if deadline_seconds is not None:
+            elapsed = time.perf_counter() - started
+            if elapsed >= deadline_seconds:
+                raise ValidatedJsonTimeout(
+                    f"LLM deadline of {deadline_seconds:.1f}s exceeded after "
+                    f"{elapsed:.1f}s while validating {response_model.__name__} "
+                    f"({attempt} attempts completed)",
+                    elapsed_seconds=elapsed,
+                    deadline_seconds=deadline_seconds,
+                    attempts_completed=attempt,
+                )
+        logger.info(
             "requesting %s from %s (attempt %d/%d)",
             response_model.__name__,
             model,
@@ -294,7 +330,7 @@ def generate_validated_json(
             messages.append({"role": "assistant", "content": content})
             messages.append(_validation_feedback_message(error))
             continue
-        logger.debug(
+        logger.info(
             "%s validated on attempt %d/%d",
             response_model.__name__,
             attempt + 1,

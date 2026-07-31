@@ -145,6 +145,38 @@ def test_build_bound_address_keys_preserves_effective_ids() -> None:
     }
 
 
+def test_build_bound_address_keys_includes_keyed_constant_series() -> None:
+    # A reader-only leaf (constant series) that still carries a per-cell key must
+    # contribute that key so ref slots pointing at it record TIME_PERIOD rather
+    # than an empty dict.
+    constant_series = [
+        {
+            "cells": [
+                {"address": "Inflation!AA8", "key": {"TIME_PERIOD": 2027}},
+                {"address": "Inflation!AB8", "key": {"TIME_PERIOD": 2028}},
+            ]
+        }
+    ]
+    bound = build_bound_address_keys((), (), (), constant_series=constant_series)
+    assert bound["Inflation!AA8"] == {"TIME_PERIOD": 2027}
+    assert bound["Inflation!AB8"] == {"TIME_PERIOD": 2028}
+
+
+def test_build_bound_address_keys_internal_overrides_constant_on_shared_address() -> (
+    None
+):
+    constant_series = [
+        {"cells": [{"address": "Engine!C10", "key": {"TIME_PERIOD": 1999}}]}
+    ]
+    internal_series = [
+        {"cells": [{"address": "Engine!C10", "key": {"TIME_PERIOD": 2000}}]}
+    ]
+    bound = build_bound_address_keys(
+        (), (), internal_series, constant_series=constant_series
+    )
+    assert bound["Engine!C10"] == {"TIME_PERIOD": 2000}
+
+
 def test_varying_and_expected_member_keys_use_dimension_ids(
     tmp_path: Path,
 ) -> None:
@@ -325,6 +357,40 @@ def test_build_address_to_series_id_falls_back_to_input_series() -> None:
         "Inputs!B9": "override_growth",
         "Inputs!C9": "override_growth",
     }
+
+
+def test_build_address_to_series_id_falls_back_to_constant_series() -> None:
+    constant_series = [
+        {
+            "id": "demography_variant_label_medium",
+            "cells": [{"address": "Demography!B8", "key": {}}],
+        },
+    ]
+
+    assert build_address_to_series_id(
+        (),
+        constant_series=constant_series,
+    ) == {"Demography!B8": "demography_variant_label_medium"}
+
+
+def test_build_address_to_series_id_prefers_internal_over_constant() -> None:
+    internal_series = [
+        {
+            "id": "internal_label",
+            "cells": [{"address": "Demography!B8", "key": {}}],
+        },
+    ]
+    constant_series = [
+        {
+            "id": "demography_variant_label_medium",
+            "cells": [{"address": "Demography!B8", "key": {}}],
+        },
+    ]
+
+    assert build_address_to_series_id(
+        internal_series,
+        constant_series=constant_series,
+    ) == {"Demography!B8": "internal_label"}
 
 
 def test_build_address_to_series_id_raises_on_duplicate_addresses() -> None:

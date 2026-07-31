@@ -27,6 +27,11 @@ from src.pipeline_config import (
     RunnableCellRule,
     discover_public_api_symbols,
 )
+from src.pipeline_monitor import (
+    StageTimer,
+    monitor_pipeline_stage,
+    resolve_stall_log_path,
+)
 from src.qmd_python_validation import (
     PublicApiPolicy,
     extract_python_cells,
@@ -47,6 +52,7 @@ MAX_SECTION_REWRITE_PROMPT_CHARS = 350_000
 REWRITE_API_EXCLUDE_PREFIXES: tuple[str, ...] = ("list_",)
 SECTION_REWRITE_REQUEST_TIMEOUT_ENV = "SECTION_REWRITE_REQUEST_TIMEOUT"
 DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT = 300.0
+SECTION_REWRITE_DEADLINE_ENV = "SECTION_REWRITE_DEADLINE"
 
 SETTER_INPUT_SHAPE_GUIDANCE = (
     "Setter input shapes: single-cell setters accept a bare scalar (not a "
@@ -64,6 +70,21 @@ SETTER_INPUT_SHAPE_GUIDANCE = (
     "measure column with a clear alias as shown in the canonical_api_usage "
     "reference."
 )
+
+
+def resolve_section_rewrite_request_timeout() -> float:
+    return (
+        env_float(SECTION_REWRITE_REQUEST_TIMEOUT_ENV)
+        or DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT
+    )
+
+
+def resolve_section_rewrite_deadline_seconds() -> float:
+    """Wall-clock budget for one section rewrite retry loop."""
+    override = env_float(SECTION_REWRITE_DEADLINE_ENV)
+    if override is not None:
+        return override
+    return resolve_section_rewrite_request_timeout() * MAX_SECTION_REWRITE_ATTEMPTS
 
 
 def _rewrite_cache_path(config: PipelineConfig) -> Path:
@@ -747,6 +768,7 @@ def rewrite_guide_section(
         response_schema=response_schema,
     )
     if cache_key in cache:
+        print(f"guide_rewrite: cache hit for {section_id}", flush=True)
         return SectionRewriteResponse.model_validate_json(cache[cache_key])
 
     if client is None:
@@ -774,6 +796,12 @@ def rewrite_guide_section(
         )
 
     model = section_rewrite_model()
+    deadline_seconds = resolve_section_rewrite_deadline_seconds()
+    print(
+        f"guide_rewrite: generating {section_id} "
+        f"(deadline={deadline_seconds:.0f}s, attempts<={MAX_SECTION_REWRITE_ATTEMPTS})",
+        flush=True,
+    )
     parsed, content = generate_validated_json(
         client=client,
         model=model,
@@ -789,9 +817,11 @@ def rewrite_guide_section(
         response_model=SectionRewriteResponse,
         post_validate=post_validate,
         max_attempts=MAX_SECTION_REWRITE_ATTEMPTS,
+        deadline_seconds=deadline_seconds,
     )
     cache[cache_key] = content
     save_rewrite_cache(config, cache)
+    print(f"guide_rewrite: finished {section_id}", flush=True)
     return parsed
 
 
@@ -1035,21 +1065,30 @@ def _section_rewrite_client(model: str) -> OpenAI | None:
     api_key = os.environ.get(provider.api_key_env)
     if not api_key:
         return None
-    timeout = (
-        env_float(SECTION_REWRITE_REQUEST_TIMEOUT_ENV)
-        or DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT
-    )
+    timeout = resolve_section_rewrite_request_timeout()
+    # Validation retries are owned by generate_validated_json; disable SDK
+    # retries so they cannot multiply the per-request timeout budget.
     return OpenAI(
         api_key=api_key,
         base_url=provider.base_url,
         timeout=timeout,
-        max_retries=2,
+        max_retries=0,
     )
 
 
 def run_documentation_pipeline(config: PipelineConfig) -> None:
     configure_logging()
     load_dotenv(config.repo_root / ".env")
+    timer = StageTimer()
+    with monitor_pipeline_stage(
+        timer,
+        "document",
+        stall_log_path=resolve_stall_log_path(config.dist_root),
+    ):
+        _run_documentation_pipeline_body(config)
+
+
+def _run_documentation_pipeline_body(config: PipelineConfig) -> None:
     great_docs_yml = _great_docs_yml(config)
     if not great_docs_yml.exists():
         # great-docs init may prompt to append great-docs/ to .gitignore; answer

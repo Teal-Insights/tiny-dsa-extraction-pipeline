@@ -443,41 +443,99 @@ def _series_id_for_refs(
     return None
 
 
+def _address_to_helper_map(
+    semantic_dependencies: Sequence[SemanticDependencyRef],
+) -> dict[str, str]:
+    """Map each covered operand address to the semantic helper that serves it.
+
+    A single binding *series* can be published as several helpers when the
+    scheduler peels its source cluster (e.g. ``baseline_interest_rate`` /
+    ``baseline_interest_rate_2`` split by year for cycle breaking). Downstream
+    operands that sweep across the split boundary must partition by the concrete
+    helper, not just the series id, so each fingerprint group's slot resolves to
+    one helper (``_resolve_ref`` requires every member ref ⊆ one dependency).
+    """
+    mapping: dict[str, str] = {}
+    for dependency in semantic_dependencies:
+        for address in dependency.addresses:
+            mapping.setdefault(address, dependency.helper_name)
+    return mapping
+
+
+_SELF_REGIME = "\0self"
+"""Regime marker for an operand this refactor unit computes itself.
+
+Never a legal helper name or series id, so an in-cluster operand can never
+collide with a sibling helper that carries the operand's series id (issue #138).
+"""
+
+
 def _ref_series_regime_key(
     ref_addresses: Sequence[str],
     address_to_series_id: Mapping[str, str] | None,
+    address_to_helper: Mapping[str, str] | None = None,
+    cluster_member_addresses: frozenset[str] = frozenset(),
 ) -> tuple[str | None, ...]:
-    """Per-slot series identity for one member (``None`` when unbound/unknown)."""
-    if not address_to_series_id:
-        return tuple(None for _ in ref_addresses)
-    return tuple(address_to_series_id.get(address) for address in ref_addresses)
+    """Per-slot resolution identity for one member.
+
+    In-cluster operands take :data:`_SELF_REGIME` (they resolve as
+    ``self_recurrence``, not through any helper). Otherwise prefers the concrete
+    semantic helper serving the operand (so a series split across helpers
+    partitions correctly); falls back to the binding series id, then ``None``
+    when unbound/unknown.
+    """
+    key: list[str | None] = []
+    for address in ref_addresses:
+        if address in cluster_member_addresses:
+            key.append(_SELF_REGIME)
+            continue
+        helper = address_to_helper.get(address) if address_to_helper else None
+        if helper is not None:
+            key.append(helper)
+        elif address_to_series_id:
+            key.append(address_to_series_id.get(address))
+        else:
+            key.append(None)
+    return tuple(key)
 
 
 def _partition_members_by_ref_series_regime(
     group_members: Sequence[MemberContext],
     refs_by_address: Mapping[str, tuple[str, ...]],
     address_to_series_id: Mapping[str, str] | None,
+    address_to_helper: Mapping[str, str] | None = None,
+    cluster_member_addresses: frozenset[str] = frozenset(),
 ) -> tuple[tuple[MemberContext, ...], ...]:
-    """Split skeleton-mates whose ref slots land in different binding series.
+    """Split skeleton-mates whose ref slots land in different helpers/series.
 
     Mechanical synthesis and LLM prompts assume each fingerprint group has one
-    series behind each ``ref_N``. When AST clustering keeps regime boundaries
-    together, partition here so each group gets uniform ``series_id`` / reads.
+    helper behind each ``ref_N``. When AST clustering keeps regime boundaries
+    together — or a series is published as several helpers — partition here so
+    each group gets uniform reads; existing multi-group synthesis then routes by
+    the varying key.
 
-    Unbound / incomplete maps: slots whose ``series_id`` is ``None`` are not
+    A peeled recurrence mixes both regimes in one slot: the first member of the
+    later unit lags into the *sibling* helper while its mates lag into the unit
+    itself. Both carry the same series id, so the in-cluster marker is what
+    keeps them apart.
+
+    Unbound / incomplete maps: slots whose identity is ``None`` are not
     further partitioned here. Callers must reject groups whose unbound members
     disagree on operand ``(sheet, row)`` geometry — see
     ``_unbound_ref_slot_geometry_conflict``. Same-geometry unbound mates (for
     example a column sweep on one row) may remain one group.
     """
-    if not address_to_series_id or len(group_members) < 2:
+    if (not address_to_series_id and not address_to_helper) or len(group_members) < 2:
         return (tuple(group_members),)
 
     partitions: dict[tuple[str | None, ...], list[MemberContext]] = {}
     order: list[tuple[str | None, ...]] = []
     for member in group_members:
         regime = _ref_series_regime_key(
-            refs_by_address[member.address], address_to_series_id
+            refs_by_address[member.address],
+            address_to_series_id,
+            address_to_helper,
+            cluster_member_addresses,
         )
         if regime not in partitions:
             partitions[regime] = []
@@ -733,12 +791,15 @@ def build_cluster_fingerprint_summary(
         refs_by_address[member.address] = refs
         groups_by_skeleton[skeleton].append(member)
 
+    address_to_helper = _address_to_helper_map(semantic_dependencies)
     group_records: list[FingerprintGroup] = []
     for skeleton, skeleton_members in groups_by_skeleton.items():
         member_partitions = _partition_members_by_ref_series_regime(
             skeleton_members,
             refs_by_address,
             address_to_series_id,
+            address_to_helper,
+            cluster_addresses,
         )
         for group_members in member_partitions:
             geometry_conflict = _unbound_ref_slot_geometry_conflict(

@@ -21,6 +21,7 @@ EXPORTED_LIBRARY_HARNESS_FILES = (
     "differential_test_exported_library.py",
     "differential_types.py",
     "differential_excel.py",
+    "comparison_utils.py",
     "workbook_labels.py",
     "differential_scenario_inputs.py",
 )

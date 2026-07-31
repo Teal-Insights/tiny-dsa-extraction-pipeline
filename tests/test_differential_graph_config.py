@@ -23,6 +23,7 @@ def test_repo_layout_defaults() -> None:
     assert config.report_dir == REPO_ROOT / "data" / "differential" / "graph"
     assert config.library_name == "Tiny DSA"
     assert config.atol == harness.ATOL
+    assert config.rtol == harness.RTOL
 
 
 def test_parse_args_defaults_to_repo_layout() -> None:

@@ -204,11 +204,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         graph_result.input_series,
         graph_result.output_series,
         graph_result.internal_series,
+        constant_series=graph_result.constant_series,
     )
     address_to_series_id = build_address_to_series_id(
         graph_result.internal_series,
         output_series=graph_result.output_series,
         input_series=graph_result.input_series,
+        constant_series=graph_result.constant_series,
     )
     clusters = cluster_graph_formulas(
         projection,
