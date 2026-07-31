@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from excel_grapher.series_bindings import load_series_bindings
 
 from src.refactor_bindings import (

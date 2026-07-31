@@ -145,7 +145,7 @@ def _patch_invalidate_for_side_caches(runtime: ModuleType) -> None:
             helper_computing.clear()
         return original(self, addresses)
 
-    setattr(invalidate, "_helper_memo_patched", True)
+    setattr(invalidate, "_helper_memo_patched", True)  # noqa: B010
     eval_context.invalidate = invalidate
 
 

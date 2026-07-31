@@ -111,9 +111,11 @@ def save_bindings_validation_report(
     payload_path, meta_path = _cache_paths(resolved_cache_dir, cache_key)
     # mtime=0 keeps the gzip stream byte-identical across rebuilds so committed
     # cache artifacts do not churn when contents are unchanged.
-    with payload_path.open("wb") as raw:
-        with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=1, mtime=0) as handle:
-            pickle.dump(dict(report), handle, protocol=pickle.HIGHEST_PROTOCOL)
+    with (
+        payload_path.open("wb") as raw,
+        gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=1, mtime=0) as handle,
+    ):
+        pickle.dump(dict(report), handle, protocol=pickle.HIGHEST_PROTOCOL)
     _write_bindings_validation_meta(
         meta_path,
         cache_key=cache_key,

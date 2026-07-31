@@ -18,10 +18,9 @@ from excel_grapher.grapher.export import to_graphviz
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import NodeKey
 
-from src.internal_bindings import InternalBindingIndex, internal_binding_for_address
-
-from src.env_utils import env_int
 from src.cytoscape_explorer_html import build_cytoscape_explorer_html
+from src.env_utils import env_int
+from src.internal_bindings import InternalBindingIndex, internal_binding_for_address
 
 GRAPH_FONT_NAME = "Arial"
 GRAPH_FONT_SIZE = 10
@@ -374,7 +373,7 @@ def build_cytoscape_preset_payload(
 ) -> dict[str, Any]:
     objects = graphviz_json.get("objects", [])
     if not isinstance(objects, list):
-        raise RuntimeError("Graphviz JSON missing objects list")
+        raise TypeError("Graphviz JSON missing objects list")
 
     targets = set(target_keys or ())
     inputs = set(input_keys or ())

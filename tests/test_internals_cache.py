@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
 from pathlib import Path
 from typing import TypedDict
 from unittest.mock import MagicMock, patch
-
-from importlib.metadata import version
 
 from src.codegen_cache import save_codegen_payload
 from src.internals_cache import (

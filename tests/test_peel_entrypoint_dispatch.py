@@ -15,7 +15,6 @@ from typing import cast
 
 from src.peel_entrypoint_dispatch import inject_peel_entrypoint_dispatch
 
-
 _TWO_UNIT_SOURCE = '''\
 @xl_memoize
 def baseline_nominal_gdp_growth(ctx: EvalContext, time_period: int) -> float:

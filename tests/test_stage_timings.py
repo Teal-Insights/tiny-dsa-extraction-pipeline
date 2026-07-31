@@ -131,9 +131,8 @@ def test_stage_records_flush_to_output_path_incrementally(tmp_path: Path) -> Non
 def test_stage_records_wall_clock_even_when_the_stage_raises(tmp_path: Path) -> None:
     timings = PipelineTimings()
 
-    with pytest.raises(RuntimeError):
-        with timings.stage("refactor"):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), timings.stage("refactor"):
+        raise RuntimeError("boom")
 
     assert [record.name for record in timings.stages] == ["refactor"]
 

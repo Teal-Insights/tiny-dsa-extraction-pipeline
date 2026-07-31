@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import textwrap
 from pathlib import Path
+
 import pytest
 
 from src.formula_clustering import FormulaCluster
@@ -374,14 +375,14 @@ def test_trade_balance_unroutable_shape_not_key_dispatch(
     not spuriously claim this shape.
     """
     from tests.test_internals_refactor import (
+        ALLOWED_RUNTIME_SYMBOLS,
+        KEY_VOCABULARY,
+        REF_AREA_SPEC,
         TRADE_BALANCE_CLUSTER,
         TRADE_BALANCE_SERIES_MAP,
         VARIABLE_PAIR_OPERAND_KEYS,
         _trade_balance_projection,
         _write_trade_balance_internals,
-        ALLOWED_RUNTIME_SYMBOLS,
-        REF_AREA_SPEC,
-        KEY_VOCABULARY,
     )
 
     monkeypatch.setattr(

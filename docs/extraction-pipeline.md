@@ -195,7 +195,9 @@ from excel_grapher.grapher import (
 )
 
 try:
-    graph: DependencyGraph = create_dependency_graph(workbook_path, targets, load_values=True)
+    graph: DependencyGraph = create_dependency_graph(
+        workbook_path, targets, load_values=True
+    )
 except DynamicRefError as e:
     print(e)
 ```
@@ -233,11 +235,11 @@ from typing import Literal, Annotated
 from excel_grapher.core.cell_types import Between, RealBetween
 
 constraints = {
-    'Inputs!A10': Literal['Borvelia'],
-    'Inputs!A11': Literal['Litellia'],
-    'Inputs!A12': Literal['Aurelium'],
-    'Inputs!B22': Literal[1, 2, 3],
-    'Inputs!B5': Literal['Borvelia', 'Litellia', 'Aurelium'],
+    "Inputs!A10": Literal["Borvelia"],
+    "Inputs!A11": Literal["Litellia"],
+    "Inputs!A12": Literal["Aurelium"],
+    "Inputs!B22": Literal[1, 2, 3],
+    "Inputs!B5": Literal["Borvelia", "Litellia", "Aurelium"],
 }
 ```
 
@@ -380,7 +382,9 @@ def build_doc_response_model(ctx) -> type[BaseModel]:
         __config__=ConfigDict(extra="forbid"),
         summary=(
             str,
-            Field(description="One-line summary for the generated series API function."),
+            Field(
+                description="One-line summary for the generated series API function."
+            ),
         ),
         purpose=(
             str,
@@ -886,6 +890,7 @@ def classify_leaves_from_constraints(
         for key in keys
     }
 
+
 leaf_classification = classify_leaves_from_constraints(constraints, graph.leaf_keys())
 graph.leaf_classification = leaf_classification
 ```
@@ -904,7 +909,7 @@ with CodeGenerator(graph) as generator:
         series_bindings=series_bindings,
         bindings_workbook=workbook_path,
         series_docstring_callback=callback_name,
-        docstring_renderer="google"
+        docstring_renderer="google",
     )
 
 dist_root = Path("../dist")
@@ -1009,7 +1014,9 @@ from tiny_dsa.api import (
 
 
 def time_series_records(values: list[float]) -> list[dict[str, float | int]]:
-    return [{"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)]
+    return [
+        {"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)
+    ]
 ```
 
 Here is one scenario: Litellia with weaker growth, tighter financing
@@ -1156,7 +1163,9 @@ from tiny_dsa.api import (
 
 
 def time_series(values: list[float]) -> list[dict[str, float | int]]:
-    return [{"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)]
+    return [
+        {"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)
+    ]
 
 
 def debt_to_gdp_frame(records: list[dict[str, object]]) -> pl.DataFrame:
@@ -1213,6 +1222,7 @@ import subprocess
 dist_root = (Path("..").resolve() / "dist").resolve()
 great_docs_yml = dist_root / "great-docs.yml"
 
+
 def run_cmd(
     args: list[str],
     *,
@@ -1224,15 +1234,23 @@ def run_cmd(
         cwd=str(cwd) if cwd is not None else None,
     )
 
+
 # Initialize once (or regenerate if you prefer --force)
 if not great_docs_yml.exists():
-    run_cmd([
-        "uv", "run",
-        "--project", str(dist_root),
-        "--with", "great-docs",
-        "great-docs", "init",
-        "--project-path", str(dist_root),
-    ])
+    run_cmd(
+        [
+            "uv",
+            "run",
+            "--project",
+            str(dist_root),
+            "--with",
+            "great-docs",
+            "great-docs",
+            "init",
+            "--project-path",
+            str(dist_root),
+        ]
+    )
 ```
 
 The `great-docs init` command will create a `dist/great-docs.yml` file
@@ -1348,9 +1366,7 @@ class SectionRewriteResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(
-        description=(
-            "Section title in sentence case, without roman numeral prefixes."
-        )
+        description=("Section title in sentence case, without roman numeral prefixes.")
     )
     purpose: str = Field(
         description="One short sentence describing why this section matters."
@@ -1578,9 +1594,7 @@ workbook.
 ``` python
 api_key = os.environ.get("OPENAI_API_KEY")
 section_client = (
-    OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/")
-    if api_key
-    else None
+    OpenAI(api_key=api_key, base_url="https://api.openai.com/v1/") if api_key else None
 )
 
 guide_text = guide_path.read_text(encoding="utf-8")
@@ -1989,23 +2003,48 @@ following groupings:
 
 ``` python
 group_1 = [
-    "Engine!C10", "Engine!C14", "Engine!C15", "Engine!C16", "Engine!C20",
+    "Engine!C10",
+    "Engine!C14",
+    "Engine!C15",
+    "Engine!C16",
+    "Engine!C20",
 ]
 group_2 = [
-    "Engine!D10", "Engine!D14", "Engine!D15", "Engine!D16", "Engine!D20",
+    "Engine!D10",
+    "Engine!D14",
+    "Engine!D15",
+    "Engine!D16",
+    "Engine!D20",
 ]
 group_3 = [
-    "Engine!E10", "Engine!E14", "Engine!E15", "Engine!E16", "Engine!E20",
+    "Engine!E10",
+    "Engine!E14",
+    "Engine!E15",
+    "Engine!E16",
+    "Engine!E20",
 ]
 group_4 = [
-    "Engine!F10", "Engine!F14", "Engine!F15", "Engine!F16", "Engine!F20",
+    "Engine!F10",
+    "Engine!F14",
+    "Engine!F15",
+    "Engine!F16",
+    "Engine!F20",
 ]
 group_5 = [
-    "Engine!G10", "Engine!G14", "Engine!G15", "Engine!G16", "Engine!G20",
+    "Engine!G10",
+    "Engine!G14",
+    "Engine!G15",
+    "Engine!G16",
+    "Engine!G20",
 ]
 group_6 = ["Engine!B6", "Engine!C6"]
 ungrouped = [
-    "Engine!D6", "Engine!E6", "Engine!F6", "Engine!G6", "Engine!B9", "Engine!B20"
+    "Engine!D6",
+    "Engine!E6",
+    "Engine!F6",
+    "Engine!G6",
+    "Engine!B9",
+    "Engine!B20",
 ]
 ```
 
@@ -2111,7 +2150,11 @@ Consider Group 1:
 
 ``` python
 group_1 = [
-    "Engine!C10", "Engine!C14", "Engine!C15", "Engine!C16", "Engine!C20",
+    "Engine!C10",
+    "Engine!C14",
+    "Engine!C15",
+    "Engine!C16",
+    "Engine!C20",
 ]
 
 data = [
@@ -2457,10 +2500,7 @@ print(
     f"Refactor projection: {len(refactor_projection)} nodes, "
     f"{projected_edge_count} edges"
 )
-print(
-    "Collapsed groups: "
-    f"{len(subgraph_manifest['collapsed_groups'])}"
-)
+print(f"Collapsed groups: {len(subgraph_manifest['collapsed_groups'])}")
 print(
     "Removed cells recorded in manifest: "
     f"{len(subgraph_manifest['removed_node_snapshots'])}"
@@ -2534,7 +2574,7 @@ with CodeGenerator(refactor_projection) as generator:
         series_bindings=series_bindings,
         bindings_workbook=workbook_path,
         series_docstring_callback=callback_name,
-        docstring_renderer="google"
+        docstring_renderer="google",
     )
 
 internals_code = projected_modules["internals.py"]
@@ -2596,13 +2636,9 @@ optimal_edge_count = sum(
 print("```text")
 print(f"Canonical graph: {len(graph)} nodes, {original_edge_count} edges")
 print(
-    f"Optimal projection: {len(optimal_projection)} nodes, "
-    f"{optimal_edge_count} edges"
+    f"Optimal projection: {len(optimal_projection)} nodes, {optimal_edge_count} edges"
 )
-print(
-    "Optimal collapsed groups: "
-    f"{len(optimal_manifest['collapsed_groups'])}"
-)
+print(f"Optimal collapsed groups: {len(optimal_manifest['collapsed_groups'])}")
 print(
     "Removed cells recorded in manifest: "
     f"{len(optimal_manifest['removed_node_snapshots'])}"

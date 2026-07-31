@@ -225,7 +225,7 @@ def test_llm_refactor_singleton_selects_naming_contract_when_synthesizable(
         return validated, response.model_dump_json()
 
     monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
     monkeypatch.setattr(module, "build_client", lambda _model: (object(), object()))

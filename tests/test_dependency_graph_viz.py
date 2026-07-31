@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 from excel_grapher.grapher import to_graphviz
 from excel_grapher.series_bindings import (
     derive_input_series,

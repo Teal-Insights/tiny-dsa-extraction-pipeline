@@ -89,10 +89,10 @@ Suppose the dump shows fingerprint `=ref_0[REF_AREA,TIME_PERIOD]-ref_1[COUNTERPA
 
 ```python
 def cell_data_c10(ctx):
-    '''Formula: =Data!C4-Data!C6.'''
-    _t1 = xl_cell(ctx, 'Data!C4')
-    _t2 = xl_cell(ctx, 'Data!C6')
-    return (xl_number(_t1) - xl_number(_t2))
+    """Formula: =Data!C4-Data!C6."""
+    _t1 = xl_cell(ctx, "Data!C4")
+    _t2 = xl_cell(ctx, "Data!C6")
+    return xl_number(_t1) - xl_number(_t2)
 ```
 
 Generalize **and** rename those temps (role-specific row tables + period→column), rather than inventing a different unpacking:

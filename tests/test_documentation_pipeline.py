@@ -6,12 +6,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.pipeline_config import (
-    PipelineConfig,
-    RunnableCellRule,
-    discover_public_api_symbols,
-    load_pipeline_config,
-)
 from src.documentation_pipeline import (
     DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT,
     MAX_SECTION_REWRITE_ATTEMPTS,
@@ -24,9 +18,9 @@ from src.documentation_pipeline import (
     estimate_prompt_chars,
     extract_api_signatures,
     extract_markdown_section,
-    introduction_focus_instructions,
     functional_overview_focus_instructions,
     illustrative_example_focus_instructions,
+    introduction_focus_instructions,
     load_canonical_api_example,
     parse_parity_report,
     render_validation_page,
@@ -37,6 +31,12 @@ from src.documentation_pipeline import (
     validate_rewritten_markdown_fences,
     validate_rewritten_runnable_api_usage,
     validate_section_rewrite_prompt_budget,
+)
+from src.pipeline_config import (
+    PipelineConfig,
+    RunnableCellRule,
+    discover_public_api_symbols,
+    load_pipeline_config,
 )
 
 
@@ -123,18 +123,7 @@ def test_build_section_prompt_includes_input_shape_guidance() -> None:
 def test_build_section_prompt_uses_discovered_api_signatures(tmp_path: Path) -> None:
     api_path = tmp_path / "api.py"
     api_path.write_text(
-        "\n".join(
-            [
-                "def make_context():",
-                "    return {}",
-                "",
-                "def set_example(ctx, value):",
-                "    pass",
-                "",
-                "def compute_example(ctx):",
-                "    return []",
-            ]
-        ),
+        "def make_context():\n    return {}\n\ndef set_example(ctx, value):\n    pass\n\ndef compute_example(ctx):\n    return []",
         encoding="utf-8",
     )
     symbols = list(discover_public_api_symbols(api_path))

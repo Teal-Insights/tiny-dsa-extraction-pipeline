@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
 from src.bindings_validation_cache import load_bindings_validation_report
 from src.cluster_cache import load_cluster_payload
 from src.codegen_cache import load_codegen_payload

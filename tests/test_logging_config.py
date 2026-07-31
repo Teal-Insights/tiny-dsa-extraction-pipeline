@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-import src.logging_config as logging_config
+from src import logging_config
 from src.logging_config import configure_logging
 
 

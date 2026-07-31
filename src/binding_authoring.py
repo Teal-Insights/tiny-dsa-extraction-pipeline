@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from excel_grapher.series_bindings.workflow import (
     BindingsCheckResult,
     validate_bindings_workbook,

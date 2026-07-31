@@ -14,6 +14,9 @@ from excel_grapher.exporter import CodeGenerator
 from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import DynamicRefConfig
 
+from src.bindings_validation_cache import DEFAULT_BINDINGS_VALIDATION_CACHE_DIR
+from src.cluster_cache import DEFAULT_CLUSTER_CACHE_DIR
+from src.codegen_cache import DEFAULT_CODEGEN_CACHE_DIR
 from src.graph_cache import (
     DEFAULT_GRAPH_CACHE_DIR,
     bindings_fingerprint,
@@ -24,6 +27,7 @@ from src.graph_cache import (
     load_dependency_graph,
     prune_cache_entries_for_other_excel_grapher_versions,
 )
+from src.internals_refactor import DEFAULT_INTERNALS_CACHE_DIR
 from src.projection_cache import (
     DEFAULT_PROJECTION_CACHE_DIR,
     clear_projection_cache,
@@ -31,10 +35,6 @@ from src.projection_cache import (
     projection_cache_key,
     rehydrate_projection_result,
 )
-from src.bindings_validation_cache import DEFAULT_BINDINGS_VALIDATION_CACHE_DIR
-from src.cluster_cache import DEFAULT_CLUSTER_CACHE_DIR
-from src.codegen_cache import DEFAULT_CODEGEN_CACHE_DIR
-from src.internals_refactor import DEFAULT_INTERNALS_CACHE_DIR
 from src.series_resolution_cache import DEFAULT_SERIES_RESOLUTION_CACHE_DIR
 from src.subgraph_projection import build_refactor_projection
 from tests.fixtures.synthetic_pipeline import (
@@ -558,12 +558,15 @@ def test_extract_graph_cli_supports_no_cache(
         "src.extraction_pipeline.stage_timings_path",
         lambda _repo_root: tmp_path / "stage-timings.json",
     )
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config", return_value=synthetic_config
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_config,
+        ),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
     ):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.extract_dependency_graph") as extract:
-                main(["--extract-graph", "--no-cache"])
+        with patch("src.extraction_pipeline.extract_dependency_graph") as extract:
+            main(["--extract-graph", "--no-cache"])
 
     extract.assert_called_once_with(
         synthetic_config, no_cache=True, force_rebuild=False, timings=ANY

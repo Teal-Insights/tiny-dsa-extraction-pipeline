@@ -221,8 +221,8 @@ def test_write_generated_modules_removes_stale_optional(tmp_path: Path) -> None:
 def test_run_export_stage_skips_generate_modules_on_cache_hit(
     tmp_path: Path,
 ) -> None:
+    from src import codegen_cache
     from src.extraction_pipeline import run_export_stage
-    import src.codegen_cache as codegen_cache
 
     config = MagicMock()
     config.repo_root = tmp_path

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from src.formula_clustering import FormulaCluster
-from src.refactor_order import RefactorUnit
 from scripts.inspect_cluster import (
     find_cluster,
     format_cluster_report,
     schedule_units_for_family,
 )
+from src.formula_clustering import FormulaCluster
+from src.refactor_order import RefactorUnit
 
 
 def test_find_cluster_returns_matching_family() -> None:

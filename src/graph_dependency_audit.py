@@ -254,16 +254,19 @@ def case_difficulty_score(
         if edge.guard is not None:
             dynamic_or_guarded += 1
         provenance = edge.provenance
-        if provenance is not None and provenance.causes:
-            if any(
+        if (
+            provenance is not None
+            and provenance.causes
+            and any(
                 cause
                 in {
                     DependencyCause.dynamic_offset,
                     DependencyCause.dynamic_indirect,
                 }
                 for cause in provenance.causes
-            ):
-                dynamic_or_guarded += 1
+            )
+        ):
+            dynamic_or_guarded += 1
         if _sheet_name(dependency) != parent_sheet:
             cross_sheet.add(_sheet_name(dependency))
     return (len(dependencies), dynamic_or_guarded, len(cross_sheet))
@@ -439,11 +442,13 @@ def build_parent_audit_prompt(evidence: ParentAuditEvidence) -> str:
         lines.extend(
             [
                 "",
-                f"Note: {evidence.truncated_dependency_count} additional direct dependencies "
-                f"were omitted from this prompt (showing "
-                f"{len(evidence.direct_dependencies)} of "
-                f"{evidence.total_dependency_count}). Formula-referenced children are "
-                "prioritized when the dependency budget is exceeded.",
+                (
+                    f"Note: {evidence.truncated_dependency_count} additional direct dependencies "
+                    f"were omitted from this prompt (showing "
+                    f"{len(evidence.direct_dependencies)} of "
+                    f"{evidence.total_dependency_count}). Formula-referenced children are "
+                    "prioritized when the dependency budget is exceeded."
+                ),
             ]
         )
     if evidence.parent_formula_truncated:

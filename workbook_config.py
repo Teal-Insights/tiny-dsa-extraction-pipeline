@@ -12,8 +12,8 @@ from typing import Annotated, Literal
 from excel_grapher.core.cell_types import Between, RealBetween
 
 from src.graph_dependency_audit import GraphAuditCase
-from src.pipeline_config import DistProjectMetadata
 from src.internal_binding_coverage import InternalBindingValidationMode
+from src.pipeline_config import DistProjectMetadata
 from src.workbook_addresses import ProjectionColumnLayout
 
 REPO_ROOT = Path(__file__).resolve().parent

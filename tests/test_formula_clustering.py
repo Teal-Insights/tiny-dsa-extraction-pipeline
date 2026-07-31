@@ -1,7 +1,7 @@
-import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from excel_grapher.core.formula_ast import parse
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import Node
@@ -469,7 +469,7 @@ def test_cluster_has_independent_operand_variation_detects_trade_balance_pattern
 
 def test_dominant_key_only_split_resolves_each_member_once() -> None:
     """dominant_key_only splitting should materialize each member's ref keys once."""
-    import src.formula_clustering as formula_clustering
+    from src import formula_clustering
 
     graph = _dominant_key_split_graph()
     call_counts: dict[str, int] = {}
@@ -560,7 +560,7 @@ def test_dominant_key_only_split_passes_layout_to_ref_key_resolution(
     monkeypatch,
 ) -> None:
     """dominant_key_only splitting must resolve operand keys with workbook layout."""
-    import src.formula_clustering as formula_clustering
+    from src import formula_clustering
 
     bindings = {
         "Inputs!B10": {"REF_AREA": "US", "SCENARIO": "base"},

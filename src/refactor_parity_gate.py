@@ -26,13 +26,13 @@ import logging
 import random
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import util as importlib_util
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
 from excel_grapher.core.cell_types import Between, RealBetween
 
@@ -168,7 +168,7 @@ def _readers_namespace(package_root: str) -> dict[str, Any]:
         "<readers-parity>",
         "exec",
     )
-    exec(compiled, namespace)
+    exec(compiled, namespace)  # noqa: S102
     return {name: namespace[name] for name in reader_names}
 
 
@@ -187,7 +187,7 @@ def exec_internals_module(source: str, *, package_root: Path) -> dict[str, Any]:
         "<internals-parity>",
         "exec",
     )
-    exec(compiled, namespace)
+    exec(compiled, namespace)  # noqa: S102
     return namespace
 
 
@@ -314,8 +314,10 @@ def _format_message(
     atol: float,
 ) -> str:
     lines = [
-        f"helper {name} diverges from the original cell semantics "
-        f"({len(mismatches)} of {total_checks} checks failed):"
+        (
+            f"helper {name} diverges from the original cell semantics "
+            f"({len(mismatches)} of {total_checks} checks failed):"
+        )
     ]
     for mismatch in mismatches[:_MAX_REPORTED_MISMATCHES]:
         lines.append(
@@ -710,8 +712,10 @@ def check_batched_mechanical_parity(
             gate_elapsed,
         )
         lines = [
-            "mechanical refactor diverges from the original cell semantics for "
-            f"unit(s) {failing_unit_ids}:"
+            (
+                "mechanical refactor diverges from the original cell semantics for "
+                f"unit(s) {failing_unit_ids}:"
+            )
         ]
         for unit_id in failing_unit_ids:
             for mismatch in mismatches_by_unit[unit_id][:_MAX_REPORTED_MISMATCHES]:

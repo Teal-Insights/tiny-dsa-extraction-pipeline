@@ -29,11 +29,13 @@ from src.binding_resolution_audit import (
     AuditFinding,
     _unfilled_label_binds,
     audit_binding_resolutions,
-    findings_from_resolution,
     find_duplicate_internal_formula_cell_bindings,
     find_sparse_label_bind_issues,
+    findings_from_resolution,
     format_audit_findings,
 )
+from src.bindings_validation_cache import COMMITTED_BINDINGS_VALIDATION_CACHE_DIR
+from src.cluster_cache import COMMITTED_CLUSTER_CACHE_DIR
 from src.graph_cache import (
     dependency_graph_cache_key,
     load_dependency_graph,
@@ -47,8 +49,6 @@ from src.internal_binding_coverage import (
     group_unbound_cells_by_sheet_row,
     suggested_layout_for_row,
 )
-from src.bindings_validation_cache import COMMITTED_BINDINGS_VALIDATION_CACHE_DIR
-from src.cluster_cache import COMMITTED_CLUSTER_CACHE_DIR
 from src.pipeline_config import PipelineConfig
 from src.series_derived_cache import COMMITTED_SERIES_DERIVED_CACHE_DIR
 from src.series_resolution_cache import COMMITTED_SERIES_RESOLUTION_CACHE_DIR
@@ -122,11 +122,13 @@ def _monkeypatch_temp_graph_cache(
     ``COMMITTED_CLUSTER_CACHE_DIR``; tests that only redirect the
     graph cache would wipe the committed artifacts used by session fixtures.
     """
-    import src.bindings_validation_cache as bindings_validation_cache
-    import src.cluster_cache as cluster_cache
-    import src.graph_cache as graph_cache
-    import src.series_derived_cache as series_derived_cache
-    import src.series_resolution_cache as series_resolution_cache
+    from src import (
+        bindings_validation_cache,
+        cluster_cache,
+        graph_cache,
+        series_derived_cache,
+        series_resolution_cache,
+    )
 
     resolved_series_cache_dir = (
         series_cache_dir
@@ -724,7 +726,7 @@ def test_internal_binding_burndown_reports_no_unbound_cells_for_synthetic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.graph_cache as graph_cache
+    from src import graph_cache
 
     workbook_path = tmp_path / "workbook.xlsx"
     write_synthetic_workbook(workbook_path)

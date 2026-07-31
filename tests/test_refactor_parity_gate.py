@@ -235,15 +235,7 @@ def test_exec_internals_injects_reader_symbols(
     package_name = load_pipeline_config().dist_metadata.package_name
     readers_path = parity_gate_dist_root / package_name / "_readers.py"
     readers_path.write_text(
-        "\n".join(
-            [
-                "from .runtime import xl_cell",
-                "",
-                "def read_shock_type(ctx):",
-                "    return xl_cell(ctx, 'Inputs!B1')",
-                "",
-            ]
-        ),
+        "from .runtime import xl_cell\n\ndef read_shock_type(ctx):\n    return xl_cell(ctx, 'Inputs!B1')\n",
         encoding="utf-8",
     )
     from tests.fixtures.test_state import clear_runtime_caches

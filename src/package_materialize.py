@@ -387,13 +387,12 @@ def try_materialize_refactored_package_from_cache(
     if not _internals_inputs_match(keys, expected_internals_inputs):
         return False
     cache_path = internals_cache_path(internals_key)
-    if not cache_path.is_file():
-        if not adopt_internals_cache_from_dist(
-            config,
-            expected_codegen_key=codegen_key,
-            internals_key=internals_key,
-        ):
-            return False
+    if not cache_path.is_file() and not adopt_internals_cache_from_dist(
+        config,
+        expected_codegen_key=codegen_key,
+        internals_key=internals_key,
+    ):
+        return False
 
     modules = load_codegen_payload(codegen_key)
     if modules is None:

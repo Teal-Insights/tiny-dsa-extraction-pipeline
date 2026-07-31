@@ -55,9 +55,8 @@ ALLOWED_RUNTIME_SYMBOLS = (
 EXCESS_DEATHS_FUNCTION_SOURCE = dedent(
     """
     def cell_some_sheet_z22(ctx):
-        return (
-            xl_number(united_states_total_deaths(ctx))
-            - xl_number(united_states_expected_deaths(ctx))
+        return xl_number(united_states_total_deaths(ctx)) - xl_number(
+            united_states_expected_deaths(ctx)
         )
     """
 ).strip()
@@ -77,6 +76,7 @@ EXCESS_DEATHS_DEPENDENCY_STUBS = dedent(
         """Coerce a scalar cell value to a number, raising on Excel errors."""
         # ...
 
+
     def united_states_expected_deaths(ctx: EvalContext) -> float:
         """
         Expected deaths for the United States.
@@ -89,6 +89,7 @@ EXCESS_DEATHS_DEPENDENCY_STUBS = dedent(
             would have occurred in the absence of the shock.
         """
         # ...
+
 
     def united_states_total_deaths(ctx: EvalContext) -> float:
         """
@@ -142,9 +143,8 @@ EXCESS_DEATHS_INTERNALS = dedent(
         return 90.0
 
     def cell_some_sheet_z22(ctx):
-        return (
-            xl_number(united_states_total_deaths(ctx))
-            - xl_number(united_states_expected_deaths(ctx))
+        return xl_number(united_states_total_deaths(ctx)) - xl_number(
+            united_states_expected_deaths(ctx)
         )
     '''
 ).strip()

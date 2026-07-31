@@ -502,13 +502,15 @@ def test_run_pipeline_rejects_unknown_stage(
 def test_main_stop_after_stage_extract_uses_extract_path(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
     ):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-                main(["--stop-after-stage", "extract"])
+        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
+            main(["--stop-after-stage", "extract"])
 
     pipeline.assert_called_once()
     assert pipeline.call_args.kwargs["stop_after_stage"] == "extract"
@@ -517,13 +519,15 @@ def test_main_stop_after_stage_extract_uses_extract_path(
 def test_main_extract_graph_alias_stops_after_extract(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
     ):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-                main(["--extract-graph"])
+        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
+            main(["--extract-graph"])
 
     pipeline.assert_called_once()
     assert pipeline.call_args.kwargs["stop_after_stage"] == "extract"
@@ -532,12 +536,14 @@ def test_main_extract_graph_alias_stops_after_extract(
 def test_main_rejects_extract_graph_with_stop_after_stage(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        pytest.raises(SystemExit),
     ):
-        with pytest.raises(SystemExit):
-            main(["--extract-graph", "--stop-after-stage", "export"])
+        main(["--extract-graph", "--stop-after-stage", "export"])
 
 
 def test_run_pipeline_skips_document_when_differential_failed(
@@ -633,9 +639,9 @@ def test_run_pipeline_document_failure_raises_document_stage_error(
             "src.documentation_pipeline.run_documentation_pipeline",
             side_effect=RuntimeError("guide rewrite hung"),
         ),
+        pytest.raises(DocumentStageError, match="document stage failed"),
     ):
-        with pytest.raises(DocumentStageError, match="document stage failed"):
-            run_pipeline(synthetic_pipeline_config_fixture)
+        run_pipeline(synthetic_pipeline_config_fixture)
 
     validate.assert_called_once()
 
@@ -868,13 +874,15 @@ def test_run_document_stage_is_profiled(
 def test_main_force_document_flag_is_passed(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
     ):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-                main(["--force-document"])
+        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
+            main(["--force-document"])
 
     assert pipeline.call_args.kwargs["force_document"] is True
 
@@ -882,13 +890,15 @@ def test_main_force_document_flag_is_passed(
 def test_main_force_rebuild_flag_is_passed(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
     ):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-                main(["--force-rebuild"])
+        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
+            main(["--force-rebuild"])
 
     assert pipeline.call_args.kwargs["force_rebuild"] is True
 
@@ -896,13 +906,15 @@ def test_main_force_rebuild_flag_is_passed(
 def test_main_start_from_stage_is_passed(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
     ):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-                main(["--start-from-stage", "refactor"])
+        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
+            main(["--start-from-stage", "refactor"])
 
     assert pipeline.call_args.kwargs["start_from_stage"] == "refactor"
     assert pipeline.call_args.kwargs["stop_after_stage"] == "document"
@@ -912,13 +924,15 @@ def test_main_start_from_stage_is_passed(
 def test_main_only_stage_is_passed(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
     ):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-                main(["--only-stage", "validate"])
+        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
+            main(["--only-stage", "validate"])
 
     assert pipeline.call_args.kwargs["only_stage"] == "validate"
     assert pipeline.call_args.kwargs["start_from_stage"] == "validate"
@@ -928,23 +942,27 @@ def test_main_only_stage_is_passed(
 def test_main_rejects_start_from_with_only_stage(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        pytest.raises(SystemExit),
     ):
-        with pytest.raises(SystemExit):
-            main(["--start-from-stage", "refactor", "--only-stage", "validate"])
+        main(["--start-from-stage", "refactor", "--only-stage", "validate"])
 
 
 def test_main_rejects_only_stage_with_stop_after_stage(
     synthetic_pipeline_config_fixture,
 ) -> None:
-    with patch(
-        "src.extraction_pipeline.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.extraction_pipeline.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        pytest.raises(SystemExit),
     ):
-        with pytest.raises(SystemExit):
-            main(["--only-stage", "validate", "--stop-after-stage", "document"])
+        main(["--only-stage", "validate", "--stop-after-stage", "document"])
 
 
 def _isolated_config_for_manifests(

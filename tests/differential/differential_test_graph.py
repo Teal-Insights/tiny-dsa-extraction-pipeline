@@ -32,18 +32,9 @@ import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-
-from .differential_excel import (
-    matched_error_values,
-    parity_exit_code,
-    read_cell_value,
-)
-from .comparison_utils import values_match
-from .differential_scenario_inputs import collect_scenario_input_addresses
-from .differential_types import ATOL, RTOL, Axis, AxisPoint, Scenario
 
 from excel_grapher.core.address_keys import normalize_key, parse_address
 from excel_grapher.evaluator import FormulaEvaluator
@@ -52,6 +43,15 @@ from excel_grapher.grapher import (
     DynamicRefConfig,
     create_dependency_graph,
 )
+
+from .comparison_utils import values_match
+from .differential_excel import (
+    matched_error_values,
+    parity_exit_code,
+    read_cell_value,
+)
+from .differential_scenario_inputs import collect_scenario_input_addresses
+from .differential_types import ATOL, RTOL, Axis, AxisPoint, Scenario
 
 logger = logging.getLogger(__name__)
 
@@ -421,9 +421,7 @@ def write_txt_summary(
     lines.append(
         f"Parity report: extracted dependency graph vs Excel ({config.library_name})"
     )
-    lines.append(
-        f"Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}"
-    )
+    lines.append(f"Generated: {datetime.now(UTC).isoformat(timespec='seconds')}")
     lines.append(f"Workbook:  {config.workbook_path}")
     lines.append(
         "Oracles:   Excel via xlwings [golden] vs "
@@ -551,7 +549,7 @@ def run_sweep(config: GraphDifferentialConfig) -> tuple[list[Trial], list[str]]:
         constraints=config.constraints,
     )
     all_input_cells = collect_scenario_input_addresses(axes, inputs_for_excel)
-    missing_inputs_in_graph = sorted(  # noqa: SLF001
+    missing_inputs_in_graph = sorted(
         cell for cell in all_input_cells if normalize_key(cell) not in mvp._known_keys
     )
     if missing_inputs_in_graph:
@@ -575,7 +573,7 @@ def run_sweep(config: GraphDifferentialConfig) -> tuple[list[Trial], list[str]]:
                     golden_value = golden.read(cell)
                     try:
                         mvp_value: Any = mvp.read(cell)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         mvp_value = f"<{type(exc).__name__}: {exc}>"
                         match, abs_diff, rel_diff, note = (
                             False,
