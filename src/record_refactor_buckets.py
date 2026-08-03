@@ -25,6 +25,7 @@ from src.codegen_cache import (
     write_generated_modules,
 )
 from src.docstring_callback import configure_docstring_callback
+from src.cluster_cache import get_or_build_clusters_and_schedule
 from src.extraction_pipeline import build_pipeline_graph
 from src.projection_cache import projection_cache_key
 from src.pipeline_config import (
@@ -36,7 +37,6 @@ from src.pipeline_config import (
     load_pipeline_config,
     validate_pipeline_config,
 )
-from src.pipeline_context import activate_pipeline_config
 from src.formula_clustering import (
     BoundAddressKeys,
     ClusterableGraph,
@@ -45,10 +45,9 @@ from src.formula_clustering import (
     cluster_graph_formulas,
     formula_nodes_for_clustering,
 )
+from src.refactor_order import compute_refactor_schedule
 from src.refactor_bindings import (
     KeyConceptSpec,
-    build_address_to_series_id,
-    build_bound_address_keys,
     load_key_concept_vocabulary,
     varying_key_concepts,
 )
@@ -56,7 +55,7 @@ from src.refactor_contracts import (
     ClusterRefactorContract,
     select_cluster_refactor_contract,
 )
-from src.internal_bindings import InternalBindingIndex, build_internal_binding_index
+from src.internal_bindings import InternalBindingIndex
 from src.internals_refactor import (
     ClusterRefactorContext,
     SingletonRefactorContext,
@@ -65,7 +64,6 @@ from src.internals_refactor import (
     build_singleton_refactor_context,
 )
 from src.logging_config import configure_logging
-from src.refactor_order import compute_refactor_schedule
 from src.semantic_naming import (
     allocate_schedule_helper_names,
     collect_semantic_helper_names,
@@ -288,8 +286,12 @@ def export_generated_modules(
     series_bindings: WorkbookSeriesBindings,
     no_cache: bool = False,
     force_rebuild: bool = False,
-) -> Path:
-    """Write generated package modules through codegen, stopping before refactor."""
+) -> tuple[Path, str]:
+    """Write generated package modules through codegen, stopping before refactor.
+
+    Returns ``(internals_path, codegen_cache_key)`` so callers can resolve the
+    pristine parity oracle from the codegen cache rather than from disk.
+    """
     refactor_projection = build_refactor_projection(
         graph,
         graph_cache_key=graph_cache_key,
@@ -329,7 +331,7 @@ def export_generated_modules(
     package_root = config.package_root
     write_generated_modules(package_root, codegen_result.modules)
 
-    return package_root / "internals.py"
+    return package_root / "internals.py", codegen_result.cache_key
 
 
 def record_refactor_buckets(
@@ -343,6 +345,9 @@ def record_refactor_buckets(
     refactor_graph: ProjectionResult | None = None,
     bound_address_keys: BoundAddressKeys | None,
     address_to_series_id: Mapping[str, str] | None = None,
+    graph_cache_key: str | None = None,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
 ) -> tuple[RefactorBucketRecord, ...]:
     """Classify formula clusters into singleton and cluster refactor target buckets."""
     resolved_bound_keys = _require_bound_address_keys(bound_address_keys)
@@ -350,16 +355,34 @@ def record_refactor_buckets(
     resolved_address_to_series_id = (
         address_to_series_id if address_to_series_id is not None else {}
     )
-    clusters = cluster_graph_formulas(
-        graph,
-        bound_address_keys=resolved_bound_keys,
-        variation_mode=config.variation_mode,
-        clustering_mode=config.clustering_mode,
-        address_to_series_id=address_to_series_id,
-        workbook_path=config.workbook_path,
-        layout=layout,
-    )
-    ordered_units = compute_refactor_schedule(graph, clusters)
+    if compression == "optimal" and graph_cache_key is not None:
+        cluster_result = get_or_build_clusters_and_schedule(
+            graph,
+            bound_address_keys=resolved_bound_keys,
+            address_to_series_id=address_to_series_id,
+            workbook_path=config.workbook_path,
+            layout=layout,
+            bindings_path=config.bindings_path,
+            projection_cache_key=projection_cache_key(graph_cache_key=graph_cache_key),
+            variation_mode=config.variation_mode,
+            clustering_mode=config.clustering_mode,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
+        )
+        clusters = cluster_result.clusters
+        ordered_units = cluster_result.schedule
+    else:
+        # Source-graph clustering (compression="none") is not projection-keyed.
+        clusters = cluster_graph_formulas(
+            graph,
+            bound_address_keys=resolved_bound_keys,
+            variation_mode=config.variation_mode,
+            clustering_mode=config.clustering_mode,
+            address_to_series_id=address_to_series_id,
+            workbook_path=config.workbook_path,
+            layout=layout,
+        )
+        ordered_units = compute_refactor_schedule(graph, clusters)
 
     internals_source = (
         internals_path.read_text(encoding="utf-8") if internals_path is not None else ""
@@ -415,6 +438,7 @@ def record_refactor_buckets(
                     bound_address_keys=resolved_bound_keys,
                     expected_helper_name=helper_name,
                     existing_helper_names=reserved_for_others,
+                    layout=layout,
                 )
             )
         else:
@@ -439,6 +463,7 @@ def record_refactor_buckets(
                     workbook_path=config.workbook_path,
                     layout=layout,
                     bound_address_keys=resolved_bound_keys,
+                    key_vocabulary=key_vocabulary,
                     address_to_series_id=resolved_address_to_series_id,
                     expected_helper_name=helper_name,
                     existing_helper_names=reserved_for_others,
@@ -730,32 +755,20 @@ def run_record_refactor_buckets(
             else config.repo_root / DEFAULT_CODEGEN_DIST_ROOT
         )
         codegen_config = replace(config, dist_root=codegen_root)
-        internals_path = export_generated_modules(
+        internals_path, _codegen_cache_key = export_generated_modules(
             codegen_config,
             graph=graph_result.graph,
             graph_cache_key=graph_result.graph_cache_key,
             series_bindings=graph_result.series_bindings,
             no_cache=no_cache,
         )
-        internal_binding_index = build_internal_binding_index(
-            graph_result.internal_series
-        )
+        internal_binding_index = graph_result.internal_binding_index
         cluster_graph = projection
     else:
         cluster_graph = graph_result.graph
 
-    bound_address_keys = build_bound_address_keys(
-        graph_result.input_series,
-        graph_result.output_series,
-        graph_result.internal_series,
-        constant_series=graph_result.constant_series,
-    )
-    address_to_series_id = build_address_to_series_id(
-        graph_result.internal_series,
-        output_series=graph_result.output_series,
-        input_series=graph_result.input_series,
-        constant_series=graph_result.constant_series,
-    )
+    bound_address_keys = graph_result.bound_address_keys
+    address_to_series_id = graph_result.address_to_series_id
     records = record_refactor_buckets(
         config,
         graph=cluster_graph,
@@ -766,6 +779,8 @@ def run_record_refactor_buckets(
         refactor_graph=projection if compression == "optimal" else None,
         bound_address_keys=bound_address_keys,
         address_to_series_id=address_to_series_id,
+        graph_cache_key=graph_result.graph_cache_key,
+        no_cache=no_cache,
     )
     report = build_refactor_buckets_report(
         config,
@@ -837,7 +852,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.clustering_mode,
     )
     validate_pipeline_config(config)
-    activate_pipeline_config(config)
 
     report = run_record_refactor_buckets(
         config,

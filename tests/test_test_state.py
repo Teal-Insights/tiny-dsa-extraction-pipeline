@@ -2,22 +2,38 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
-from src.pipeline_config import load_pipeline_config
-from src.pipeline_context import activate_pipeline_config, require_pipeline_config
+from src.runtime_symbols import (
+    _allowed_runtime_symbols_cached,
+    allowed_runtime_symbols,
+)
 from tests.fixtures.test_state import reset_pipeline_test_state
 
 
-def test_reset_pipeline_test_state_clears_active_config_and_probe_modules() -> None:
-    activate_pipeline_config(load_pipeline_config())
+def test_reset_pipeline_test_state_clears_caches_and_probe_modules(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime.py"
+    runtime.write_text(
+        "class XlError(Exception):\n    pass\n\ndef xl_eval():\n    return 1\n",
+        encoding="utf-8",
+    )
+    allowed_runtime_symbols(tmp_path)
+    assert _allowed_runtime_symbols_cached.cache_info().currsize >= 1
     sys.modules["_runtime_symbols_probe"] = types.ModuleType("_runtime_symbols_probe")
 
     reset_pipeline_test_state()
 
-    with pytest.raises(RuntimeError, match="Pipeline configuration is not active"):
-        require_pipeline_config()
+    assert _allowed_runtime_symbols_cached.cache_info().currsize == 0
     assert "_runtime_symbols_probe" not in sys.modules
+
+
+def test_pipeline_context_module_is_removed() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("src.pipeline_context")

@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-from collections.abc import Iterator
-from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -27,7 +25,6 @@ from src.internals_refactor import (
     SingletonRefactorResponse,
 )
 from src.pipeline_config import load_pipeline_config
-from src.pipeline_context import activate_pipeline_config
 from src.refactor_parity_gate import (
     ParityError,
     _evaluate_candidate,
@@ -215,26 +212,26 @@ def parity_gate_dist_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return root
 
 
-@pytest.fixture(autouse=True)
-def _parity_gate_active_config(parity_gate_dist_root: Path) -> Iterator[None]:
-    config = replace(load_pipeline_config(), dist_root=parity_gate_dist_root)
-    activate_pipeline_config(config)
+@pytest.fixture
+def package_root(parity_gate_dist_root: Path) -> Path:
     from tests.fixtures.test_state import clear_runtime_caches
 
     clear_runtime_caches()
-    yield
+    return parity_gate_dist_root / load_pipeline_config().dist_metadata.package_name
 
 
-def test_allowed_runtime_symbols_exist_on_fixture_runtime() -> None:
+def test_allowed_runtime_symbols_exist_on_fixture_runtime(package_root: Path) -> None:
     from src.refactor_parity_gate import _runtime, _runtime_path
     from src.runtime_symbols import discover_allowed_runtime_symbols
 
-    runtime = _runtime()
-    for symbol in discover_allowed_runtime_symbols(_runtime_path()):
+    runtime = _runtime(str(package_root.resolve()))
+    for symbol in discover_allowed_runtime_symbols(_runtime_path(package_root)):
         assert hasattr(runtime, symbol), symbol
 
 
-def test_exec_internals_injects_reader_symbols(parity_gate_dist_root: Path) -> None:
+def test_exec_internals_injects_reader_symbols(
+    parity_gate_dist_root: Path, package_root: Path
+) -> None:
     package_name = load_pipeline_config().dist_metadata.package_name
     readers_path = parity_gate_dist_root / package_name / "_readers.py"
     readers_path.write_text(
@@ -260,38 +257,39 @@ def test_exec_internals_injects_reader_symbols(parity_gate_dist_root: Path) -> N
         "def cell_inputs_b1(ctx):\n"
         "    return read_shock_type(ctx)\n"
     )
-    namespace = exec_internals_module(source)
+    namespace = exec_internals_module(source, package_root=package_root)
     assert callable(namespace["read_shock_type"])
     assert callable(namespace["cell_inputs_b1"])
 
 
-def test_exec_pristine_cluster_source() -> None:
-    namespace = exec_internals_module(PRISTINE_CLUSTER)
+def test_exec_pristine_cluster_source(package_root: Path) -> None:
+    namespace = exec_internals_module(PRISTINE_CLUSTER, package_root=package_root)
     assert callable(namespace["_resolve_formula"])
     assert callable(namespace["cell_engine_c6"])
 
 
-def test_golden_namespace_caches_identical_pristine_source() -> None:
+def test_golden_namespace_caches_identical_pristine_source(package_root: Path) -> None:
     from src.refactor_parity_gate import _golden_namespace
 
     _golden_namespace.cache_clear()
-    first = _golden_namespace(PRISTINE_CLUSTER)
-    second = _golden_namespace(PRISTINE_CLUSTER)
+    first = _golden_namespace(PRISTINE_CLUSTER, str(package_root.resolve()))
+    second = _golden_namespace(PRISTINE_CLUSTER, str(package_root.resolve()))
     assert first is second
     assert callable(first["_resolve_formula"])
 
 
 def test_cluster_gate_reuses_golden_namespace_across_calls(
     monkeypatch: pytest.MonkeyPatch,
+    package_root: Path,
 ) -> None:
     from src import refactor_parity_gate as gate
 
     exec_calls: list[str] = []
     real_exec = gate.exec_internals_module
 
-    def tracking_exec(source: str) -> dict:
+    def tracking_exec(source: str, *, package_root):
         exec_calls.append(source)
-        return real_exec(source)
+        return real_exec(source, package_root=package_root)
 
     monkeypatch.setattr(gate, "exec_internals_module", tracking_exec)
     gate._golden_namespace.cache_clear()
@@ -301,34 +299,40 @@ def test_cluster_gate_reuses_golden_namespace_across_calls(
         current_source=PRISTINE_CLUSTER,
         response=_cluster_response(CORRECT_CLUSTER_SOURCE),
         input_vectors=CLUSTER_INPUTS,
+        package_root=package_root,
     )
     check_cluster_parity(
         pristine_source=PRISTINE_CLUSTER,
         current_source=PRISTINE_CLUSTER,
         response=_cluster_response(CORRECT_CLUSTER_SOURCE),
         input_vectors=CLUSTER_INPUTS,
+        package_root=package_root,
     )
 
     pristine_execs = [source for source in exec_calls if source == PRISTINE_CLUSTER]
     assert len(pristine_execs) == 1
 
 
-def test_cluster_gate_passes_for_semantics_preserving_refactor() -> None:
+def test_cluster_gate_passes_for_semantics_preserving_refactor(
+    package_root: Path,
+) -> None:
     check_cluster_parity(
         pristine_source=PRISTINE_CLUSTER,
         current_source=PRISTINE_CLUSTER,
         response=_cluster_response(CORRECT_CLUSTER_SOURCE),
         input_vectors=CLUSTER_INPUTS,
+        package_root=package_root,
     )
 
 
-def test_cluster_gate_rejects_semantics_breaking_refactor() -> None:
+def test_cluster_gate_rejects_semantics_breaking_refactor(package_root: Path) -> None:
     with pytest.raises(ParityError) as excinfo:
         check_cluster_parity(
             pristine_source=PRISTINE_CLUSTER,
             current_source=PRISTINE_CLUSTER,
             response=_cluster_response(BROKEN_CLUSTER_SOURCE),
             input_vectors=CLUSTER_INPUTS,
+            package_root=package_root,
         )
     message = str(excinfo.value)
     assert "combined_input_passthrough" in message
@@ -336,26 +340,32 @@ def test_cluster_gate_rejects_semantics_breaking_refactor() -> None:
     assert "20.0" in message
 
 
-def test_cluster_gate_converts_runtime_error_to_parity_error() -> None:
+def test_cluster_gate_converts_runtime_error_to_parity_error(
+    package_root: Path,
+) -> None:
     with pytest.raises(ParityError) as excinfo:
         check_cluster_parity(
             pristine_source=PRISTINE_CLUSTER,
             current_source=PRISTINE_CLUSTER,
             response=_cluster_response(CRASHING_CLUSTER_SOURCE),
             input_vectors=CLUSTER_INPUTS,
+            package_root=package_root,
         )
     message = str(excinfo.value)
     assert "combined_input_passthrough" in message
     assert "TypeError" in message
 
 
-def test_cluster_gate_surfaces_missing_symbol_as_retryable_parity_error() -> None:
+def test_cluster_gate_surfaces_missing_symbol_as_retryable_parity_error(
+    package_root: Path,
+) -> None:
     with pytest.raises(ParityError) as excinfo:
         check_cluster_parity(
             pristine_source=PRISTINE_CLUSTER,
             current_source=PRISTINE_CLUSTER,
             response=_cluster_response(MISSING_SYMBOL_CLUSTER_SOURCE),
             input_vectors=CLUSTER_INPUTS,
+            package_root=package_root,
         )
     message = str(excinfo.value)
     assert "refactored symbol combined_input_passthrough could not be loaded" in message
@@ -366,7 +376,7 @@ def _mechanical_cluster_module(helper_source: str) -> str:
     return RUNTIME_IMPORT + "\n" + helper_source + "\n" + RESOLVER_SECTION
 
 
-def test_batched_mechanical_parity_passes_for_correct_units() -> None:
+def test_batched_mechanical_parity_passes_for_correct_units(package_root: Path) -> None:
     from src.refactor_parity_gate import (
         MechanicalParityUnit,
         check_batched_mechanical_parity,
@@ -388,10 +398,11 @@ def test_batched_mechanical_parity_passes_for_correct_units() -> None:
         mechanical_source=_mechanical_cluster_module(CORRECT_CLUSTER_SOURCE),
         units=units,
         input_vectors=CLUSTER_INPUTS,
+        package_root=package_root,
     )
 
 
-def test_batched_mechanical_parity_names_failing_unit() -> None:
+def test_batched_mechanical_parity_names_failing_unit(package_root: Path) -> None:
     from src.refactor_parity_gate import (
         MechanicalParityUnit,
         check_batched_mechanical_parity,
@@ -414,6 +425,7 @@ def test_batched_mechanical_parity_names_failing_unit() -> None:
             mechanical_source=_mechanical_cluster_module(BROKEN_CLUSTER_SOURCE),
             units=units,
             input_vectors=CLUSTER_INPUTS,
+            package_root=package_root,
         )
     assert "cluster:1" in str(excinfo.value)
 
@@ -434,6 +446,7 @@ def _batched_cluster_unit():
 
 def test_batched_mechanical_parity_logs_phases_and_completion(
     caplog: pytest.LogCaptureFixture,
+    package_root: Path,
 ) -> None:
     from src.refactor_parity_gate import (
         _golden_namespace,
@@ -450,6 +463,7 @@ def test_batched_mechanical_parity_logs_phases_and_completion(
             mechanical_source=_mechanical_cluster_module(CORRECT_CLUSTER_SOURCE),
             units=units,
             input_vectors=CLUSTER_INPUTS,
+            package_root=package_root,
         )
 
     messages = [record.message for record in caplog.records]
@@ -478,6 +492,7 @@ def test_batched_mechanical_parity_logs_phases_and_completion(
 
 def test_batched_mechanical_parity_logs_failure_summary(
     caplog: pytest.LogCaptureFixture,
+    package_root: Path,
 ) -> None:
     from src.refactor_parity_gate import check_batched_mechanical_parity
 
@@ -491,6 +506,7 @@ def test_batched_mechanical_parity_logs_failure_summary(
             mechanical_source=_mechanical_cluster_module(BROKEN_CLUSTER_SOURCE),
             units=units,
             input_vectors=CLUSTER_INPUTS,
+            package_root=package_root,
         )
 
     assert any("parity gate starting" in record.message for record in caplog.records)
@@ -530,7 +546,7 @@ CORRECT_XLERROR_SINGLETON_SOURCE = f'''def initial_value(ctx):
 '''
 
 
-def _singleton_context() -> SingletonRefactorContext:
+def _singleton_context(package_root: Path) -> SingletonRefactorContext:
     from src.runtime_symbols import allowed_runtime_symbols
 
     return SingletonRefactorContext(
@@ -543,9 +559,10 @@ def _singleton_context() -> SingletonRefactorContext:
         external_dependencies=(),
         semantic_dependencies=(),
         call_sites=(),
-        allowed_runtime_symbols=allowed_runtime_symbols(),
+        allowed_runtime_symbols=allowed_runtime_symbols(package_root),
         naming_hints={},
         expected_helper_name="initial_value",
+        package_root=package_root,
     )
 
 
@@ -560,94 +577,114 @@ def _singleton_response(symbol_source: str) -> SingletonRefactorResponse:
 SINGLETON_INPUTS = [{"Inputs!B2": 7.0}, {"Inputs!B2": 11.0}]
 
 
-def test_singleton_gate_passes_for_semantics_preserving_refactor() -> None:
+def test_singleton_gate_passes_for_semantics_preserving_refactor(
+    package_root: Path,
+) -> None:
     check_singleton_parity(
         pristine_source=PRISTINE_SINGLETON,
         current_source=PRISTINE_SINGLETON,
         response=_singleton_response(CORRECT_SINGLETON_SOURCE),
-        ctx=_singleton_context(),
+        ctx=_singleton_context(package_root),
         input_vectors=SINGLETON_INPUTS,
+        package_root=package_root,
     )
 
 
-def test_singleton_gate_rejects_semantics_breaking_refactor() -> None:
+def test_singleton_gate_rejects_semantics_breaking_refactor(package_root: Path) -> None:
     with pytest.raises(ParityError) as excinfo:
         check_singleton_parity(
             pristine_source=PRISTINE_SINGLETON,
             current_source=PRISTINE_SINGLETON,
             response=_singleton_response(BROKEN_SINGLETON_SOURCE),
-            ctx=_singleton_context(),
+            ctx=_singleton_context(package_root),
             input_vectors=SINGLETON_INPUTS,
+            package_root=package_root,
         )
     assert "Inputs!B6" in str(excinfo.value)
 
 
-def test_singleton_gate_converts_runtime_error_to_parity_error() -> None:
+def test_singleton_gate_converts_runtime_error_to_parity_error(
+    package_root: Path,
+) -> None:
     with pytest.raises(ParityError) as excinfo:
         check_singleton_parity(
             pristine_source=PRISTINE_SINGLETON,
             current_source=PRISTINE_SINGLETON,
             response=_singleton_response(CRASHING_SINGLETON_SOURCE),
-            ctx=_singleton_context(),
+            ctx=_singleton_context(package_root),
             input_vectors=SINGLETON_INPUTS,
+            package_root=package_root,
         )
     message = str(excinfo.value)
     assert "initial_value(ctx)" in message
     assert "TypeError" in message
 
 
-def test_singleton_gate_passes_when_both_sides_return_excel_error() -> None:
+def test_singleton_gate_passes_when_both_sides_return_excel_error(
+    package_root: Path,
+) -> None:
     check_singleton_parity(
         pristine_source=PRISTINE_XLERROR_SINGLETON,
         current_source=PRISTINE_XLERROR_SINGLETON,
         response=_singleton_response(CORRECT_XLERROR_SINGLETON_SOURCE),
-        ctx=_singleton_context(),
+        ctx=_singleton_context(package_root),
         input_vectors=SINGLETON_INPUTS,
+        package_root=package_root,
     )
 
 
-def test_evaluate_golden_normalizes_excel_errors() -> None:
+def test_evaluate_golden_normalizes_excel_errors(package_root: Path) -> None:
     from src.refactor_parity_gate import _runtime
 
-    runtime = _runtime()
+    runtime = _runtime(str(package_root.resolve()))
 
     result = _evaluate_golden(
-        lambda: (_ for _ in ()).throw(runtime.XlErrorException(runtime.XlError.VALUE))
+        lambda: (_ for _ in ()).throw(runtime.XlErrorException(runtime.XlError.VALUE)),
+        package_root=package_root,
     )
     assert result is runtime.XlError.VALUE
 
 
-def test_evaluate_golden_propagates_non_excel_exceptions() -> None:
+def test_evaluate_golden_propagates_non_excel_exceptions(package_root: Path) -> None:
     with pytest.raises(RuntimeError, match="pipeline defect"):
-        _evaluate_golden(lambda: (_ for _ in ()).throw(RuntimeError("pipeline defect")))
+        _evaluate_golden(
+            lambda: (_ for _ in ()).throw(RuntimeError("pipeline defect")),
+            package_root=package_root,
+        )
 
 
-def test_evaluate_candidate_normalizes_excel_errors() -> None:
+def test_evaluate_candidate_normalizes_excel_errors(package_root: Path) -> None:
     from src.refactor_parity_gate import _runtime
 
-    runtime = _runtime()
+    runtime = _runtime(str(package_root.resolve()))
 
     result = _evaluate_candidate(
         lambda: (_ for _ in ()).throw(runtime.XlErrorException(runtime.XlError.NA)),
         call="helper(ctx)",
+        package_root=package_root,
     )
     assert result is runtime.XlError.NA
 
 
-def test_evaluate_candidate_wraps_non_excel_exceptions_with_call_site() -> None:
+def test_evaluate_candidate_wraps_non_excel_exceptions_with_call_site(
+    package_root: Path,
+) -> None:
     with pytest.raises(ParityError) as excinfo:
         _evaluate_candidate(
             lambda: (_ for _ in ()).throw(ValueError("bad helper")),
             call="helper(ctx, time_period=1)",
+            package_root=package_root,
         )
     message = str(excinfo.value)
     assert "helper(ctx, time_period=1)" in message
     assert "ValueError" in message
 
 
-def test_load_candidate_surfaces_compile_errors_as_parity_error() -> None:
+def test_load_candidate_surfaces_compile_errors_as_parity_error(
+    package_root: Path,
+) -> None:
     with pytest.raises(ParityError) as excinfo:
-        _load_candidate("def broken(\n", "broken")
+        _load_candidate("def broken(\n", "broken", package_root=package_root)
     message = str(excinfo.value)
     assert "refactored symbol broken could not be loaded" in message
     assert "SyntaxError" in message
@@ -787,7 +824,9 @@ def _recurrence_mechanical_module() -> str:
     )
 
 
-def test_batched_mechanical_parity_warm_recurrence_is_incremental() -> None:
+def test_batched_mechanical_parity_warm_recurrence_is_incremental(
+    package_root: Path,
+) -> None:
     """Late-horizon members must not re-walk O(years) under a warm EvalContext."""
     from src.helper_memoization import memoize_namespace_helpers
     from src.refactor_parity_gate import (
@@ -798,7 +837,7 @@ def test_batched_mechanical_parity_warm_recurrence_is_incremental() -> None:
         make_eval_context,
     )
 
-    runtime = _runtime()
+    runtime = _runtime(str(package_root.resolve()))
     horizon = 80
     instrumented = '''\
 def accum_path(ctx, time_period: int):
@@ -824,8 +863,8 @@ def accum_path(ctx, time_period: int):
         + RESOLVER_SECTION
     )
 
-    bare_ns = exec_internals_module(module)
-    bare_ctx = make_eval_context(bare_ns, {"__calls__": 0})
+    bare_ns = exec_internals_module(module, package_root=package_root)
+    bare_ctx = make_eval_context(bare_ns, {"__calls__": 0}, package_root=package_root)
     assert bare_ns["accum_path"](bare_ctx, time_period=horizon) == horizon
     bare_cold_calls = bare_ctx.inputs["__calls__"]
     bare_ctx.inputs["__calls__"] = 0
@@ -835,9 +874,9 @@ def accum_path(ctx, time_period: int):
     assert bare_cold_calls == horizon
     assert bare_warm_calls == horizon + 1
 
-    memo_ns = exec_internals_module(module)
+    memo_ns = exec_internals_module(module, package_root=package_root)
     memoize_namespace_helpers(memo_ns, ("accum_path",), runtime=runtime)
-    memo_ctx = make_eval_context(memo_ns, {"__calls__": 0})
+    memo_ctx = make_eval_context(memo_ns, {"__calls__": 0}, package_root=package_root)
     assert memo_ns["accum_path"](memo_ctx, time_period=horizon) == horizon
     memo_cold_calls = memo_ctx.inputs["__calls__"]
     memo_ctx.inputs["__calls__"] = 0
@@ -864,10 +903,13 @@ def accum_path(ctx, time_period: int):
         mechanical_source=_recurrence_mechanical_module(),
         units=units,
         input_vectors=[{}],
+        package_root=package_root,
     )
 
 
-def test_batched_mechanical_parity_still_reports_recurrence_mismatch() -> None:
+def test_batched_mechanical_parity_still_reports_recurrence_mismatch(
+    package_root: Path,
+) -> None:
     from src.refactor_parity_gate import (
         MechanicalParityUnit,
         check_batched_mechanical_parity,
@@ -902,5 +944,6 @@ def test_batched_mechanical_parity_still_reports_recurrence_mismatch() -> None:
             mechanical_source=mechanical,
             units=units,
             input_vectors=[{}],
+            package_root=package_root,
         )
     assert "cluster:recurrence" in str(excinfo.value)

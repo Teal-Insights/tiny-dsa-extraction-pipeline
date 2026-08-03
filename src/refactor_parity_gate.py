@@ -41,7 +41,6 @@ from src.helper_memoization import (
     install_helper_memoization,
     memoize_namespace_helpers,
 )
-from src.pipeline_context import require_pipeline_config
 from src.runtime_symbols import (
     discover_allowed_reader_symbols,
     discover_allowed_runtime_symbols,
@@ -57,6 +56,8 @@ if TYPE_CHECKING:
         SingletonRefactorResponse,
     )
 
+# Bump when batched / per-unit parity-gate semantics change.
+PARITY_GATE_SCHEMA_VERSION = "1.0.0"
 PARITY_ATOL = 1e-6
 DEFAULT_SAMPLE_COUNT = 8
 DEFAULT_SAMPLE_SEED = 0
@@ -70,19 +71,20 @@ _BATCHED_PROGRESS_EVERY_SECONDS = 30.0
 repo_root = Path(__file__).resolve().parents[1]
 
 
-def _runtime_path() -> Path:
-    config = require_pipeline_config()
-    return config.package_root / "runtime.py"
+def _resolved_package_root(package_root: Path) -> str:
+    return str(package_root.resolve())
 
 
-def _readers_path() -> Path:
-    config = require_pipeline_config()
-    return config.package_root / "_readers.py"
+def _runtime_path(package_root: Path) -> Path:
+    return Path(_resolved_package_root(package_root)) / "runtime.py"
 
 
-def _data_path() -> Path:
-    config = require_pipeline_config()
-    return config.package_root / "data.py"
+def _readers_path(package_root: Path) -> Path:
+    return Path(_resolved_package_root(package_root)) / "_readers.py"
+
+
+def _data_path(package_root: Path) -> Path:
+    return Path(_resolved_package_root(package_root)) / "data.py"
 
 
 InputVector = Mapping[str, Any]
@@ -101,10 +103,10 @@ class _Mismatch:
     vector_index: int
 
 
-@lru_cache(maxsize=1)
-def _runtime() -> ModuleType:
+@lru_cache(maxsize=8)
+def _runtime(package_root: str) -> ModuleType:
     """Load the exported runtime module in isolation (no package side effects)."""
-    runtime_path = _runtime_path()
+    runtime_path = Path(package_root) / "runtime.py"
     spec = importlib_util.spec_from_file_location(
         "_exported_runtime_for_parity", runtime_path
     )
@@ -146,14 +148,14 @@ def _strip_package_relative_imports(source: str) -> str:
     return "".join(lines)
 
 
-@lru_cache(maxsize=1)
-def _readers_namespace() -> dict[str, Any]:
+@lru_cache(maxsize=8)
+def _readers_namespace(package_root: str) -> dict[str, Any]:
     """Load exported ``_readers.py`` with runtime symbols injected."""
-    readers_path = _readers_path()
+    readers_path = Path(package_root) / "_readers.py"
     reader_names = discover_allowed_reader_symbols(readers_path)
     if not reader_names:
         return {}
-    runtime = _runtime()
+    runtime = _runtime(package_root)
     namespace: dict[str, Any] = {
         name: getattr(runtime, name)
         for name in dir(runtime)
@@ -170,14 +172,15 @@ def _readers_namespace() -> dict[str, Any]:
     return {name: namespace[name] for name in reader_names}
 
 
-def exec_internals_module(source: str) -> dict[str, Any]:
+def exec_internals_module(source: str, *, package_root: Path) -> dict[str, Any]:
     """Execute an ``internals.py`` source string with runtime/reader symbols injected."""
-    runtime = _runtime()
+    root = _resolved_package_root(package_root)
+    runtime = _runtime(root)
     namespace: dict[str, Any] = {
         name: getattr(runtime, name)
-        for name in discover_allowed_runtime_symbols(_runtime_path())
+        for name in discover_allowed_runtime_symbols(_runtime_path(package_root))
     }
-    namespace.update(_readers_namespace())
+    namespace.update(_readers_namespace(root))
     namespace["__name__"] = "_exported_internals_parity"
     compiled = compile(
         _strip_package_relative_imports(source),
@@ -188,8 +191,8 @@ def exec_internals_module(source: str) -> dict[str, Any]:
     return namespace
 
 
-@lru_cache(maxsize=2)
-def _golden_namespace(pristine_source: str) -> dict[str, Any]:
+@lru_cache(maxsize=8)
+def _golden_namespace(pristine_source: str, package_root: str) -> dict[str, Any]:
     """Execute the pristine ``internals.py`` once and reuse its namespace.
 
     The pristine oracle source is identical for every cluster and singleton in a
@@ -199,19 +202,29 @@ def _golden_namespace(pristine_source: str) -> dict[str, Any]:
     :class:`EvalContext` (which owns the per-run memoization ``cache``) bound to
     ``namespace["_resolve_formula"]`` — so a single cached exec is safe to share.
     """
-    return exec_internals_module(pristine_source)
+    return exec_internals_module(pristine_source, package_root=Path(package_root))
 
 
-def make_eval_context(namespace: dict[str, Any], inputs: InputVector) -> Any:
+def make_eval_context(
+    namespace: dict[str, Any],
+    inputs: InputVector,
+    *,
+    package_root: Path,
+) -> Any:
     """Build an ``EvalContext`` bound to a module namespace's resolver."""
-    runtime = _runtime()
+    runtime = _runtime(_resolved_package_root(package_root))
     return runtime.EvalContext(
         inputs=runtime.coerce_inputs_dict(dict(inputs)),
         resolver=namespace["_resolve_formula"],
     )
 
 
-def _evaluate_candidate(thunk: Callable[[], Any], *, call: str) -> Any:
+def _evaluate_candidate(
+    thunk: Callable[[], Any],
+    *,
+    call: str,
+    package_root: Path,
+) -> Any:
     """Evaluate a candidate helper call, normalizing outcomes for comparison.
 
     A raised :class:`XlErrorException` is a legitimate Excel-error result and is
@@ -220,7 +233,7 @@ def _evaluate_candidate(thunk: Callable[[], Any], *, call: str) -> Any:
     :class:`ParityError` so the LLM retry loop re-prompts the model with the
     failure instead of the exception aborting the whole pipeline.
     """
-    runtime = _runtime()
+    runtime = _runtime(_resolved_package_root(package_root))
     try:
         return thunk()
     except runtime.XlErrorException as error:
@@ -234,27 +247,32 @@ def _evaluate_candidate(thunk: Callable[[], Any], *, call: str) -> Any:
         ) from error
 
 
-def _evaluate_golden(thunk: Callable[[], Any]) -> Any:
+def _evaluate_golden(thunk: Callable[[], Any], *, package_root: Path) -> Any:
     """Evaluate the pristine oracle, returning an ``XlError`` code for Excel errors.
 
     The oracle is trusted, so non-Excel exceptions are left to propagate: they
     indicate a defect in the pipeline itself rather than in a candidate helper.
     """
-    runtime = _runtime()
+    runtime = _runtime(_resolved_package_root(package_root))
     try:
         return thunk()
     except runtime.XlErrorException as error:
         return error.code
 
 
-def _load_candidate(source: str, symbol_name: str) -> tuple[dict[str, Any], Any]:
+def _load_candidate(
+    source: str,
+    symbol_name: str,
+    *,
+    package_root: Path,
+) -> tuple[dict[str, Any], Any]:
     """Execute a candidate ``internals.py`` and fetch its refactored symbol.
 
     A failure to compile, exec, or locate the symbol is treated as a candidate
     defect and surfaced as a retryable :class:`ParityError`.
     """
     try:
-        namespace = exec_internals_module(source)
+        namespace = exec_internals_module(source, package_root=package_root)
         return namespace, namespace[symbol_name]
     except Exception as error:
         raise ParityError(
@@ -264,8 +282,14 @@ def _load_candidate(source: str, symbol_name: str) -> tuple[dict[str, Any], Any]
         ) from error
 
 
-def _values_close(expected: object, actual: object, atol: float) -> bool:
-    runtime = _runtime()
+def _values_close(
+    expected: object,
+    actual: object,
+    atol: float,
+    *,
+    package_root: Path,
+) -> bool:
+    runtime = _runtime(_resolved_package_root(package_root))
     if isinstance(expected, runtime.XlError) or isinstance(actual, runtime.XlError):
         return expected == actual
     if expected is None or actual is None:
@@ -315,6 +339,7 @@ def check_cluster_parity(
     current_source: str,
     response: ClusterRefactorResponse,
     input_vectors: Sequence[InputVector],
+    package_root: Path,
     ctx: ClusterRefactorContext | None = None,
     atol: float = PARITY_ATOL,
 ) -> None:
@@ -325,6 +350,7 @@ def check_cluster_parity(
         current_source: ``internals.py`` as it exists just before this collapse.
         response: The candidate cluster refactor response to gate.
         input_vectors: Input mappings (address -> value) to evaluate under.
+        package_root: Exported package directory containing ``runtime.py``.
         ctx: Cluster context, threaded to ``apply_refactor_plan`` (unused there).
         atol: Absolute tolerance for value comparison.
 
@@ -333,10 +359,13 @@ def check_cluster_parity(
     """
     from src.internals_refactor import _parameter_literals, apply_refactor_plan
 
-    runtime = _runtime()
+    root = _resolved_package_root(package_root)
+    runtime = _runtime(root)
     candidate_source = apply_refactor_plan(current_source, response, ctx)
-    golden_ns = _golden_namespace(pristine_source)
-    candidate_ns, helper = _load_candidate(candidate_source, response.helper_name)
+    golden_ns = _golden_namespace(pristine_source, root)
+    candidate_ns, helper = _load_candidate(
+        candidate_source, response.helper_name, package_root=package_root
+    )
 
     mismatches: list[_Mismatch] = []
     for index, inputs in enumerate(input_vectors):
@@ -345,14 +374,17 @@ def check_cluster_parity(
         # columns/rows, so they resolve overlapping dependency subtrees; a shared
         # ``ctx.cache`` memoizes those once instead of once per member. The
         # resolver is pure for fixed inputs, so cross-member reuse is exact.
-        golden_ctx = make_eval_context(golden_ns, inputs)
-        candidate_ctx = make_eval_context(candidate_ns, inputs)
+        golden_ctx = make_eval_context(golden_ns, inputs, package_root=package_root)
+        candidate_ctx = make_eval_context(
+            candidate_ns, inputs, package_root=package_root
+        )
         for entry in response.member_keys:
             literals = _parameter_literals(response.parameters, entry.keys_dict())
             expected = _evaluate_golden(
                 lambda eval_ctx=golden_ctx, address=entry.address: runtime.xl_cell(
                     eval_ctx, address
-                )
+                ),
+                package_root=package_root,
             )
             call = _format_call(response.helper_name, literals)
             actual = _evaluate_candidate(
@@ -360,8 +392,9 @@ def check_cluster_parity(
                     eval_ctx, **kwargs
                 ),
                 call=call,
+                package_root=package_root,
             )
-            if not _values_close(expected, actual, atol):
+            if not _values_close(expected, actual, atol, package_root=package_root):
                 mismatches.append(
                     _Mismatch(
                         address=entry.address,
@@ -386,6 +419,7 @@ def check_singleton_parity(
     response: SingletonRefactorResponse,
     ctx: SingletonRefactorContext,
     input_vectors: Sequence[InputVector],
+    package_root: Path,
     atol: float = PARITY_ATOL,
 ) -> None:
     """Verify a renamed singleton reproduces its cell's pristine value.
@@ -396,6 +430,7 @@ def check_singleton_parity(
         response: The candidate singleton refactor response to gate.
         ctx: Singleton context providing the covered address.
         input_vectors: Input mappings (address -> value) to evaluate under.
+        package_root: Exported package directory containing ``runtime.py``.
         atol: Absolute tolerance for value comparison.
 
     Raises:
@@ -403,25 +438,32 @@ def check_singleton_parity(
     """
     from src.internals_refactor import apply_singleton_refactor_plan
 
-    runtime = _runtime()
+    root = _resolved_package_root(package_root)
+    runtime = _runtime(root)
     candidate_source, _ = apply_singleton_refactor_plan(current_source, response, ctx)
-    golden_ns = _golden_namespace(pristine_source)
-    candidate_ns, symbol = _load_candidate(candidate_source, response.symbol_name)
+    golden_ns = _golden_namespace(pristine_source, root)
+    candidate_ns, symbol = _load_candidate(
+        candidate_source, response.symbol_name, package_root=package_root
+    )
     call = f"{response.symbol_name}(ctx)"
 
     mismatches: list[_Mismatch] = []
     address = ctx.address
     for index, inputs in enumerate(input_vectors):
-        golden_ctx = make_eval_context(golden_ns, inputs)
+        golden_ctx = make_eval_context(golden_ns, inputs, package_root=package_root)
         expected = _evaluate_golden(
-            lambda eval_ctx=golden_ctx: runtime.xl_cell(eval_ctx, address)
+            lambda eval_ctx=golden_ctx: runtime.xl_cell(eval_ctx, address),
+            package_root=package_root,
         )
-        candidate_ctx = make_eval_context(candidate_ns, inputs)
+        candidate_ctx = make_eval_context(
+            candidate_ns, inputs, package_root=package_root
+        )
         actual = _evaluate_candidate(
             lambda fn=symbol, eval_ctx=candidate_ctx: fn(eval_ctx),
             call=call,
+            package_root=package_root,
         )
-        if not _values_close(expected, actual, atol):
+        if not _values_close(expected, actual, atol, package_root=package_root):
             mismatches.append(
                 _Mismatch(
                     address=ctx.address,
@@ -459,6 +501,7 @@ def check_batched_mechanical_parity(
     mechanical_source: str,
     units: Sequence[MechanicalParityUnit],
     input_vectors: Sequence[InputVector],
+    package_root: Path,
     atol: float = PARITY_ATOL,
 ) -> None:
     """Verify every mechanically refactored helper against the pristine oracle.
@@ -489,10 +532,11 @@ def check_batched_mechanical_parity(
         atol,
     )
 
-    runtime = _runtime()
+    root = _resolved_package_root(package_root)
+    runtime = _runtime(root)
     cache_info_before = _golden_namespace.cache_info()
     golden_started = time.perf_counter()
-    golden_ns = _golden_namespace(pristine_source)
+    golden_ns = _golden_namespace(pristine_source, root)
     golden_seconds = time.perf_counter() - golden_started
     golden_cache_hit = _golden_namespace.cache_info().hits > cache_info_before.hits
     logger.info(
@@ -503,7 +547,9 @@ def check_batched_mechanical_parity(
 
     candidate_started = time.perf_counter()
     try:
-        candidate_ns = exec_internals_module(mechanical_source)
+        candidate_ns = exec_internals_module(
+            mechanical_source, package_root=package_root
+        )
     except Exception as error:
         logger.error(
             "batched mechanical parity gate failed: candidate exec raised "
@@ -570,8 +616,10 @@ def check_batched_mechanical_parity(
 
     try:
         for index, inputs in enumerate(input_vectors):
-            golden_ctx = make_eval_context(golden_ns, inputs)
-            candidate_ctx = make_eval_context(candidate_ns, inputs)
+            golden_ctx = make_eval_context(golden_ns, inputs, package_root=package_root)
+            candidate_ctx = make_eval_context(
+                candidate_ns, inputs, package_root=package_root
+            )
             for unit in units:
                 helper = candidate_ns.get(unit.helper_name)
                 if helper is None:
@@ -593,7 +641,8 @@ def check_batched_mechanical_parity(
                     expected = _evaluate_golden(
                         lambda eval_ctx=golden_ctx, addr=address: runtime.xl_cell(
                             eval_ctx, addr
-                        )
+                        ),
+                        package_root=package_root,
                     )
                     golden_eval_seconds += time.perf_counter() - golden_call_started
                     call = _format_call(unit.helper_name, literals)
@@ -604,6 +653,7 @@ def check_batched_mechanical_parity(
                                 eval_ctx, **kw
                             ),
                             call=call,
+                            package_root=package_root,
                         )
                         candidate_eval_seconds += (
                             time.perf_counter() - candidate_call_started
@@ -618,7 +668,9 @@ def check_batched_mechanical_parity(
                         raise ParityError(
                             f"mechanical unit {unit.unit_id!r}: {error}"
                         ) from error
-                    if not _values_close(expected, actual, atol):
+                    if not _values_close(
+                        expected, actual, atol, package_root=package_root
+                    ):
                         mismatches_by_unit.setdefault(unit.unit_id, []).append(
                             _Mismatch(
                                 address=address,
@@ -637,7 +689,6 @@ def check_batched_mechanical_parity(
                 _log_progress(vector_index=index)
     finally:
         clear_side_helper_memos()
-
     eval_seconds = time.perf_counter() - eval_started
     mismatch_count = sum(len(items) for items in mismatches_by_unit.values())
     gate_elapsed = time.perf_counter() - gate_started
@@ -690,10 +741,10 @@ def check_batched_mechanical_parity(
     )
 
 
-@lru_cache(maxsize=1)
-def _dist_data() -> ModuleType:
+@lru_cache(maxsize=8)
+def _dist_data(package_root: str) -> ModuleType:
     """Load the exported ``data.py`` (DEFAULT_INPUTS/CONSTANTS) in isolation."""
-    data_path = _data_path()
+    data_path = Path(package_root) / "data.py"
     spec = importlib_util.spec_from_file_location(
         "_exported_data_for_parity", data_path
     )
@@ -707,16 +758,15 @@ def _dist_data() -> ModuleType:
 
 def build_default_input_vectors(
     *,
+    package_root: Path,
+    constraints: Mapping[str, object],
     count: int = DEFAULT_SAMPLE_COUNT,
     seed: int = DEFAULT_SAMPLE_SEED,
 ) -> list[dict[str, object]]:
     """Build gate input vectors from pipeline constraints and exported defaults."""
-    from src.pipeline_context import require_pipeline_config
-
-    config = require_pipeline_config()
-    data = _dist_data()
+    data = _dist_data(_resolved_package_root(package_root))
     return sample_input_vectors(
-        constraints=config.constraints,
+        constraints=constraints,
         default_inputs=data.DEFAULT_INPUTS,
         constants=data.CONSTANTS,
         count=count,

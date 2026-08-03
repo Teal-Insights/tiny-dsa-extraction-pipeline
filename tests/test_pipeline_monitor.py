@@ -20,6 +20,17 @@ def test_stage_timer_records_durations() -> None:
     assert all(seconds >= 0 for seconds in timings.values())
 
 
+def test_stage_timer_record_appends_without_printing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    timer = StageTimer()
+
+    timer.record("cluster_graph_formulas", 1.25)
+
+    assert timer.as_dict() == {"cluster_graph_formulas": 1.25}
+    assert capsys.readouterr().out == ""
+
+
 def test_env_flag_truthiness(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PIPELINE_PROFILE", raising=False)
     assert env_flag("PIPELINE_PROFILE") is False

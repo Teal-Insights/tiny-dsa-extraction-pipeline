@@ -10,7 +10,7 @@ from typing import Any
 import fastpyxl
 from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.normalize import effective_dimension_id
-from excel_grapher.series_bindings.types import Scalar
+from excel_grapher.series_bindings.types import Scalar, WorkbookSeriesBindings
 
 from src.workbook_addresses import ProjectionColumnLayout
 
@@ -65,9 +65,10 @@ def resolve_dimension_key(
     raise ValueError(f"unknown binding key: {name!r}")
 
 
-def load_key_concept_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ...]:
-    """Aggregate cell-scoped key dimensions from ``bindings/*.bindings.yaml``."""
-    bindings = load_series_bindings(bindings_path)
+def key_concept_vocabulary_from_bindings(
+    bindings: WorkbookSeriesBindings,
+) -> tuple[KeyConceptSpec, ...]:
+    """Aggregate cell-scoped key dimensions from already-loaded series bindings."""
     concept_scheme = bindings.get("concept_scheme") or {}
     concept_dtypes: dict[str, str] = {}
     for concept in concept_scheme.get("concepts") or []:
@@ -104,6 +105,11 @@ def load_key_concept_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ..
                 suggested_param_name=dimension_id_to_param_name(dimension_id),
             )
     return tuple(sorted(seen.values(), key=lambda item: item.dimension_id))
+
+
+def load_key_concept_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ...]:
+    """Aggregate cell-scoped key dimensions from ``bindings/*.bindings.yaml``."""
+    return key_concept_vocabulary_from_bindings(load_series_bindings(bindings_path))
 
 
 def build_bound_address_keys(

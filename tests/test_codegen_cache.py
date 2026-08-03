@@ -225,15 +225,27 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
     import src.codegen_cache as codegen_cache
 
     config = MagicMock()
+    config.repo_root = tmp_path
     config.package_root = tmp_path / "dist" / "pkg"
     config.dist_root = tmp_path / "dist"
     config.dist_root.mkdir(parents=True)
     config.package_root.mkdir(parents=True)
     config.targets = ("Sheet!A1",)
+    config.constraints = {}
+    config.variation_mode = "independent"
+    config.clustering_mode = "series_ast"
+    config.internal_binding_validation_mode = "warn"
+    config.internal_binding_exempt_cells = frozenset()
     config.docstring_callback_name = "openai_series_docstring"
     config.guide_path = tmp_path / "guide.md"
     config.guide_path.write_text("guide", encoding="utf-8")
     config.workbook_path = tmp_path / "workbook.xlsx"
+    config.workbook_path.write_bytes(b"workbook")
+    config.bindings_path = tmp_path / "bindings"
+    config.bindings_path.mkdir()
+    (config.bindings_path / "inputs.bindings.yaml").write_text(
+        "series: []\n", encoding="utf-8"
+    )
     config.graph_output_dir = tmp_path / "artifacts"
     config.dist_metadata = MagicMock()
     config.graph_output_dir.mkdir()
@@ -243,6 +255,9 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
     graph_result.series_bindings = MagicMock()
     graph_result.graph_cache_key = "graph-key"
     graph_result.internal_series = []
+    graph_result.internal_binding_index = {}
+    graph_result.bound_address_keys = {}
+    graph_result.address_to_series_id = {}
 
     codegen_dir = tmp_path / "codegen"
     sample = dict(_SAMPLE_MODULES)
@@ -256,17 +271,13 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
             "src.extraction_pipeline.build_refactor_projection",
             return_value=MagicMock(),
         ),
-        patch(
-            "src.extraction_pipeline.build_internal_binding_index",
-            return_value={},
-        ),
         patch("src.extraction_pipeline.profile_if_enabled") as profile_mock,
         patch("src.extraction_pipeline.configure_logging"),
         patch("src.extraction_pipeline.StageTimer") as timer_cls,
         patch("src.extraction_pipeline.resolve_stall_log_path") as stall_path,
-        patch("src.extraction_pipeline.seed_validation_harness"),
-        patch("src.extraction_pipeline.render_dist_pyproject_toml", return_value=""),
-        patch("src.extraction_pipeline.write_dist_readme"),
+        patch("src.package_materialize.seed_validation_harness"),
+        patch("src.package_materialize.render_dist_pyproject_toml", return_value=""),
+        patch("src.package_materialize.write_dist_readme"),
         patch("src.extraction_pipeline.configure_docstring_callback") as configure_cb,
         patch("src.extraction_pipeline.CodeGenerator") as codegen_cls,
         patch.object(codegen_cache, "DEFAULT_CODEGEN_CACHE_DIR", codegen_dir),

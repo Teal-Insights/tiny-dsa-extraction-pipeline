@@ -81,29 +81,23 @@ def discover_allowed_formula_symbols(
     return tuple(sorted(symbols))
 
 
-def _runtime_path_from_config() -> Path:
-    from src.pipeline_context import require_pipeline_config
-
-    return require_pipeline_config().package_root / "runtime.py"
-
-
-def _readers_path_from_config() -> Path:
-    from src.pipeline_context import require_pipeline_config
-
-    return require_pipeline_config().package_root / "_readers.py"
+@lru_cache(maxsize=8)
+def _allowed_runtime_symbols_cached(package_root: str) -> tuple[str, ...]:
+    root = Path(package_root)
+    return discover_allowed_formula_symbols(root / "runtime.py", root / "_readers.py")
 
 
-@lru_cache(maxsize=1)
-def allowed_runtime_symbols() -> tuple[str, ...]:
+@lru_cache(maxsize=8)
+def _allowed_runtime_module_symbols_cached(package_root: str) -> tuple[str, ...]:
+    return discover_allowed_runtime_symbols(Path(package_root) / "runtime.py")
+
+
+def allowed_runtime_symbols(package_root: Path) -> tuple[str, ...]:
     """Cached allowlist used by refactor validation and the parity gate."""
-    return discover_allowed_formula_symbols(
-        _runtime_path_from_config(),
-        _readers_path_from_config(),
-    )
+    return _allowed_runtime_symbols_cached(str(package_root.resolve()))
 
 
-@lru_cache(maxsize=1)
-def allowed_runtime_module_symbols() -> tuple[str, ...]:
+def allowed_runtime_module_symbols(package_root: Path) -> tuple[str, ...]:
     """Cached allowlist restricted to symbols exported by ``runtime.py``.
 
     :func:`allowed_runtime_symbols` unions in the ``_readers`` helpers, which
@@ -111,4 +105,10 @@ def allowed_runtime_module_symbols() -> tuple[str, ...]:
     rewrites the ``from .runtime import`` line needs this narrower set so
     reader helpers are never merged into the runtime import bundle.
     """
-    return discover_allowed_runtime_symbols(_runtime_path_from_config())
+    return _allowed_runtime_module_symbols_cached(str(package_root.resolve()))
+
+
+def clear_runtime_symbol_caches() -> None:
+    """Drop path-keyed allowlist caches (e.g. after patching ``runtime.py``)."""
+    _allowed_runtime_symbols_cached.cache_clear()
+    _allowed_runtime_module_symbols_cached.cache_clear()

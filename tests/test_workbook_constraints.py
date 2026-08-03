@@ -54,9 +54,9 @@ def test_leaf_classification_matches_constraint_kinds(
         synthetic_configured_pipeline.config.constraints,
         graph.leaf_keys(),
     )
-    assert graph.leaf_classification == expected
-    assert graph.leaf_classification["Inputs!A1"] == "input"
-    assert graph.leaf_classification["Inputs!B1"] == "constant"
+    assert synthetic_configured_pipeline.leaf_classification == expected
+    assert synthetic_configured_pipeline.leaf_classification["Inputs!A1"] == "input"
+    assert synthetic_configured_pipeline.leaf_classification["Inputs!B1"] == "constant"
 
 
 def test_missing_constraint_reports_graph_leaf_keys(synthetic_graph) -> None:

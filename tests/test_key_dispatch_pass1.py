@@ -175,7 +175,7 @@ def test_build_cluster_refactor_context_rescues_multi_regime_as_key_dispatch(
 ) -> None:
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_symbols",
-        lambda: frozenset({"xl_cell", "xl_number", "ctx"}),
+        lambda *_args, **_kwargs: frozenset({"xl_cell", "xl_number", "ctx"}),
     )
     bound_keys = {**DSPB_LIKE_MEMBER_KEYS, **DSPB_LIKE_OPERAND_KEYS}
     ctx = build_cluster_refactor_context(
@@ -201,7 +201,7 @@ def test_try_synthesize_cluster_body_emits_key_dispatch_control_flow(
 ) -> None:
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_symbols",
-        lambda: frozenset({"xl_cell", "xl_number", "ctx"}),
+        lambda *_args, **_kwargs: frozenset({"xl_cell", "xl_number", "ctx"}),
     )
     bound_keys = {**DSPB_LIKE_MEMBER_KEYS, **DSPB_LIKE_OPERAND_KEYS}
     ctx = build_cluster_refactor_context(
@@ -231,7 +231,9 @@ def test_key_dispatch_mechanical_response_validates(
 ) -> None:
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_symbols",
-        lambda: frozenset({"xl_cell", "xl_number", "ctx", "xl_memoize"}),
+        lambda *_args, **_kwargs: frozenset(
+            {"xl_cell", "xl_number", "ctx", "xl_memoize"}
+        ),
     )
     internals_path = _write_dspb_internals(tmp_path)
     bound_keys = {**DSPB_LIKE_MEMBER_KEYS, **DSPB_LIKE_OPERAND_KEYS}

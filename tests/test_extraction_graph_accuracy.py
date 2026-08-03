@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 import asyncio
+from collections.abc import Mapping
+
 import pytest
 
 from excel_grapher.grapher import DependencyGraph
@@ -29,6 +31,7 @@ def _run_llm_graph_dependency_audit(
     graph: DependencyGraph,
     audit_cases: tuple[GraphAuditCase, ...],
     empty_cases_message: str,
+    leaf_classification: Mapping[str, str],
 ) -> None:
     if not audit_cases:
         pytest.skip(empty_cases_message)
@@ -57,6 +60,7 @@ def _run_llm_graph_dependency_audit(
             graph=graph,
             cases=selected_cases,
             model=model,
+            leaf_classification=leaf_classification,
         )
     )
 
@@ -82,6 +86,7 @@ def test_llm_judges_workbook_graph_is_correct() -> None:
     _run_llm_graph_dependency_audit(
         config=config,
         graph=graph,
+        leaf_classification=graph_result.leaf_classification,
         audit_cases=config.graph_audit_cases,
         empty_cases_message=(
             "workbook_config.GRAPH_AUDIT_CASES is empty; declare audit cases in "
@@ -100,6 +105,7 @@ def test_llm_judges_synthetic_graph_is_correct(
     _run_llm_graph_dependency_audit(
         config=pipeline.config,
         graph=pipeline.graph,
+        leaf_classification=pipeline.leaf_classification,
         audit_cases=pipeline.config.graph_audit_cases,
         empty_cases_message=(
             "Synthetic pipeline config has no graph audit cases; this should not "

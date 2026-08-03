@@ -18,11 +18,6 @@ if str(REPO_ROOT) not in sys.path:
 from src.extraction_pipeline import build_pipeline_graph  # noqa: E402
 from src.formula_clustering import FormulaCluster, cluster_graph_formulas  # noqa: E402
 from src.pipeline_config import load_pipeline_config, validate_pipeline_config  # noqa: E402
-from src.pipeline_context import activate_pipeline_config  # noqa: E402
-from src.refactor_bindings import (  # noqa: E402
-    build_address_to_series_id,
-    build_bound_address_keys,
-)
 from src.refactor_order import (  # noqa: E402
     ScheduleDiagnostics,
     compute_refactor_schedule_with_diagnostics,
@@ -238,7 +233,6 @@ def main() -> None:
 
     config = load_pipeline_config()
     validate_pipeline_config(config)
-    activate_pipeline_config(config)
 
     graph_result = build_pipeline_graph(config, no_cache=args.no_cache)
     projection = build_refactor_projection(
@@ -246,18 +240,8 @@ def main() -> None:
         graph_cache_key=graph_result.graph_cache_key,
         no_cache=args.no_cache,
     )
-    bound_address_keys = build_bound_address_keys(
-        graph_result.input_series,
-        graph_result.output_series,
-        graph_result.internal_series,
-        constant_series=graph_result.constant_series,
-    )
-    address_to_series_id = build_address_to_series_id(
-        graph_result.internal_series,
-        output_series=graph_result.output_series,
-        input_series=graph_result.input_series,
-        constant_series=graph_result.constant_series,
-    )
+    bound_address_keys = graph_result.bound_address_keys
+    address_to_series_id = graph_result.address_to_series_id
 
     clusters = cluster_graph_formulas(
         projection,

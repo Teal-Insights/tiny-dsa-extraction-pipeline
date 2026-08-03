@@ -1,14 +1,16 @@
-# Tiny DSA extraction pipeline
+# Extraction Pipeline Template
 
-This repository reverse-engineers the illustrative Excel workbook at [`data/tiny-dsa.xlsx`](data/tiny-dsa.xlsx) and exports a standalone Python package (plus its documentation site sources) into `dist/`. It is configured from the [extraction-pipeline-template](https://github.com/Teal-Insights/extraction-pipeline-template); see [technical_standard.md](technical_standard.md) for the acceptance bar and [lessons-learned.md](lessons-learned.md) for design rationale.
+Cookie-cutter template for turning an Excel financial model into a semantic, distributable Python library using [excel-grapher](https://github.com/Teal-Insights/excel-grapher). The pipeline combines target-driven graph extraction, explicit dynamic-reference constraints, series bindings, LLM-assisted naming and documentation, and Excel-backed parity tests.
+
+See [technical_standard.md](technical_standard.md) for the acceptance bar and [lessons-learned.md](lessons-learned.md) for design rationale.
 
 ## Clone and configure (onboarding checklist)
 
-Follow this order when adapting the pipeline to a new workbook (or re-onboarding after a major template merge). Each step has a stage-gate owner who signs off before the next step begins.
+Follow this order when adapting the template to a new workbook. Each step has a stage-gate owner who signs off before the next step begins.
 
 | Step | Owner | Action |
 |---|---|---|
-| 1. Ingest | **Config author** | Clone the repo. Replace `data/tiny-dsa.xlsx` and `data/tiny-dsa-guide.md`. Clear workbook-specific state: delete `bindings/*.bindings.yaml`, `dist/`, and `.cache/`. Point [workbook_config.py](workbook_config.py) paths at the new workbook. |
+| 1. Ingest | **Config author** | Clone the repo. Replace `data/workbook.xlsx` and `data/guide.md`. Clear workbook-specific state: delete `bindings/*.bindings.yaml`, `dist/`, and `.cache/`. Point [workbook_config.py](workbook_config.py) paths at the new workbook. |
 | 2. Audit | **Config author** | Run `uv run python -m src.workbook_audit --output artifacts/workbook-audit.md`. Resolve blocking automation (VBA, macros, external links) before graph work. |
 | 3. Configure | **Config author** | Declare extraction targets, author bindings, constrain every dynamic-ref controller, and classify all graph leaves. See [Configure](#1-configure) below. |
 | 4. Extract | **Config author** | Run `uv run python -m src.extraction_pipeline --extract-graph`. Confirm the graph builds without `DynamicRefError`. |
@@ -25,8 +27,8 @@ Before running the pipeline, populate this repository with workbook-specific inp
 
 | Input | Location | Purpose |
 |---|---|---|
-| Workbook | `data/tiny-dsa.xlsx` | Source Excel model |
-| Human guide | `data/tiny-dsa-guide.md` | Domain usage, public I/O catalog, scenario narrative |
+| Workbook | `data/workbook.xlsx` | Source Excel model |
+| Human guide | `data/guide.md` | Domain usage, public I/O catalog, scenario narrative |
 | Targets | `workbook_config.py` → `TARGETS` | Named ranges or addresses driving graph extraction |
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml` | Records-shaped public API surface and internal formula-cell triangulation |
@@ -71,7 +73,7 @@ flowchart LR
 ### 1. Configure
 
 1. Edit [workbook_config.py](workbook_config.py): paths, `TARGETS`, `CONSTRAINTS`, and `DIST_METADATA`.
-2. Author `bindings/*.bindings.yaml` (schema version `1.8.0`, one logical series per public API function or internal formula group).
+2. Author `bindings/*.bindings.yaml` (schema version `1.10.0`, one logical series per public API function or internal formula group).
 3. Constrain cells that control `OFFSET` / `INDEX` / `MATCH` / `CHOOSE` so dynamic refs resolve completely.
 4. Classify every leaf as `input` or `constant`; every mutable input leaf must appear in `inputs.bindings.yaml`.
 5. Bind every internal formula cell in `internals.bindings.yaml` (see [Authoring internals](#authoring-internals) below).
@@ -89,9 +91,11 @@ uv run python -m src.workbook_audit --output artifacts/workbook-audit.md
 
 See [artifacts/README.md](artifacts/README.md) and [artifacts/artifacts-catalog.md](artifacts/artifacts-catalog.md) for report sections and commit policy. Optional hooks in [workbook_config.py](workbook_config.py) (`AUDIT_TITLE`, `AUDIT_PUBLIC_INPUTS`, `AUDIT_GUIDE_USE_CASES`) add workbook-specific inventory tables when populated.
 
-#### Projection column layout
+#### Projection column layout (optional)
 
-`PROJECTION_LAYOUT` in [workbook_config.py](workbook_config.py) maps Tiny DSA Engine columns C–G to Outputs columns B–F so the internals refactor names helpers by economic time period instead of raw column letters. Set `projection_dimension_id` when the projection axis uses an explicit dimension id other than `TIME_PERIOD` (for example `PROJECTION_PERIOD`).
+Set `PROJECTION_LAYOUT` in [workbook_config.py](workbook_config.py) when the workbook has parallel time-series columns on an engine sheet and a related outputs sheet. The internals refactor uses this mapping to name helpers by economic time period instead of raw column letters. Set `projection_dimension_id` when the projection axis uses an explicit dimension id other than `TIME_PERIOD` (for example `PROJECTION_PERIOD`). Leave it `None` when formulas do not follow that pattern.
+
+See the commented reference example at the bottom of `workbook_config.py` (Tiny DSA Engine columns C–G mapped to Outputs columns B–F).
 
 ### 2. Extract
 
@@ -102,13 +106,25 @@ uv run python -m src.extraction_pipeline --stop-after-stage extract
 # equivalent: --extract-graph
 ```
 
-This writes `artifacts/dependency-graph/` (see [artifacts/artifacts-catalog.md](artifacts/artifacts-catalog.md)), then exits. Review graph completeness manually (step 5 in the [onboarding checklist](#clone-and-configure-onboarding-checklist)): expected sheets, no spurious nodes, shock/engine paths present.
+This writes `artifacts/dependency-graph/` (see [artifacts/artifacts-catalog.md](artifacts/artifacts-catalog.md)), then exits. Review graph completeness manually (step 5 in the [onboarding checklist](#clone-and-configure-onboarding-checklist)): expected sheets, no spurious nodes, shock/engine paths present. See [artifacts/README.md](artifacts/README.md) for commit policy and [artifacts/artifacts-catalog.md](artifacts/artifacts-catalog.md) for the summary schema.
 
-The extraction design is documented in [docs/extraction-pipeline.qmd](docs/extraction-pipeline.qmd) (rendered to [docs/extraction-pipeline.md](docs/extraction-pipeline.md)).
+You can also build the graph programmatically:
+
+```python
+from excel_grapher.grapher import DynamicRefConfig, create_dependency_graph
+
+graph = create_dependency_graph(
+    workbook_path,
+    targets,
+    load_values=True,
+    dynamic_refs=DynamicRefConfig.from_constraints(constraints, {}),
+    capture_dependency_provenance=True,
+)
+```
 
 After manual review (onboarding step 5), run graph-oracle differential parity (step 6) before export.
 
-During graph build the pipeline also runs **internal binding derivation** and optional **internal binding coverage validation** (see below). Both run on `--extract-graph` and on the full export path.
+During graph build the pipeline also runs **internal binding derivation** and optional **internal binding coverage validation** (see below). Both run on `--extract-graph` and on the extract stage of a full pipeline run.
 
 #### Internal series bindings
 
@@ -126,7 +142,7 @@ Author `internals.bindings.yaml` after `--extract-graph`, when you can see which
 - **Validate** — `validate_series_bindings(...)`, then `derive_internal_series(...)`. Run `uv run pytest tests/test_internal_binding_coverage.py` once `INTERNAL_BINDING_VALIDATION_MODE` is enabled.
 - **Review** — re-run `--extract-graph` and confirm bound formula nodes show `keys:` / `record:` labels in the graph explorer.
 
-Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction, schema 1.8.0). Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt) for agent-assisted drafting.
+Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction, schema 1.10.0). Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt) for agent-assisted drafting.
 
 #### Internal binding coverage validation
 
@@ -149,7 +165,7 @@ Use `warn` while iterating locally; treat pytest failures as the CI gate once ex
 
 | Utility | Command | When to use |
 |---|---|---|
-| Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints, or excel-grapher. Add `--force` to rebuild even when entries exist. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
+| Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints, or excel-grapher. Add `--force` to rebuild even when entries exist; `--force` also clears and prunes `.cache/series-resolution/`, `.cache/series-derived/`, and `.cache/bindings-validation/`, and clears `.cache/clusters/` and `.cache/internals/`. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
 | Internal-binding burndown | `uv run python -m scripts.internal_binding_burndown` | After `--extract-graph` to see which formula rows still need `internals.bindings.yaml` entries. Supports `--per-sheet` and `--max-rows`. Reuses the newest cached graph even when bindings changed. |
 | Programmatic binding emission | `uv run python -m scripts.author_bindings` | Large, regular binding surfaces defined in a declarative catalog (`templates/binding-catalog.example.yaml`). Complements [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt). |
 
@@ -173,9 +189,7 @@ Reports land under `data/differential/graph/`. Exit codes: **`0`** all compariso
 
 ### 4. Export
 
-The pipeline applies `OptimalCompression` over the canonical graph, generates a records-shaped API (`make_context`, `set_*`, `compute_*`), writes `dist/tiny_dsa/`, and copies the validation bundle into `dist/tests/`.
-
-After generating and committing `dist/`, dispatch [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) to publish to [`Teal-Insights/py-tiny-dsa`](https://github.com/Teal-Insights/py-tiny-dsa) (see [Deploying the generated package](#deploying-the-generated-package)).
+The pipeline applies `OptimalCompression` over the canonical graph, generates a records-shaped API (`make_context`, `set_*`, `compute_*`), writes `dist/<package>/`, and copies the validation bundle into `dist/tests/`.
 
 ### 5. Test
 
@@ -190,8 +204,6 @@ On Windows with Excel installed, re-run from the exported project:
 ```pwsh
 uv run --project dist --group validation python -m tests.differential.differential_test_exported_library --layout exported
 ```
-
-See [tests/differential/README.md](tests/differential/README.md) for coverage details and report locations.
 
 ### 6. Document
 
@@ -257,12 +269,15 @@ synthesizer cannot prove correct fall back to the legacy full-body contract,
 and the per-helper parity gate guards both paths. Set
 `MECHANICAL_REFACTOR_BODIES=0` to disable synthesis for a run.
 
-Iterate on the refactor stage in isolation (scratch output root, warm caches):
+Iterate on the refactor stage in isolation after a warm export (scratch output root by default; thin wrapper over `--only-stage refactor`):
 
 ```bash
+uv run python -m src.extraction_pipeline --stop-after-stage export
 uv run python -m scripts.run_refactor_stage --dump-prompts artifacts/refactor-lab-prompts
 uv run python -m scripts.run_refactor_stage --report-synthesis artifacts/refactor-lab-synthesis
 ```
+
+`--dump-prompts`, `--report-synthesis`, `--dry-run`, and `--no-parity-gate` all force a real Pass 1 / Pass 2 run: answering them from the refactored-internals cache would return before any prompt was built, making them silent no-ops. Add `--force-rebuild` to also discard warm graph / projection / cluster payloads.
 
 ## Run the pipeline
 
@@ -273,17 +288,21 @@ uv sync
 uv run python -m src.extraction_pipeline
 ```
 
-### Stop after a stage
+### Stage entry and exit
 
-The pipeline is ordered as `extract → export → refactor → validate → document`. Use `--stop-after-stage` to run through a named stage and exit — useful while iterating without paying for later LLM or docs work:
+The pipeline is ordered as `extract → export → refactor → validate → document`. Each completed stage writes `artifacts/stages/<stage>.json` (cache keys, upstream keys, and input fingerprints). Use the flags below to enter or exit at a named stage without re-paying upstream work:
 
-| Flag | Stops after | Typical use |
+| Flag | Behavior | Typical use |
 |---|---|---|
-| `--stop-after-stage extract` (or `--extract-graph`) | Graph build + review artifacts | Bindings / constraint iteration |
-| `--stop-after-stage export` | Codegen package + seeded validation harness | Inspect generated API before LLM refactor |
-| `--stop-after-stage refactor` | Internals rewrite | Skip differential + docs |
-| `--stop-after-stage validate` | Post-refactor differential + shipped reports | Skip documentation website |
-| `--stop-after-stage document` (default) | Full pipeline | Release / complete run |
+| `--stop-after-stage extract` (or `--extract-graph`) | Run extract only (graph review artifacts) | Bindings / constraint iteration |
+| `--stop-after-stage export` | Run through export | Inspect generated API before LLM refactor |
+| `--start-from-stage refactor` | Resume at refactor from warm `export.json` | Re-run internals after export is stable |
+| `--only-stage validate` | Run validate only (rehydrates `dist/` from manifest keys) | Differential without export/refactor |
+| `--only-stage document` | Run document only | Guide rewrite against an existing package |
+| `--stop-after-stage document` (default) | Full pipeline from the start | Release / complete run |
+| `--force-rebuild` | Rebuild warm on-disk caches even when keys match | Invalidate stale cache payloads |
+
+`--start-from-stage` and `--only-stage` are mutually exclusive. `--only-stage` cannot be combined with `--stop-after-stage`. Loading a stage manifest recomputes workbook / bindings / constraints / mode fingerprints and **fails loudly** (naming the drifted input) when they disagree — it never silently falls back to a full run. Entering at `validate` or `document` rebuilds `dist/` via `materialize_package` from the manifest's codegen and internals keys.
 
 When the default full run reaches `document` after a non-zero exported-library differential exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (timeouts, validation exhaustion, LLM errors) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
 
@@ -291,11 +310,13 @@ Guide-rewrite LLM calls use `SECTION_REWRITE_REQUEST_TIMEOUT` (default 300s per 
 
 ```bash
 uv run python -m src.extraction_pipeline --stop-after-stage export
+uv run python -m src.extraction_pipeline --start-from-stage refactor --stop-after-stage validate
+uv run python -m src.extraction_pipeline --only-stage validate
 ```
 
 ### Prerequisites
 
-LLM steps (docstrings, internals refactor, guide rewrites) cache results under `.cache/`. Dependency graph extraction, `OptimalCompression` projection, and `derive_*_series` resolution also cache gzipped pickle payloads under `.cache/dependency-graph/`, `.cache/projection/`, and `.cache/series-resolution/` (keyed by workbook bytes, targets, constraints, bindings, and `excel-grapher` version). Pass `--no-cache` to bypass graph, projection, and series-resolution caches for a single run. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
+LLM steps (docstrings, internals refactor, guide rewrites) cache results under `.cache/`. Dependency graph extraction, `OptimalCompression` projection, `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, formula clusters / refactor schedule, and codegen module texts also cache gzipped pickle payloads under `.cache/dependency-graph/`, `.cache/projection/`, `.cache/series-resolution/`, `.cache/series-derived/`, `.cache/bindings-validation/`, `.cache/clusters/`, and `.cache/codegen/` (keyed by workbook bytes, targets, constraints, bindings, clustering modes, codegen options, and `excel-grapher` version). A successful gated refactor also content-keys the final `internals.py` under `.cache/internals/<key>.py` (codegen key, clusters key, digest of `.cache/internals-refactors.json`, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, refactor model, and `excel-grapher` version) so a warm refactor is a file copy that skips Pass 1, the batched parity gate, and Pass 2. The Pass 1 mechanical checkpoint is stored under `.cache/internals/<package-namespace>/` (not under `dist/`). `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen (and optional internals) cache keys recorded in `dist/.pipeline-cache-keys.json`. That sidecar also records `internals_inputs` — the refactor model, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, and `excel-grapher` version the committed module was built under. Adopting a committed `dist/` happens before clustering, so the full content key cannot be recomputed there; the recorded provenance must match the current run or the refactor is rebuilt from pristine codegen instead. Stage entry/exit also records those keys (plus fingerprints) under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, cluster, codegen, and refactored-internals caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
 
 ```bash
 # .env — logging verbosity for pipeline entry points (default: INFO)
@@ -363,7 +384,7 @@ Open `http://localhost:8000/`.
 
 Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-checklist):
 
-- [ ] **Ingest:** `data/tiny-dsa.xlsx` and `data/tiny-dsa-guide.md` populated; stale bindings, `dist/`, and `.cache/` cleared
+- [ ] **Ingest:** `data/workbook.xlsx` and `data/guide.md` populated; stale bindings, `dist/`, and `.cache/` cleared
 - [ ] **Audit:** Pre-extraction workbook audit reviewed (`uv run python -m src.workbook_audit`); blocking automation resolved
 - [ ] **Configure:** Outputs declared as extraction targets in `workbook_config.py`
 - [ ] **Configure:** `bindings/inputs.bindings.yaml` + `outputs.bindings.yaml` validated
@@ -382,22 +403,9 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 
 ## Development
 
-### Setup
-
-Clone the repository and install the dependencies:
-
 ```bash
-git clone https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline.git
-cd tiny-dsa-extraction-pipeline
 uv sync
 uv run pre-commit install
-```
-
-### Workflow
-
-Type, lint, and format checks are run automatically when you commit.
-
-```bash
 uv run pytest
 uv run ruff check
 uv run ruff format
@@ -405,8 +413,6 @@ uv run ty check
 ```
 
 Pull requests run the same test suite on Ubuntu via `.github/workflows/test.yml`.
-
-Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audits require `GRAPH_AUDIT_CASES` in `workbook_config.py`; synthetic fixture audits run without extra setup; provider API key required for `LLM_GRAPH_AUDIT_MODEL`).
 
 ### Deploying the generated package
 

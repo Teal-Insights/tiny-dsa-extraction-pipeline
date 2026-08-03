@@ -6,8 +6,6 @@ import ast
 import importlib.metadata
 import inspect
 import shutil
-from collections.abc import Iterator
-from dataclasses import replace
 from pathlib import Path
 from textwrap import dedent
 
@@ -16,7 +14,6 @@ from excel_grapher.exporter.codegen import CodeGenerator
 
 from src.empty_if_rewrite import rewrite_empty_if_none_literals
 from src.pipeline_config import load_pipeline_config
-from src.pipeline_context import activate_pipeline_config
 from src.refactor_parity_gate import (
     MechanicalParityUnit,
     ParityError,
@@ -65,14 +62,12 @@ def parity_gate_dist_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return root
 
 
-@pytest.fixture(autouse=True)
-def _parity_gate_active_config(parity_gate_dist_root: Path) -> Iterator[None]:
-    config = replace(load_pipeline_config(), dist_root=parity_gate_dist_root)
-    activate_pipeline_config(config)
+@pytest.fixture
+def package_root(parity_gate_dist_root: Path) -> Path:
     from tests.fixtures.test_state import clear_runtime_caches
 
     clear_runtime_caches()
-    yield
+    return parity_gate_dist_root / load_pipeline_config().dist_metadata.package_name
 
 
 def test_rewrite_empty_if_none_arms_to_zero() -> None:
@@ -226,9 +221,12 @@ def _empty_if_unit() -> MechanicalParityUnit:
     )
 
 
-def test_empty_if_shaped_parity_fails_when_helper_returns_none() -> None:
+def test_empty_if_shaped_parity_fails_when_helper_returns_none(
+    package_root: Path,
+) -> None:
     with pytest.raises(ParityError, match="cluster_365_g114"):
         check_batched_mechanical_parity(
+            package_root=package_root,
             pristine_source=_empty_if_pristine(),
             mechanical_source=_empty_if_mechanical(empty_arm=None),
             units=[_empty_if_unit()],
@@ -236,16 +234,17 @@ def test_empty_if_shaped_parity_fails_when_helper_returns_none() -> None:
         )
 
 
-def test_empty_if_shaped_parity_passes_after_rewrite() -> None:
+def test_empty_if_shaped_parity_passes_after_rewrite(package_root: Path) -> None:
     mechanical = rewrite_empty_if_none_literals(_empty_if_mechanical(empty_arm=None))
     check_batched_mechanical_parity(
+        package_root=package_root,
         pristine_source=_empty_if_pristine(),
         mechanical_source=mechanical,
         units=[_empty_if_unit()],
         input_vectors=[{}],
     )
-    ns = exec_internals_module(mechanical)
-    ctx = make_eval_context(ns, {})
+    ns = exec_internals_module(mechanical, package_root=package_root)
+    ctx = make_eval_context(ns, {}, package_root=package_root)
     assert (
         ns["baseline_engine_indicators_2029"](ctx, indicator="fiscal_gap_above_target")
         == 0.0

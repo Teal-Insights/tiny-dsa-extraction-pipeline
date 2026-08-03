@@ -38,6 +38,9 @@ from src.refactor_fingerprints import (
     _subset_routing_lookup,
 )
 
+# Bump when ``synthesize_*_body`` / mechanical rewrite semantics change.
+MECHANICAL_BODY_SCHEMA_VERSION = "1.0.0"
+
 _MECHANICAL_TEMP_PATTERN = re.compile(r"^_t\d+$")
 _ACCESSOR_PREFIX = "read_"
 _CELL_FUNCTION_PREFIX = "cell_"

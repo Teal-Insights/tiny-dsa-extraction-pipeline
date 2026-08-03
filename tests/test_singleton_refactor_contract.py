@@ -771,11 +771,12 @@ def test_ensure_singleton_refactor_imports_injects_referenced_runtime_calls(
 ) -> None:
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_module_symbols",
-        lambda: ("XlError", "xl_cell", "xl_number", "xl_raise"),
+        lambda *_args, **_kwargs: ("XlError", "xl_cell", "xl_number", "xl_raise"),
     )
     updated = ensure_singleton_refactor_imports(
         INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
         CELLVALUE_REFACTOR_RESPONSE,
+        package_root=Path("."),
     )
     import_line = next(
         line for line in updated.splitlines() if line.startswith("from .runtime import")
@@ -794,7 +795,7 @@ def test_ensure_singleton_refactor_imports_ignores_docstring_mentions(
     """A symbol named only in prose is not a reference and needs no import."""
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_module_symbols",
-        lambda: ("xl_cell", "xl_number"),
+        lambda *_args, **_kwargs: ("xl_cell", "xl_number"),
     )
     response = SingletonRefactorResponse(
         symbol_name="inputs_c1",
@@ -810,6 +811,7 @@ def test_ensure_singleton_refactor_imports_ignores_docstring_mentions(
     updated = ensure_singleton_refactor_imports(
         INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
         response,
+        package_root=Path("."),
     )
     import_line = next(
         line for line in updated.splitlines() if line.startswith("from .runtime import")
@@ -823,7 +825,7 @@ def test_ensure_singleton_refactor_imports_ignores_locally_bound_names(
     """A local that shadows a runtime name is not an unresolved reference."""
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_module_symbols",
-        lambda: ("as_scalar", "xl_cell"),
+        lambda *_args, **_kwargs: ("as_scalar", "xl_cell"),
     )
     response = SingletonRefactorResponse(
         symbol_name="inputs_c1",
@@ -840,6 +842,7 @@ def test_ensure_singleton_refactor_imports_ignores_locally_bound_names(
     updated = ensure_singleton_refactor_imports(
         INTERNALS_WITHOUT_EVAL_CONTEXT_IMPORT,
         response,
+        package_root=Path("."),
     )
     import_line = next(
         line for line in updated.splitlines() if line.startswith("from .runtime import")

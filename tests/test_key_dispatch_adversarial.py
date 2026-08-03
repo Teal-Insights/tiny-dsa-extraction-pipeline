@@ -386,7 +386,7 @@ def test_trade_balance_unroutable_shape_not_key_dispatch(
 
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_symbols",
-        lambda: ALLOWED_RUNTIME_SYMBOLS,
+        lambda *_args, **_kwargs: ALLOWED_RUNTIME_SYMBOLS,
     )
     bound_address_keys: dict[str, dict[str, BindingKeyValue]] = {
         **VARIABLE_PAIR_OPERAND_KEYS,

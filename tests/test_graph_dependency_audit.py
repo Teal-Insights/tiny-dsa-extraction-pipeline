@@ -115,6 +115,40 @@ def test_collect_parent_audit_evidence_includes_guard_and_provenance_fields() ->
     assert evidence.direct_dependencies[0].provenance == "none"
 
 
+def test_collect_parent_audit_evidence_labels_leaf_roles_from_classification() -> None:
+    """Leaf roles come from the caller's classification, not from the graph object.
+
+    ``build_pipeline_graph`` no longer stamps ``leaf_classification`` onto the
+    graph, so an audit that does not thread it through degrades every leaf to the
+    generic ``"leaf"`` role in the prompt.
+    """
+    graph = _sample_graph()
+    case = GraphAuditCase(
+        parent_key="Baseline!D11",
+        label="baseline_engine",
+        focus="engine dependencies",
+    )
+
+    unclassified = collect_parent_audit_evidence(graph, case, max_children=10)
+    assert {record.role for record in unclassified.direct_dependencies} == {"leaf"}
+
+    evidence = collect_parent_audit_evidence(
+        graph,
+        case,
+        max_children=10,
+        leaf_classification={
+            "Dashboard!C12": "constant",
+            "Macrofiscal!Z3": "input",
+        },
+    )
+    assert {
+        record.child_key: record.role for record in evidence.direct_dependencies
+    } == {
+        "Dashboard!C12": "constant",
+        "Macrofiscal!Z3": "input",
+    }
+
+
 def test_build_parent_audit_prompt_notes_truncation() -> None:
     graph = _sample_graph()
     case = GraphAuditCase(

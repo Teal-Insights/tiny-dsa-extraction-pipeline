@@ -1,13 +1,12 @@
-"""Integration tests for config-scoped runtime symbol discovery."""
+"""Integration tests for path-scoped runtime symbol discovery."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from src.pipeline_config import DistProjectMetadata, PipelineConfig
-from src.pipeline_context import activate_pipeline_config
 from src.runtime_symbols import (
     allowed_runtime_symbols,
+    clear_runtime_symbol_caches,
     discover_allowed_formula_symbols,
 )
 
@@ -39,50 +38,31 @@ def test_allowed_runtime_symbols_uses_package_root(tmp_path: Path) -> None:
         "def read_shock_type(ctx):\n    return 'level'\n",
         encoding="utf-8",
     )
-    config = PipelineConfig(
-        repo_root=tmp_path,
-        workbook_path=tmp_path / "workbook.xlsx",
-        guide_path=tmp_path / "guide.md",
-        bindings_path=tmp_path / "bindings",
-        dist_root=tmp_path / "dist",
-        targets=("Sheet1!A1",),
-        constraints={"Sheet1!A1": "x"},
-        dist_metadata=DistProjectMetadata(
-            project_name="my-model",
-            package_name="my_model",
-            library_name="My Model",
-            description="test",
-            documentation_url="https://example.com",
-        ),
-        docstring_callback_name="series_docs",
-        projection_layout=None,
-        canonical_api_example_path=tmp_path / "templates" / "canonical-api-usage.md",
-        binding_authoring_prompt_path=tmp_path
-        / "templates"
-        / "binding-authoring-prompt.txt",
-        section_rewrite_introduction_focus_path=(
-            tmp_path / "templates" / "section-rewrite-introduction-focus.txt"
-        ),
-        section_rewrite_functional_overview_focus_path=(
-            tmp_path / "templates" / "section-rewrite-functional-overview-focus.txt"
-        ),
-        section_rewrite_illustrative_example_focus_path=(
-            tmp_path / "templates" / "section-rewrite-illustrative-example-focus.txt"
-        ),
-        differential_workbook_rel=Path("data/workbook.xlsx"),
-        differential_report_dir_rel=Path("data/differential/exported_library"),
-        differential_graph_report_dir_rel=Path("data/differential/graph"),
-        graph_output_dir=tmp_path / "artifacts" / "dependency-graph",
-        graph_audit_cases=(),
-    )
-    activate_pipeline_config(config)
 
-    allowed_runtime_symbols.cache_clear()
-    symbols = allowed_runtime_symbols()
+    clear_runtime_symbol_caches()
+    symbols = allowed_runtime_symbols(package_root)
 
     assert symbols == discover_allowed_formula_symbols(
-        config.package_root / "runtime.py",
-        config.package_root / "_readers.py",
+        package_root / "runtime.py",
+        package_root / "_readers.py",
     )
     assert "to_bool" not in symbols
     assert symbols == ("XlError", "read_shock_type", "xl_eval")
+
+
+def test_allowed_runtime_symbols_cache_is_keyed_by_package_root(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "pkg_a"
+    second = tmp_path / "pkg_b"
+    _write_runtime(first / "runtime.py")
+    _write_runtime(second / "runtime.py")
+    (second / "runtime.py").write_text(
+        "class XlError(Exception):\n    pass\n\ndef xl_other():\n    return 2\n",
+        encoding="utf-8",
+    )
+
+    clear_runtime_symbol_caches()
+    assert "xl_eval" in allowed_runtime_symbols(first)
+    assert "xl_other" in allowed_runtime_symbols(second)
+    assert "xl_other" not in allowed_runtime_symbols(first)

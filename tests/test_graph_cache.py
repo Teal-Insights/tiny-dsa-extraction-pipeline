@@ -6,7 +6,7 @@ from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated, cast
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from excel_grapher.core.cell_types import RealBetween
@@ -32,7 +32,9 @@ from src.projection_cache import (
     rehydrate_projection_result,
 )
 from src.bindings_validation_cache import DEFAULT_BINDINGS_VALIDATION_CACHE_DIR
+from src.cluster_cache import DEFAULT_CLUSTER_CACHE_DIR
 from src.codegen_cache import DEFAULT_CODEGEN_CACHE_DIR
+from src.internals_refactor import DEFAULT_INTERNALS_CACHE_DIR
 from src.series_resolution_cache import DEFAULT_SERIES_RESOLUTION_CACHE_DIR
 from src.subgraph_projection import build_refactor_projection
 from tests.fixtures.synthetic_pipeline import (
@@ -42,8 +44,10 @@ from tests.fixtures.synthetic_pipeline import (
 )
 from tests.fixtures.test_state import (
     REPO_BINDINGS_VALIDATION_CACHE_DIR,
+    REPO_CLUSTER_CACHE_DIR,
     REPO_CODEGEN_CACHE_DIR,
     REPO_GRAPH_CACHE_DIR,
+    REPO_INTERNALS_CACHE_DIR,
     REPO_PROJECTION_CACHE_DIR,
     REPO_SERIES_RESOLUTION_CACHE_DIR,
 )
@@ -74,6 +78,8 @@ def test_pytest_uses_isolated_pipeline_disk_cache() -> None:
     assert DEFAULT_SERIES_RESOLUTION_CACHE_DIR != REPO_SERIES_RESOLUTION_CACHE_DIR
     assert DEFAULT_BINDINGS_VALIDATION_CACHE_DIR != REPO_BINDINGS_VALIDATION_CACHE_DIR
     assert DEFAULT_CODEGEN_CACHE_DIR != REPO_CODEGEN_CACHE_DIR
+    assert DEFAULT_CLUSTER_CACHE_DIR != REPO_CLUSTER_CACHE_DIR
+    assert DEFAULT_INTERNALS_CACHE_DIR != REPO_INTERNALS_CACHE_DIR
 
 
 @pytest.fixture
@@ -543,19 +549,22 @@ def test_clear_projection_cache_removes_entries(
 
 def test_extract_graph_cli_supports_no_cache(
     synthetic_config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.extraction_pipeline import main
 
+    monkeypatch.setattr(
+        "src.extraction_pipeline.stage_timings_path",
+        lambda _repo_root: tmp_path / "stage-timings.json",
+    )
     with patch(
         "src.extraction_pipeline.load_pipeline_config", return_value=synthetic_config
     ):
         with patch("src.extraction_pipeline.validate_pipeline_config"):
-            with patch("src.extraction_pipeline.activate_pipeline_config"):
-                with patch(
-                    "src.extraction_pipeline.extract_dependency_graph"
-                ) as extract:
-                    main(["--extract-graph", "--no-cache"])
+            with patch("src.extraction_pipeline.extract_dependency_graph") as extract:
+                main(["--extract-graph", "--no-cache"])
 
     extract.assert_called_once_with(
-        synthetic_config, no_cache=True, force_rebuild=False
+        synthetic_config, no_cache=True, force_rebuild=False, timings=ANY
     )

@@ -6,7 +6,7 @@ re-running Pass 1:
 
     uv run python -m scripts.patch_mechanical_empty_if \\
         .cache/mechanical-salvage.py \\
-        --output dist/<package>/internals.mechanical.py
+        --output .cache/internals/<package-namespace>/internals.mechanical.py
 """
 
 from __future__ import annotations

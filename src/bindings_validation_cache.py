@@ -49,7 +49,6 @@ def bindings_validation_cache_key(*, graph_cache_key: str) -> str:
 
 
 def _cache_paths(cache_dir: Path, cache_key: str) -> tuple[Path, Path]:
-    cache_dir.mkdir(parents=True, exist_ok=True)
     return (
         cache_dir / f"{cache_key}.pkl.gz",
         cache_dir / f"{cache_key}.meta.json",
@@ -108,6 +107,7 @@ def save_bindings_validation_report(
     cache_dir: Path | None = None,
 ) -> None:
     resolved_cache_dir = _bindings_validation_cache_dir(cache_dir)
+    resolved_cache_dir.mkdir(parents=True, exist_ok=True)
     payload_path, meta_path = _cache_paths(resolved_cache_dir, cache_key)
     # mtime=0 keeps the gzip stream byte-identical across rebuilds so committed
     # cache artifacts do not churn when contents are unchanged.

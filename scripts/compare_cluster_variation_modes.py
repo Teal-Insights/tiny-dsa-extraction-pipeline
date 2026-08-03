@@ -16,13 +16,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.cluster_cache import get_or_build_clusters_and_schedule  # noqa: E402
 from src.extraction_pipeline import build_pipeline_graph  # noqa: E402
 from src.formula_clustering import (  # noqa: E402
     BoundAddressKeys,
     ClusteringMode,
     FormulaCluster,
     VariationMode,
-    cluster_graph_formulas,
     format_structural_skeleton,
     structural_fingerprint,
 )
@@ -33,11 +33,7 @@ from src.pipeline_config import (  # noqa: E402
     load_pipeline_config,
     validate_pipeline_config,
 )
-from src.pipeline_context import activate_pipeline_config  # noqa: E402
-from src.refactor_bindings import (  # noqa: E402
-    build_address_to_series_id,
-    build_bound_address_keys,
-)
+from src.projection_cache import projection_cache_key  # noqa: E402
 from src.refactor_order import compute_refactor_schedule_with_diagnostics  # noqa: E402
 from src.subgraph_projection import build_refactor_projection  # noqa: E402
 
@@ -55,7 +51,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="Bypass on-disk graph, projection, and codegen caches for this run.",
+        help=("Bypass on-disk graph, projection, and cluster caches for this run."),
     )
     add_clustering_mode_argument(parser)
     parser.add_argument(
@@ -84,16 +80,22 @@ def _cluster_by_mode(
     projection,
     workbook_path,
     layout,
+    bindings_path: Path,
+    projection_key: str,
+    no_cache: bool,
 ) -> tuple[FormulaCluster, ...]:
-    return cluster_graph_formulas(
+    return get_or_build_clusters_and_schedule(
         projection,
         bound_address_keys=bound_address_keys,
-        variation_mode=variation_mode,
-        clustering_mode=clustering_mode,
         address_to_series_id=address_to_series_id,
         workbook_path=workbook_path,
         layout=layout,
-    )
+        bindings_path=bindings_path,
+        projection_cache_key=projection_key,
+        variation_mode=variation_mode,
+        clustering_mode=clustering_mode,
+        no_cache=no_cache,
+    ).clusters
 
 
 def _member_to_bucket(
@@ -315,7 +317,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     config = load_pipeline_config()
     config = apply_clustering_mode_cli_override(config, args.clustering_mode)
     validate_pipeline_config(config)
-    activate_pipeline_config(config)
 
     graph_result = build_pipeline_graph(config, no_cache=args.no_cache)
     projection = build_refactor_projection(
@@ -323,20 +324,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         graph_cache_key=graph_result.graph_cache_key,
         no_cache=args.no_cache,
     )
-    bound_address_keys = build_bound_address_keys(
-        graph_result.input_series,
-        graph_result.output_series,
-        graph_result.internal_series,
-        constant_series=graph_result.constant_series,
-    )
-    address_to_series_id = build_address_to_series_id(
-        graph_result.internal_series,
-        output_series=graph_result.output_series,
-        input_series=graph_result.input_series,
-        constant_series=graph_result.constant_series,
-    )
+    bound_address_keys = graph_result.bound_address_keys
+    address_to_series_id = graph_result.address_to_series_id
     layout = config.projection_layout
 
+    projection_key = projection_cache_key(graph_cache_key=graph_result.graph_cache_key)
     independent = _cluster_by_mode(
         variation_mode="independent",
         bound_address_keys=bound_address_keys,
@@ -345,6 +337,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         projection=projection,
         workbook_path=config.workbook_path,
         layout=layout,
+        bindings_path=config.bindings_path,
+        projection_key=projection_key,
+        no_cache=args.no_cache,
     )
     dominant_key_only = _cluster_by_mode(
         variation_mode="dominant_key_only",
@@ -354,6 +349,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         projection=projection,
         workbook_path=config.workbook_path,
         layout=layout,
+        bindings_path=config.bindings_path,
+        projection_key=projection_key,
+        no_cache=args.no_cache,
     )
 
     source_formula_count = len(graph_result.graph.formula_keys())

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -219,15 +219,23 @@ def _format_provenance(causes: frozenset[DependencyCause]) -> str:
 def _node_role(
     graph: DependencyGraph,
     key: NodeKey,
+    *,
+    leaf_classification: Mapping[str, str] | None = None,
 ) -> str:
+    """Label a dependency as formula/input/constant for the audit prompt.
+
+    ``leaf_classification`` comes from ``PipelineGraphResult`` (or the
+    series-derived cache); the graph object itself does not carry it. Without it
+    every leaf degrades to the generic ``"leaf"`` role, so callers that have the
+    classification should always pass it.
+    """
     node = graph.get_node(key)
     if node is None:
         return "missing"
     if node.formula:
         return "formula"
-    classification = graph.leaf_classification
-    if classification is not None:
-        kind = classification.get(key)
+    if leaf_classification is not None:
+        kind = leaf_classification.get(key)
         if kind is not None:
             return kind
     return "leaf"
@@ -338,6 +346,7 @@ def collect_parent_audit_evidence(
     *,
     max_children: int | None = None,
     max_formula_length: int | None = None,
+    leaf_classification: Mapping[str, str] | None = None,
 ) -> ParentAuditEvidence:
     child_limit = max_children if max_children is not None else DEFAULT_MAX_CHILDREN
     formula_limit = (
@@ -368,7 +377,11 @@ def collect_parent_audit_evidence(
         records.append(
             DirectDependencyRecord(
                 child_key=dependency,
-                role=_node_role(graph, dependency),
+                role=_node_role(
+                    graph,
+                    dependency,
+                    leaf_classification=leaf_classification,
+                ),
                 formula=_truncate_text(
                     child.formula if child is not None else None,
                     max_length=formula_limit,
@@ -580,12 +593,14 @@ async def audit_parent_dependencies_with_llm_async(
     model: str,
     max_children: int | None = None,
     max_formula_length: int | None = None,
+    leaf_classification: Mapping[str, str] | None = None,
 ) -> tuple[GraphDependencyAuditVerdict, ParentAuditEvidence]:
     evidence = collect_parent_audit_evidence(
         graph,
         case,
         max_children=max_children,
         max_formula_length=max_formula_length,
+        leaf_classification=leaf_classification,
     )
     if not evidence_is_complete_for_audit(evidence):
         return inconclusive_verdict_for_truncated_evidence(), evidence
@@ -607,6 +622,7 @@ async def audit_parent_dependencies_batch_with_llm(
     model: str,
     max_children: int | None = None,
     max_formula_length: int | None = None,
+    leaf_classification: Mapping[str, str] | None = None,
 ) -> list[tuple[GraphDependencyAuditVerdict, ParentAuditEvidence]]:
     """Run independent parent dependency audits concurrently."""
     return list(
@@ -620,6 +636,7 @@ async def audit_parent_dependencies_batch_with_llm(
                     model=model,
                     max_children=max_children,
                     max_formula_length=max_formula_length,
+                    leaf_classification=leaf_classification,
                 )
                 for case in cases
             )
@@ -636,12 +653,14 @@ def audit_parent_dependencies_with_llm(
     model: str,
     max_children: int | None = None,
     max_formula_length: int | None = None,
+    leaf_classification: Mapping[str, str] | None = None,
 ) -> tuple[GraphDependencyAuditVerdict, ParentAuditEvidence]:
     evidence = collect_parent_audit_evidence(
         graph,
         case,
         max_children=max_children,
         max_formula_length=max_formula_length,
+        leaf_classification=leaf_classification,
     )
     if not evidence_is_complete_for_audit(evidence):
         return inconclusive_verdict_for_truncated_evidence(), evidence

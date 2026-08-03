@@ -14,13 +14,11 @@ from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 from src.extraction_pipeline import (
     DependencyGraphExtraction,
     build_pipeline_graph,
-    classify_leaves_from_constraints,
     extract_dependency_graph_result,
     write_dependency_graph_artifacts,
 )
 from src.pipeline_config import PipelineConfig, load_pipeline_config
 from tests.fixtures.synthetic_pipeline import (
-    build_synthetic_pipeline_graph,
     build_synthetic_projection,
     load_synthetic_series_bindings,
     synthetic_pipeline_config,
@@ -112,11 +110,6 @@ class SyntheticConfiguredPipeline:
 def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
     config = load_pipeline_config()
     graph_result = build_pipeline_graph(config)
-    leaf_classification = classify_leaves_from_constraints(
-        config.constraints,
-        graph_result.graph.leaf_keys(),
-    )
-    graph_result.graph.leaf_classification = leaf_classification
     binding_validation_report = validate_series_bindings(
         graph_result.graph,
         graph_result.series_bindings,
@@ -130,7 +123,7 @@ def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
         output_series=graph_result.output_series,
         internal_series=graph_result.internal_series,
         constant_series=graph_result.constant_series,
-        leaf_classification=leaf_classification,
+        leaf_classification=graph_result.leaf_classification,
         binding_validation_report=binding_validation_report,
     )
 
@@ -139,33 +132,21 @@ def tiny_dsa_configured_pipeline() -> SyntheticConfiguredPipeline:
 def synthetic_configured_pipeline(
     synthetic_pipeline_config_fixture: PipelineConfig,
 ) -> SyntheticConfiguredPipeline:
-    (
-        graph,
-        series_bindings,
-        input_series,
-        output_series,
-        internal_series,
-        constant_series,
-    ) = build_synthetic_pipeline_graph(synthetic_pipeline_config_fixture)
-    leaf_classification = classify_leaves_from_constraints(
-        synthetic_pipeline_config_fixture.constraints,
-        graph.leaf_keys(),
-    )
-    graph.leaf_classification = leaf_classification
+    graph_result = build_pipeline_graph(synthetic_pipeline_config_fixture)
     binding_validation_report = validate_series_bindings(
-        graph,
-        series_bindings,
+        graph_result.graph,
+        graph_result.series_bindings,
         workbook=synthetic_pipeline_config_fixture.workbook_path,
     )
     return SyntheticConfiguredPipeline(
         config=synthetic_pipeline_config_fixture,
-        graph=graph,
-        series_bindings=series_bindings,
-        input_series=input_series,
-        output_series=output_series,
-        internal_series=internal_series,
-        constant_series=constant_series,
-        leaf_classification=leaf_classification,
+        graph=graph_result.graph,
+        series_bindings=graph_result.series_bindings,
+        input_series=graph_result.input_series,
+        output_series=graph_result.output_series,
+        internal_series=graph_result.internal_series,
+        constant_series=graph_result.constant_series,
+        leaf_classification=graph_result.leaf_classification,
         binding_validation_report=binding_validation_report,
     )
 
@@ -187,16 +168,9 @@ def synthetic_series_bindings():
 
 @pytest.fixture(scope="session")
 def synthetic_bound_address_keys(
-    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
+    synthetic_pipeline_config_fixture: PipelineConfig,
 ):
-    from src.refactor_bindings import build_bound_address_keys
-
-    return build_bound_address_keys(
-        synthetic_configured_pipeline.input_series,
-        synthetic_configured_pipeline.output_series,
-        synthetic_configured_pipeline.internal_series,
-        constant_series=synthetic_configured_pipeline.constant_series,
-    )
+    return build_pipeline_graph(synthetic_pipeline_config_fixture).bound_address_keys
 
 
 @dataclass(frozen=True)

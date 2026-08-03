@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Iterator
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +17,6 @@ from src.helper_memoization import (
     runtime_source_has_helper_memoization,
 )
 from src.pipeline_config import load_pipeline_config
-from src.pipeline_context import activate_pipeline_config
 from src.refactor_parity_gate import clear_parity_runtime_caches
 
 
@@ -35,8 +33,6 @@ def helper_memo_dist_root(tmp_path: Path) -> Iterator[Path]:
         "DEFAULT_INPUTS = {}\nCONSTANTS = {}\n",
         encoding="utf-8",
     )
-    config = replace(load_pipeline_config(), dist_root=tmp_path)
-    activate_pipeline_config(config)
     clear_parity_runtime_caches()
     yield tmp_path
     clear_parity_runtime_caches()
@@ -122,8 +118,8 @@ def xl_circular_reference():
 def test_make_xl_helper_uses_runtime_error_types(helper_memo_dist_root: Path) -> None:
     from src.refactor_parity_gate import _runtime
 
-    _ = helper_memo_dist_root
-    runtime = _runtime()
+    package_name = load_pipeline_config().dist_metadata.package_name
+    runtime = _runtime(str((helper_memo_dist_root / package_name).resolve()))
     xl_helper = make_xl_helper(runtime)
     xl_memoize = make_xl_memoize(xl_helper)
     calls = {"n": 0}

@@ -58,6 +58,49 @@ uv run python -m http.server 8000 --directory artifacts/dependency-graph
 
 Open `http://localhost:8000/`.
 
+## `stages/`
+
+Written by each completed pipeline stage. Used by `--start-from-stage` / `--only-stage` to resume without re-running upstream work. Local/untracked (see `.gitignore`).
+
+| File | Description |
+|---|---|
+| `extract.json` | Graph cache key and input fingerprints after extract |
+| `export.json` | Graph / projection / series-derived / codegen keys after export |
+| `refactor.json` | Codegen / clusters / internals keys after refactor |
+| `validate.json` | Keys carried forward after validate |
+| `document.json` | Keys carried forward after document |
+
+Each manifest records `cache_keys`, `upstream_keys`, and labeled `fingerprints` (workbook, bindings, constraints, modes, `excel-grapher` version). Loading a manifest recomputes fingerprints and aborts on drift.
+
+## `stage-timings.json`
+
+Written by every `run_pipeline` invocation (`uv run python -m src.extraction_pipeline`), rewritten after each stage completes so a run that dies mid-pipeline still records the stages that finished (including the stage that raised).
+
+### Schema (version `1.0.0`)
+
+| Field | Type | Description |
+|---|---|---|
+| `schema_version` | string | Timings schema version (`1.0.0`) |
+| `total_seconds` | number | Sum of every recorded stage's wall clock |
+| `stages` | array | One entry per stage reached, in run order |
+| `stages[].name` | string | `extract`, `export`, `refactor`, `validate`, or `document` |
+| `stages[].elapsed_seconds` | number | Stage wall clock |
+| `stages[].spans` | object | Seconds keyed by leaf span name inside that stage |
+| `caches` | object | One entry per on-disk cache; `null` fields mean the run never reached it |
+| `caches.<name>.cache_hit` | boolean \| null | Whether the payload was loaded from `.cache/` |
+| `caches.<name>.elapsed_seconds` | number \| null | Seconds spent resolving the cache (the `get_or_build_*` call; for `internals`, the adopt/load on a hit and the refactor itself on a miss) |
+| `caches.<name>.cache_key` | string \| null | Content key the lookup resolved to |
+
+`caches` keys: `dependency-graph`, `bindings-validation`, `series-resolution`, `series-derived`, `projection`, `codegen`, `clusters`, `internals`.
+
+Spans are non-overlapping leaf measurements: do not invent a total by summing them with a parent rollup. A full `run_pipeline` records `extract`, `export`, `refactor`, `validate`, and `document` in order. Graph-build spans (`create_dependency_graph`, `derive_series`, `validate_series_bindings`, …) land under `extract`; projection/codegen spans (`build_refactor_projection`, `codegen`, `write_export_package`) land under `export`. Extract alone appears when `stop_after_stage=extract` (or `--extract-graph`).
+
+Notable spans: `create_dependency_graph`, `derive_series`, `validate_series_bindings` (extract); `build_refactor_projection`, `codegen`, `write_export_package` (export); `build_refactor_bindings`, `cluster_graph_formulas`, `pass1_context`, `pass1_synthesize`, `pass1_apply`, `pass1_validate`, `pass1_reindex`, `mechanical_parity_gate`, `pass2_semantic_naming`, `phase_c` (refactor); `post_refactor_differential`, `export_reference_reports` (validate).
+
+### cProfile output
+
+Set `PIPELINE_PROFILE=1` to additionally write `<stage>.prof` and `<stage>.pstats.txt` under `artifacts/dependency-graph/` for each of `extract`, `export`, `refactor`, `validate`, and `document`.
+
 ## `workbook-audit.md`
 
 Written by the pre-extraction audit CLI (`uv run python -m src.workbook_audit`).

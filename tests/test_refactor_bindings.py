@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from excel_grapher.series_bindings import load_series_bindings
+
 from src.refactor_bindings import (
     KeyConceptSpec,
     build_address_to_series_id,
@@ -13,6 +15,7 @@ from src.refactor_bindings import (
     engine_column_from_member_keys,
     expected_member_keys_for_cluster,
     helper_parameters_for_varying_keys,
+    key_concept_vocabulary_from_bindings,
     load_key_concept_vocabulary,
     resolve_dimension_key,
     varying_key_concepts,
@@ -31,6 +34,13 @@ def test_load_key_concept_vocabulary_keeps_distinct_ids_for_shared_concept() -> 
     assert by_id["REFERENCE_PERIOD"].concept == "TIME_PERIOD"
     assert by_id["PROJECTION_PERIOD"].suggested_param_name == "projection_period"
     assert by_id["REFERENCE_PERIOD"].suggested_param_name == "reference_period"
+
+
+def test_key_concept_vocabulary_from_bindings_matches_path_loader() -> None:
+    bindings = load_series_bindings(SHARED_TIME_PERIOD_BINDINGS)
+    assert key_concept_vocabulary_from_bindings(
+        bindings
+    ) == load_key_concept_vocabulary(SHARED_TIME_PERIOD_BINDINGS)
 
 
 def test_load_key_concept_vocabulary_falls_back_to_concept_when_id_omitted(

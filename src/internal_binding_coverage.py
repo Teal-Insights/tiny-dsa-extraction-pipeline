@@ -163,6 +163,25 @@ def _coverage_error_message(unbound_cells: Sequence[NodeKey]) -> str:
     )
 
 
+def apply_internal_binding_coverage_report(
+    report: InternalBindingCoverageReport | None,
+    *,
+    mode: InternalBindingValidationMode,
+    context: InternalBindingValidationContext,
+) -> InternalBindingCoverageReport | None:
+    """Apply warn/error policy for a previously computed coverage report."""
+    if mode == "off":
+        return None
+    if report is None or not report.unbound_cells:
+        return report
+
+    message = _coverage_error_message(report.unbound_cells)
+    if mode == "warn" and context == "pipeline":
+        logger.warning(message)
+        return report
+    raise InternalBindingCoverageError(message)
+
+
 def enforce_internal_binding_coverage(
     *,
     graph: DependencyGraph,
@@ -192,13 +211,8 @@ def enforce_internal_binding_coverage(
         required_cell_count=len(required_cells),
         unbound_cells=unbound_cells,
     )
-    if not unbound_cells:
-        return report
-
-    message = _coverage_error_message(unbound_cells)
-    if mode == "warn":
-        if context == "pipeline":
-            logger.warning(message)
-            return report
-        raise InternalBindingCoverageError(message)
-    raise InternalBindingCoverageError(message)
+    return apply_internal_binding_coverage_report(
+        report,
+        mode=mode,
+        context=context,
+    )

@@ -21,7 +21,6 @@ from src.pipeline_config import (
     load_pipeline_config,
     validate_pipeline_config,
 )
-from src.pipeline_context import activate_pipeline_config
 from src.record_refactor_buckets import (
     DEFAULT_CODEGEN_DIST_ROOT,
     main,
@@ -70,7 +69,7 @@ def stub_docstring_callback() -> Iterator[None]:
     )
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_symbols",
-        lambda: ("XlError", "xl_cell", "xl_eval"),
+        lambda *_args, **_kwargs: ("XlError", "xl_cell", "xl_eval"),
     )
     yield
     monkeypatch.undo()
@@ -92,7 +91,6 @@ def refactor_buckets_report(
     stub_docstring_callback: None,
 ) -> dict[str, Any]:
     output_dir = tmp_path_factory.mktemp("refactor_buckets")
-    activate_pipeline_config(pipeline_config)
     return run_record_refactor_buckets(
         pipeline_config,
         json_output=output_dir / "refactor-buckets.json",
@@ -124,9 +122,8 @@ def test_run_record_refactor_buckets_writes_codegen_outside_dist(
     )
     monkeypatch.setattr(
         "src.internals_refactor.allowed_runtime_symbols",
-        lambda: ("XlError", "xl_cell", "xl_eval"),
+        lambda *_args, **_kwargs: ("XlError", "xl_cell", "xl_eval"),
     )
-    activate_pipeline_config(config)
     report = run_record_refactor_buckets(
         config,
         json_output=tmp_path / "refactor-buckets.json",
@@ -160,7 +157,6 @@ def test_run_record_refactor_buckets_leaves_repo_dist_unchanged(
         "src.record_refactor_buckets.configure_docstring_callback",
         _stub_configure_docstring_callback,
     )
-    activate_pipeline_config(config)
     run_record_refactor_buckets(
         config,
         json_output=tmp_path / "refactor-buckets.json",
@@ -356,7 +352,6 @@ def test_uncompressed_refactor_buckets_include_formula_cells(
     tmp_path: Path,
     stub_docstring_callback: None,
 ) -> None:
-    activate_pipeline_config(pipeline_config)
     report = run_record_refactor_buckets(
         pipeline_config,
         json_output=tmp_path / "refactor-buckets-uncompressed.json",
@@ -381,28 +376,27 @@ def test_main_passes_cli_variation_mode_to_bucket_recording(
         return_value=synthetic_pipeline_config_fixture,
     ):
         with patch("src.record_refactor_buckets.validate_pipeline_config"):
-            with patch("src.record_refactor_buckets.activate_pipeline_config"):
-                with patch(
-                    "src.record_refactor_buckets.run_record_refactor_buckets"
-                ) as run_buckets:
-                    run_buckets.return_value = {
-                        "formula_cluster_count": 0,
-                        "refactor_unit_count": 0,
-                        "cluster_count": 0,
-                        "refactor_target_count": 0,
-                        "skipped_target_count": 0,
-                        "buckets": [],
-                    }
-                    main(
-                        [
-                            "--variation-mode",
-                            "dominant_key_only",
-                            "--json-output",
-                            str(tmp_path / "buckets.json"),
-                            "--markdown-output",
-                            str(tmp_path / "buckets.md"),
-                        ]
-                    )
+            with patch(
+                "src.record_refactor_buckets.run_record_refactor_buckets"
+            ) as run_buckets:
+                run_buckets.return_value = {
+                    "formula_cluster_count": 0,
+                    "refactor_unit_count": 0,
+                    "cluster_count": 0,
+                    "refactor_target_count": 0,
+                    "skipped_target_count": 0,
+                    "buckets": [],
+                }
+                main(
+                    [
+                        "--variation-mode",
+                        "dominant_key_only",
+                        "--json-output",
+                        str(tmp_path / "buckets.json"),
+                        "--markdown-output",
+                        str(tmp_path / "buckets.md"),
+                    ]
+                )
 
     run_buckets.assert_called_once()
     assert run_buckets.call_args.args[0].variation_mode == "dominant_key_only"
@@ -417,28 +411,27 @@ def test_main_passes_cli_clustering_mode_to_bucket_recording(
         return_value=synthetic_pipeline_config_fixture,
     ):
         with patch("src.record_refactor_buckets.validate_pipeline_config"):
-            with patch("src.record_refactor_buckets.activate_pipeline_config"):
-                with patch(
-                    "src.record_refactor_buckets.run_record_refactor_buckets"
-                ) as run_buckets:
-                    run_buckets.return_value = {
-                        "formula_cluster_count": 0,
-                        "refactor_unit_count": 0,
-                        "cluster_count": 0,
-                        "refactor_target_count": 0,
-                        "skipped_target_count": 0,
-                        "buckets": [],
-                    }
-                    main(
-                        [
-                            "--clustering-mode",
-                            "ast",
-                            "--json-output",
-                            str(tmp_path / "buckets.json"),
-                            "--markdown-output",
-                            str(tmp_path / "buckets.md"),
-                        ]
-                    )
+            with patch(
+                "src.record_refactor_buckets.run_record_refactor_buckets"
+            ) as run_buckets:
+                run_buckets.return_value = {
+                    "formula_cluster_count": 0,
+                    "refactor_unit_count": 0,
+                    "cluster_count": 0,
+                    "refactor_target_count": 0,
+                    "skipped_target_count": 0,
+                    "buckets": [],
+                }
+                main(
+                    [
+                        "--clustering-mode",
+                        "ast",
+                        "--json-output",
+                        str(tmp_path / "buckets.json"),
+                        "--markdown-output",
+                        str(tmp_path / "buckets.md"),
+                    ]
+                )
 
     run_buckets.assert_called_once()
     assert run_buckets.call_args.args[0].clustering_mode == "ast"
