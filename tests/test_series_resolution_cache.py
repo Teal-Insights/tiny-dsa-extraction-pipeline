@@ -379,8 +379,8 @@ def test_build_pipeline_graph_uses_series_resolution_cache(
     synthetic_config,
     series_cache_dir: Path,
 ) -> None:
+    from src import series_resolution_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.series_resolution_cache as series_resolution_cache
 
     with patch.object(
         series_resolution_cache,
@@ -401,8 +401,8 @@ def test_build_pipeline_graph_no_cache_bypasses_series_resolution_cache(
     synthetic_config,
     series_cache_dir: Path,
 ) -> None:
+    from src import series_resolution_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.series_resolution_cache as series_resolution_cache
 
     with patch.object(
         series_resolution_cache,

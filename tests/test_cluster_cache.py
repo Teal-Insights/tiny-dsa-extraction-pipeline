@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from src.cluster_cache import (
     DEFAULT_CLUSTER_CACHE_DIR,
     clear_cluster_cache,
@@ -621,8 +622,8 @@ def test_run_refactor_stage_uses_cluster_cache(
     cluster_cache_dir: Path,
     tmp_path: Path,
 ) -> None:
+    from src import cluster_cache
     from src.extraction_pipeline import ExportStageState, run_refactor_stage
-    import src.cluster_cache as cluster_cache
 
     graph_result, _projection = _projection_and_bindings(
         synthetic_config, graph_cache_dir=Path()
@@ -672,9 +673,9 @@ def test_run_refactor_stage_no_cache_bypasses_cluster_cache(
     cluster_cache_dir: Path,
     tmp_path: Path,
 ) -> None:
+    from src import cluster_cache
     from src.extraction_pipeline import ExportStageState, run_refactor_stage
     from src.series_derived_cache import series_derived_cache_key
-    import src.cluster_cache as cluster_cache
 
     graph_result, projection = _projection_and_bindings(
         synthetic_config, graph_cache_dir=Path()

@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
+from pydantic import ValidationError
+
 from src.internals_refactor import (
     _strip_note_section,
     load_refactor_cache,
@@ -42,8 +44,6 @@ from src.mechanical_naming import (
     load_cluster_naming_prompt_fixed_portion,
     load_singleton_naming_prompt_fixed_portion,
 )
-from pydantic import ValidationError
-
 from src.runtime_symbols import (
     discover_allowed_formula_symbols,
     discover_allowed_reader_symbols,
@@ -153,9 +153,7 @@ def _is_suspected_mechanical_helper(node: ast.FunctionDef) -> bool:
     """
     if node.name.startswith("cell_") or node.name.startswith("_"):
         return False
-    if not node.args.args or node.args.args[0].arg != "ctx":
-        return False
-    return True
+    return bool(node.args.args and node.args.args[0].arg == "ctx")
 
 
 def build_standalone_naming_prompt(helper: DiscoveredNamingHelper) -> str:

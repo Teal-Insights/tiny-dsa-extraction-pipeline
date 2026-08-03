@@ -12,11 +12,16 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from excel_grapher.exporter import ProjectionResult
 from pydantic import ValidationError
 
 from src.formula_clustering import FormulaCluster
 from src.internals_refactor import (
+    FORMULA_SECTION_MARKER,
+    PROJECTION_ALIAS_SECTION_MARKER,
     REFACTOR_PROMPT_VERSION,
+    RESOLVER_SECTION_MARKER,
+    UNREFACTORED_CELLS_SECTION_MARKER,
     ClusterRefactorContext,
     ClusterRefactorLLMResponse,
     ClusterRefactorResponse,
@@ -29,18 +34,17 @@ from src.internals_refactor import (
     SingletonRefactorContext,
     SingletonRefactorLLMResponse,
     SingletonRefactorResponse,
-    FORMULA_SECTION_MARKER,
-    PROJECTION_ALIAS_SECTION_MARKER,
-    RESOLVER_SECTION_MARKER,
-    UNREFACTORED_CELLS_SECTION_MARKER,
+    _attempt_artifacts_from_validated_json_failure,
+    _dump_validated_json_failure,
+    _prepare_cluster_refactor_response,
+    _prompt_for_refactor,
+    _prompt_for_singleton_refactor,
+    _single_function_def,
     address_to_function_name,
     apply_cluster_collapse,
     apply_phase_c,
     apply_singleton_refactor_plan,
     build_cluster_refactor_context,
-    insert_helper_source,
-    rehome_unrefactored_cell_functions,
-    validate_refactored_internals,
     build_cluster_refactor_prompt_context,
     build_singleton_refactor_context,
     build_singleton_refactor_prompt_context,
@@ -48,6 +52,7 @@ from src.internals_refactor import (
     complete_cluster_member_keys_from_expected,
     extract_function_source,
     helper_static_key_domain,
+    insert_helper_source,
     llm_refactor_cluster,
     llm_refactor_singleton,
     load_cluster_refactor_prompt_fixed_portion,
@@ -58,6 +63,7 @@ from src.internals_refactor import (
     refactor_cache_key,
     refactor_internals_all_clusters,
     refactor_internals_singleton,
+    rehome_unrefactored_cell_functions,
     resolve_semantic_dependencies,
     sample_indices_for_prompt,
     singleton_prompt_payload,
@@ -66,24 +72,18 @@ from src.internals_refactor import (
     validate_cluster_refactor_response,
     validate_no_xl_index_ref_of_xl_range,
     validate_parameter_names_match_vocabulary,
+    validate_refactored_internals,
     validate_semantic_local_names,
     validate_singleton_refactor_response,
     write_refactor_failure_diagnostic,
-    _attempt_artifacts_from_validated_json_failure,
-    _dump_validated_json_failure,
-    _prepare_cluster_refactor_response,
-    _prompt_for_refactor,
-    _prompt_for_singleton_refactor,
-    _single_function_def,
 )
 from src.llm_json import (
     DEFAULT_MAX_ATTEMPTS,
     ValidatedJsonFailure,
     ValidationAttemptRecord,
 )
-from src.refactor_parity_gate import ParityError
-from excel_grapher.exporter import ProjectionResult
 from src.refactor_bindings import BindingKeyValue, KeyConceptSpec
+from src.refactor_parity_gate import ParityError
 from src.workbook_addresses import ProjectionColumnLayout
 
 ALLOWED_RUNTIME_SYMBOLS = (
@@ -335,9 +335,9 @@ def test_pass1_mechanical_cluster_failure_writes_diagnostic(
     tmp_path: Path,
 ) -> None:
     """Pass-1 mechanical assemble/validate failures must dump like LLM failures."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import FormulaCluster
     from src.mechanical_body import MechanicalBodyDraft
     from src.refactor_return_types import RefactorReturnTypeInferenceError
@@ -454,9 +454,9 @@ def test_pass1_refreshes_callee_hints_after_mechanical_cluster_flush(
     tmp_path: Path,
 ) -> None:
     """Downstream units must see upstream helper return annotations after flush."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import FormulaCluster
     from src.mechanical_body import MechanicalBodyDraft
 
@@ -650,9 +650,9 @@ def test_pass1_mechanical_singleton_failure_writes_diagnostic(
     tmp_path: Path,
 ) -> None:
     """Pass-1 singleton mechanical failures must also dump diagnostics."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import FormulaCluster
     from src.mechanical_body import MechanicalBodyDraft
     from src.refactor_return_types import RefactorReturnTypeInferenceError
@@ -1067,17 +1067,19 @@ def test_validate_cluster_rejects_xl_index_ref_of_xl_range() -> None:
     data_range = xl_range(ctx, f"Inputs!A{{time_period}}:B10")
     return xl_offset(ctx, xl_index_ref(data_range, 1.0, 1.0), 0.0, 0.0)
 '''
-    with patch(
-        "src.internals_refactor._resolved_projection_layout",
-        return_value=TEST_LAYOUT,
+    with (
+        patch(
+            "src.internals_refactor._resolved_projection_layout",
+            return_value=TEST_LAYOUT,
+        ),
+        pytest.raises(ValueError, match=_INDEX_REF_HINT) as exc_info,
     ):
-        with pytest.raises(ValueError, match=_INDEX_REF_HINT) as exc_info:
-            validate_cluster_refactor_response(
-                ctx,
-                _cluster_response(helper_source=bad_source),
-                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
-                internals_source=PRISTINE_CLUSTER,
-            )
+        validate_cluster_refactor_response(
+            ctx,
+            _cluster_response(helper_source=bad_source),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
     assert "do not pass xl_range" in str(exc_info.value).lower()
 
 
@@ -1179,17 +1181,19 @@ def test_validate_cluster_rejects_duplicate_member_key_combinations() -> None:
             keys=(MemberKeyEntry(dimension_id="TIME_PERIOD", value=1),),
         ),
     )
-    with patch(
-        "src.internals_refactor._resolved_projection_layout",
-        return_value=TEST_LAYOUT,
+    with (
+        patch(
+            "src.internals_refactor._resolved_projection_layout",
+            return_value=TEST_LAYOUT,
+        ),
+        pytest.raises(ValueError, match="unique key combination"),
     ):
-        with pytest.raises(ValueError, match="unique key combination"):
-            validate_cluster_refactor_response(
-                CLUSTER_CONTEXT,
-                _cluster_response(member_keys=duplicate_member_keys),
-                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
-                internals_source=PRISTINE_CLUSTER,
-            )
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(member_keys=duplicate_member_keys),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
 
 
 # --- RED: a helper must serve every member key it claims (#139) ---------------
@@ -1210,17 +1214,19 @@ def test_validate_cluster_rejects_helper_that_cannot_serve_a_member_key() -> Non
     column = columns[time_period]
     return xl_cell(ctx, f'Inputs!{{column}}1')
 '''
-    with patch(
-        "src.internals_refactor._resolved_projection_layout",
-        return_value=TEST_LAYOUT,
+    with (
+        patch(
+            "src.internals_refactor._resolved_projection_layout",
+            return_value=TEST_LAYOUT,
+        ),
+        pytest.raises(ValueError, match="cannot serve member keys"),
     ):
-        with pytest.raises(ValueError, match="cannot serve member keys"):
-            validate_cluster_refactor_response(
-                CLUSTER_CONTEXT,
-                _cluster_response(helper_source=helper_source),
-                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
-                internals_source=PRISTINE_CLUSTER,
-            )
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(helper_source=helper_source),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
 
 
 def test_validate_cluster_rejects_key_dispatch_chain_missing_a_member_key() -> None:
@@ -1230,17 +1236,19 @@ def test_validate_cluster_rejects_key_dispatch_chain_missing_a_member_key() -> N
         return xl_cell(ctx, 'Inputs!C1')
     raise ValueError(time_period)
 '''
-    with patch(
-        "src.internals_refactor._resolved_projection_layout",
-        return_value=TEST_LAYOUT,
+    with (
+        patch(
+            "src.internals_refactor._resolved_projection_layout",
+            return_value=TEST_LAYOUT,
+        ),
+        pytest.raises(ValueError, match="cannot serve member keys"),
     ):
-        with pytest.raises(ValueError, match="cannot serve member keys"):
-            validate_cluster_refactor_response(
-                CLUSTER_CONTEXT,
-                _cluster_response(helper_source=helper_source),
-                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
-                internals_source=PRISTINE_CLUSTER,
-            )
+        validate_cluster_refactor_response(
+            CLUSTER_CONTEXT,
+            _cluster_response(helper_source=helper_source),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
 
 
 def test_validate_cluster_accepts_member_key_handled_by_a_guard_branch() -> None:
@@ -1405,17 +1413,19 @@ def test_validate_cluster_allowlist_excludes_cell_star_names() -> None:
     """{CLUSTER_DOCSTRING}"""
     return mystery_helper(ctx)
 '''
-    with patch(
-        "src.internals_refactor._resolved_projection_layout",
-        return_value=TEST_LAYOUT,
+    with (
+        patch(
+            "src.internals_refactor._resolved_projection_layout",
+            return_value=TEST_LAYOUT,
+        ),
+        pytest.raises(ValueError, match="disallowed function") as exc_info,
     ):
-        with pytest.raises(ValueError, match="disallowed function") as exc_info:
-            validate_cluster_refactor_response(
-                ctx,
-                _cluster_response(helper_source=bad_source),
-                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
-                internals_source=PRISTINE_CLUSTER,
-            )
+        validate_cluster_refactor_response(
+            ctx,
+            _cluster_response(helper_source=bad_source),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
     message = str(exc_info.value)
     assert "cell_climate_database_z72" not in message
     assert "cell_inputs_b6" not in message
@@ -1942,9 +1952,9 @@ def test_pass_one_batches_independent_cluster_applies(
     tmp_path: Path,
 ) -> None:
     """Independent mechanical clusters in one layer share a single batch apply."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import FormulaCluster
     from src.mechanical_body import MechanicalBodyDraft
 
@@ -2295,7 +2305,7 @@ def baseline_interest_rate(ctx, time_period):
     assert "Baseline!AA33" in resolved[0].addresses
 
 
-def test_resolve_semantic_dependencies_resolves_stranded_passthrough_when_ambiguous() -> (  # noqa: E501
+def test_resolve_semantic_dependencies_resolves_stranded_passthrough_when_ambiguous() -> (
     None
 ):
     """When two helpers advertise overlapping coverage of the dependency's row the
@@ -2871,7 +2881,7 @@ def test_llm_refactor_singleton_wires_parity_into_post_validate(
         parity_calls.append(1)
 
     monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
@@ -2944,7 +2954,7 @@ def test_llm_refactor_singleton_post_validate_retries_on_parity_error(
         raise RuntimeError("exhausted attempts") from last_error
 
     monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
@@ -3106,7 +3116,7 @@ def test_llm_refactor_singleton_aborts_on_declared_error_without_retry(
         ),
     )
     monkeypatch.setattr(module, "prepare_singleton_refactor_response", boom_prepare)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "glm-test")
@@ -3195,7 +3205,7 @@ def test_llm_refactor_cluster_aborts_on_declared_error_without_retry(
         ),
     )
     monkeypatch.setattr(module, "prepare_cluster_refactor_response", boom_prepare)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "glm-test")
@@ -3275,7 +3285,7 @@ def test_llm_refactor_singleton_declared_error_writes_diagnostic_dump(
             module.provider_for_model("glm-test"),
         ),
     )
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "glm-test")
@@ -3372,7 +3382,7 @@ def test_llm_refactor_singleton_multi_attempt_failure_dumps_full_history(
             module.provider_for_model("glm-test"),
         ),
     )
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "glm-test")
@@ -3556,20 +3566,22 @@ def test_validate_dimension_aware_rejects_collapsed_concept_parameter() -> None:
             keys=(MemberKeyEntry(dimension_id="PROJECTION_PERIOD", value=2),),
         ),
     )
-    with patch(
-        "src.internals_refactor._resolved_projection_layout",
-        return_value=DUAL_PERIOD_LAYOUT,
+    with (
+        patch(
+            "src.internals_refactor._resolved_projection_layout",
+            return_value=DUAL_PERIOD_LAYOUT,
+        ),
+        pytest.raises(ValueError, match="collapses distinct dimensions"),
     ):
-        with pytest.raises(ValueError, match="collapses distinct dimensions"):
-            validate_cluster_refactor_response(
-                DUAL_PERIOD_CONTEXT,
-                _dimension_aware_response(
-                    parameters=(DUAL_PERIOD_PARAMETERS[0],),
-                    member_keys=collapsed_member_keys,
-                ),
-                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
-                internals_source=PRISTINE_CLUSTER,
-            )
+        validate_cluster_refactor_response(
+            DUAL_PERIOD_CONTEXT,
+            _dimension_aware_response(
+                parameters=(DUAL_PERIOD_PARAMETERS[0],),
+                member_keys=collapsed_member_keys,
+            ),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
 
 
 def test_prepare_dimension_aware_rejects_bare_concept_dimension_id() -> None:
@@ -3615,19 +3627,21 @@ def test_validate_member_sweep_rejects_invented_counterpart_parameter() -> None:
             dtype="str",
         ),
     )
-    with patch(
-        "src.internals_refactor._resolved_projection_layout",
-        return_value=TEST_LAYOUT,
-    ):
-        with pytest.raises(
+    with (
+        patch(
+            "src.internals_refactor._resolved_projection_layout",
+            return_value=TEST_LAYOUT,
+        ),
+        pytest.raises(
             ValueError, match="parameters must match varying binding key dimensions"
-        ):
-            validate_cluster_refactor_response(
-                ctx,
-                _cluster_response(parameters=invented_parameters),
-                existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
-                internals_source=PRISTINE_CLUSTER,
-            )
+        ),
+    ):
+        validate_cluster_refactor_response(
+            ctx,
+            _cluster_response(parameters=invented_parameters),
+            existing_names=frozenset({"cell_engine_c6", "cell_engine_d6"}),
+            internals_source=PRISTINE_CLUSTER,
+        )
 
 
 TRADE_BALANCE_SERIES_MAP = {
@@ -4239,7 +4253,7 @@ def test_llm_refactor_singleton_uses_shared_index_without_rereads(
         return validated, SINGLETON_LLM_RESPONSE.model_dump_json()
 
     monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
@@ -4292,7 +4306,7 @@ def test_llm_refactor_cluster_uses_shared_index_without_rereads(
         return validated, llm_response.model_dump_json()
 
     monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
@@ -4367,9 +4381,9 @@ def test_refactor_schedule_rebuilds_index_only_after_apply(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -4492,9 +4506,9 @@ def test_pass_one_defers_internals_write_until_single_flush(
     tmp_path: Path,
 ) -> None:
     """Pass 1 applies units in memory; internals.py is flushed exactly once."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -4612,9 +4626,9 @@ def test_pass_one_writes_mechanical_checkpoint_before_parity_gate(
     tmp_path: Path,
 ) -> None:
     """Pass 1 must persist mechanical source before the batched parity gate."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -4759,9 +4773,9 @@ def test_pass_one_parity_failure_keeps_package_internals_pristine(
     tmp_path: Path,
 ) -> None:
     """Parity failure must not promote the mechanical sidecar to package path."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -4887,9 +4901,9 @@ def test_pass_one_defers_full_module_validate_until_end(
     tmp_path: Path,
 ) -> None:
     """Pass 1 must not parse/compile the full module after every unit apply."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.wide_layer import wide_layer_graph
 
@@ -4998,9 +5012,9 @@ def test_pass_one_reindexes_lazily_per_layer(
     must see an index rebuilt from the accumulated source, and every apply must
     chain onto the previous apply's output rather than the stale index source.
     """
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.wide_layer import wide_layer_graph
 
@@ -5123,9 +5137,9 @@ def test_pass_one_fallback_applies_onto_accumulated_source(
 ) -> None:
     """An LLM-fallback unit with clean reads keeps the stale index for context
     but must apply onto the accumulated source, not the index's snapshot."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.wide_layer import wide_layer_graph
 
@@ -5468,7 +5482,7 @@ def test_llm_refactor_cluster_uses_dimension_aware_prompt(
         return validated, llm_response.model_dump_json()
 
     monkeypatch.setattr(module, "generate_validated_json", fake_generate_validated_json)
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda _cache: None)
     monkeypatch.setattr(module, "_refactor_provider_key_present", lambda: True)
     monkeypatch.setattr(module, "refactor_model", lambda: "test-model")
@@ -5498,9 +5512,9 @@ def test_refactor_internals_all_clusters_consumes_refactor_schedule(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -5587,9 +5601,9 @@ def test_refactor_internals_all_clusters_records_spans_on_the_stage_timer(
     tmp_path: Path,
 ) -> None:
     """Pass 1 / parity-gate / Pass 2 wall clock lands on the caller's StageTimer."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import cluster_graph_formulas
     from src.pipeline_monitor import StageTimer
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
@@ -5658,9 +5672,9 @@ def test_refactor_internals_all_clusters_passes_unique_allocated_helper_names(
     tmp_path: Path,
 ) -> None:
     """Peel schedule units receive distinct expected_helper_name kwargs before LLM."""
-    import src.internals_refactor as module
     from types import SimpleNamespace
 
+    import src.internals_refactor as module
     from src.formula_clustering import FormulaCluster
     from src.refactor_order import compute_refactor_schedule
 
@@ -5797,7 +5811,6 @@ def test_refactor_internals_all_clusters_forwards_bound_address_keys(
 ) -> None:
     """Multi-member units must receive caller keys, not the graph-rebuild fallback."""
     import src.internals_refactor as module
-
     from src.refactor_order import RefactorUnit
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -5824,7 +5837,6 @@ def test_refactor_internals_all_clusters_forwards_bound_address_keys(
         **_kwargs: object,
     ) -> None:
         received["bound_address_keys"] = bound_address_keys
-        return None
 
     unit = RefactorUnit(
         parent_cluster_id=0,
@@ -5863,7 +5875,6 @@ def test_refactor_internals_all_clusters_forwards_key_vocabulary(
 ) -> None:
     """Multi-member units must receive caller vocabulary, not the YAML-reload fallback."""
     import src.internals_refactor as module
-
     from src.refactor_order import RefactorUnit
     from tests.fixtures.inter_cluster_cycle import inter_cluster_cycle_graph
 
@@ -5898,7 +5909,6 @@ def test_refactor_internals_all_clusters_forwards_key_vocabulary(
         **_kwargs: object,
     ) -> None:
         received["key_vocabulary"] = key_vocabulary
-        return None
 
     def boom_default_key_vocabulary(_bindings_path: Path) -> tuple[KeyConceptSpec, ...]:
         raise AssertionError("_default_key_vocabulary must not run")

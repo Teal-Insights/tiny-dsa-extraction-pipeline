@@ -16,9 +16,9 @@ from src.refactor_types import (
     VARIATION_MODE_CLI_HELP,
     ClusteringMode,
     VariationMode,
+    clustering_mode_choices,
     parse_clustering_mode,
     parse_variation_mode,
-    clustering_mode_choices,
     variation_mode_choices,
 )
 from src.workbook_addresses import ProjectionColumnLayout
@@ -183,7 +183,7 @@ def _load_runnable_cell_rules(value: object) -> tuple[RunnableCellRule, ...]:
     if value is None:
         return ()
     if not isinstance(value, (tuple, list)):
-        raise ValueError(
+        raise TypeError(
             "RUNNABLE_CELL_RULES must be a tuple or list of RunnableCellRule "
             "instances or (pattern, message) pairs"
         )

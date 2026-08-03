@@ -434,8 +434,8 @@ def test_build_pipeline_graph_uses_series_derived_cache(
     synthetic_config,
     derived_cache_dir: Path,
 ) -> None:
+    from src import series_derived_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.series_derived_cache as series_derived_cache
 
     with patch.object(
         series_derived_cache,
@@ -457,8 +457,8 @@ def test_build_pipeline_graph_no_cache_bypasses_series_derived_cache(
     synthetic_config,
     derived_cache_dir: Path,
 ) -> None:
+    from src import series_derived_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.series_derived_cache as series_derived_cache
 
     with patch.object(
         series_derived_cache,
@@ -474,8 +474,8 @@ def test_build_pipeline_graph_does_not_mutate_shared_leaf_classification(
     synthetic_config,
     derived_cache_dir: Path,
 ) -> None:
+    from src import series_derived_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.series_derived_cache as series_derived_cache
 
     with patch.object(
         series_derived_cache,
@@ -505,8 +505,8 @@ def test_call_sites_read_derived_fields_instead_of_rebuilding(
     derived_cache_dir: Path,
 ) -> None:
     """Warm pipeline result carries derived fields; builders are not needed again."""
+    from src import series_derived_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.series_derived_cache as series_derived_cache
 
     with patch.object(
         series_derived_cache,

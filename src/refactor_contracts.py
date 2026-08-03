@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from src.formula_clustering import (
     BoundAddressKeys,
@@ -46,7 +46,7 @@ from src.refactor_bindings import (
 )
 from src.workbook_addresses import ProjectionColumnLayout
 
-ClusterRefactorContract: TypeAlias = Literal[
+type ClusterRefactorContract = Literal[
     "member_sweep",
     "dimension_aware",
     "key_dispatch",

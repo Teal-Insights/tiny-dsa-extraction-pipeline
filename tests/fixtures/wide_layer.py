@@ -3,7 +3,6 @@ from __future__ import annotations
 from excel_grapher.grapher.graph import DependencyGraph
 
 from src.workbook_addresses import parse_workbook_address
-
 from tests.fixtures.inter_cluster_cycle import formula_node, leaf_node
 
 

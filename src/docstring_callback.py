@@ -11,6 +11,8 @@ from typing import Any
 from dotenv import load_dotenv
 from excel_grapher.exporter import (
     FieldDoc as SeriesFieldDoc,
+)
+from excel_grapher.exporter import (
     SeriesFunctionDoc,
     register_series_docstring_callback,
 )

@@ -1,10 +1,10 @@
-from dotenv import load_dotenv
 import asyncio
 from collections.abc import Mapping
 
 import pytest
-
+from dotenv import load_dotenv
 from excel_grapher.grapher import DependencyGraph
+
 from src.extraction_pipeline import build_pipeline_graph
 from src.graph_dependency_audit import (
     GraphAuditCase,

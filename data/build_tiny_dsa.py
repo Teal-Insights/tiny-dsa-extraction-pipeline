@@ -41,7 +41,7 @@ import hashlib
 import io
 import json
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastpyxl import Workbook
@@ -57,7 +57,7 @@ OUT_MANIFEST = HERE / "tiny-dsa-manifest.json"
 VERSION = "0.2.0"
 RELEASE_DATE_UTC = "2026-05-04T00:00:00Z"  # fixed; bumps only on version increment
 EPOCH_FOR_ZIP = (2026, 5, 4, 0, 0, 0)
-EPOCH_DATETIME = datetime(2026, 5, 4, 0, 0, 0, tzinfo=timezone.utc)
+EPOCH_DATETIME = datetime(2026, 5, 4, 0, 0, 0, tzinfo=UTC)
 
 # Country profile table. Three stylized profiles; only initial debt-to-GDP
 # differs across them, all other parameters share the baseline default.

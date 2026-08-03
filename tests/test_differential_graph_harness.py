@@ -144,14 +144,14 @@ def test_graph_txt_summary_header_reports_both_tolerances(tmp_path: Path) -> Non
 
 def _graph_config(tmp_path: Path, **overrides):
     harness = _load_harness_module()
-    kwargs = dict(
-        repo_root=tmp_path,
-        workbook_path=tmp_path / "workbook.xlsx",
-        report_dir=tmp_path / "reports",
-        targets=("Outputs!B1",),
-        constraints={"Inputs!A1": float},
-        library_name="Example",
-    )
+    kwargs = {
+        "repo_root": tmp_path,
+        "workbook_path": tmp_path / "workbook.xlsx",
+        "report_dir": tmp_path / "reports",
+        "targets": ("Outputs!B1",),
+        "constraints": {"Inputs!A1": float},
+        "library_name": "Example",
+    }
     kwargs.update(overrides)
     return harness.GraphDifferentialConfig(**kwargs)
 

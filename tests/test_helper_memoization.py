@@ -95,7 +95,7 @@ def xl_circular_reference():
     path = tmp_path / "runtime.py"
     path.write_text(patched, encoding="utf-8")
     namespace: dict[str, Any] = {}
-    exec(compile(patched, str(path), "exec"), namespace)
+    exec(compile(patched, str(path), "exec"), namespace)  # noqa: S102
     xl_memoize = namespace["xl_memoize"]
     EvalContext = namespace["EvalContext"]
 

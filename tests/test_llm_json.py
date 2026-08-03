@@ -449,18 +449,20 @@ def test_deadline_exceeded_before_next_attempt_raises_timeout() -> None:
 
     client, fake = _make([bad, bad, bad], after_create=advance_past_deadline)
 
-    with patch("src.llm_json.time.perf_counter", side_effect=lambda: clock["now"]):
-        with pytest.raises(ValidatedJsonTimeout, match="deadline"):
-            generate_validated_json(
-                client=client,
-                model="m",
-                provider=JSON_OBJECT_PROVIDER,
-                system_prompt="sys",
-                user_prompt="usr",
-                response_model=_Sample,
-                max_attempts=3,
-                deadline_seconds=5.0,
-            )
+    with (
+        patch("src.llm_json.time.perf_counter", side_effect=lambda: clock["now"]),
+        pytest.raises(ValidatedJsonTimeout, match="deadline"),
+    ):
+        generate_validated_json(
+            client=client,
+            model="m",
+            provider=JSON_OBJECT_PROVIDER,
+            system_prompt="sys",
+            user_prompt="usr",
+            response_model=_Sample,
+            max_attempts=3,
+            deadline_seconds=5.0,
+        )
 
     assert len(fake.chat.completions.calls) == 1
 

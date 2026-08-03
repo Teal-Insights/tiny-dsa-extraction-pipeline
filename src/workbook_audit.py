@@ -324,7 +324,7 @@ def audit_workbook(
     named_ranges: list[NamedRangeRecord] = []
     for name, defined_name in wb.defined_names.items():
         target = defined_name.attr_text
-        external = target.startswith("[") or target.startswith("'[") or ":\\" in target
+        external = target.startswith(("[", "'[")) or ":\\" in target
         broken = "#REF!" in target.upper()
         named_ranges.append(
             NamedRangeRecord(name=name, target=target, external=external, broken=broken)
@@ -533,7 +533,7 @@ def render_audit_markdown(report: WorkbookAuditReport) -> str:
             _fmt_int(report.function_call_sites[name]),
             _fmt_int(report.function_formula_counts[name]),
         )
-        for name in report.function_call_sites.keys()
+        for name in report.function_call_sites
     ]
     function_rows.sort(key=lambda row: int(row[1].replace(",", "")), reverse=True)
     total_call_sites = sum(report.function_call_sites.values())

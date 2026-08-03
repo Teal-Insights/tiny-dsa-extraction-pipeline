@@ -43,14 +43,16 @@ def redirect_pipeline_disk_cache(root: Path) -> None:
     global _ORIGINAL_CLUSTER_CACHE_DIR
     global _ORIGINAL_INTERNALS_CACHE_DIR
 
-    import src.bindings_validation_cache as bindings_validation_cache
-    import src.cluster_cache as cluster_cache
-    import src.codegen_cache as codegen_cache
-    import src.graph_cache as graph_cache
-    import src.internals_refactor as internals_refactor
-    import src.projection_cache as projection_cache
-    import src.series_derived_cache as series_derived_cache
-    import src.series_resolution_cache as series_resolution_cache
+    from src import (
+        bindings_validation_cache,
+        cluster_cache,
+        codegen_cache,
+        graph_cache,
+        internals_refactor,
+        projection_cache,
+        series_derived_cache,
+        series_resolution_cache,
+    )
 
     if _ORIGINAL_GRAPH_CACHE_DIR is None:
         _ORIGINAL_GRAPH_CACHE_DIR = graph_cache.DEFAULT_GRAPH_CACHE_DIR
@@ -113,14 +115,16 @@ def restore_pipeline_disk_cache() -> None:
     ):
         return
 
-    import src.bindings_validation_cache as bindings_validation_cache
-    import src.cluster_cache as cluster_cache
-    import src.codegen_cache as codegen_cache
-    import src.graph_cache as graph_cache
-    import src.internals_refactor as internals_refactor
-    import src.projection_cache as projection_cache
-    import src.series_derived_cache as series_derived_cache
-    import src.series_resolution_cache as series_resolution_cache
+    from src import (
+        bindings_validation_cache,
+        cluster_cache,
+        codegen_cache,
+        graph_cache,
+        internals_refactor,
+        projection_cache,
+        series_derived_cache,
+        series_resolution_cache,
+    )
 
     graph_cache.DEFAULT_GRAPH_CACHE_DIR = original_graph
     projection_cache.DEFAULT_PROJECTION_CACHE_DIR = original_projection

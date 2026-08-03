@@ -93,7 +93,7 @@ def _validation_feedback_message(error: Exception) -> ChatCompletionMessageParam
     }
 
 
-def _request_json(
+def _request_json[T: BaseModel](
     *,
     client: OpenAI,
     model: str,
@@ -145,7 +145,7 @@ def _request_json(
     return None, content
 
 
-async def _request_json_async(
+async def _request_json_async[T: BaseModel](
     *,
     client: AsyncOpenAI,
     model: str,
@@ -191,7 +191,7 @@ async def _request_json_async(
     return None, content
 
 
-def generate_validated_json(
+def generate_validated_json[T: BaseModel](
     *,
     client: OpenAI,
     model: str,
@@ -346,7 +346,7 @@ def generate_validated_json(
     ) from last_error
 
 
-async def generate_validated_json_async(
+async def generate_validated_json_async[T: BaseModel](
     *,
     client: AsyncOpenAI,
     model: str,

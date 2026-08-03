@@ -539,7 +539,7 @@ def test_run_semantic_naming_pass_skips_gather_failure_and_warns(
     internals_path = tmp_path / "internals.py"
     internals_path.write_text(source, encoding="utf-8")
     monkeypatch.setattr(module, "REFACTOR_CACHE_PATH", tmp_path / "cache.json")
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda cache: None)
 
     def fake_gather(misses, *, model, prompts, on_success=None):  # type: ignore[no-untyped-def]
@@ -653,7 +653,7 @@ def test_run_semantic_naming_pass_applies_successes_despite_sibling_gather_failu
     internals_path = tmp_path / "internals.py"
     internals_path.write_text(source, encoding="utf-8")
     monkeypatch.setattr(module, "REFACTOR_CACHE_PATH", tmp_path / "cache.json")
-    monkeypatch.setattr(module, "load_refactor_cache", lambda: {})
+    monkeypatch.setattr(module, "load_refactor_cache", dict)
     monkeypatch.setattr(module, "save_refactor_cache", lambda cache: None)
 
     def fake_gather(misses, *, model, prompts, on_success=None):  # type: ignore[no-untyped-def]

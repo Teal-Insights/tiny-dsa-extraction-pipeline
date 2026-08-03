@@ -4,49 +4,46 @@ import argparse
 import json
 import logging
 import time
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, Mapping, Sequence, cast, get_args, get_origin
+from typing import Any, Literal, cast, get_args, get_origin
 
 from excel_grapher.core.cell_types import normalize_cell_type_env_key
+from excel_grapher.exporter import CodeGenerator
+from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import (
     DependencyGraph,
     DynamicRefConfig,
 )
-from excel_grapher.exporter import CodeGenerator
-from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
+from src.bindings_validation_cache import get_or_build_bindings_validation
+from src.codegen_cache import (
+    get_or_build_codegen_modules,
+    guide_fingerprint,
+)
 from src.dependency_graph_viz import (
     constant_keys_from_leaf_classification,
     series_cell_keys,
     write_dependency_graph_site,
 )
+from src.differential_validation import run_post_refactor_differential
+from src.docstring_callback import configure_docstring_callback
+from src.export_validation_assets import export_reference_reports
+from src.graph_cache import get_or_build_dependency_graph, load_dependency_graph
+from src.internal_binding_coverage import InternalBindingCoverageReport
 from src.internal_bindings import (
     InternalBindingIndex,
     binding_node_labels,
 )
-from src.internal_binding_coverage import InternalBindingCoverageReport
-from src.refactor_bindings import BindingKeyValue
-from src.codegen_cache import (
-    get_or_build_codegen_modules,
-    guide_fingerprint,
-)
-from src.docstring_callback import configure_docstring_callback
-from src.differential_validation import run_post_refactor_differential
-from src.export_validation_assets import export_reference_reports
+from src.logging_config import configure_logging
 from src.package_materialize import (
     materialize_package,
     try_materialize_refactored_package_from_cache,
 )
-from src.projection_cache import (
-    load_projection_payload,
-    projection_cache_key,
-    rehydrate_projection_result,
-)
-from src.logging_config import configure_logging
 from src.pipeline_config import (
     PipelineConfig,
     add_clustering_mode_argument,
@@ -62,8 +59,12 @@ from src.pipeline_monitor import (
     profile_if_enabled,
     resolve_stall_log_path,
 )
-from src.bindings_validation_cache import get_or_build_bindings_validation
-from src.graph_cache import get_or_build_dependency_graph, load_dependency_graph
+from src.projection_cache import (
+    load_projection_payload,
+    projection_cache_key,
+    rehydrate_projection_result,
+)
+from src.refactor_bindings import BindingKeyValue
 from src.series_derived_cache import (
     get_or_build_series_derived,
     load_series_derived_payload,
@@ -866,9 +867,8 @@ def run_refactor_stage(
         set_refactor_prompt_observer,
         set_singleton_context_observer,
     )
-    from src.refactor_bindings import key_concept_vocabulary_from_bindings
-
     from src.package_materialize import current_internals_inputs
+    from src.refactor_bindings import key_concept_vocabulary_from_bindings
 
     config = state.config
     lab = lab_options or RefactorLabOptions()

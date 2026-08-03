@@ -5,9 +5,9 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Any, NoReturn, TypeAlias, cast
+from typing import Any, NoReturn, cast
 
 import fastpyxl.utils.cell
 
@@ -104,7 +104,7 @@ class ExcelRange:
         return (self.end_row - self.start_row + 1, self.end_col - self.start_col + 1)
 
 
-NormalizedAddress: TypeAlias = str
+type NormalizedAddress = str
 
 
 class XlError(StrEnum):
@@ -125,7 +125,7 @@ class XlError(StrEnum):
         return None
 
 
-Scalar: TypeAlias = float | int | str | bool | XlError | None
+type Scalar = float | int | str | bool | XlError | None
 
 
 class XlErrorException(Exception):
@@ -145,7 +145,7 @@ class XlErrorException(Exception):
         super().__init__(code.value)
 
 
-_EXCEL_EPOCH = datetime(1899, 12, 30)
+_EXCEL_EPOCH = datetime(1899, 12, 30, tzinfo=UTC)
 
 
 def _escape_sheet_for_formula(sheet: str) -> str:
@@ -153,7 +153,7 @@ def _escape_sheet_for_formula(sheet: str) -> str:
     return sheet.replace("'", "''")
 
 
-def _format_general_number(value: float | int) -> str:
+def _format_general_number(value: float) -> str:
     f = float(value)
     if f.is_integer():
         return str(int(f))
@@ -175,7 +175,8 @@ def _raise_if_error_value(value: CellValue) -> CellValue:
 def datetime_to_excel_serial(value: datetime) -> float:
     """Convert a naive datetime to an Excel day serial (1900 date system)."""
     naive = value.replace(tzinfo=None) if value.tzinfo is not None else value
-    delta = naive - _EXCEL_EPOCH
+    epoch = _EXCEL_EPOCH.replace(tzinfo=None)
+    delta = naive - epoch
     return delta.days + (delta.seconds + delta.microseconds / 1_000_000) / 86_400.0
 
 
@@ -185,7 +186,7 @@ def _try_parse_iso_date_serial(text: str) -> float | None:
         return None
     try:
         if "T" in stripped or " " in stripped:
-            parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(stripped)
             if parsed.tzinfo is not None:
                 parsed = parsed.replace(tzinfo=None)
         else:
@@ -379,13 +380,13 @@ class Range:
         return value
 
 
-CellValue: TypeAlias = Scalar | ExcelRange | Range | list["CellValue"]
+type CellValue = Scalar | ExcelRange | Range | list["CellValue"]
 
 
 class Grid:
     """Positional raw-value access over a lazy `Range` or nested-list array."""
 
-    __slots__ = ("nrows", "ncols", "_range", "_rows")
+    __slots__ = ("_range", "_rows", "ncols", "nrows")
 
     def __init__(
         self,
@@ -1056,7 +1057,7 @@ def xl_offset(
 
     if h == 1 and w == 1:
         addr = _format_address(sheet, target_row, target_col)
-        return cast("CellValue", xl_cell(ctx, addr))
+        return xl_cell(ctx, addr)
 
     return _ctx_range(
         ctx, sheet, target_row, target_col, target_row + h - 1, target_col + w - 1
@@ -1098,7 +1099,7 @@ def xl_range_rows(ctx: EvalContext, address: str) -> CellValue:
     """
     rng = xl_range(ctx, address)
     if isinstance(rng, Range):
-        return rng.rows_raw()
+        return cast("CellValue", rng.rows_raw())
     return rng
 
 

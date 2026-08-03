@@ -169,7 +169,7 @@ def _unique_series_id_by_address(
         if len(series_ids) > 1
     }
     if duplicates:
-        sample_address, sample_series_ids = sorted(duplicates.items())[0]
+        sample_address, sample_series_ids = min(duplicates.items())
         raise ValueError(
             f"{ownership_kind} series cell address must map to exactly one series_id; "
             f"got {sample_address!r} in {list(sample_series_ids)}"
@@ -268,9 +268,7 @@ def expected_keys_for_address(
 def _coerce_binding_keys(keys: Mapping[str, Scalar]) -> dict[str, BindingKeyValue]:
     coerced: dict[str, BindingKeyValue] = {}
     for key, value in keys.items():
-        if isinstance(value, bool):
-            coerced[key] = value
-        elif isinstance(value, (str, int, float)):
+        if isinstance(value, (bool, str, int, float)):
             coerced[key] = value
     return coerced
 

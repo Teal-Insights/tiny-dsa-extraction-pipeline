@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeAlias
 
 from excel_grapher.core.formula_ast import (
     AstNode,
@@ -29,12 +28,12 @@ from src.refactor_bindings import BindingKeyValue, expected_keys_for_address
 from src.refactor_types import ClusteringMode, VariationMode
 from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
-ClusterableGraph: TypeAlias = DependencyGraph | ProjectionResult
+type ClusterableGraph = DependencyGraph | ProjectionResult
 
-StructuralFingerprint: TypeAlias = tuple[tuple, tuple[str, ...]]
+type StructuralFingerprint = tuple[tuple, tuple[str, ...]]
 
-BoundAddressKeys: TypeAlias = Mapping[str, Mapping[str, BindingKeyValue]]
-AddressToSeriesId: TypeAlias = Mapping[str, str]
+type BoundAddressKeys = Mapping[str, Mapping[str, BindingKeyValue]]
+type AddressToSeriesId = Mapping[str, str]
 
 
 def _require_bound_address_keys(
@@ -233,11 +232,7 @@ def _formula_nodes(graph: ClusterableGraph) -> dict[str, str]:
 
 
 def _formula_body(normalized_formula: str) -> str:
-    return (
-        normalized_formula[1:]
-        if normalized_formula.startswith("=")
-        else normalized_formula
-    )
+    return normalized_formula.removeprefix("=")
 
 
 def _binding_key_concepts_for_address(
@@ -670,9 +665,7 @@ def _formulas_are_parameterizable(
         left_fingerprint
     ) or not _binding_aware_fingerprint_complete(right_fingerprint):
         return False
-    if len(left_refs) != len(right_refs):
-        return False
-    return True
+    return len(left_refs) == len(right_refs)
 
 
 def formulas_are_parameterizable(

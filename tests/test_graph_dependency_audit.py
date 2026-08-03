@@ -9,9 +9,9 @@ from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import Node
 
 from src.graph_dependency_audit import (
+    SYSTEM_PROMPT,
     GraphAuditCase,
     GraphDependencyAuditVerdict,
-    SYSTEM_PROMPT,
     audit_parent_dependencies_batch_with_llm,
     audit_parent_dependencies_with_llm,
     build_graph_audit_client,

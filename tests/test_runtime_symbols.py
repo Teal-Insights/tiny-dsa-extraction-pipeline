@@ -31,16 +31,7 @@ def test_excludes_sentinel_returning_helpers() -> None:
 def test_verifies_symbols_are_importable(tmp_path: Path) -> None:
     runtime_path = tmp_path / "runtime.py"
     runtime_path.write_text(
-        "\n".join(
-            [
-                "class XlError(Exception):",
-                "    pass",
-                "",
-                "def xl_eval():",
-                "    return 1",
-                "",
-            ]
-        ),
+        "class XlError(Exception):\n    pass\n\ndef xl_eval():\n    return 1\n",
         encoding="utf-8",
     )
     assert discover_allowed_runtime_symbols(runtime_path) == ("XlError", "xl_eval")
@@ -61,20 +52,7 @@ def test_runtime_module_load_failure_propagates(tmp_path: Path) -> None:
 def test_discovers_public_reader_functions(tmp_path: Path) -> None:
     readers_path = tmp_path / "_readers.py"
     readers_path.write_text(
-        "\n".join(
-            [
-                "from .runtime import xl_cell",
-                "",
-                "_LEAF_INDEX = {(): 'Inputs!B1'}",
-                "",
-                "def read_shock_type(ctx):",
-                "    return xl_cell(ctx, 'Inputs!B1')",
-                "",
-                "def read_country(ctx):",
-                "    return xl_cell(ctx, 'Dashboard!C12')",
-                "",
-            ]
-        ),
+        "from .runtime import xl_cell\n\n_LEAF_INDEX = {(): 'Inputs!B1'}\n\ndef read_shock_type(ctx):\n    return xl_cell(ctx, 'Inputs!B1')\n\ndef read_country(ctx):\n    return xl_cell(ctx, 'Dashboard!C12')\n",
         encoding="utf-8",
     )
     assert discover_allowed_reader_symbols(readers_path) == (
@@ -90,16 +68,7 @@ def test_missing_readers_file_yields_empty_tuple(tmp_path: Path) -> None:
 def test_formula_symbols_union_runtime_and_readers(tmp_path: Path) -> None:
     runtime_path = tmp_path / "runtime.py"
     runtime_path.write_text(
-        "\n".join(
-            [
-                "class XlError(Exception):",
-                "    pass",
-                "",
-                "def xl_cell(ctx, address):",
-                "    return address",
-                "",
-            ]
-        ),
+        "class XlError(Exception):\n    pass\n\ndef xl_cell(ctx, address):\n    return address\n",
         encoding="utf-8",
     )
     readers_path = tmp_path / "_readers.py"

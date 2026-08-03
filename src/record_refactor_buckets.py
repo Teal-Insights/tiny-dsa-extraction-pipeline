@@ -19,24 +19,14 @@ from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
+from src.cluster_cache import get_or_build_clusters_and_schedule
 from src.codegen_cache import (
     get_or_build_codegen_modules,
     guide_fingerprint,
     write_generated_modules,
 )
 from src.docstring_callback import configure_docstring_callback
-from src.cluster_cache import get_or_build_clusters_and_schedule
 from src.extraction_pipeline import build_pipeline_graph
-from src.projection_cache import projection_cache_key
-from src.pipeline_config import (
-    PipelineConfig,
-    add_clustering_mode_argument,
-    add_variation_mode_argument,
-    apply_clustering_mode_cli_override,
-    apply_variation_mode_cli_override,
-    load_pipeline_config,
-    validate_pipeline_config,
-)
 from src.formula_clustering import (
     BoundAddressKeys,
     ClusterableGraph,
@@ -44,16 +34,6 @@ from src.formula_clustering import (
     _require_bound_address_keys,
     cluster_graph_formulas,
     formula_nodes_for_clustering,
-)
-from src.refactor_order import compute_refactor_schedule
-from src.refactor_bindings import (
-    KeyConceptSpec,
-    load_key_concept_vocabulary,
-    varying_key_concepts,
-)
-from src.refactor_contracts import (
-    ClusterRefactorContract,
-    select_cluster_refactor_contract,
 )
 from src.internal_bindings import InternalBindingIndex
 from src.internals_refactor import (
@@ -64,6 +44,26 @@ from src.internals_refactor import (
     build_singleton_refactor_context,
 )
 from src.logging_config import configure_logging
+from src.pipeline_config import (
+    PipelineConfig,
+    add_clustering_mode_argument,
+    add_variation_mode_argument,
+    apply_clustering_mode_cli_override,
+    apply_variation_mode_cli_override,
+    load_pipeline_config,
+    validate_pipeline_config,
+)
+from src.projection_cache import projection_cache_key
+from src.refactor_bindings import (
+    KeyConceptSpec,
+    load_key_concept_vocabulary,
+    varying_key_concepts,
+)
+from src.refactor_contracts import (
+    ClusterRefactorContract,
+    select_cluster_refactor_contract,
+)
+from src.refactor_order import compute_refactor_schedule
 from src.semantic_naming import (
     allocate_schedule_helper_names,
     collect_semantic_helper_names,
@@ -657,10 +657,14 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
             [
                 "## Fingerprint prompt coverage",
                 "",
-                f"- Summarized cluster buckets: "
-                f"**{fingerprint_summary.get('summarized_cluster_count', 0)}**",
-                f"- Fingerprint dump fallbacks: "
-                f"**{fingerprint_summary.get('fallback_cluster_count', 0)}**",
+                (
+                    f"- Summarized cluster buckets: "
+                    f"**{fingerprint_summary.get('summarized_cluster_count', 0)}**"
+                ),
+                (
+                    f"- Fingerprint dump fallbacks: "
+                    f"**{fingerprint_summary.get('fallback_cluster_count', 0)}**"
+                ),
                 f"- Relation tiers: {tier_text}",
                 (
                     "- Token estimates (legacy sources vs fingerprint): "
@@ -678,11 +682,15 @@ def render_refactor_buckets_markdown(report: Mapping[str, Any]) -> str:
             [
                 f"### {kind.title()} buckets",
                 "",
-                f"- Targets: {summary['target_count']} "
-                f"({summary['eligible_target_count']} eligible, "
-                f"{summary['skipped_target_count']} skipped)",
-                f"- Cells covered by eligible targets: {summary['eligible_cell_count']} "
-                f"of {summary['cell_count']}",
+                (
+                    f"- Targets: {summary['target_count']} "
+                    f"({summary['eligible_target_count']} eligible, "
+                    f"{summary['skipped_target_count']} skipped)"
+                ),
+                (
+                    f"- Cells covered by eligible targets: {summary['eligible_cell_count']} "
+                    f"of {summary['cell_count']}"
+                ),
                 "",
             ]
         )

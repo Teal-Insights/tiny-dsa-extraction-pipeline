@@ -14,19 +14,7 @@ from src.runtime_symbols import (
 def _write_runtime(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "\n".join(
-            [
-                "class XlError(Exception):",
-                "    pass",
-                "",
-                "def to_bool(value):",
-                "    return True",
-                "",
-                "def xl_eval():",
-                "    return 1",
-                "",
-            ]
-        ),
+        "class XlError(Exception):\n    pass\n\ndef to_bool(value):\n    return True\n\ndef xl_eval():\n    return 1\n",
         encoding="utf-8",
     )
 

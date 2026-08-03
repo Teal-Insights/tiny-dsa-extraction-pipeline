@@ -25,9 +25,9 @@ from tests.fixtures.synthetic_pipeline import (
     write_synthetic_workbook,
 )
 from tests.fixtures.test_state import (
+    redirect_pipeline_disk_cache,
     reset_pipeline_test_state,
     restore_pipeline_disk_cache,
-    redirect_pipeline_disk_cache,
 )
 
 

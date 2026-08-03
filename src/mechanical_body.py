@@ -24,7 +24,6 @@ import ast
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from fastpyxl.utils.cell import column_index_from_string
 
@@ -58,12 +57,6 @@ class MechanicalSynthesisError(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
-
-
-class _ExemplarLike(Protocol):
-    address: str
-    function_name: str
-    python_source: str
 
 
 @dataclass(frozen=True)

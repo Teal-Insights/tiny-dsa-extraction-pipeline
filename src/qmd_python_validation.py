@@ -317,9 +317,12 @@ def referenced_api_symbols(source: str, allowed: frozenset[str]) -> frozenset[st
                 if alias.name in allowed:
                     found.add(alias.name)
             continue
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in allowed:
-                found.add(node.func.id)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in allowed
+        ):
+            found.add(node.func.id)
     return frozenset(found)
 
 
@@ -431,13 +434,11 @@ def _cell_number_from_script(script_text: str, error_text: str) -> int | None:
     if line_match is None:
         return cell_numbers[-1]
     line_number = int(line_match.group(1))
-    current_line = 0
     current_cell = cell_numbers[0]
-    for line in script_text.splitlines():
+    for current_line, line in enumerate(script_text.splitlines(), start=1):
         marker = re.match(r"# qmd: .+ cell (\d+)", line)
         if marker is not None:
             current_cell = int(marker.group(1))
-        current_line += 1
         if current_line >= line_number:
             return current_cell
     return current_cell

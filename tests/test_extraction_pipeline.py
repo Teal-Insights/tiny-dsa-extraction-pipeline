@@ -2,17 +2,16 @@ import os
 import random
 from typing import Annotated, Any, Literal, get_args, get_origin
 
-from dotenv import load_dotenv
 import fastpyxl
 import fastpyxl.utils.cell
 import pytest
-
-from excel_grapher.core.cell_types import Between, RealBetween
+from dotenv import load_dotenv
 from excel_grapher.core.address_keys import normalize_key
+from excel_grapher.core.cell_types import Between, RealBetween
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import to_mermaid
-from excel_grapher.grapher.resolver import NamedRangeMaps, build_named_range_map
 from excel_grapher.grapher.parser import expand_range
+from excel_grapher.grapher.resolver import NamedRangeMaps, build_named_range_map
 
 from tests.conftest import SyntheticConfiguredPipeline
 
@@ -118,7 +117,7 @@ def test_llm_judges_that_graph_is_correct(tiny_dsa_configured_pipeline):
     )
 
     targets = ["Outputs!B12:F12", "Outputs!B13:F13", "Outputs!B14:F14"]
-    prompt = """
+    prompt = f"""
 Given these targets in an Excel workbook, we want to extract a graph
 of all possible dependencies of the targets:
 
@@ -135,13 +134,9 @@ CORRECT or INCORRECT.
 
 Graph:
 ```mermaid
-{mermaid_graph}
+{to_mermaid(graph)}
 ```
-""".format(
-        targets=targets,
-        required_constraints=required_constraints,
-        mermaid_graph=to_mermaid(graph),
-    )
+"""
 
     response = client.chat.completions.create(
         model="gpt-5.5",
@@ -267,7 +262,7 @@ def test_formula_evaluator_matches_excel_for_randomized_inputs(
             app.display_alerts = False
             app.screen_updating = False
             book = app.books.open(str(workbook_path.resolve()))
-        except Exception as exc:  # pragma: no cover - environment-specific
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover - environment-specific
             pytest.skip(f"Excel is not available for xlwings automation: {exc}")
 
         def _sheet(name: str) -> Any:

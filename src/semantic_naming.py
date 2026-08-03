@@ -153,9 +153,7 @@ def _is_semantic_helper_def(function_def: ast.FunctionDef) -> bool:
         return False
     if not function_def.args.args:
         return False
-    if function_def.args.args[0].arg != "ctx":
-        return False
-    return True
+    return function_def.args.args[0].arg == "ctx"
 
 
 def collect_semantic_helper_names(source: str) -> frozenset[str]:

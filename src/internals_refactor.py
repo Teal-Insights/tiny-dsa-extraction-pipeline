@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import builtins
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from dotenv import load_dotenv
 from excel_grapher.exporter import ProjectionResult
@@ -23,9 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from src.async_gather import run_map_as_completed
 from src.formula_clustering import FormulaCluster
+from src.internal_bindings import InternalBindingIndex, internal_binding_for_address
 from src.key_dispatch_synthesis import KeyDispatchPlan, plan_key_dispatch
-from src.mechanical_body import MechanicalBodyDraft
-from src.mechanical_naming import ClusterNamingLLMResponse
 from src.llm_json import (
     DEFAULT_MAX_ATTEMPTS,
     ValidatedJsonFailure,
@@ -39,9 +39,10 @@ from src.llm_providers import (
     model_from_env,
     provider_for_model,
 )
+from src.mechanical_body import MechanicalBodyDraft
+from src.mechanical_naming import ClusterNamingLLMResponse
+from src.peel_entrypoint_dispatch import inject_peel_entrypoint_dispatch
 from src.pipeline_monitor import StageTimer
-from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
-from src.internal_bindings import InternalBindingIndex, internal_binding_for_address
 from src.refactor_bindings import (
     BindingKeyValue,
     KeyConceptSpec,
@@ -54,17 +55,6 @@ from src.refactor_bindings import (
     render_literal_helper_call,
     resolve_dimension_key,
 )
-from src.refactor_return_types import (
-    ALLOWED_REFACTOR_RETURN_TYPE_HINTS,
-    KNOWN_RUNTIME_RETURN_HINTS,
-    _binding_dtype_to_python,
-    build_callee_return_hints,
-    infer_refactor_return_type_hint,
-    merge_callee_return_hints,
-    merge_callee_return_hints_from_functions,
-    normalize_return_type_hint_for_allowlist,
-    validate_scalar_return_type_hint,
-)
 from src.refactor_contracts import (
     ClusterRefactorContract,
     concepts_with_multiple_dimensions,
@@ -76,11 +66,21 @@ from src.refactor_fingerprints import (
     build_cluster_fingerprint_summary,
     format_cluster_fingerprint_dump,
 )
-from src.peel_entrypoint_dispatch import inject_peel_entrypoint_dispatch
 from src.refactor_order import (
     RefactorUnit,
     compute_refactor_schedule,
     refactor_failure_target,
+)
+from src.refactor_return_types import (
+    ALLOWED_REFACTOR_RETURN_TYPE_HINTS,
+    KNOWN_RUNTIME_RETURN_HINTS,
+    _binding_dtype_to_python,
+    build_callee_return_hints,
+    infer_refactor_return_type_hint,
+    merge_callee_return_hints,
+    merge_callee_return_hints_from_functions,
+    normalize_return_type_hint_for_allowlist,
+    validate_scalar_return_type_hint,
 )
 from src.runtime_symbols import (
     allowed_runtime_module_symbols,
@@ -91,12 +91,13 @@ from src.semantic_naming import (
     BindingRecordHints,
     _is_semantic_helper_def,
     allocate_schedule_helper_names,
+    binding_record_hints_from_cell,
     cluster_binding_naming_hints,
     semantic_helpers_available_for_calls,
-    binding_record_hints_from_cell,
     sole_series_id_for_addresses,
     validate_semantic_identifier,
 )
+from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
 
 repo_root = Path(__file__).resolve().parents[1]
 
@@ -828,14 +829,21 @@ class RefactorDeclaredError(RuntimeError):
         super().__init__(reason)
 
 
-def _validate_llm_response_error_or_success[T: BaseModel](
+class LlmResponseWithDeclaredError(Protocol):
+    """Structural shape shared by refactor/naming LLM response models."""
+
+    error: bool | None
+    error_reason: str | None
+
+
+def _validate_llm_response_error_or_success[T: LlmResponseWithDeclaredError](
     response: T,
     *,
     success_fields: tuple[str, ...],
     optional_ignored_fields: tuple[str, ...] = (),
 ) -> T:
-    error = getattr(response, "error")
-    error_reason = getattr(response, "error_reason")
+    error = response.error
+    error_reason = response.error_reason
     if error is True:
         reason = error_reason.strip() if isinstance(error_reason, str) else ""
         if not reason:
@@ -875,15 +883,15 @@ def _validate_llm_response_error_or_success[T: BaseModel](
 
 
 def raise_if_llm_declared_error(
-    response: BaseModel,
+    response: LlmResponseWithDeclaredError,
     *,
     kind: Literal["singleton", "cluster"],
     target: str,
 ) -> None:
     """Abort immediately when the LLM sets ``error`` to true."""
-    if getattr(response, "error") is not True:
+    if response.error is not True:
         return
-    error_reason = getattr(response, "error_reason")
+    error_reason = response.error_reason
     reason = error_reason.strip() if isinstance(error_reason, str) else ""
     if not reason:
         raise ValueError("error_reason must be a non-empty string when error is true")
@@ -2052,15 +2060,10 @@ def _local_binding_names(function_def: ast.FunctionDef) -> set[str]:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 names.update(_names_from_target(target))
-        elif isinstance(node, ast.AnnAssign):
-            names.update(_names_from_target(node.target))
-        elif isinstance(node, ast.NamedExpr):
-            names.update(_names_from_target(node.target))
-        elif isinstance(node, ast.AugAssign):
-            names.update(_names_from_target(node.target))
-        elif isinstance(node, ast.For):
-            names.update(_names_from_target(node.target))
-        elif isinstance(node, ast.comprehension):
+        elif isinstance(
+            node,
+            (ast.AnnAssign, ast.NamedExpr, ast.AugAssign, ast.For, ast.comprehension),
+        ):
             names.update(_names_from_target(node.target))
         elif isinstance(node, ast.ExceptHandler) and node.name is not None:
             names.add(node.name)
@@ -2565,8 +2568,7 @@ def strip_python_string_delimiters(docstring: str) -> str:
     for quote in ('"""', "'''"):
         if stripped.startswith(quote) and stripped.endswith(quote):
             inner = stripped[len(quote) : -len(quote)]
-            if inner.startswith("\n"):
-                inner = inner[1:]
+            inner = inner.removeprefix("\n")
             return inner.rstrip("\n")
     return docstring
 
@@ -2834,7 +2836,8 @@ def _build_dependency_stubs(
             for name in semantic_names
         ),
     ]
-    return "\n\n".join(stubs)
+    # Two blank lines between top-level defs, matching Ruff's Python layout.
+    return "\n\n\n".join(stubs)
 
 
 def build_singleton_refactor_context_dump(
@@ -2945,8 +2948,7 @@ def format_cluster_covered_addresses(addresses: Sequence[str]) -> str:
     )
     column_indices = [_column_index(column) for column in columns]
     contiguous = all(
-        later - earlier == 1
-        for earlier, later in zip(column_indices, column_indices[1:], strict=False)
+        later - earlier == 1 for earlier, later in itertools.pairwise(column_indices)
     )
     if contiguous:
         return f"{sheet}!{columns[0]}{row}:{columns[-1]}{row}"
@@ -3282,7 +3284,8 @@ def _build_cluster_dependency_stubs(
             for name in semantic_names
         ),
     ]
-    return "\n\n".join(stubs)
+    # Two blank lines between top-level defs, matching Ruff's Python layout.
+    return "\n\n\n".join(stubs)
 
 
 def sample_indices_for_prompt(
@@ -4315,7 +4318,7 @@ def resolve_semantic_dependencies(
             call_form=_helper_pass_through_call_form(
                 source, helper_name, index=resolved
             ),
-            address_template=_column_address_template(sorted(entries)[0][0]),
+            address_template=_column_address_template(min(entries)[0]),
             columns=tuple(tag for _, tag in sorted(entries)),
             addresses=tuple(address for address, _ in sorted(entries)),
         )
@@ -5642,6 +5645,8 @@ def _run_semantic_naming_pass(
     """
     from src.mechanical_naming import (
         ClusterNamingLLMResponse as ClusterNamingModel,
+    )
+    from src.mechanical_naming import (
         SingletonNamingLLMResponse,
         apply_cluster_naming_response,
     )
@@ -5777,6 +5782,8 @@ def _gather_semantic_naming(
 ]:
     from src.mechanical_naming import (
         ClusterNamingLLMResponse as ClusterNamingModel,
+    )
+    from src.mechanical_naming import (
         SingletonNamingLLMResponse,
         apply_cluster_naming_response,
     )
@@ -5999,7 +6006,7 @@ def refactor_internals_all_clusters(
         seconds: float,
         *,
         attach: bool = True,
-        **metrics: int | float | str,
+        **metrics: float | str,
     ) -> None:
         """Log one refactor span; attach leaf spans to the caller's stage timer.
 

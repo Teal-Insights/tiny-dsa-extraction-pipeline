@@ -11,6 +11,8 @@ from unittest.mock import patch
 import pytest
 from excel_grapher.exporter import (
     FieldDoc as SeriesFieldDoc,
+)
+from excel_grapher.exporter import (
     ProjectionResult,
     SeriesFunctionDoc,
     register_series_docstring_callback,
@@ -371,32 +373,32 @@ def test_main_passes_cli_variation_mode_to_bucket_recording(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
 ) -> None:
-    with patch(
-        "src.record_refactor_buckets.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.record_refactor_buckets.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.record_refactor_buckets.validate_pipeline_config"),
+        patch("src.record_refactor_buckets.run_record_refactor_buckets") as run_buckets,
     ):
-        with patch("src.record_refactor_buckets.validate_pipeline_config"):
-            with patch(
-                "src.record_refactor_buckets.run_record_refactor_buckets"
-            ) as run_buckets:
-                run_buckets.return_value = {
-                    "formula_cluster_count": 0,
-                    "refactor_unit_count": 0,
-                    "cluster_count": 0,
-                    "refactor_target_count": 0,
-                    "skipped_target_count": 0,
-                    "buckets": [],
-                }
-                main(
-                    [
-                        "--variation-mode",
-                        "dominant_key_only",
-                        "--json-output",
-                        str(tmp_path / "buckets.json"),
-                        "--markdown-output",
-                        str(tmp_path / "buckets.md"),
-                    ]
-                )
+        run_buckets.return_value = {
+            "formula_cluster_count": 0,
+            "refactor_unit_count": 0,
+            "cluster_count": 0,
+            "refactor_target_count": 0,
+            "skipped_target_count": 0,
+            "buckets": [],
+        }
+        main(
+            [
+                "--variation-mode",
+                "dominant_key_only",
+                "--json-output",
+                str(tmp_path / "buckets.json"),
+                "--markdown-output",
+                str(tmp_path / "buckets.md"),
+            ]
+        )
 
     run_buckets.assert_called_once()
     assert run_buckets.call_args.args[0].variation_mode == "dominant_key_only"
@@ -406,32 +408,32 @@ def test_main_passes_cli_clustering_mode_to_bucket_recording(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
 ) -> None:
-    with patch(
-        "src.record_refactor_buckets.load_pipeline_config",
-        return_value=synthetic_pipeline_config_fixture,
+    with (
+        patch(
+            "src.record_refactor_buckets.load_pipeline_config",
+            return_value=synthetic_pipeline_config_fixture,
+        ),
+        patch("src.record_refactor_buckets.validate_pipeline_config"),
+        patch("src.record_refactor_buckets.run_record_refactor_buckets") as run_buckets,
     ):
-        with patch("src.record_refactor_buckets.validate_pipeline_config"):
-            with patch(
-                "src.record_refactor_buckets.run_record_refactor_buckets"
-            ) as run_buckets:
-                run_buckets.return_value = {
-                    "formula_cluster_count": 0,
-                    "refactor_unit_count": 0,
-                    "cluster_count": 0,
-                    "refactor_target_count": 0,
-                    "skipped_target_count": 0,
-                    "buckets": [],
-                }
-                main(
-                    [
-                        "--clustering-mode",
-                        "ast",
-                        "--json-output",
-                        str(tmp_path / "buckets.json"),
-                        "--markdown-output",
-                        str(tmp_path / "buckets.md"),
-                    ]
-                )
+        run_buckets.return_value = {
+            "formula_cluster_count": 0,
+            "refactor_unit_count": 0,
+            "cluster_count": 0,
+            "refactor_target_count": 0,
+            "skipped_target_count": 0,
+            "buckets": [],
+        }
+        main(
+            [
+                "--clustering-mode",
+                "ast",
+                "--json-output",
+                str(tmp_path / "buckets.json"),
+                "--markdown-output",
+                str(tmp_path / "buckets.md"),
+            ]
+        )
 
     run_buckets.assert_called_once()
     assert run_buckets.call_args.args[0].clustering_mode == "ast"

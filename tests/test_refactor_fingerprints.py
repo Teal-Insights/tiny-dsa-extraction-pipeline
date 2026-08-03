@@ -10,12 +10,12 @@ from src.refactor_fingerprints import (
     RefRelation,
     RefResolution,
     SemanticDependencyRef,
+    _format_ref_relation_lines,
     build_cluster_fingerprint_summary,
     classify_ref_relation,
     estimate_fingerprint_dump_tokens,
     estimate_legacy_dump_tokens,
     format_cluster_fingerprint_dump,
-    _format_ref_relation_lines,
 )
 from src.workbook_addresses import ProjectionColumnLayout
 

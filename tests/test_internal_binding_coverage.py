@@ -205,6 +205,7 @@ def test_build_pipeline_graph_raises_when_validation_mode_is_error(
 
 
 def test_workbook_internal_binding_coverage_gate() -> None:
+    from src.dependency_graph_viz import series_cell_keys
     from src.pipeline_config import load_pipeline_config, validate_pipeline_config
 
     config = load_pipeline_config()
@@ -215,5 +216,15 @@ def test_workbook_internal_binding_coverage_gate() -> None:
     except FileNotFoundError as exc:
         pytest.skip(f"Pipeline configuration is incomplete: {exc}")
 
-    with pytest.raises(InternalBindingCoverageError):
-        build_pipeline_graph(config)
+    graph_result = build_pipeline_graph(config)
+    report = enforce_internal_binding_coverage(
+        graph=graph_result.graph,
+        internal_series=graph_result.internal_series,
+        input_cells=series_cell_keys(graph_result.input_series),
+        output_cells=series_cell_keys(graph_result.output_series),
+        exempt_cells=config.internal_binding_exempt_cells,
+        mode=config.internal_binding_validation_mode,
+        context="pytest",
+    )
+    assert report is not None
+    assert report.unbound_cells == ()

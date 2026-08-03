@@ -1,5 +1,5 @@
-from src.pipeline_config import load_pipeline_config
 from src import docstring_callback
+from src.pipeline_config import load_pipeline_config
 
 
 def test_docstring_callback_name_comes_from_workbook_config(monkeypatch, tmp_path):

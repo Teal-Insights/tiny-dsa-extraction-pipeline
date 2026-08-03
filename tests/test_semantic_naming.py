@@ -7,10 +7,10 @@ import pytest
 from src.semantic_naming import (
     BindingRecordHints,
     allocate_schedule_helper_names,
+    binding_record_hints_from_cell,
     cluster_binding_naming_hints,
     collect_semantic_helper_names,
     semantic_helpers_available_for_calls,
-    binding_record_hints_from_cell,
     sole_series_id_for_addresses,
     validate_semantic_identifier,
 )

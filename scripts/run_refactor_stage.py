@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
 
 from src.extraction_pipeline import RefactorLabOptions, run_pipeline
 from src.internals_refactor import (
@@ -27,12 +27,12 @@ from src.internals_refactor import (
     set_refactor_prompt_observer,
     set_singleton_context_observer,
 )
+from src.logging_config import configure_logging
 from src.mechanical_body import (
     MechanicalSynthesisError,
     synthesize_cluster_body,
     synthesize_singleton_body,
 )
-from src.logging_config import configure_logging
 from src.pipeline_config import (
     add_clustering_mode_argument,
     add_variation_mode_argument,

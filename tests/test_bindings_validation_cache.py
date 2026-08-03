@@ -12,8 +12,8 @@ from excel_grapher.series_bindings import validate_series_bindings
 
 from src.bindings_validation_cache import (
     DEFAULT_BINDINGS_VALIDATION_CACHE_DIR,
-    clear_bindings_validation_cache,
     bindings_validation_cache_key,
+    clear_bindings_validation_cache,
     get_or_build_bindings_validation,
     load_bindings_validation_report,
     prune_stale_bindings_validation_cache_entries,
@@ -334,8 +334,8 @@ def test_build_pipeline_graph_uses_bindings_validation_cache(
     synthetic_config,
     validation_cache_dir: Path,
 ) -> None:
+    from src import bindings_validation_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.bindings_validation_cache as bindings_validation_cache
 
     with patch.object(
         bindings_validation_cache,
@@ -353,8 +353,8 @@ def test_build_pipeline_graph_no_cache_bypasses_bindings_validation_cache(
     synthetic_config,
     validation_cache_dir: Path,
 ) -> None:
+    from src import bindings_validation_cache
     from src.extraction_pipeline import build_pipeline_graph
-    import src.bindings_validation_cache as bindings_validation_cache
 
     with patch.object(
         bindings_validation_cache,
