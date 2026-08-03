@@ -97,7 +97,7 @@ def test_workbook_audit_cli_writes_output(
     main(["--workbook", str(synthetic_workbook_path), "--output", str(output)])
     assert output.is_file()
     text = output.read_text(encoding="utf-8")
-    assert "# Workbook Audit" in text
+    assert "# Tiny DSA Workbook Audit" in text
 
 
 @pytest.mark.parametrize(
