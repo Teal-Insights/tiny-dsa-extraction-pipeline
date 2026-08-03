@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from dotenv import load_dotenv
 from excel_grapher.exporter import ProjectionResult
@@ -829,7 +829,14 @@ class RefactorDeclaredError(RuntimeError):
         super().__init__(reason)
 
 
-def _validate_llm_response_error_or_success[T: BaseModel](
+class LlmResponseWithDeclaredError(Protocol):
+    """Structural shape shared by refactor/naming LLM response models."""
+
+    error: bool | None
+    error_reason: str | None
+
+
+def _validate_llm_response_error_or_success[T: LlmResponseWithDeclaredError](
     response: T,
     *,
     success_fields: tuple[str, ...],
@@ -876,7 +883,7 @@ def _validate_llm_response_error_or_success[T: BaseModel](
 
 
 def raise_if_llm_declared_error(
-    response: BaseModel,
+    response: LlmResponseWithDeclaredError,
     *,
     kind: Literal["singleton", "cluster"],
     target: str,
