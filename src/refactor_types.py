@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal, cast, get_args
+from typing import Literal, TypeAlias, cast, get_args
 
-type VariationMode = Literal["independent", "dominant_key_only"]
-type ClusteringMode = Literal["series", "series_ast", "ast"]
+VariationMode: TypeAlias = Literal["independent", "dominant_key_only"]
+ClusteringMode: TypeAlias = Literal["series", "series_ast", "ast"]
 
 _VARIATION_MODE_CHOICES: tuple[str, ...] = get_args(VariationMode)
 _CLUSTERING_MODE_CHOICES: tuple[str, ...] = get_args(ClusteringMode)

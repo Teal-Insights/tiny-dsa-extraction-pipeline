@@ -2836,7 +2836,8 @@ def _build_dependency_stubs(
             for name in semantic_names
         ),
     ]
-    return "\n\n".join(stubs)
+    # Two blank lines between top-level defs, matching Ruff's Python layout.
+    return "\n\n\n".join(stubs)
 
 
 def build_singleton_refactor_context_dump(
@@ -3283,7 +3284,8 @@ def _build_cluster_dependency_stubs(
             for name in semantic_names
         ),
     ]
-    return "\n\n".join(stubs)
+    # Two blank lines between top-level defs, matching Ruff's Python layout.
+    return "\n\n\n".join(stubs)
 
 
 def sample_indices_for_prompt(
