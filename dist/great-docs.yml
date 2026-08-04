@@ -6,6 +6,8 @@
 # Set this if your importable module name differs from the project name.
 # Example: project 'py-yaml12' with module name 'yaml12'
 module: tiny_dsa
+site_url: "https://teal-insights.github.io/py-tiny-dsa/"
+repo: https://github.com/Teal-Insights/py-tiny-dsa
 display_name: Tiny DSA
 homepage: user_guide
 

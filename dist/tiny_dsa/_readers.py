@@ -9,21 +9,16 @@ _LEAF_INDEX_COUNTRY_NAME = {
 }
 
 def read_country_name(ctx: EvalContext) -> CellValue:
-    """Return the country name currently selected in the Inputs sheet.
+    """Read the selected country name from the Inputs sheet.
 
-    Returns the selected country name from the Inputs sheet.
-    A single record representing the value from cell Inputs!B5.
+    Returns the current country name as a record.
+    Each record corresponds to the scalar cell `country_name` (Inputs!B5).
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - OBS_VALUE: The name of the selected country, chosen from the country profile table.
-            Optional record fields:
-                - PARAMETER: Identifies the parameter represented by this record. If supplied, expected value: "country_name".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!B5
@@ -46,23 +41,16 @@ def read_country_initial_debt(
     *,
     country: str,
 ) -> CellValue:
-    """Read the initial debt-to-GDP ratios from the country profile lookup table.
+    """Read the initial debt-to-GDP values from the country profile lookup table.
 
-    Returns the initial debt-to-GDP ratio for each country in the profile table.
-    Each record corresponds to a row in the table at Inputs!A10:C12, where the COUNTRY is the row label and OBS_VALUE is the value in column B.
+    Returns records containing each country's initial debt-to-GDP ratio as a percentage of GDP.
+    Each record corresponds to a row in the country profile table (Inputs!A10:C12), with the COUNTRY label in column A and the OBS_VALUE in column B.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - COUNTRY: The country name, as it appears in the country profile table.
-                - OBS_VALUE: The initial debt-to-GDP ratio, expressed as a percentage of GDP.
-            Optional record fields:
-                - INDICATOR: Identifies the series as the initial debt-to-GDP ratio. If supplied, expected value: "initial_debt_to_gdp".
-                - UNIT_MEASURE: Unit of measure for the observation value, expressed as percent of GDP. If supplied, expected value: "PC_GDP".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!B10:B12
@@ -79,23 +67,16 @@ def read_country_initial_debt(
     return xl_cell(ctx, address)
 
 def read_country_initial_debt_range(ctx: EvalContext) -> CellValue:
-    """Read the initial debt-to-GDP values from the country profile lookup table.
+    """Return the initial debt-to-GDP ratios from the country profile lookup table.
 
-    Returns records of each country's initial debt-to-GDP ratio.
-    Each record maps a country name from column A to its initial debt ratio from column B in the country profile table.
+    Returns the country-specific initial debt-to-GDP values for all countries in the table.
+    Each record corresponds to a row in the input range, with the country name as key.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - COUNTRY: The country name as listed in the country profile table.
-                - OBS_VALUE: The initial debt-to-GDP ratio as a percentage of GDP.
-            Optional record fields:
-                - INDICATOR: A constant indicator label for the series. If supplied, expected value: "initial_debt_to_gdp".
-                - UNIT_MEASURE: The unit of measure for the observation value. If supplied, expected value: "PC_GDP".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!B10:B12
@@ -120,23 +101,16 @@ def read_growth_baseline(
     *,
     time_period: int,
 ) -> CellValue:
-    """Read the baseline real GDP growth rates for projection years 1 through 5.
+    """Read the baseline real GDP growth rates for projection years 1–5.
 
-    Returns the specified projection years and their corresponding baseline real GDP growth rates.
-    Each record corresponds to a cell in the `growth_baseline` range (Inputs!C16:G16), with `TIME_PERIOD` from column headers and `OBS_VALUE` from the data cells.
+    Returns the baseline real GDP growth trajectory as a series of records.
+    Each record corresponds to a cell in the range Inputs!C16:G16, with TIME_PERIOD derived from the column header in row 15 and OBS_VALUE from the cell value.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - TIME_PERIOD: Projection year, an integer from 1 to 5.
-                - OBS_VALUE: Baseline real GDP growth rate for the projection year, expressed as a percentage per annum.
-            Optional record fields:
-                - INDICATOR: Economic indicator constant identifying the series. If supplied, expected value: "real_gdp_growth".
-                - UNIT_MEASURE: Unit of measure for the observation value. If supplied, expected value: "PERCENT_PER_ANNUM".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!C16:G16
@@ -153,23 +127,16 @@ def read_growth_baseline(
     return xl_cell(ctx, address)
 
 def read_growth_baseline_range(ctx: EvalContext) -> CellValue:
-    """Read the baseline real GDP growth path from the Inputs sheet.
+    """Read the baseline real GDP growth rates from the Inputs sheet.
 
-    Returns the baseline real GDP growth rate for each projection year (1–5) as a list of records.
-    Each record corresponds to one cell in the `growth_baseline` range (Inputs!C16:G16), with the year from the column header and the growth rate from the cell value.
+    Returns records for the growth_baseline series representing projected real GDP growth rates for years 1 through 5.
+    Each record corresponds to a cell in the range Inputs!C16:G16, with TIME_PERIOD derived from column headers and OBS_VALUE from cell values.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - TIME_PERIOD: The projection year (1 to 5).
-                - OBS_VALUE: The baseline real GDP growth rate.
-            Optional record fields:
-                - INDICATOR: The economic indicator represented by the series. If supplied, expected value: "real_gdp_growth".
-                - UNIT_MEASURE: The unit of measurement for the rate. If supplied, expected value: "PERCENT_PER_ANNUM".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!C16:G16
@@ -194,23 +161,16 @@ def read_interest_baseline(
     *,
     time_period: int,
 ) -> CellValue:
-    """Read baseline real interest rates from the Inputs sheet.
+    """Return the baseline real interest rate assumptions.
 
-    Returns the baseline real interest rates for projection years 1 through 5.
-    Each record maps to one column in the `interest_baseline` range (Inputs!C17:G17); TIME_PERIOD is derived from the column header and OBS_VALUE from the cell value.
+    Read the real interest rate trajectory from the Inputs sheet for the five projection years.
+    Each record corresponds to one projection year: TIME_PERIOD is the year index, and OBS_VALUE holds the real interest rate.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - TIME_PERIOD: Projection year (1 through 5).
-                - OBS_VALUE: Baseline real interest rate.
-            Optional record fields:
-                - INDICATOR: Identifies the series as the real interest rate baseline. If supplied, expected value: "real_interest_rate".
-                - UNIT_MEASURE: Unit of measure for the interest rate. If supplied, expected value: "PERCENT_PER_ANNUM".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!C17:G17
@@ -227,23 +187,16 @@ def read_interest_baseline(
     return xl_cell(ctx, address)
 
 def read_interest_baseline_range(ctx: EvalContext) -> CellValue:
-    """Read baseline real interest rates for projection years.
+    """Read the baseline real interest rate series for projection years 1 through 5.
 
-    Returns the baseline real interest rates for the projection horizon (years 1 through 5) as a list of records.
-    Each record corresponds to one projection year, with TIME_PERIOD from the column header and OBS_VALUE from the cell value.
+    Returns the real interest rate path from the `interest_baseline` range (Inputs!C17:G17).
+    Each record maps a projection year (`TIME_PERIOD`) to its corresponding cell value in the range, with year 1 corresponding to cell C17, year 2 to D17, and so on.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - TIME_PERIOD: Projection year (1 to 5).
-                - OBS_VALUE: Real interest rate in percent per annum.
-            Optional record fields:
-                - INDICATOR: Indicator type for this series. If supplied, expected value: "real_interest_rate".
-                - UNIT_MEASURE: Unit of measurement for the interest rate. If supplied, expected value: "PERCENT_PER_ANNUM".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!C17:G17
@@ -268,23 +221,16 @@ def read_primary_balance_baseline(
     *,
     time_period: int,
 ) -> CellValue:
-    """Read the baseline primary balance path for projection years 1 through 5.
+    """Read the baseline primary balance path for projection years 1–5.
 
-    Returns the baseline primary balance values for each projection year.
-    Each record corresponds to a cell in the Inputs!C18:G18 range, where TIME_PERIOD identifies the projection year and OBS_VALUE provides the primary balance.
+    Returns the baseline primary balance series as a percentage of GDP, with positive values indicating a surplus.
+    Each record corresponds to one year in the five-year projection horizon.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - TIME_PERIOD: The projection year.
-                - OBS_VALUE: The primary balance value as a percentage of GDP.
-            Optional record fields:
-                - INDICATOR: Identifier for the indicator series. If supplied, expected value: "primary_balance".
-                - UNIT_MEASURE: Unit of measure of the observation value. If supplied, expected value: "PC_GDP".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!C18:G18
@@ -301,23 +247,16 @@ def read_primary_balance_baseline(
     return xl_cell(ctx, address)
 
 def read_primary_balance_baseline_range(ctx: EvalContext) -> CellValue:
-    """Read the baseline primary balance path from the Inputs sheet.
+    """Read the baseline primary balance path for projection years 1 through 5.
 
-    Returns a list of records representing the baseline primary balance path for projection years 1 through 5.
-    Each record corresponds to a cell in the baseline primary balance range (Inputs!C18:G18); the column header provides the projection year, and the cell value provides the observation value.
+    Returns the baseline primary balance values as a percentage of GDP for each projection year.
+    Each record corresponds to one cell in Inputs!C18:G18, mapping the column header year to TIME_PERIOD and the cell value to OBS_VALUE.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - TIME_PERIOD: The projection year, from 1 to 5.
-                - OBS_VALUE: The baseline primary balance as a percentage of GDP. A positive value indicates a surplus.
-            Optional record fields:
-                - INDICATOR: Identifies this series as the primary balance. If supplied, expected value: "primary_balance".
-                - UNIT_MEASURE: The unit of measurement for the observation value. If supplied, expected value: "PC_GDP".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!C18:G18
@@ -334,21 +273,16 @@ _LEAF_INDEX_SHOCK_YEAR = {
 }
 
 def read_shock_year(ctx: EvalContext) -> CellValue:
-    """Return the year in which the shock first applies.
+    """Read the shock year from the Inputs sheet.
 
-    Returns the shock year currently set in the workbook.
-    Each record corresponds to the single scalar cell Inputs!B21.
+    Returns the projection year (1–5) in which the selected shock first takes effect.
+    Reads the integer value from cell B21 of the Inputs sheet and returns it as a single record.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - OBS_VALUE: The first projection year in which the shock takes effect.
-            Optional record fields:
-                - PARAMETER: Identifies the parameter as the shock year. If supplied, expected value: "shock_year".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!B21
@@ -365,21 +299,16 @@ _LEAF_INDEX_SHOCK_TYPE = {
 }
 
 def read_shock_type(ctx: EvalContext) -> CellValue:
-    """Read the shock type, which indicates the macroeconomic parameter that the shock modifies.
+    """Read the shock type code that determines which parameter the shock affects.
 
-    Return the shock type code (an integer) specifying whether the shock applies to growth, the interest rate, or the primary balance.
-    Returns a single record with the shock type integer in the `OBS_VALUE` field.
+    Returns the configured shock type code, an integer indicating which parameter the shock affects.
+    The function returns a single record representing the value in cell Inputs!B22.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - OBS_VALUE: The shock type code. 1 corresponds to real GDP growth, 2 to the real interest rate, and 3 to the primary balance.
-            Optional record fields:
-                - PARAMETER: The parameter identifier, constant for this series. If supplied, expected value: "shock_type".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!B22
@@ -402,23 +331,16 @@ def read_shock_magnitudes(
     *,
     shock_parameter: str,
 ) -> CellValue:
-    """Read the shock magnitude values configured for each shock parameter.
+    """Read the shock magnitudes for the three configurable shock parameters.
 
-    Returns the shock magnitudes as records keyed by the affected shock parameter.
-    Each record corresponds to a cell in the shock table (Inputs!B26:D26), where the column header provides the SHOCK_PARAMETER key and the cell value provides the OBS_VALUE magnitude.
+    Returns the shock magnitudes keyed by the affected shock parameter.
+    Each record corresponds to a single cell in the shock magnitude row (Inputs!B26:D26), keyed by the shock parameter name taken from the column headers.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - SHOCK_PARAMETER: Name of the shock parameter (e.g., Growth, Interest, Primary Balance).
-                - OBS_VALUE: Shock magnitude value, in the unit specified by UNIT_MEASURE.
-            Optional record fields:
-                - PARAMETER: Identifies this series as containing the shock magnitudes. If supplied, expected value: "shock_magnitude".
-                - UNIT_MEASURE: Unit of measure for the shock magnitude values. If supplied, expected value: "PP".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!B26:D26
@@ -435,23 +357,16 @@ def read_shock_magnitudes(
     return xl_cell(ctx, address)
 
 def read_shock_magnitudes_range(ctx: EvalContext) -> CellValue:
-    """Read the shock magnitudes for each affected parameter from the Shock Table.
+    """Return the shock magnitudes from the Shock Table for all shock-affected parameters.
 
-    Returns the magnitude, in percentage points, of the shock applied to each parameter (growth, interest rate, primary balance) as configured in the Shock Table.
-    Each record corresponds to one cell in the Shock Table (Inputs!B26:D26); the column header (trimmed) maps to the SHOCK_PARAMETER field, and the cell value maps to OBS_VALUE.
+    Returns a list of records, each containing a shock parameter name and its associated magnitude, as read from the Shock Table.
+    Each record corresponds to a cell in the Shock Table row (cells B26:D26), with the parameter name taken from the column header in row 25.
 
     Args:
-        ctx (EvalContext | None): Existing evaluation context, if available.
-        inputs (dict[str, object] | None): Optional input map when ctx is omitted.
+        ctx (EvalContext): Evaluation context.
 
     Returns:
-        Records: Computed output records.
-            Required record fields:
-                - SHOCK_PARAMETER: The parameter affected by the shock (e.g., growth, interest rate, primary balance).
-                - OBS_VALUE: The shock magnitude, expressed in percentage points.
-            Optional record fields:
-                - PARAMETER: Constant field that classifies the record as containing shock magnitude data. If supplied, expected value: "shock_magnitude".
-                - UNIT_MEASURE: The unit of measurement for the observation value. If supplied, expected value: "PP".
+        CellValue: Value read from the bound cell or range.
 
     Source binding:
         Workbook range: Inputs!B26:D26

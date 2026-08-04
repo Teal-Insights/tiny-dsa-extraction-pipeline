@@ -1,5 +1,5 @@
 Parity report: exported Tiny DSA standalone library vs Excel
-Generated: 2026-07-16T15:47:46+00:00
+Generated: 2026-08-04T20:30:45+00:00
 Workbook:  C:\Users\chris\Software\tiny-dsa-extraction-pipeline\data\tiny-dsa.xlsx
 Package:   C:\Users\chris\Software\tiny-dsa-extraction-pipeline\dist\tiny_dsa (imported as dist.tiny_dsa.api)
 Tolerance: atol = 1e-06

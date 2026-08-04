@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
@@ -14,6 +14,8 @@ import fastpyxl.utils.cell
 class CircularReferenceWarning(RuntimeWarning):
     """Warning emitted when a circular reference is encountered (default Excel mode)."""
 
+HelperCacheKey: TypeAlias = tuple[Hashable, tuple[tuple[str, Hashable], ...]]
+
 @dataclass(slots=True)
 class EvalContextBase:
     """Per-run evaluation state without dependency-tracking fields."""
@@ -23,6 +25,8 @@ class EvalContextBase:
     cache: dict[str, CellValue] = field(default_factory=dict)
     computing: set[str] = field(default_factory=set)
     circular_warning_roots: set[str] = field(default_factory=set)
+    helper_cache: dict[HelperCacheKey, CellValue] = field(default_factory=dict)
+    helper_computing: set[HelperCacheKey] = field(default_factory=set)
     iterative_enabled: bool = False
     iterate_count: int = 100
     iterate_delta: float = 0.001
@@ -43,7 +47,14 @@ class EvalContext(EvalContextBase):
         self.reverse_deps.setdefault(child, set()).add(parent)
 
     def invalidate(self, addresses: Iterable[str]) -> None:
-        """Invalidate cached values for the given addresses and their dependents."""
+        """Invalidate cached values for the given addresses and their dependents.
+
+        Helper memos are not address-dep-tracked, so any address invalidation
+        clears `helper_cache` and `helper_computing` entirely.
+        """
+        self.helper_cache.clear()
+        self.helper_computing.clear()
+
         to_visit = list(addresses)
         seen: set[str] = set()
         while to_visit:
@@ -623,10 +634,10 @@ def to_string(value: FormulaValue) -> str:
     return str(value)
 
 def try_coerce_string_to_float(text: str) -> float | None:
-    """Parse one Excel numeric string, or return None when coercion fails."""
+    """Parse one Excel numeric string; empty/whitespace text fails (`None`)."""
     stripped = text.strip()
     if stripped == "":
-        return 0.0
+        return None
     try:
         return float(stripped)
     except ValueError:
@@ -720,6 +731,12 @@ def compare_scalars(op: str, left: FormulaValue, right: FormulaValue) -> bool | 
 
     if isinstance(left, str) and isinstance(right, str):
         return _cmp_str(excel_casefold(left), excel_casefold(right))
+
+    # Exact empty text compares as 0 (Excel); whitespace-only does not coerce.
+    if isinstance(left, str) and left == "":
+        left = 0.0
+    if isinstance(right, str) and right == "":
+        right = 0.0
 
     ln = to_number(left)
     rn = to_number(right)
@@ -1105,3 +1122,103 @@ def xl_range_rows(ctx: EvalContext, address: str) -> CellValue:
     if isinstance(rng, Range):
         return rng.rows_raw()
     return rng
+
+# --- parameterized helper memoization ---
+
+def _xl_freeze_helper_kwargs(kwargs):
+    frozen = []
+    for name in sorted(kwargs):
+        value = kwargs[name]
+        try:
+            hash(value)
+        except TypeError as error:
+            raise TypeError(
+                f"xl_helper kwargs must be hashable for memoization; "
+                f"got {name}={value!r} of type {type(value).__name__}"
+            ) from error
+        frozen.append((name, value))
+    return tuple(frozen)
+
+
+_XL_SIDE_HELPER_CACHES = {}
+_XL_SIDE_HELPER_COMPUTING = {}
+
+
+def _xl_helper_maps(ctx):
+    helper_cache = getattr(ctx, "helper_cache", None)
+    helper_computing = getattr(ctx, "helper_computing", None)
+    if isinstance(helper_cache, dict) and isinstance(helper_computing, set):
+        return helper_cache, helper_computing
+    ctx_id = id(ctx)
+    return (
+        _XL_SIDE_HELPER_CACHES.setdefault(ctx_id, {}),
+        _XL_SIDE_HELPER_COMPUTING.setdefault(ctx_id, set()),
+    )
+
+
+def xl_helper(ctx, fn, /, **kwargs):
+    """Evaluate a parameterized helper, memoized by ``(fn, kwargs)`` on ``ctx``."""
+    key = (fn, _xl_freeze_helper_kwargs(kwargs))
+    cache, computing = _xl_helper_maps(ctx)
+    if key in cache:
+        value = cache[key]
+        if isinstance(value, XlError):
+            raise XlErrorException(value)
+        return value
+    if key in computing:
+        return xl_circular_reference()
+    computing.add(key)
+    try:
+        try:
+            value = fn(ctx, **kwargs)
+        except XlErrorException as exc:
+            cache[key] = exc.code
+            raise
+        cache[key] = value
+        if isinstance(value, XlError):
+            raise XlErrorException(value)
+        return value
+    finally:
+        computing.discard(key)
+
+
+def xl_memoize(fn):
+    """Decorator routing a ``(ctx, **params)`` helper through :func:`xl_helper`."""
+    import functools as _functools
+    import inspect as _inspect
+
+    @_functools.wraps(fn)
+    def wrapper(ctx, /, *args, **kwargs):
+        if args:
+            bound = _inspect.signature(fn).bind(ctx, *args, **kwargs)
+            bound.apply_defaults()
+            param_kwargs = {
+                name: value
+                for name, value in bound.arguments.items()
+                if name != "ctx"
+            }
+            return xl_helper(ctx, fn, **param_kwargs)
+        return xl_helper(ctx, fn, **kwargs)
+
+    wrapper.__wrapped__ = fn
+    return wrapper
+
+
+def _xl_patch_eval_context_invalidate():
+    original = EvalContext.invalidate
+
+    def invalidate(self, addresses):
+        _XL_SIDE_HELPER_CACHES.pop(id(self), None)
+        _XL_SIDE_HELPER_COMPUTING.pop(id(self), None)
+        helper_cache = getattr(self, "helper_cache", None)
+        helper_computing = getattr(self, "helper_computing", None)
+        if isinstance(helper_cache, dict):
+            helper_cache.clear()
+        if isinstance(helper_computing, set):
+            helper_computing.clear()
+        return original(self, addresses)
+
+    EvalContext.invalidate = invalidate
+
+
+_xl_patch_eval_context_invalidate()

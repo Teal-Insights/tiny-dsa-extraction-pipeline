@@ -18,14 +18,16 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib
+import itertools
 import logging
 import math
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Iterator, Literal, cast
+from typing import Any, Literal, cast
 
 from excel_grapher import XlError
 from excel_grapher.core.address_keys import normalize_key, parse_address
@@ -374,9 +376,7 @@ def write_txt_summary(
         handle.write(
             f"Parity report: exported {config.library_name} standalone library vs Excel\n"
         )
-        handle.write(
-            f"Generated: {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
-        )
+        handle.write(f"Generated: {datetime.now(UTC).isoformat(timespec='seconds')}\n")
         handle.write(f"Workbook:  {config.workbook_path}\n")
         handle.write(
             f"Package:   {config.package_dir} (imported as {config.package_name})\n"
@@ -460,7 +460,7 @@ def _records_to_cells(
     raw_periods = [record.get("TIME_PERIOD") for record in records]
     if all(period is not None for period in raw_periods):
         periods = cast(list[Any], raw_periods)
-        if any(a >= b for a, b in zip(periods, periods[1:], strict=False)):
+        if any(a >= b for a, b in itertools.pairwise(periods)):
             raise ValueError(
                 f"records' TIME_PERIOD values are not strictly increasing: {periods!r}"
             )

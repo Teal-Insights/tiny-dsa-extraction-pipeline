@@ -2,6 +2,14 @@ from __future__ import annotations
 
 # --- Default inputs (leaf cells) ---
 DEFAULT_INPUTS = {
+    'Engine!C5': 1,
+    'Engine!D5': 2,
+    'Engine!E5': 3,
+    'Engine!F5': 4,
+    'Engine!G5': 5,
+    'Inputs!A10': 'Borvelia',
+    'Inputs!A11': 'Litellia',
+    'Inputs!A12': 'Aurelium',
     'Inputs!B10': 60,
     'Inputs!B11': 80,
     'Inputs!B12': 40,
@@ -28,14 +36,4 @@ DEFAULT_INPUTS = {
     'Inputs!G18': 1,
 }
 
-# --- Constant leaf values ---
-CONSTANTS = {
-    'Engine!C5': 1,
-    'Engine!D5': 2,
-    'Engine!E5': 3,
-    'Engine!F5': 4,
-    'Engine!G5': 5,
-    'Inputs!A10': 'Borvelia',
-    'Inputs!A11': 'Litellia',
-    'Inputs!A12': 'Aurelium',
-}
+CONSTANTS = {}
