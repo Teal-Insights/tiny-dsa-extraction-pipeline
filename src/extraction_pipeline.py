@@ -951,7 +951,7 @@ def run_refactor_stage(
         record_cache_result(timings, "clusters", cluster_result)
         formula_count = sum(len(cluster.members) for cluster in formula_clusters)
         print(
-            f"clustering: {formula_count} formulas → {len(formula_clusters)} clusters "
+            f"clustering: {formula_count} formulas -> {len(formula_clusters)} clusters "
             f"({clustering_seconds:.1f}s)",
             flush=True,
         )
