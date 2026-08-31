@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -9,6 +10,8 @@ import pytest
 from excel_grapher.exporter import BaseProjectionManifest, CodeGenerator
 from excel_grapher.exporter.codegen import GraphLike
 
+from src.extraction_pipeline import stamp_projection_leaf_classification
+from src.refactor_parity_gate import _nodekey_leaf_map
 from src.subgraph_projection import build_refactor_projection
 
 
@@ -132,3 +135,34 @@ def test_projected_codegen_preserves_public_series_api(
                 "synthetic_model_projected."
             ):
                 del sys.modules[name]
+
+
+def test_stamped_projection_codegen_puts_literal_leaves_in_constants(
+    synthetic_configured_pipeline,
+) -> None:
+    pipeline = synthetic_configured_pipeline
+    original_graph = pipeline.graph
+    assert getattr(original_graph, "leaf_classification", None) in (None, {})
+
+    projection = build_refactor_projection(
+        original_graph,
+        series_bindings=pipeline.series_bindings,
+        bindings_workbook=pipeline.config.workbook_path,
+    )
+    stamp_projection_leaf_classification(projection, pipeline.leaf_classification)
+    assert getattr(original_graph, "leaf_classification", None) in (None, {})
+
+    modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
+        list(pipeline.config.targets),
+        series_bindings=pipeline.series_bindings,
+        bindings_workbook=pipeline.config.workbook_path,
+    )
+    namespace: dict[str, object] = {}
+    exec(modules["data.py"], namespace)  # noqa: S102
+    constants = _nodekey_leaf_map(cast(Mapping[str, object], namespace["CONSTANTS"]))
+    defaults = _nodekey_leaf_map(
+        cast(Mapping[str, object], namespace["DEFAULT_INPUTS"])
+    )
+    assert "Inputs!B1" in constants
+    assert "Inputs!A1" in defaults
+    assert "Inputs!B1" not in defaults

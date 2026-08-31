@@ -17,32 +17,36 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib
-import itertools
 import logging
-import math
+import platform
+import re
 import sys
-from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
-from excel_grapher import XlError
 from excel_grapher.core.address_keys import normalize_key, parse_address
+from fastpyxl.utils.cell import column_index_from_string, get_column_letter
 
+from .comparison_utils import classify_comparison
 from .differential_excel import (
     coerce_excel_error,
     matched_error_values,
     parity_exit_code,
-    read_cell_value,
 )
-from .differential_types import ATOL, Scenario
+from .differential_types import ATOL, RTOL, Scenario
 
 logger = logging.getLogger(__name__)
 
 LayoutName = Literal["repo", "exported"]
+
+ExcelOracle = Callable[[Scenario, tuple[str, ...]], dict[str, Any]]
+MvpOracle = Callable[[Scenario], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,7 @@ class DifferentialConfig:
     report_dir: Path
     library_name: str
     atol: float = ATOL
+    rtol: float = RTOL
     allow_matched_errors: bool = False
 
 
@@ -71,6 +76,7 @@ class Comparison:
     passed: bool
     matched_error: bool = False
     flagged_matched_error: bool = False
+    note: str = ""
 
 
 CSV_COLUMNS: tuple[str, ...] = (
@@ -84,6 +90,15 @@ CSV_COLUMNS: tuple[str, ...] = (
     "passed",
     "matched_error",
     "flagged_matched_error",
+    "note",
+)
+
+_REQUIRED_WORKBOOK_HOOKS: tuple[str, ...] = (
+    "build_scenarios",
+    "output_cell_labels",
+    "inputs_for_excel",
+    "apply_inputs_to_mvp",
+    "mvp_outputs_for_scenario",
 )
 
 
@@ -194,6 +209,7 @@ def resolve_config(
         report_dir=(report_dir or defaults.report_dir).resolve(),
         library_name=library_name,
         atol=ATOL,
+        rtol=RTOL,
         allow_matched_errors=allow_matched_errors,
     )
 
@@ -218,74 +234,50 @@ def compare_cell(
     mvp: Any,
     *,
     atol: float,
+    rtol: float,
     expects_error_values: bool = False,
 ) -> Comparison:
-    raw_excel = excel
-    raw_mvp = mvp
-    excel = coerce_excel_error(excel)
-    mvp = coerce_excel_error(mvp)
+    passed, _healthy, _outcome, abs_diff, rel_diff, _note = classify_comparison(
+        excel, mvp, atol=atol, rtol=rtol
+    )
+    excel_c = coerce_excel_error(excel)
+    mvp_c = coerce_excel_error(mvp)
+    matched_error = matched_error_values(excel, mvp) and passed
 
-    if isinstance(excel, XlError) or isinstance(mvp, XlError):
-        passed = (
-            isinstance(excel, XlError) and isinstance(mvp, XlError) and excel == mvp
-        )
-        matched_error = passed
-        return Comparison(
-            scenario_id,
-            cell_address,
-            cell_label,
-            excel,
-            mvp,
-            None,
-            None,
-            passed,
-            matched_error=matched_error,
-            flagged_matched_error=matched_error and not expects_error_values,
-        )
+    excel_out: Any = excel_c
+    mvp_out: Any = mvp_c
+    if (
+        abs_diff is not None
+        and isinstance(excel_c, int | float)
+        and isinstance(mvp_c, int | float)
+        and not isinstance(excel_c, bool)
+        and not isinstance(mvp_c, bool)
+    ):
+        excel_out = float(excel_c)
+        mvp_out = float(mvp_c)
+    elif (
+        isinstance(excel_c, int | float)
+        and isinstance(mvp_c, int | float)
+        and not isinstance(excel_c, bool)
+        and not isinstance(mvp_c, bool)
+    ):
+        try:
+            excel_out = float(excel_c)
+            mvp_out = float(mvp_c)
+        except OverflowError:
+            pass
 
-    if excel is None and mvp is None:
-        return Comparison(
-            scenario_id, cell_address, cell_label, None, None, 0.0, 0.0, True
-        )
-    if excel is None or mvp is None:
-        return Comparison(
-            scenario_id, cell_address, cell_label, excel, mvp, None, None, False
-        )
-    try:
-        excel_f = float(excel)  # type: ignore[arg-type]
-        mvp_f = float(mvp)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        passed = excel == mvp
-        matched_error = matched_error_values(raw_excel, raw_mvp) and passed
-        return Comparison(
-            scenario_id,
-            cell_address,
-            cell_label,
-            excel,
-            mvp,
-            None,
-            None,
-            passed,
-            matched_error=matched_error,
-            flagged_matched_error=matched_error and not expects_error_values,
-        )
-    if not (math.isfinite(excel_f) and math.isfinite(mvp_f)):
-        passed = excel_f == mvp_f or (math.isnan(excel_f) and math.isnan(mvp_f))
-        return Comparison(
-            scenario_id, cell_address, cell_label, excel_f, mvp_f, None, None, passed
-        )
-    abs_diff = abs(excel_f - mvp_f)
-    rel_diff = abs_diff / abs(excel_f) if excel_f != 0 else math.inf
-    passed = abs_diff <= atol
     return Comparison(
         scenario_id,
         cell_address,
         cell_label,
-        excel_f,
-        mvp_f,
+        excel_out,
+        mvp_out,
         abs_diff,
         rel_diff,
         passed,
+        matched_error=matched_error,
+        flagged_matched_error=matched_error and not expects_error_values,
     )
 
 
@@ -296,6 +288,7 @@ def compare_scenario(
     cell_labels: tuple[tuple[str, str], ...],
     *,
     atol: float,
+    rtol: float,
 ) -> list[Comparison]:
     return [
         compare_cell(
@@ -303,8 +296,9 @@ def compare_scenario(
             cell_address,
             cell_label,
             excel_outputs.get(cell_address),
-            mvp_outputs.get(cell_address),
+            mvp_outputs.get(cell_label),
             atol=atol,
+            rtol=rtol,
             expects_error_values=scenario.expects_error_values,
         )
         for cell_label, cell_address in cell_labels
@@ -315,18 +309,32 @@ def crash_comparisons(
     scenario: Scenario,
     cell_labels: tuple[tuple[str, str], ...],
     exc: BaseException,
+    *,
+    crashed_oracle: str = "unknown",
+    excel_outputs: Mapping[str, Any] | None = None,
+    mvp_outputs: Mapping[str, Any] | None = None,
 ) -> list[Comparison]:
     err_repr = f"<exception: {type(exc).__name__}: {exc}>"
+    note = f"{crashed_oracle} oracle crashed"
     return [
         Comparison(
             scenario_id=scenario.id,
             cell_address=cell_address,
             cell_label=cell_label,
-            excel_value=err_repr,
-            mvp_value=err_repr,
+            excel_value=(
+                err_repr
+                if crashed_oracle == "excel"
+                else (excel_outputs or {}).get(cell_address)
+            ),
+            mvp_value=(
+                err_repr
+                if crashed_oracle == "mvp"
+                else (mvp_outputs or {}).get(cell_label)
+            ),
             abs_diff=None,
             rel_diff=None,
             passed=False,
+            note=note,
         )
         for cell_label, cell_address in cell_labels
     ]
@@ -350,8 +358,24 @@ def write_csv_report(comparisons: list[Comparison], path: Path) -> None:
                     comparison.passed,
                     comparison.matched_error,
                     comparison.flagged_matched_error,
+                    comparison.note,
                 ]
             )
+
+
+def _environment_info(excel_version: str | None) -> dict[str, str]:
+    try:
+        import xlwings
+
+        xlwings_version = xlwings.__version__
+    except Exception:  # noqa: BLE001  # pragma: no cover - xlwings always present in this repo
+        xlwings_version = "unavailable"
+    return {
+        "python": sys.version.split()[0],
+        "os": platform.platform(),
+        "xlwings": xlwings_version,
+        "excel": excel_version or "not launched",
+    }
 
 
 def write_txt_summary(
@@ -359,6 +383,8 @@ def write_txt_summary(
     path: Path,
     *,
     config: DifferentialConfig,
+    environment: Mapping[str, str],
+    workbook_sha256: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     total = len(comparisons)
@@ -381,7 +407,13 @@ def write_txt_summary(
         handle.write(
             f"Package:   {config.package_dir} (imported as {config.package_name})\n"
         )
-        handle.write(f"Tolerance: atol = {config.atol}\n\n")
+        handle.write(f"Tolerance: atol = {config.atol}, rtol = {config.rtol}\n\n")
+        handle.write(f"Workbook SHA-256: {workbook_sha256}\n\n")
+        handle.write("ENVIRONMENT\n")
+        handle.write(f"  Python:  {environment['python']}\n")
+        handle.write(f"  OS:      {environment['os']}\n")
+        handle.write(f"  xlwings: {environment['xlwings']}\n")
+        handle.write(f"  Excel:   {environment['excel']}\n\n")
         handle.write(f"Total comparisons: {total}\n")
         handle.write(f"Passed:            {passed}\n")
         handle.write(f"Failed:            {len(failures)}\n")
@@ -403,6 +435,14 @@ def write_txt_summary(
             handle.write(f"  mvp:       {first.mvp_value!r}\n")
             handle.write(f"  abs_diff:  {first.abs_diff!r}\n")
             handle.write(f"  rel_diff:  {first.rel_diff!r}\n")
+        if failures:
+            handle.write(f"\nFAILING COMPARISONS ({len(failures)}):\n")
+            for comparison in failures:
+                handle.write(
+                    f"  {comparison.scenario_id} :: {comparison.cell_address} "
+                    f"({comparison.cell_label}) excel={comparison.excel_value!r} "
+                    f"mvp={comparison.mvp_value!r} abs_diff={comparison.abs_diff!r}\n"
+                )
         if flagged:
             handle.write(
                 "\nMATCHED ERROR VALUES (both oracles returned the same Excel "
@@ -423,65 +463,61 @@ def load_exported_library(import_root: Path, package_name: str) -> ModuleType:
     return importlib.import_module(package_name)
 
 
-def run_excel_oracle(
-    workbook_path: Path,
-    scenario: Scenario,
-    output_addresses: tuple[str, ...],
-) -> dict[str, Any]:
-    import xlwings as xw
+def read_cells_batched(sheets: Any, addresses: Sequence[str]) -> dict[str, Any]:
+    """Read cells with one COM span-read per (sheet, row) instead of per cell."""
+    parsed: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for address in addresses:
+        sheet, cell = parse_address(normalize_key(address))
+        match = re.match(r"([A-Z]+)(\d+)", cell)
+        if match is None:
+            raise ValueError(f"Cannot parse cell reference {cell!r} from {address!r}")
+        column, row = match.groups()
+        parsed.setdefault((sheet, row), []).append((column, address))
 
-    logger.info("Excel oracle: %s", scenario.id)
-    app = xw.App(visible=False, add_book=False)
-    try:
-        workbook = app.books.open(str(workbook_path))
+    values: dict[str, Any] = {}
+    for (sheet, row), columns in parsed.items():
+        indices = sorted(column_index_from_string(c) for c, _ in columns)
+        first, last = indices[0], indices[-1]
+        span = (
+            f"{get_column_letter(first)}{row}"
+            if first == last
+            else f"{get_column_letter(first)}{row}:{get_column_letter(last)}{row}"
+        )
+        raw = sheets[sheet].range(span).options(err_to_str=True).value
+        row_values = [raw] if first == last else list(raw)
+        for column, address in columns:
+            values[address] = row_values[column_index_from_string(column) - first]
+    return values
+
+
+class XlwingsExcelOracle:
+    """Golden-master oracle: fresh isolated Excel instance per scenario."""
+
+    def __init__(self, workbook_path: Path) -> None:
+        self.workbook_path = workbook_path
+        self.excel_version: str | None = None
+
+    def __call__(
+        self, scenario: Scenario, output_addresses: tuple[str, ...]
+    ) -> dict[str, Any]:
+        import xlwings as xw
+
+        logger.info("Excel oracle: %s", scenario.id)
+        app = xw.App(visible=False, add_book=False)
         try:
-            app.calculation = "manual"
-            for address, value in inputs_for_excel(scenario).items():
-                sheet, cell = parse_address(normalize_key(address))
-                workbook.sheets[sheet].range(cell).value = value
-            workbook.app.calculate()
-
-            def read(address: str) -> Any:
-                return read_cell_value(workbook.sheets, address)
-
-            return {address: read(address) for address in output_addresses}
+            self.excel_version = str(app.version)
+            workbook = app.books.open(str(self.workbook_path))
+            try:
+                app.calculation = "manual"
+                for address, value in inputs_for_excel(scenario).items():
+                    sheet, cell = parse_address(normalize_key(address))
+                    workbook.sheets[sheet].range(cell).value = value
+                workbook.app.calculate()
+                return read_cells_batched(workbook.sheets, output_addresses)
+            finally:
+                workbook.close()
         finally:
-            workbook.close()
-    finally:
-        app.quit()
-
-
-def _records_to_cells(
-    records: list[dict[str, Any]],
-    cells: tuple[str, ...],
-) -> dict[str, Any]:
-    if len(records) != len(cells):
-        raise ValueError(f"expected {len(cells)} records, got {len(records)}")
-    raw_periods = [record.get("TIME_PERIOD") for record in records]
-    if all(period is not None for period in raw_periods):
-        periods = cast(list[Any], raw_periods)
-        if any(a >= b for a, b in itertools.pairwise(periods)):
-            raise ValueError(
-                f"records' TIME_PERIOD values are not strictly increasing: {periods!r}"
-            )
-    by_cell: dict[str, Any] = {}
-    for index, (record, cell) in enumerate(zip(records, cells, strict=True)):
-        if "OBS_VALUE" not in record:
-            raise ValueError(f"record {index}: missing OBS_VALUE: {record!r}")
-        by_cell[cell] = record["OBS_VALUE"]
-    return by_cell
-
-
-def run_mvp_oracle(api: ModuleType, scenario: Scenario) -> dict[str, Any]:
-    logger.info("MVP oracle:   %s", scenario.id)
-    ctx = api.make_context()
-    apply_inputs_to_mvp(api, ctx, scenario)
-    outputs: dict[str, Any] = {}
-    for entrypoint, cells in output_ranges():
-        compute_fn = getattr(api, f"compute_{entrypoint}")
-        records = compute_fn(ctx=ctx)
-        outputs.update(_records_to_cells(records, cells))
-    return outputs
+            app.quit()
 
 
 def _verify_paths(config: DifferentialConfig) -> None:
@@ -501,123 +537,166 @@ def _verify_paths(config: DifferentialConfig) -> None:
         )
 
 
+def _workbook_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_input_symmetry(scenarios: tuple[Scenario, ...]) -> None:
+    """Every Excel write must be expressible via a public setter when configured."""
+    expressible = expressible_input_cells()
+    if expressible is None:
+        return
+
+    offenders: dict[str, list[str]] = {}
+    for scenario in scenarios:
+        rogue = sorted(set(inputs_for_excel(scenario)) - expressible)
+        if rogue:
+            offenders[scenario.id] = rogue
+    if offenders:
+        details = "; ".join(
+            f"{scenario_id}: {cells}" for scenario_id, cells in offenders.items()
+        )
+        raise RuntimeError(
+            "Input-symmetry pre-flight failed — these Excel writes have no "
+            f"public-setter counterpart in the exported API: {details}. "
+            "Either bind them as inputs (and re-export) or remove them from "
+            "the scenario's Excel writes."
+        )
+
+
 def _check_staleness(config: DifferentialConfig) -> None:
+    fixture = (
+        config.package_dir.parent / "tests" / "fixtures" / config.workbook_path.name
+    )
+    if fixture.is_file():
+        current = _workbook_sha256(config.workbook_path)
+        exported = _workbook_sha256(fixture)
+        if current != exported:
+            raise RuntimeError(
+                "Workbook SHA-256 mismatch: the workbook has changed since the "
+                f"package was exported (current {current[:12]}…, export-time "
+                f"{exported[:12]}…). Re-run the extraction pipeline before "
+                "trusting parity results."
+            )
+        return
     data_path = config.package_dir / "data.py"
     if not data_path.is_file():
         return
-    workbook_mtime = config.workbook_path.stat().st_mtime
-    data_mtime = data_path.stat().st_mtime
-    if workbook_mtime > data_mtime:
+    if config.workbook_path.stat().st_mtime > data_path.stat().st_mtime:
         logger.warning(
             "Workbook is newer than exported data.py; regenerate dist/ if constants changed."
         )
 
 
 def _validate_workbook_hooks() -> None:
-    scenarios = build_scenarios()
-    if not scenarios:
+    hooks = {
+        "build_scenarios": build_scenarios,
+        "output_cell_labels": output_cell_labels,
+        "inputs_for_excel": inputs_for_excel,
+        "apply_inputs_to_mvp": apply_inputs_to_mvp,
+        "mvp_outputs_for_scenario": mvp_outputs_for_scenario,
+    }
+    missing = [name for name in _REQUIRED_WORKBOOK_HOOKS if not callable(hooks[name])]
+    if missing:
+        raise RuntimeError(
+            "Missing workbook-specific hook(s): "
+            f"{', '.join(missing)}. Author them in "
+            "tests/differential/differential_test_exported_library.py."
+        )
+    if not build_scenarios():
         raise RuntimeError(
             "No differential scenarios configured. Author build_scenarios(), "
-            "output_cell_labels(), output_ranges(), inputs_for_excel(), and "
-            "apply_inputs_to_mvp() in "
+            "output_cell_labels(), inputs_for_excel(), apply_inputs_to_mvp(), and "
+            "mvp_outputs_for_scenario() in "
             "tests/differential/differential_test_exported_library.py."
         )
     if not output_cell_labels():
         raise RuntimeError(
             "output_cell_labels() returned no cells. Mirror your output bindings "
-            "as (label, address) pairs."
-        )
-    if not output_ranges():
-        raise RuntimeError(
-            "output_ranges() returned no compute groups. Map each compute_* "
-            "entrypoint to its output cell addresses."
+            "as (label, address) pairs, typically via specs_from_output_series()."
         )
 
 
-def verify_binding_cells(api: ModuleType) -> None:
-    """Assert exported binding tables match this script's cell constants."""
-    expected_inputs: dict[str, set[str]] = {
-        "_LEAF_INDEX_COUNTRY_NAME": {COUNTRY_NAME_CELL},
-        "_LEAF_INDEX_SHOCK_YEAR": {SHOCK_YEAR_CELL},
-        "_LEAF_INDEX_SHOCK_TYPE": {SHOCK_TYPE_CELL},
-        "_LEAF_INDEX_SHOCK_MAGNITUDES": set(SHOCK_TABLE_CELLS),
-        "_LEAF_INDEX_GROWTH_BASELINE": set(GROWTH_BASELINE_CELLS),
-        "_LEAF_INDEX_INTEREST_BASELINE": set(INTEREST_BASELINE_CELLS),
-        "_LEAF_INDEX_PRIMARY_BALANCE_BASELINE": set(PRIMARY_BALANCE_BASELINE_CELLS),
-    }
-    for name, expected_cells in expected_inputs.items():
-        table = getattr(api, name, None)
-        if table is None:
-            raise RuntimeError(
-                f"Exported library is missing {name}; the input-binding shape "
-                f"may have changed. Re-read bindings/inputs.bindings.yaml and "
-                f"update this script's cell constants."
-            )
-        actual_cells = set(table.values())
-        if actual_cells != expected_cells:
-            raise RuntimeError(
-                f"Binding-cell mismatch on {name}: "
-                f"library targets {sorted(actual_cells)!r}, "
-                f"script expects {sorted(expected_cells)!r}. "
-                f"Update either the bindings or this script's constants."
-            )
-
-    expected_outputs: dict[str, tuple[str, ...]] = {
-        "_OUTPUT_LEAVES_OUTPUT_BASELINE": OUTPUT_BASELINE_CELLS,
-        "_OUTPUT_LEAVES_OUTPUT_SHOCKED": OUTPUT_SHOCKED_CELLS,
-        "_OUTPUT_LEAVES_OUTPUT_DELTA": OUTPUT_DELTA_CELLS,
-    }
-    for name, expected_cells in expected_outputs.items():
-        leaves = getattr(api, name, None)
-        if leaves is None:
-            raise RuntimeError(
-                f"Exported library is missing {name}; the output-binding "
-                f"shape may have changed."
-            )
-        actual_cells = tuple(address for address, _ in leaves)
-        if actual_cells != expected_cells:
-            raise RuntimeError(
-                f"Binding-cell mismatch on {name}: "
-                f"library targets {actual_cells!r}, "
-                f"script expects {expected_cells!r}. "
-                f"Update either the bindings or this script's constants."
-            )
-    logger.info("Binding-cell verification passed.")
-
-
-def run_differential_test(config: DifferentialConfig) -> int:
-    _validate_workbook_hooks()
+def run_differential_test(
+    config: DifferentialConfig,
+    *,
+    excel_oracle: ExcelOracle | None = None,
+    mvp_oracle: MvpOracle | None = None,
+) -> int:
     _verify_paths(config)
+    _validate_workbook_hooks()
     _check_staleness(config)
 
     api = load_exported_library(config.import_root, config.package_name)
-    verify_binding_cells(api)
     scenarios = build_scenarios()
+    _verify_input_symmetry(scenarios)
     cell_labels = output_cell_labels()
     output_addresses = tuple(address for _, address in cell_labels)
+
+    if excel_oracle is None:
+        excel_oracle = XlwingsExcelOracle(config.workbook_path)
+    if mvp_oracle is None:
+
+        def mvp_oracle(scenario: Scenario) -> dict[str, Any]:
+            return mvp_outputs_for_scenario(api, scenario)
 
     comparisons: list[Comparison] = []
     for scenario in scenarios:
         try:
-            excel_outputs = run_excel_oracle(
-                config.workbook_path,
-                scenario,
-                output_addresses,
-            )
-            mvp_outputs = run_mvp_oracle(api, scenario)
+            excel_outputs = excel_oracle(scenario, output_addresses)
         except Exception as exc:
-            logger.exception("Scenario %s crashed; recording as failure.", scenario.id)
-            comparisons.extend(crash_comparisons(scenario, cell_labels, exc))
-            continue
-        comparisons.extend(
-            compare_scenario(
-                scenario,
-                excel_outputs,
-                mvp_outputs,
-                cell_labels,
-                atol=config.atol,
+            logger.exception("Excel oracle crashed on %s.", scenario.id)
+            comparisons.extend(
+                crash_comparisons(scenario, cell_labels, exc, crashed_oracle="excel")
             )
-        )
+            continue
+        try:
+            mvp_outputs = mvp_oracle(scenario)
+        except Exception as exc:
+            logger.exception("MVP oracle crashed on %s.", scenario.id)
+            comparisons.extend(
+                crash_comparisons(
+                    scenario,
+                    cell_labels,
+                    exc,
+                    crashed_oracle="mvp",
+                    excel_outputs=excel_outputs,
+                )
+            )
+            continue
+        try:
+            comparisons.extend(
+                compare_scenario(
+                    scenario,
+                    excel_outputs,
+                    mvp_outputs,
+                    cell_labels,
+                    atol=config.atol,
+                    rtol=config.rtol,
+                )
+            )
+        except Exception as exc:
+            logger.exception(
+                "Comparison stage crashed on %s; recording as failure.", scenario.id
+            )
+            comparisons.extend(
+                crash_comparisons(
+                    scenario,
+                    cell_labels,
+                    exc,
+                    crashed_oracle="comparison",
+                    excel_outputs=excel_outputs,
+                    mvp_outputs=mvp_outputs,
+                )
+            )
+            continue
+
+    workbook_sha256 = _workbook_sha256(config.workbook_path)
+    environment = _environment_info(getattr(excel_oracle, "excel_version", None))
 
     config.report_dir.mkdir(parents=True, exist_ok=True)
     write_csv_report(comparisons, config.report_dir / "parity_report.csv")
@@ -625,6 +704,8 @@ def run_differential_test(config: DifferentialConfig) -> int:
         comparisons,
         config.report_dir / "parity_report.txt",
         config=config,
+        environment=environment,
+        workbook_sha256=workbook_sha256,
     )
 
     failed = sum(1 for comparison in comparisons if not comparison.passed)
@@ -633,7 +714,7 @@ def run_differential_test(config: DifferentialConfig) -> int:
     if flagged:
         log = logger.warning if config.allow_matched_errors else logger.error
         log(
-            "Matched error values in %d comparison(s); see report section in %s "
+            "Matched error values in %d comparison(s); see MATCHED ERROR VALUES in %s "
             "(set Scenario.expects_error_values=True when intentional)",
             flagged,
             config.report_dir / "parity_report.txt",
@@ -732,53 +813,72 @@ def _override_year(
     return tuple(value if i == year - 1 else v for i, v in enumerate(vec))
 
 
+def _scenario(scenario_id: str, inputs: Inputs) -> Scenario:
+    return Scenario(id=scenario_id, inputs=asdict(inputs))
+
+
+def _as_inputs(scenario: Scenario) -> Inputs:
+    raw = scenario.inputs
+    return Inputs(
+        country_name=str(raw["country_name"]),
+        growth_baseline=tuple(raw["growth_baseline"]),
+        interest_baseline=tuple(raw["interest_baseline"]),
+        primary_balance_baseline=tuple(raw["primary_balance_baseline"]),
+        shock_year=int(raw["shock_year"]),
+        shock_type=int(raw["shock_type"]),
+        shock_table=(
+            float(raw["shock_table"][0]),
+            float(raw["shock_table"][1]),
+            float(raw["shock_table"][2]),
+        ),
+    )
+
+
 def _canonical_scenarios() -> Iterator[Scenario]:
     for country in COUNTRIES:
         base = replace(CANONICAL_BASELINE, country_name=country)
-        yield Scenario(id=f"canonical:{country}:baseline", inputs=base)
-        yield Scenario(
-            id=f"canonical:{country}:growth_shock",
-            inputs=replace(base, shock_type=1, shock_table=(-2.0, 0.0, 0.0)),
+        yield _scenario(f"canonical:{country}:baseline", base)
+        yield _scenario(
+            f"canonical:{country}:growth_shock",
+            replace(base, shock_type=1, shock_table=(-2.0, 0.0, 0.0)),
         )
-        yield Scenario(
-            id=f"canonical:{country}:interest_shock",
-            inputs=replace(base, shock_type=2, shock_table=(0.0, 2.0, 0.0)),
+        yield _scenario(
+            f"canonical:{country}:interest_shock",
+            replace(base, shock_type=2, shock_table=(0.0, 2.0, 0.0)),
         )
-        yield Scenario(
-            id=f"canonical:{country}:primary_balance_shock",
-            inputs=replace(base, shock_type=3, shock_table=(0.0, 0.0, -1.0)),
+        yield _scenario(
+            f"canonical:{country}:primary_balance_shock",
+            replace(base, shock_type=3, shock_table=(0.0, 0.0, -1.0)),
         )
 
 
 def _single_axis_perturbations() -> Iterator[Scenario]:
     for country in COUNTRIES:
-        yield Scenario(
-            id=f"single_axis:country={country}",
-            inputs=replace(CANONICAL_BASELINE, country_name=country),
+        yield _scenario(
+            f"single_axis:country={country}",
+            replace(CANONICAL_BASELINE, country_name=country),
         )
 
     canonical_growth_shock = replace(
         CANONICAL_BASELINE, shock_type=1, shock_table=(-2.0, 0.0, 0.0)
     )
     for year in SHOCK_YEARS:
-        yield Scenario(
-            id=f"single_axis:shock_year={year}",
-            inputs=replace(canonical_growth_shock, shock_year=year),
+        yield _scenario(
+            f"single_axis:shock_year={year}",
+            replace(canonical_growth_shock, shock_year=year),
         )
 
     full_shock_table = (-2.0, 2.0, -1.0)
     for stype in SHOCK_TYPES:
-        yield Scenario(
-            id=f"single_axis:shock_type={stype}",
-            inputs=replace(
-                CANONICAL_BASELINE, shock_type=stype, shock_table=full_shock_table
-            ),
+        yield _scenario(
+            f"single_axis:shock_type={stype}",
+            replace(CANONICAL_BASELINE, shock_type=stype, shock_table=full_shock_table),
         )
 
     for magnitude in SHOCK_MAGNITUDE_SWEEP:
-        yield Scenario(
-            id=f"single_axis:growth_shock_magnitude={magnitude:+.1f}",
-            inputs=replace(
+        yield _scenario(
+            f"single_axis:growth_shock_magnitude={magnitude:+.1f}",
+            replace(
                 CANONICAL_BASELINE,
                 shock_type=1,
                 shock_table=(magnitude, 0.0, 0.0),
@@ -789,9 +889,9 @@ def _single_axis_perturbations() -> Iterator[Scenario]:
         base_vec: tuple[float, ...] = getattr(CANONICAL_BASELINE, attr)
         for year in PERTURBATION_YEARS:
             for value in values:
-                yield Scenario(
-                    id=f"single_axis:{indicator}[year={year}]={value:+.1f}",
-                    inputs=replace(
+                yield _scenario(
+                    f"single_axis:{indicator}[year={year}]={value:+.1f}",
+                    replace(
                         CANONICAL_BASELINE,
                         **{attr: _override_year(base_vec, year, value)},
                     ),
@@ -803,9 +903,9 @@ def _categorical_combo_scenarios() -> Iterator[Scenario]:
     for country in COUNTRIES:
         for stype in SHOCK_TYPES:
             for year in SHOCK_YEARS:
-                yield Scenario(
-                    id=f"combo:country={country}:shock_type={stype}:shock_year={year}",
-                    inputs=replace(
+                yield _scenario(
+                    f"combo:country={country}:shock_type={stype}:shock_year={year}",
+                    replace(
                         CANONICAL_BASELINE,
                         country_name=country,
                         shock_type=stype,
@@ -831,10 +931,6 @@ def output_cell_labels() -> tuple[tuple[str, str], ...]:
     )
 
 
-def output_ranges() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    return OUTPUT_RANGES
-
-
 def _inputs_for_excel(inputs: Inputs) -> dict[str, Any]:
     return {
         COUNTRY_NAME_CELL: inputs.country_name,
@@ -854,7 +950,7 @@ def _inputs_for_excel(inputs: Inputs) -> dict[str, Any]:
 
 
 def inputs_for_excel(scenario: Scenario) -> dict[str, Any]:
-    return _inputs_for_excel(scenario.inputs)
+    return _inputs_for_excel(_as_inputs(scenario))
 
 
 def _time_series_records(values: tuple[float, ...]) -> list[dict[str, Any]]:
@@ -864,7 +960,7 @@ def _time_series_records(values: tuple[float, ...]) -> list[dict[str, Any]]:
 
 
 def apply_inputs_to_mvp(api: ModuleType, ctx: Any, scenario: Scenario) -> None:
-    inputs = scenario.inputs
+    inputs = _as_inputs(scenario)
     api.set_country_name(
         ctx, [{"PARAMETER": "country_name", "OBS_VALUE": inputs.country_name}]
     )
@@ -887,6 +983,35 @@ def apply_inputs_to_mvp(api: ModuleType, ctx: Any, scenario: Scenario) -> None:
                 SHOCK_PARAMETER_LABELS, inputs.shock_table, strict=True
             )
         ],
+    )
+
+
+def mvp_outputs_for_scenario(api: ModuleType, scenario: Scenario) -> dict[str, Any]:
+    ctx = api.make_context()
+    apply_inputs_to_mvp(api, ctx, scenario)
+    outputs: dict[str, Any] = {}
+    for name, cells in OUTPUT_RANGES:
+        records = getattr(api, f"compute_{name}")(ctx=ctx)
+        if len(records) != len(cells):
+            raise ValueError(
+                f"expected {len(cells)} records from compute_{name}, got {len(records)}"
+            )
+        for index, record in enumerate(records):
+            outputs[f"{name}[year={index + 1}]"] = record["OBS_VALUE"]
+    return outputs
+
+
+def expressible_input_cells() -> frozenset[str] | None:
+    return frozenset(
+        {
+            COUNTRY_NAME_CELL,
+            SHOCK_YEAR_CELL,
+            SHOCK_TYPE_CELL,
+            *SHOCK_TABLE_CELLS,
+            *GROWTH_BASELINE_CELLS,
+            *INTEREST_BASELINE_CELLS,
+            *PRIMARY_BALANCE_BASELINE_CELLS,
+        }
     )
 
 

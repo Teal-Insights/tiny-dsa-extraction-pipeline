@@ -7,85 +7,19 @@ from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
-from typing import NoReturn, TypeAlias, cast
+from fastpyxl.utils.cell import column_index_from_string, coordinate_from_string
+from fastpyxl.utils.exceptions import CellCoordinatesException
+from typing import Any, NoReturn, TypeAlias, cast
 
 import fastpyxl.utils.cell
+import re
 
 class CircularReferenceWarning(RuntimeWarning):
     """Warning emitted when a circular reference is encountered (default Excel mode)."""
 
 HelperCacheKey: TypeAlias = tuple[Hashable, tuple[tuple[str, Hashable], ...]]
 
-@dataclass(slots=True)
-class EvalContextBase:
-    """Per-run evaluation state without dependency-tracking fields."""
-
-    inputs: dict[str, CellValue]
-    resolver: Callable[[str], Callable[[EvalContext], CellValue] | None]
-    cache: dict[str, CellValue] = field(default_factory=dict)
-    computing: set[str] = field(default_factory=set)
-    circular_warning_roots: set[str] = field(default_factory=set)
-    helper_cache: dict[HelperCacheKey, CellValue] = field(default_factory=dict)
-    helper_computing: set[HelperCacheKey] = field(default_factory=set)
-    iterative_enabled: bool = False
-    iterate_count: int = 100
-    iterate_delta: float = 0.001
-    iteration_values: dict[str, CellValue] = field(default_factory=dict)
-
-@dataclass(slots=True)
-class EvalContext(EvalContextBase):
-    """Per-run evaluation state with dependency tracking for input invalidation."""
-
-    deps: dict[str, set[str]] = field(default_factory=dict)
-    reverse_deps: dict[str, set[str]] = field(default_factory=dict)
-    stack: list[str] = field(default_factory=list)
-
-    def _record_dependency(self, parent: str, child: str) -> None:
-        if parent == child:
-            return
-        self.deps.setdefault(parent, set()).add(child)
-        self.reverse_deps.setdefault(child, set()).add(parent)
-
-    def invalidate(self, addresses: Iterable[str]) -> None:
-        """Invalidate cached values for the given addresses and their dependents.
-
-        Helper memos are not address-dep-tracked, so any address invalidation
-        clears `helper_cache` and `helper_computing` entirely.
-        """
-        self.helper_cache.clear()
-        self.helper_computing.clear()
-
-        to_visit = list(addresses)
-        seen: set[str] = set()
-        while to_visit:
-            addr = to_visit.pop()
-            if addr in seen:
-                continue
-            seen.add(addr)
-
-            self.cache.pop(addr, None)
-            self.circular_warning_roots.discard(addr)
-            self.computing.discard(addr)
-
-            dependents = list(self.reverse_deps.get(addr, set()))
-            to_visit.extend(dependents)
-
-            for dep in self.deps.get(addr, set()):
-                parents = self.reverse_deps.get(dep)
-                if parents is not None:
-                    parents.discard(addr)
-                    if not parents:
-                        self.reverse_deps.pop(dep, None)
-
-            self.deps.pop(addr, None)
-            self.reverse_deps.pop(addr, None)
-
-    def set_inputs(self, inputs: dict[str, CellValue]) -> None:
-        """Update input values and invalidate dependent cached results."""
-        changed = [k for k, v in inputs.items() if self.inputs.get(k) != v]
-        self.inputs.update(inputs)
-        if changed:
-            self.invalidate(changed)
+MISSING: object = object()
 
 NormalizedAddress: TypeAlias = str
 
@@ -124,7 +58,13 @@ class XlErrorException(Exception):
         self.code = code
         super().__init__(code.value)
 
+_A1_CELL_COORD_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d+)$")
+
 _EXCEL_EPOCH = datetime(1899, 12, 30)
+
+_WHOLE_COL_COORD_RE = re.compile(r"^\$?([A-Za-z]{1,3})$")
+
+_WHOLE_ROW_COORD_RE = re.compile(r"^\$?(\d+)$")
 
 def _escape_sheet_for_formula(sheet: str) -> str:
     """Escape apostrophes for use inside quoted sheet names."""
@@ -136,6 +76,41 @@ def _format_general_number(value: float | int) -> str:
         return str(int(f))
     return str(f)
 
+def _looks_like_leaf_store(values: Mapping[object, object]) -> bool:
+    """True when values look like `sheet -> {(row, col): value}`."""
+    for sample in values.values():
+        if not isinstance(sample, Mapping):
+            return False
+        for coord in sample:
+            return (
+                isinstance(coord, tuple)
+                and len(coord) == 2
+                and isinstance(coord[0], int)
+                and isinstance(coord[1], int)
+            )
+        return True
+    return False
+
+def _ndarray_grid_shape(value: object) -> tuple[int, int] | None:
+    """Read a 1-D/2-D ndarray-like shape as ``(nrows, ncols)`` without converting it.
+
+    Lets `Grid` hold the array itself instead of eagerly copying every cell into
+    nested lists. 1-D buffers read as single-column grids, matching
+    `_as_nested_rows_from_ndarray`. Returns `None` for anything else (including
+    3-D buffers) so callers keep the nested-list path.
+    """
+    ndim = getattr(value, "ndim", None)
+    if ndim not in (1, 2) or not callable(getattr(value, "tolist", None)):
+        return None
+    shape = getattr(value, "shape", None)
+    if not isinstance(shape, tuple) or len(shape) != ndim:
+        return None
+    if not all(isinstance(extent, int) for extent in shape):
+        return None
+    if ndim == 1:
+        return (shape[0], 1)
+    return (shape[0], shape[1])
+
 def _raise_error(code: XlError) -> XlErrorException:
     """Build the exception for an Excel error code (callers raise the result)."""
     return XlErrorException(code)
@@ -145,6 +120,41 @@ def _raise_if_error_value(value: CellValue) -> CellValue:
     if isinstance(value, XlError):
         raise XlErrorException(value)
     return value
+
+def _require_coord(coord: object) -> tuple[int, int]:
+    if not (isinstance(coord, tuple) and len(coord) == 2):
+        raise TypeError(f"Leaf store keys must be (row, col) tuples; got {coord!r}")
+    row, col = coord
+    if not isinstance(row, int) or not isinstance(col, int):
+        raise TypeError(f"Leaf store keys must be (row, col) ints; got {coord!r}")
+    if row < 1 or col < 1:
+        raise ValueError(f"Leaf store coordinates must be 1-based; got {coord!r}")
+    return row, col
+
+def canonical_cell_coord(cell: str) -> str:
+    """Canonicalize an A1 / whole-column / whole-row coordinate fragment.
+
+    Strips `$` markers, uppercases column letters, and normalizes row numbers
+    (`01` -> `1`). Non-matching fragments are returned unchanged.
+    """
+    m = _A1_CELL_COORD_RE.fullmatch(cell)
+    if m is not None:
+        return f"{m.group(1).upper()}{int(m.group(2))}"
+    m_col = _WHOLE_COL_COORD_RE.fullmatch(cell)
+    if m_col is not None:
+        return m_col.group(1).upper()
+    m_row = _WHOLE_ROW_COORD_RE.fullmatch(cell)
+    if m_row is not None:
+        return str(int(m_row.group(1)))
+    return cell
+
+def _parse_a1_cell(cell: str) -> tuple[str, int]:
+    """Parse an A1 cell coordinate into uppercase column letters and row."""
+    try:
+        column, row = coordinate_from_string(canonical_cell_coord(cell))
+    except CellCoordinatesException as exc:
+        raise ValueError(f"Expected A1 cell coordinate, got: {cell!r}") from exc
+    return str(column).upper(), int(row)
 
 def datetime_to_excel_serial(value: datetime) -> float:
     """Convert a naive datetime to an Excel day serial (1900 date system)."""
@@ -169,6 +179,13 @@ def _try_parse_iso_date_serial(text: str) -> float | None:
 
 def excel_casefold(value: str) -> str:
     return value.casefold()
+
+def leaf(store: LeafStore, sheet: str, row: int, col: int) -> object:
+    """Return the stored leaf at `(sheet, row, col)`, or `MISSING` if absent."""
+    sheet_map = store.get(sheet)
+    if sheet_map is None:
+        return MISSING
+    return sheet_map.get((row, col), MISSING)
 
 def needs_quoting(sheet: str) -> bool:
     """Return True if a sheet name must be wrapped in single quotes in a formula."""
@@ -209,6 +226,68 @@ def parse_address(address: str) -> tuple[str, str]:
 
     raise ValueError(f"Address must be sheet-qualified: {address}")
 
+def parse_cell_coords(address: str) -> tuple[str, int, int]:
+    """Parse a sheet-qualified A1 cell into `(sheet, row, col)` (1-based).
+
+    Raises:
+        ValueError: If `address` is not a sheet-qualified single cell.
+    """
+    sheet, cell = parse_address(address)
+    col_letters, row = _parse_a1_cell(cell)
+    return sheet, row, int(column_index_from_string(col_letters))
+
+def _require_cell_coords(address: str) -> tuple[str, int, int]:
+    try:
+        return parse_cell_coords(address)
+    except ValueError as exc:
+        raise ValueError(f"Cannot round-trip input key to (sheet, row, col): {address!r}") from exc
+
+class LeafInputs:
+    """NodeKey-keyed view over a nested `LeafStore`.
+
+    Get/set parse A1 at the boundary. Rectangle scans should call `leaf`
+    with integer coordinates instead of iterating this view.
+    """
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: LeafStore) -> None:
+        self._store = store
+
+    def __getitem__(self, address: str) -> CellValue:
+        sheet, row, col = _require_cell_coords(address)
+        try:
+            return self._store[sheet][(row, col)]
+        except KeyError:
+            raise KeyError(address) from None
+
+    def __setitem__(self, address: str, value: CellValue) -> None:
+        sheet, row, col = _require_cell_coords(address)
+        self._store.setdefault(sheet, {})[(row, col)] = value
+
+    def __contains__(self, address: object) -> bool:
+        if not isinstance(address, str):
+            return False
+        try:
+            sheet, row, col = parse_cell_coords(address)
+        except ValueError:
+            return False
+        sheet_map = self._store.get(sheet)
+        if sheet_map is None:
+            return False
+        return (row, col) in sheet_map
+
+    def get(self, address: str, default: CellValue | None = None) -> CellValue | None:
+        try:
+            return self[address]
+        except KeyError:
+            return default
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, LeafInputs):
+            return self._store == other._store
+        return NotImplemented
+
 def quote_sheet_if_needed(sheet: str) -> str:
     """Return a sheet name quoted for formulas when quoting is required."""
     if not needs_quoting(sheet):
@@ -235,6 +314,11 @@ class Range:
     # Resolvers may come from evaluation contexts with their own value
     # vocabulary; values are validated/coerced at consumption time.
     _resolver: Callable[[str], FormulaValue] = field(repr=False, compare=False)
+    # Optional coordinate reader: `(row, col)` absolute 1-based. When set,
+    # `cell` / `value_at` use it and do not construct NodeKey strings.
+    _coord_resolver: Callable[[int, int], FormulaValue] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Validate the rectangular bounds."""
@@ -266,7 +350,7 @@ class Range:
             XlErrorException: If the resolved cell is an Excel error.
         """
         self._validate_relative_cell(row, col)
-        value = self._resolver(self._address(self.start_row + row - 1, self.start_col + col - 1))
+        value = self._resolve_at(self.start_row + row - 1, self.start_col + col - 1)
         return self._raise_if_error(value)
 
     def row(self, row: int) -> Range:
@@ -282,6 +366,7 @@ class Range:
             absolute_row,
             self.end_col,
             self._resolver,
+            _coord_resolver=self._coord_resolver,
         )
 
     def column(self, col: int) -> Range:
@@ -297,6 +382,7 @@ class Range:
             self.end_row,
             absolute_col,
             self._resolver,
+            _coord_resolver=self._coord_resolver,
         )
 
     def view(
@@ -321,6 +407,7 @@ class Range:
             self.start_row + row_end - 1,
             self.start_col + col_end - 1,
             self._resolver,
+            _coord_resolver=self._coord_resolver,
         )
 
     def value_at(self, row: int, col: int) -> FormulaValue:
@@ -332,9 +419,8 @@ class Range:
         matching) use this accessor; `cell`/iteration raise instead.
         """
         self._validate_relative_cell(row, col)
-        address = self._address(self.start_row + row - 1, self.start_col + col - 1)
         try:
-            return self._resolver(address)
+            return self._resolve_at(self.start_row + row - 1, self.start_col + col - 1)
         except XlErrorException as exc:
             return exc.code
 
@@ -360,6 +446,11 @@ class Range:
     def __iter__(self) -> Iterator[FormulaValue]:
         """Yield values in deterministic row-major order."""
         return self.iter_values()
+
+    def _resolve_at(self, row: int, col: int) -> FormulaValue:
+        if self._coord_resolver is not None:
+            return self._coord_resolver(row, col)
+        return self._resolver(self._address(row, col))
 
     def _address(self, row: int, col: int) -> str:
         col_letter = fastpyxl.utils.cell.get_column_letter(col)
@@ -407,6 +498,8 @@ class ExcelRange:
 
 CellValue: TypeAlias = Scalar | ExcelRange | Range | list["CellValue"]
 
+LeafStore: TypeAlias = dict[str, dict[tuple[int, int], CellValue]]
+
 NestedGrid: TypeAlias = list[list[CellValue]]
 
 FormulaValue: TypeAlias = CellValue | NestedGrid
@@ -429,9 +522,9 @@ def _as_nested_rows_from_ndarray(value: object) -> list[list[CellValue]] | None:
     return cast("list[list[CellValue]]", raw)
 
 class Grid:
-    """Positional raw-value access over a lazy `Range` or nested-list array."""
+    """Positional raw-value access over a lazy `Range`, ndarray, or nested-list array."""
 
-    __slots__ = ("nrows", "ncols", "_range", "_rows")
+    __slots__ = ("nrows", "ncols", "_range", "_rows", "_array")
 
     def __init__(
         self,
@@ -439,18 +532,30 @@ class Grid:
         ncols: int,
         rng: Range | None,
         rows: list[list[CellValue]] | None,
+        array: object = None,
     ) -> None:
         self.nrows = nrows
         self.ncols = ncols
         self._range = rng
         self._rows = rows
+        self._array = array
 
     @staticmethod
     def wrap(value: object) -> Grid | None:
-        """Wrap a range/array value; return `None` for scalar values."""
+        """Wrap a range/array value; return `None` for scalar values.
+
+        ndarray operands are kept as-is: consumers that want the buffer read
+        `array`, and positional consumers pay for nested rows only on first use.
+        """
         if isinstance(value, Range):
             nrows, ncols = value.shape
             return Grid(nrows, ncols, value, None)
+        ndarray_shape = _ndarray_grid_shape(value)
+        if ndarray_shape is not None:
+            nrows, ncols = ndarray_shape
+            if nrows == 0:
+                return Grid(1, 1, None, [[None]])
+            return Grid(nrows, ncols, None, None, value)
         ndarray_rows = _as_nested_rows_from_ndarray(value)
         if ndarray_rows is not None:
             if not ndarray_rows:
@@ -466,12 +571,29 @@ class Grid:
             return Grid(len(rows), len(rows[0]), None, cast("list[list[CellValue]]", rows))
         return None
 
+    @property
+    def array(self) -> object:
+        """The backing ndarray for ndarray operands, else `None`.
+
+        Array consumers (vectorized operator fast paths) use this to skip the
+        nested-list round trip; everything else goes through `at`.
+        """
+        return self._array
+
+    def _nested_rows(self) -> list[list[CellValue]]:
+        """Materialize (and cache) nested rows for positional access."""
+        rows = self._rows
+        if rows is None:
+            rows = _as_nested_rows_from_ndarray(self._array)
+            assert rows is not None
+            self._rows = rows
+        return rows
+
     def at(self, row0: int, col0: int) -> Scalar:
         """Return the raw value at a 0-based position (error sentinels included)."""
         if self._range is not None:
             return cast(Scalar, self._range.value_at(row0 + 1, col0 + 1))
-        assert self._rows is not None
-        return cast(Scalar, self._rows[row0][col0])
+        return cast(Scalar, self._nested_rows()[row0][col0])
 
     def at_flat(self, index0: int) -> Scalar:
         """Return the raw value at a 0-based row-major flat index."""
@@ -493,15 +615,19 @@ class Grid:
         """Return one row as a lazy view (`Range` input) or nested list."""
         if self._range is not None:
             return self._range.row(row0 + 1)
-        assert self._rows is not None
-        return [list(self._rows[row0])]
+        return [list(self._nested_rows()[row0])]
 
     def col_slice(self, col0: int) -> Range | list[list[CellValue]]:
         """Return one column as a lazy view (`Range` input) or nested list."""
         if self._range is not None:
             return self._range.column(col0 + 1)
-        assert self._rows is not None
-        return [[row[col0]] for row in self._rows]
+        return [[row[col0]] for row in self._nested_rows()]
+
+    def as_array(self) -> Range | list[list[CellValue]]:
+        """Return the full grid as a lazy `Range` or nested-list copy."""
+        if self._range is not None:
+            return self._range
+        return [list(row) for row in self._nested_rows()]
 
 def _as_scalar(value: object) -> Scalar:
     if isinstance(value, (Range, list, tuple)):
@@ -558,6 +684,177 @@ def _as_addressing_scalar(value: CellValue | None) -> Scalar | None:
 def coerce_inputs_dict(values: Mapping[str, object]) -> dict[str, CellValue]:
     """Widen inferred default-input dicts to `dict[str, CellValue]` for `EvalContext`."""
     return cast(dict[str, CellValue], dict(values))
+
+def lookup_leaf(ctx: object, address: str) -> Any:
+    """Look up a leaf by NodeKey, using `ctx.leaves` when present.
+
+    Returns `MISSING` when the address is not a stored leaf (including when it
+    is not a parseable single cell). Formula cells must still go through the
+    resolver.
+    """
+    store = getattr(ctx, "leaves", None)
+    if not store:
+        return MISSING
+    try:
+        sheet, row, col = parse_cell_coords(address)
+    except ValueError:
+        return MISSING
+    return leaf(cast(LeafStore, store), sheet, row, col)
+
+def overlay_leaf_inputs(store: LeafStore, overlay: Any) -> None:
+    """Merge `overlay` into `store`.
+
+    Nested coordinate stores merge sheet-by-sheet. NodeKey dicts parse A1 at
+    the boundary.
+
+    Raises:
+        ValueError: If a NodeKey cannot round-trip to `(sheet, row, col)`.
+        TypeError: If `overlay` is neither a leaf store nor a NodeKey mapping.
+    """
+    if not overlay:
+        return
+    if not isinstance(overlay, Mapping):
+        raise TypeError(f"Expected a mapping of leaves; got {type(overlay)!r}")
+    if _looks_like_leaf_store(overlay):
+        for sheet, cells in overlay.items():
+            if not isinstance(sheet, str):
+                raise TypeError(f"Leaf store sheets must be strings; got {sheet!r}")
+            if not isinstance(cells, Mapping):
+                raise TypeError(f"Leaf store sheet map must be a mapping; got {cells!r}")
+            sheet_map = store.setdefault(sheet, {})
+            for coord, value in cells.items():
+                row, col = _require_coord(coord)
+                sheet_map[(row, col)] = cast(CellValue, value)
+        return
+    for key, value in overlay.items():
+        if not isinstance(key, str):
+            raise TypeError(f"Input keys must be NodeKey strings; got {key!r}")
+        sheet, row, col = _require_cell_coords(key)
+        store.setdefault(sheet, {})[(row, col)] = cast(CellValue, value)
+
+def as_leaf_store(values: Any) -> LeafStore:
+    """Copy `values` into a nested leaf store.
+
+    Accepts a nested coordinate store or a NodeKey-keyed dict. Empty mappings
+    become `{}`.
+    """
+    if isinstance(values, LeafInputs):
+        return {sheet: dict(cells) for sheet, cells in values._store.items()}
+    if not isinstance(values, Mapping):
+        raise TypeError(f"Expected a mapping of leaves; got {type(values)!r}")
+    if not values:
+        return {}
+    if _looks_like_leaf_store(values):
+        out: LeafStore = {}
+        for sheet, cells in values.items():
+            if not isinstance(sheet, str):
+                raise TypeError(f"Leaf store sheets must be strings; got {sheet!r}")
+            if not isinstance(cells, Mapping):
+                raise TypeError(f"Leaf store sheet map must be a mapping; got {cells!r}")
+            sheet_map: dict[tuple[int, int], CellValue] = {}
+            for coord, value in cells.items():
+                row, col = _require_coord(coord)
+                sheet_map[(row, col)] = cast(CellValue, value)
+            out[sheet] = sheet_map
+        return out
+    out = {}
+    overlay_leaf_inputs(out, values)
+    return out
+
+@dataclass(slots=True)
+class EvalContextBase:
+    """Per-run evaluation state without dependency-tracking fields."""
+
+    inputs: Any
+    resolver: Callable[[str], Callable[[EvalContext], CellValue] | None]
+    cache: dict[str, CellValue] = field(default_factory=dict)
+    computing: set[str] = field(default_factory=set)
+    circular_warning_roots: set[str] = field(default_factory=set)
+    helper_cache: dict[HelperCacheKey, CellValue] = field(default_factory=dict)
+    helper_computing: set[HelperCacheKey] = field(default_factory=set)
+    iterative_enabled: bool = False
+    iterate_count: int = 100
+    iterate_delta: float = 0.001
+    iteration_values: dict[str, CellValue] = field(default_factory=dict)
+    leaves: LeafStore = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        store = as_leaf_store(self.inputs) if self.inputs else as_leaf_store(self.leaves)
+        self.leaves = store
+        self.inputs = LeafInputs(store)
+
+@dataclass(slots=True)
+class EvalContext(EvalContextBase):
+    """Per-run evaluation state with dependency tracking for input invalidation."""
+
+    deps: dict[str, set[str]] = field(default_factory=dict)
+    reverse_deps: dict[str, set[str]] = field(default_factory=dict)
+    stack: list[str] = field(default_factory=list)
+
+    def _record_dependency(self, parent: str, child: str) -> None:
+        if parent == child:
+            return
+        self.deps.setdefault(parent, set()).add(child)
+        self.reverse_deps.setdefault(child, set()).add(parent)
+
+    def invalidate(self, addresses: Iterable[str]) -> None:
+        """Invalidate cached values for the given addresses and their dependents.
+
+        Helper memos are not address-dep-tracked, so any address invalidation
+        clears `helper_cache` and `helper_computing` entirely.
+        """
+        self.helper_cache.clear()
+        self.helper_computing.clear()
+
+        to_visit = list(addresses)
+        seen: set[str] = set()
+        while to_visit:
+            addr = to_visit.pop()
+            if addr in seen:
+                continue
+            seen.add(addr)
+
+            self.cache.pop(addr, None)
+            self.circular_warning_roots.discard(addr)
+            self.computing.discard(addr)
+
+            dependents = list(self.reverse_deps.get(addr, set()))
+            to_visit.extend(dependents)
+
+            for dep in self.deps.get(addr, set()):
+                parents = self.reverse_deps.get(dep)
+                if parents is not None:
+                    parents.discard(addr)
+                    if not parents:
+                        self.reverse_deps.pop(dep, None)
+
+            self.deps.pop(addr, None)
+            self.reverse_deps.pop(addr, None)
+
+    def set_inputs(self, inputs: dict[str, CellValue]) -> None:
+        """Update input values and invalidate dependent cached results.
+
+        `inputs` is NodeKey-keyed. Keys that cannot round-trip to
+        `(sheet, row, col)` raise `ValueError`.
+        """
+        parsed = as_leaf_store(inputs)
+        changed = [k for k, v in inputs.items() if self.inputs.get(k) != v]
+        overlay_leaf_inputs(self.leaves, parsed)
+        if changed:
+            self.invalidate(changed)
+
+def prepare_context_inputs(
+    default_inputs: Any,
+    constants: Any = None,
+    overlay: Any = None,
+) -> LeafStore:
+    """Copy defaults, then merge constants and a NodeKey overlay."""
+    merged = as_leaf_store(default_inputs)
+    if constants:
+        overlay_leaf_inputs(merged, constants)
+    if overlay is not None:
+        overlay_leaf_inputs(merged, overlay)
+    return merged
 
 def split_sheet_qualified_address(address: str) -> tuple[str, str] | None:
     """Split `sheet!coord` into `(sheet_name, coord)`.
@@ -754,6 +1051,9 @@ def index_excel_range(
 
     Mirrors `excel_grapher.runtime.lookup.xl_index` geometry
     so OFFSET(INDEX(...), ...) receives a true cell reference.
+
+    A `row_num` or `col_num` of `0` selects the entire column or row. Both `0`
+    returns the full `base` range.
     """
     nrows = base.end_row - base.start_row + 1
     ncols = base.end_col - base.start_col + 1
@@ -764,6 +1064,9 @@ def index_excel_range(
         r = base.start_row + r0
         c = base.start_col + c0
         return ExcelRange(base.sheet, r, c, r, c)
+
+    def full_base() -> ExcelRange:
+        return ExcelRange(base.sheet, base.start_row, base.start_col, base.end_row, base.end_col)
 
     if row_omitted and col_omitted:
         if nrows == 1 and ncols == 1:
@@ -779,6 +1082,8 @@ def index_excel_range(
         if isinstance(cn, XlError):
             return cn
         col = int(cn)
+        if col == 0:
+            return full_base()
         if col < 1 or col > ncols:
             return XlError.REF
         if nrows == 1:
@@ -792,6 +1097,8 @@ def index_excel_range(
     row = int(rn)
 
     if col_omitted:
+        if row == 0:
+            return full_base()
         if nrows == 1:
             if row < 1 or row > ncols:
                 return XlError.REF
@@ -809,6 +1116,22 @@ def index_excel_range(
     if isinstance(cn, XlError):
         return cn
     col = int(cn)
+    if row == 0 and col == 0:
+        return full_base()
+    if row == 0:
+        if col < 1 or col > ncols:
+            return XlError.REF
+        if nrows == 1:
+            return abs_cell(0, col - 1)
+        c0 = base.start_col + col - 1
+        return ExcelRange(base.sheet, base.start_row, c0, base.end_row, c0)
+    if col == 0:
+        if row < 1 or row > nrows:
+            return XlError.REF
+        if ncols == 1:
+            return abs_cell(row - 1, 0)
+        r0 = base.start_row + row - 1
+        return ExcelRange(base.sheet, r0, base.start_col, r0, base.end_col)
     if nrows == 1:
         if row < 1 or row > ncols:
             return XlError.REF
@@ -924,10 +1247,10 @@ def _evaluate_address(
         ctx.circular_warning_roots.add(root)
         return xl_circular_reference()
 
-    if address in ctx.inputs:
-        v = ctx.inputs[address]
-        ctx.cache[address] = v
-        return _raise_if_error_value(v)
+    found = lookup_leaf(ctx, address)
+    if found is not MISSING:
+        ctx.cache[address] = found
+        return _raise_if_error_value(found)
 
     fn = obtain_fn()
 
@@ -955,7 +1278,7 @@ def xl_cell(ctx: EvalContext, address: str) -> CellValue:
 
     Resolution order:
     - cached value (per ctx)
-    - user-provided inputs
+    - leaf coordinate store (`ctx.leaves` / NodeKey overlays)
     - exported formula implementation (via resolver)
     - missing cell raises KeyError
     """
@@ -974,7 +1297,13 @@ def _ctx_range(ctx: EvalContext, sheet: str, r1: int, c1: int, r2: int, c2: int)
     def resolve(address: str):
         return xl_cell(ctx, address)
 
-    return Range(sheet, r1, c1, r2, c2, resolve)
+    def resolve_coord(row: int, col: int):
+        found = leaf(ctx.leaves, sheet, row, col)
+        if found is not MISSING:
+            return found
+        return xl_cell(ctx, _format_address(sheet, row, col))
+
+    return Range(sheet, r1, c1, r2, c2, resolve, _coord_resolver=resolve_coord)
 
 def xl_compare(op: str, left: CellValue, right: CellValue) -> bool:
     """Compare two scalar operands with Excel ordering rules."""

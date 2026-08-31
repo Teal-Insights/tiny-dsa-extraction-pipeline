@@ -9,10 +9,10 @@ _LEAF_INDEX_COUNTRY_NAME = {
 }
 
 def read_country_name(ctx: EvalContext) -> CellValue:
-    """Read the selected country name from the Inputs sheet.
+    """Read the currently selected country name from the Inputs sheet.
 
-    Returns the current country name as a record.
-    Each record corresponds to the scalar cell `country_name` (Inputs!B5).
+    Returns the user-selected country name that controls the initial debt-to-GDP lookup and identifies the active scenario.
+    This scalar series maps to the single cell Inputs!B5; the constant parameter attribute appears on every record.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -41,10 +41,10 @@ def read_country_initial_debt(
     *,
     country: str,
 ) -> CellValue:
-    """Read the initial debt-to-GDP values from the country profile lookup table.
+    """Read the initial debt-to-GDP ratios from the country profile lookup table.
 
-    Returns records containing each country's initial debt-to-GDP ratio as a percentage of GDP.
-    Each record corresponds to a row in the country profile table (Inputs!A10:C12), with the COUNTRY label in column A and the OBS_VALUE in column B.
+    Returns one record per country containing its initial debt-to-GDP observation value.
+    Each record corresponds to a row in the country profile lookup table, with COUNTRY read from the row label in column A and OBS_VALUE read from the data cell in column B.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -67,10 +67,10 @@ def read_country_initial_debt(
     return xl_cell(ctx, address)
 
 def read_country_initial_debt_range(ctx: EvalContext) -> CellValue:
-    """Return the initial debt-to-GDP ratios from the country profile lookup table.
+    """Read the initial debt-to-GDP values from the country profile lookup table as a series keyed by country.
 
-    Returns the country-specific initial debt-to-GDP values for all countries in the table.
-    Each record corresponds to a row in the input range, with the country name as key.
+    Returns the initial debt-to-GDP ratio for each country profile in the lookup table.
+    Each returned record corresponds to one row in the country profile lookup table, with the country name read from column A and the initial debt-to-GDP value read from the corresponding data cell in column B.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -101,10 +101,10 @@ def read_growth_baseline(
     *,
     time_period: int,
 ) -> CellValue:
-    """Read the baseline real GDP growth rates for projection years 1–5.
+    """Read the baseline real GDP growth rates for projection years 1 through 5 from the Inputs sheet.
 
-    Returns the baseline real GDP growth trajectory as a series of records.
-    Each record corresponds to a cell in the range Inputs!C16:G16, with TIME_PERIOD derived from the column header in row 15 and OBS_VALUE from the cell value.
+    Returns the baseline real GDP growth time series as a set of records, one per projection year.
+    Each record corresponds to a projection-year column in the growth_baseline range, with TIME_PERIOD taken from the column header and OBS_VALUE from the data cell.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -127,10 +127,10 @@ def read_growth_baseline(
     return xl_cell(ctx, address)
 
 def read_growth_baseline_range(ctx: EvalContext) -> CellValue:
-    """Read the baseline real GDP growth rates from the Inputs sheet.
+    """Read the baseline real GDP growth series for projection years 1 through 5.
 
-    Returns records for the growth_baseline series representing projected real GDP growth rates for years 1 through 5.
-    Each record corresponds to a cell in the range Inputs!C16:G16, with TIME_PERIOD derived from column headers and OBS_VALUE from cell values.
+    Returns the baseline real GDP growth rates for each projection year from the Inputs sheet.
+    Each record corresponds to one projection-year cell in the growth baseline range, with TIME_PERIOD taken from the column header and OBS_VALUE from the cell value.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -161,10 +161,10 @@ def read_interest_baseline(
     *,
     time_period: int,
 ) -> CellValue:
-    """Return the baseline real interest rate assumptions.
+    """Read the baseline real interest rate series for projection years 1 through 5.
 
-    Read the real interest rate trajectory from the Inputs sheet for the five projection years.
-    Each record corresponds to one projection year: TIME_PERIOD is the year index, and OBS_VALUE holds the real interest rate.
+    Returns the baseline real interest rates used in the debt-dynamics recursion for each projection year.
+    Each record contains one projection-year observation read from the corresponding cell in the interest_baseline range.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -187,10 +187,10 @@ def read_interest_baseline(
     return xl_cell(ctx, address)
 
 def read_interest_baseline_range(ctx: EvalContext) -> CellValue:
-    """Read the baseline real interest rate series for projection years 1 through 5.
+    """Read the baseline real interest rate series for projection years 1 through 5 from the Inputs sheet.
 
-    Returns the real interest rate path from the `interest_baseline` range (Inputs!C17:G17).
-    Each record maps a projection year (`TIME_PERIOD`) to its corresponding cell value in the range, with year 1 corresponding to cell C17, year 2 to D17, and so on.
+    Returns the baseline real interest rates for years 1 through 5 as records keyed by projection year.
+    Each projection year from the column header is paired with the corresponding observation value in the data range, and the series-level indicator is applied to all returned records.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -221,10 +221,10 @@ def read_primary_balance_baseline(
     *,
     time_period: int,
 ) -> CellValue:
-    """Read the baseline primary balance path for projection years 1–5.
+    """Read the baseline primary balance path for projection years 1 through 5.
 
-    Returns the baseline primary balance series as a percentage of GDP, with positive values indicating a surplus.
-    Each record corresponds to one year in the five-year projection horizon.
+    Returns records with the baseline primary balance for each projection year.
+    Each record holds one projection year's observation, taken from the corresponding cell in the baseline primary balance data range; the projection year is read from the column header.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -249,8 +249,8 @@ def read_primary_balance_baseline(
 def read_primary_balance_baseline_range(ctx: EvalContext) -> CellValue:
     """Read the baseline primary balance path for projection years 1 through 5.
 
-    Returns the baseline primary balance values as a percentage of GDP for each projection year.
-    Each record corresponds to one cell in Inputs!C18:G18, mapping the column header year to TIME_PERIOD and the cell value to OBS_VALUE.
+    Returns the baseline primary balance series as a set of records with projection-year keys and observation values.
+    Each record maps one projection-year cell in Inputs!C18:G18, with TIME_PERIOD taken from the column header and OBS_VALUE taken from the cell value.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -275,8 +275,8 @@ _LEAF_INDEX_SHOCK_YEAR = {
 def read_shock_year(ctx: EvalContext) -> CellValue:
     """Read the shock year from the Inputs sheet.
 
-    Returns the projection year (1–5) in which the selected shock first takes effect.
-    Reads the integer value from cell B21 of the Inputs sheet and returns it as a single record.
+    Returns the first projection year in which the selected shock applies.
+    The scalar cell Inputs!B21 is read as a single record containing the observation value.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -299,10 +299,10 @@ _LEAF_INDEX_SHOCK_TYPE = {
 }
 
 def read_shock_type(ctx: EvalContext) -> CellValue:
-    """Read the shock type code that determines which parameter the shock affects.
+    """Read the user-selected shock type from the Inputs sheet.
 
-    Returns the configured shock type code, an integer indicating which parameter the shock affects.
-    The function returns a single record representing the value in cell Inputs!B22.
+    Returns the shock type that determines which baseline parameter the configured shock magnitude is applied to.
+    A single record is returned whose observation value is the current value of the shock_type cell on the Inputs sheet.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -331,10 +331,10 @@ def read_shock_magnitudes(
     *,
     shock_parameter: str,
 ) -> CellValue:
-    """Read the shock magnitudes for the three configurable shock parameters.
+    """Read shock magnitudes keyed by affected parameter.
 
-    Returns the shock magnitudes keyed by the affected shock parameter.
-    Each record corresponds to a single cell in the shock magnitude row (Inputs!B26:D26), keyed by the shock parameter name taken from the column headers.
+    Returns the shock magnitudes entered in the SHOCK TABLE section as a series of records.
+    Each record corresponds to one cell in the shock magnitude range, with the column header on the Inputs sheet supplying the affected parameter.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -357,10 +357,10 @@ def read_shock_magnitudes(
     return xl_cell(ctx, address)
 
 def read_shock_magnitudes_range(ctx: EvalContext) -> CellValue:
-    """Return the shock magnitudes from the Shock Table for all shock-affected parameters.
+    """Read the configured shock magnitudes for each shock parameter from the Inputs sheet.
 
-    Returns a list of records, each containing a shock parameter name and its associated magnitude, as read from the Shock Table.
-    Each record corresponds to a cell in the Shock Table row (cells B26:D26), with the parameter name taken from the column header in row 25.
+    Returns the shock magnitudes for each shock parameter in the SHOCK TABLE section.
+    Each record corresponds to one cell in the shock magnitudes data range, with the shock parameter identified by the cell's column header.
 
     Args:
         ctx (EvalContext): Evaluation context.
@@ -377,3 +377,121 @@ def read_shock_magnitudes_range(ctx: EvalContext) -> CellValue:
         read_shock_magnitudes_range(ctx=ctx)
     """
     return xl_range(ctx, 'Inputs!B26:D26')
+
+_LEAF_INDEX_COUNTRY_PROFILE_NAMES = {
+    (('COUNTRY', 'Borvelia'),): 'Inputs!A10',
+    (('COUNTRY', 'Litellia'),): 'Inputs!A11',
+    (('COUNTRY', 'Aurelium'),): 'Inputs!A12',
+}
+
+def read_country_profile_names(
+    ctx: EvalContext,
+    *,
+    country: str,
+) -> CellValue:
+    """Read country profile names from the country profile lookup table.
+
+    Returns the country profile names listed in the country profile table on the Inputs sheet.
+    Each record contains a country name from the row labels and the corresponding profile name from the data cells in the country profile table.
+
+    Args:
+        ctx (EvalContext): Evaluation context.
+
+    Returns:
+        CellValue: Value read from the bound cell or range.
+
+    Source binding:
+        Workbook range: Inputs!A10:A12
+        Layout: series
+        Value type: string
+
+    Examples:
+        read_country_profile_names(ctx=ctx)
+    """
+    key_tuple = (('COUNTRY', country),)
+    address = _LEAF_INDEX_COUNTRY_PROFILE_NAMES.get(key_tuple)
+    if address is None:
+        raise ValueError(f"no leaf matches key {dict(key_tuple)!r}")
+    return xl_cell(ctx, address)
+
+def read_country_profile_names_range(ctx: EvalContext) -> CellValue:
+    """Read the country profile names range as a series of country-keyed records.
+
+    Returns the country names from the country profile table that serve as MATCH lookup keys for the country selector.
+    Each cell in Inputs!A10:A12 produces one record: the row label in column A provides the COUNTRY key, and the cell value provides the observation value OBS_VALUE.
+
+    Args:
+        ctx (EvalContext): Evaluation context.
+
+    Returns:
+        CellValue: Value read from the bound cell or range.
+
+    Source binding:
+        Workbook range: Inputs!A10:A12
+        Layout: series
+        Value type: string
+
+    Examples:
+        read_country_profile_names_range(ctx=ctx)
+    """
+    return xl_range(ctx, 'Inputs!A10:A12')
+
+_LEAF_INDEX_ENGINE_YEAR_LABELS = {
+    (('TIME_PERIOD', 1),): 'Engine!C5',
+    (('TIME_PERIOD', 2),): 'Engine!D5',
+    (('TIME_PERIOD', 3),): 'Engine!E5',
+    (('TIME_PERIOD', 4),): 'Engine!F5',
+    (('TIME_PERIOD', 5),): 'Engine!G5',
+}
+
+def read_engine_year_labels(
+    ctx: EvalContext,
+    *,
+    time_period: int,
+) -> CellValue:
+    """Reads the Engine baseline projection-year labels as a series of integer records.
+
+    Returns the projection-year label for each column in the Engine baseline header range.
+    Each record maps to one cell in Engine!C5:G5, with the projection year read from the column header and the cell value as the observation.
+
+    Args:
+        ctx (EvalContext): Evaluation context.
+
+    Returns:
+        CellValue: Value read from the bound cell or range.
+
+    Source binding:
+        Workbook range: Engine!C5:G5
+        Layout: series
+        Value type: int
+
+    Examples:
+        read_engine_year_labels(ctx=ctx)
+    """
+    key_tuple = (('TIME_PERIOD', time_period),)
+    address = _LEAF_INDEX_ENGINE_YEAR_LABELS.get(key_tuple)
+    if address is None:
+        raise ValueError(f"no leaf matches key {dict(key_tuple)!r}")
+    return xl_cell(ctx, address)
+
+def read_engine_year_labels_range(ctx: EvalContext) -> CellValue:
+    """Read the projection-year label series from the Engine baseline header row.
+
+    Returns the integer projection-year labels used on the Engine baseline path for comparison with the shock year.
+    Each record corresponds to one column in the Engine!C5:G5 header range, keyed by TIME_PERIOD with the cell value as OBS_VALUE.
+
+    Args:
+        ctx (EvalContext): Evaluation context.
+
+    Returns:
+        CellValue: Value read from the bound cell or range.
+
+    Source binding:
+        Workbook range: Engine!C5:G5
+        Layout: series
+        Value type: int
+
+    Examples:
+        read_engine_year_labels_range(ctx=ctx)
+    """
+    return xl_range(ctx, 'Engine!C5:G5')

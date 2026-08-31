@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,7 +15,7 @@ class Scenario:
     """One identified input configuration plus a stable scenario id."""
 
     id: str
-    inputs: Any
+    inputs: Mapping[str, Any]
     expects_error_values: bool = False
 
 

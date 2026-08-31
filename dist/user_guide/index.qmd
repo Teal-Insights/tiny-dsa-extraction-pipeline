@@ -2,34 +2,22 @@
 title: "Introduction"
 ---
 
-Tiny DSA is a stylized debt-sustainability tool that projects a country's general-government debt-to-GDP ratio over a five-year horizon. It applies a baseline macroeconomic and fiscal path together with one configurable shock. The model is intentionally minimal: it recurses a single public-debt accounting identity annually across five periods. It is designed to be transparent and hand-traceable rather than to reproduce the indicator-and-threshold structure of an operational debt-sustainability framework.
+[^1]: Tiny DSA is a methodological artifact prepared by Teal Insights. It is not intended for policy use, is not validated against country-specific data, and is not endorsed by the IMF, the World Bank, or any other institution. The modeling choices follow the standard public-debt accounting literature; the documentation conventions follow the IMF/World Bank LIC-DSF and IMF FAD Q-CRAFT guidance documents.
 
-Tiny DSA is a Python reimplementation of the source Excel workbook. The package was produced through programmatic extraction, machine translation, and AI-assisted translation of the workbook's structure and formulas. The workbook itself contains three worksheets and fewer than sixty formula cells; this documentation presents the resulting model as a Python package rather than as a spreadsheet interface.
+Tiny DSA is a stylized debt-sustainability tool that projects a country's general-government debt-to-GDP ratio over a five-year horizon under a baseline macroeconomic and fiscal path and one configurable shock. It is intentionally minimal. The package implements a single accounting identity, recursed annually for five periods, in a codebase that mirrors a source Excel workbook totaling fewer than sixty formula cells. It does not reproduce the indicator-and-threshold structure of operational debt-sustainability frameworks.
 
-The intended reader is a domain economist familiar with the standard public-debt accounting identity who needs to understand what the model computes, what its inputs and outputs mean, and where its simplifications depart from operational practice. The debt ratio and primary balance are expressed as percentages of GDP. Real GDP growth and the real interest rate are expressed in percent per annum. The projection is carried out in real terms throughout.
+Tiny DSA is a Python reimplementation of the original Excel workbook, produced by Teal Insights using programmatic extraction, machine translation, and AI. The Python package preserves the calculation logic and inputs of the workbook while exposing it through a programmatic API.
+
+The intended reader is a domain economist familiar with the standard public-debt accounting identity, who needs to understand what the package computes, what its inputs and outputs mean, and where its simplifications depart from operational practice. The debt ratio and the primary balance are expressed as percentages of GDP. Real GDP growth and the real interest rate are expressed in percent per annum. The package projects in real terms throughout.
+
+Tiny DSA omits, deliberately, the contribution of inflation to the debt ratio (treating the recursion in real terms throughout); the exchange-rate dynamics and currency decomposition of debt that drive much of the variation in low-income-country debt trajectories; the residual financing terms that account for stock-flow adjustments, contingent-liability calls, and other below-the-line operations; and any endogenous response of the primary balance to the macroeconomic environment.[^2] The fiscal stance is taken as exogenous, the snowball factor is computed in real terms, and shocks are step changes to a single parameter from a configurable shock-year onwards. These omissions hold the package small enough to be hand-traceable end-to-end.
+
+[^2]: For the corresponding treatment in operational frameworks, see International Monetary Fund and World Bank (2018), Sections II.B–II.D and Appendix III, and the discussion in Escolano (2010).
 
 ## Installation
 
-Install the package directly from the project repository at [github.com/Teal-Insights/py-tiny-dsa](https://github.com/Teal-Insights/py-tiny-dsa):
+Install Tiny DSA from its GitHub repository using `uv add "tiny-dsa @ git+https://github.com/Teal-Insights/py-tiny-dsa"`. The source repository is available at https://github.com/Teal-Insights/py-tiny-dsa.
 
-```text
-uv add "tiny-dsa @ git+https://github.com/Teal-Insights/py-tiny-dsa"
-```
-
-## Scope and limitations
-
-Tiny DSA deliberately omits inflation's contribution to the debt ratio by treating the recursion entirely in real terms. It also omits exchange-rate dynamics and the currency composition of debt, residual financing terms such as stock-flow adjustments and contingent-liability calls, and any endogenous response of the primary balance to the macroeconomic environment. The fiscal stance is therefore exogenous, the snowball factor is computed in real terms, and shocks are step changes to a single parameter from a configurable shock year onward.
-
-These omissions keep the model small enough to inspect end to end, but they also limit its use. Tiny DSA is a methodological artifact, not a policy tool. It is not validated against country-specific data and is not endorsed by the IMF, the World Bank, or any other institution. Its modeling choices follow standard public-debt accounting literature, while its documentation conventions draw on IMF/World Bank LIC-DSF and IMF FAD Q-CRAFT guidance.
-
-## Documentation roadmap
-
-The remainder of the documentation provides:
-
-- a functional overview of the package's model structure, inputs, outputs, and workflow;
-- illustrative scenarios using the fictional country Borvelia; and
-- a detailed methodology discussion covering the debt-dynamics identity, shock specification, output realism, and modeling limitations.
-
-For the corresponding treatment in operational frameworks, see International Monetary Fund and World Bank (2018), Sections II.B–II.D and Appendix III, and Escolano (2010).
+This guide explains how to set up and use the Tiny DSA package and how to interpret its outputs. The remainder of the guide is structured as follows. Section II provides a functional overview of the package, including its module architecture, the public API, and the steps required to create a context, set baseline parameters, and configure a shock. Section III walks through three illustrative scenarios using a fictional country, Borvelia. Section IV provides a detailed discussion of the methodology, including the debt-dynamics identity, the shock specification, a realism check on the outputs, and the limitations of the modeling approach.
 
 For correctness evidence, see [Excel parity validation](user-guide/excel-parity-validation.qmd), which summarizes the exported-library differential test against the source workbook.

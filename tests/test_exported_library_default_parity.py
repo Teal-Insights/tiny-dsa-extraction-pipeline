@@ -26,6 +26,7 @@ from excel_grapher.grapher import DynamicRefConfig, create_dependency_graph
 from dist.tiny_dsa import api
 from dist.tiny_dsa._api_helpers import Record, Records
 from dist.tiny_dsa.data import CONSTANTS, DEFAULT_INPUTS
+from src.refactor_parity_gate import _nodekey_leaf_map
 
 ATOL = 1e-6
 
@@ -51,7 +52,11 @@ def workbook_oracle(tiny_dsa_configured_pipeline) -> FormulaEvaluator:
         dynamic_refs=config,
     )
     known_cells = frozenset(graph.leaf_keys()) | frozenset(graph.formula_keys())
-    for address, value in {**DEFAULT_INPUTS, **CONSTANTS}.items():
+    default_leaves = {
+        **_nodekey_leaf_map(DEFAULT_INPUTS),
+        **_nodekey_leaf_map(CONSTANTS),
+    }
+    for address, value in default_leaves.items():
         if address in known_cells:
             graph.set_node_value(address, value)
     return FormulaEvaluator(graph)

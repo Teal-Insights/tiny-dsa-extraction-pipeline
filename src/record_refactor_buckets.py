@@ -26,7 +26,10 @@ from src.codegen_cache import (
     write_generated_modules,
 )
 from src.docstring_callback import configure_docstring_callback
-from src.extraction_pipeline import build_pipeline_graph
+from src.extraction_pipeline import (
+    build_pipeline_graph,
+    stamp_projection_leaf_classification,
+)
 from src.formula_clustering import (
     BoundAddressKeys,
     ClusterableGraph,
@@ -265,6 +268,7 @@ def export_generated_modules(
     graph: DependencyGraph,
     graph_cache_key: str,
     series_bindings: WorkbookSeriesBindings,
+    leaf_classification: Mapping[str, str] | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
 ) -> tuple[Path, str]:
@@ -281,6 +285,8 @@ def export_generated_modules(
         no_cache=no_cache,
         force_rebuild=force_rebuild,
     )
+    if leaf_classification:
+        stamp_projection_leaf_classification(refactor_projection, leaf_classification)
     proj_cache_key = projection_cache_key(
         graph_cache_key=graph_cache_key,
         series_bindings_preserve=True,
@@ -751,6 +757,7 @@ def run_record_refactor_buckets(
             graph=graph_result.graph,
             graph_cache_key=graph_result.graph_cache_key,
             series_bindings=graph_result.series_bindings,
+            leaf_classification=graph_result.leaf_classification,
             no_cache=no_cache,
         )
         internal_binding_index = graph_result.internal_binding_index

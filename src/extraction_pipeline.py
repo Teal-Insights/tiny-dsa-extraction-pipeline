@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, cast, get_args, get_origin
 
 from excel_grapher.core.cell_types import normalize_cell_type_env_key
-from excel_grapher.exporter import CodeGenerator
+from excel_grapher.exporter import CodeGenerator, ProjectionResult
 from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import (
     DependencyGraph,
@@ -575,6 +575,20 @@ def classify_leaves_from_constraints(
     }
 
 
+def stamp_projection_leaf_classification(
+    projection: ProjectionResult,
+    leaf_classification: Mapping[str, str],
+) -> None:
+    """Copy constraint-derived leaf roles onto the projected graph for codegen.
+
+    ``CodeGenerator`` splits ``DEFAULT_INPUTS`` / ``CONSTANTS`` from
+    ``graph.leaf_classification``. The cached canonical graph stays unmarked so
+    shared pickle hits remain classification-free; ``ProjectionResult`` writes
+    this attribute onto ``projected_graph`` only.
+    """
+    projection.leaf_classification = dict(leaf_classification)
+
+
 def build_dependency_graph(
     config: PipelineConfig,
     *,
@@ -808,6 +822,9 @@ def run_export_stage(
         timer.record(
             "build_refactor_projection", time.perf_counter() - projection_started
         )
+        classification = graph_result.leaf_classification
+        if isinstance(classification, Mapping):
+            stamp_projection_leaf_classification(refactor_projection, classification)
         state = _generate_export_package(
             config,
             series_bindings=series_bindings,

@@ -1,39 +1,49 @@
 from __future__ import annotations
 
+from types import MappingProxyType
+
 # --- Default inputs (leaf cells) ---
 DEFAULT_INPUTS = {
-    'Engine!C5': 1,
-    'Engine!D5': 2,
-    'Engine!E5': 3,
-    'Engine!F5': 4,
-    'Engine!G5': 5,
-    'Inputs!A10': 'Borvelia',
-    'Inputs!A11': 'Litellia',
-    'Inputs!A12': 'Aurelium',
-    'Inputs!B10': 60,
-    'Inputs!B11': 80,
-    'Inputs!B12': 40,
-    'Inputs!B21': 2,
-    'Inputs!B22': 1,
-    'Inputs!B26': -2,
-    'Inputs!B5': 'Borvelia',
-    'Inputs!C16': 3.5,
-    'Inputs!C17': 4,
-    'Inputs!C18': -1,
-    'Inputs!C26': 2,
-    'Inputs!D16': 3.5,
-    'Inputs!D17': 4,
-    'Inputs!D18': -0.5,
-    'Inputs!D26': -1,
-    'Inputs!E16': 3.5,
-    'Inputs!E17': 4,
-    'Inputs!E18': 0,
-    'Inputs!F16': 3.5,
-    'Inputs!F17': 4,
-    'Inputs!F18': 0.5,
-    'Inputs!G16': 3.5,
-    'Inputs!G17': 4,
-    'Inputs!G18': 1,
+    'Inputs': {
+        (5, 2): 'Borvelia',
+        (10, 2): 60,
+        (11, 2): 80,
+        (12, 2): 40,
+        (16, 3): 3.5,
+        (16, 4): 3.5,
+        (16, 5): 3.5,
+        (16, 6): 3.5,
+        (16, 7): 3.5,
+        (17, 3): 4,
+        (17, 4): 4,
+        (17, 5): 4,
+        (17, 6): 4,
+        (17, 7): 4,
+        (18, 3): -1,
+        (18, 4): -0.5,
+        (18, 5): 0,
+        (18, 6): 0.5,
+        (18, 7): 1,
+        (21, 2): 2,
+        (22, 2): 1,
+        (26, 2): -2,
+        (26, 3): 2,
+        (26, 4): -1,
+    },
 }
 
-CONSTANTS = {}
+# --- Constant leaf values ---
+CONSTANTS = MappingProxyType({
+    'Engine': MappingProxyType({
+        (5, 3): 1,
+        (5, 4): 2,
+        (5, 5): 3,
+        (5, 6): 4,
+        (5, 7): 5,
+    }),
+    'Inputs': MappingProxyType({
+        (10, 1): 'Borvelia',
+        (11, 1): 'Litellia',
+        (12, 1): 'Aurelium',
+    }),
+})
