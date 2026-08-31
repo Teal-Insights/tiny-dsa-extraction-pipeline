@@ -48,10 +48,16 @@ def test_binding_shards_merge_into_expected_series(tiny_dsa_configured_pipeline)
         "baseline_path_internal",
         "shocked_path_internal",
     }
+    expected_constant_ids = {
+        "country_profile_names",
+        "engine_year_labels",
+    }
 
-    assert series_bindings["schema_version"] == "1.8.0"
+    assert series_bindings["schema_version"] == "1.13.0"
     series_ids = {series["id"] for series in series_bindings["series"]}
-    assert series_ids == expected_public_ids | expected_internal_ids
+    assert series_ids == (
+        expected_public_ids | expected_internal_ids | expected_constant_ids
+    )
 
 
 def test_input_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
@@ -140,6 +146,38 @@ def test_generated_records_api_computes_and_sets_values():
     updated_initial_debt = compute_output_baseline(ctx=ctx)
 
     assert updated_initial_debt[0]["OBS_VALUE"] != updated[0]["OBS_VALUE"]
+
+
+def test_constant_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
+    addresses = _series_addresses(tiny_dsa_configured_pipeline.constant_series)
+
+    assert addresses["country_profile_names"] == [
+        "Inputs!A10",
+        "Inputs!A11",
+        "Inputs!A12",
+    ]
+    assert addresses["engine_year_labels"] == [
+        "Engine!C5",
+        "Engine!D5",
+        "Engine!E5",
+        "Engine!F5",
+        "Engine!G5",
+    ]
+
+
+def test_every_constant_leaf_has_constant_series_binding(
+    tiny_dsa_configured_pipeline,
+):
+    pipeline = tiny_dsa_configured_pipeline
+    constant_leaves = {
+        key for key, kind in pipeline.leaf_classification.items() if kind == "constant"
+    }
+    bound_constant_cells = series_cell_keys(pipeline.constant_series)
+    unbound = sorted(constant_leaves - bound_constant_cells)
+
+    assert unbound == [], (
+        "Constant leaves missing from constants.bindings.yaml: " + ", ".join(unbound)
+    )
 
 
 def test_every_mutable_input_leaf_has_input_series_binding(
