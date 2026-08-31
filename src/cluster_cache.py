@@ -26,7 +26,6 @@ from src.graph_cache import (
 )
 from src.refactor_order import RefactorUnit, compute_refactor_schedule
 from src.refactor_types import ClusteringMode, VariationMode
-from src.workbook_addresses import ProjectionColumnLayout
 
 CLUSTERING_CACHE_SCHEMA_VERSION = "1.1.0"
 DEFAULT_CLUSTER_CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache" / "clusters"
@@ -43,37 +42,12 @@ def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def projection_layout_fingerprint(
-    layout: ProjectionColumnLayout | None,
-) -> str:
-    """Stable digest of ``PROJECTION_LAYOUT`` for cluster cache keying."""
-    if layout is None:
-        payload: object = None
-    else:
-        payload = {
-            "engine_sheet": layout.engine_sheet,
-            "engine_columns": list(layout.engine_columns),
-            "outputs_sheet": layout.outputs_sheet,
-            "outputs_column_to_engine": dict(layout.outputs_column_to_engine),
-            "time_period_to_engine_column": {
-                str(period): column
-                for period, column in sorted(
-                    layout.time_period_to_engine_column.items()
-                )
-            },
-            "time_period_header_row": layout.time_period_header_row,
-            "projection_dimension_id": layout.projection_dimension_id,
-        }
-    return hashlib.sha256(stable_json(payload).encode()).hexdigest()
-
-
 def cluster_cache_key(
     *,
     projection_cache_key: str,
     variation_mode: VariationMode | str,
     clustering_mode: ClusteringMode | str,
     bindings_fingerprint: str,
-    projection_layout: ProjectionColumnLayout | None = None,
 ) -> str:
     payload = {
         "cache_schema_version": CLUSTERING_CACHE_SCHEMA_VERSION,
@@ -81,7 +55,6 @@ def cluster_cache_key(
         "variation_mode": variation_mode,
         "clustering_mode": clustering_mode,
         "bindings_fingerprint": bindings_fingerprint,
-        "projection_layout": projection_layout_fingerprint(projection_layout),
         "excel_grapher_version": version("excel-grapher"),
     }
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
@@ -203,7 +176,6 @@ def get_or_build_clusters_and_schedule(
     bound_address_keys: BoundAddressKeys | None,
     address_to_series_id: AddressToSeriesId | Mapping[str, str] | None,
     workbook_path: Path,
-    layout: ProjectionColumnLayout | None,
     bindings_path: Path,
     projection_cache_key: str,
     variation_mode: VariationMode | str = "independent",
@@ -219,7 +191,6 @@ def get_or_build_clusters_and_schedule(
         variation_mode=variation_mode,
         clustering_mode=clustering_mode,
         bindings_fingerprint=fingerprint,
-        projection_layout=layout,
     )
     started = time.perf_counter()
     if not no_cache and not force_rebuild:
@@ -249,7 +220,6 @@ def get_or_build_clusters_and_schedule(
             dict(address_to_series_id) if address_to_series_id is not None else None
         ),
         workbook_path=workbook_path,
-        layout=layout,
     )
     schedule = compute_refactor_schedule(projection, clusters)
     build_elapsed = time.perf_counter() - build_started

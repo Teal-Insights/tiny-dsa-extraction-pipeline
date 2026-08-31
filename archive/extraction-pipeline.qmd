@@ -4,6 +4,13 @@ format: gfm
 output: asis
 ---
 
+> **Historical archive.** This literate notebook informed the template's early
+> workflow and is not authoritative. Prefer [README.md](../README.md),
+> [AGENTS.md](../AGENTS.md), and [technical_standard.md](../technical_standard.md)
+> for current schema versions, cache keys, artifact paths, and stage layout.
+> Figures that once lived under `docs/extraction-pipeline_files/` were removed
+> with this archive note.
+
 The illustrative Tiny DSA workbook, [data/tiny-dsa.xlsx](tiny-dsa.xlsx), was created by Teal Emery as a test case for reverse-engineering an Excel financial model with `excel-grapher` and turning it into a standalone Python library. This workbook demonstrates the extraction and export workflow. The workflow consists of three stages:
 
 1. **configure**: declare input/output series bindings, classify leaves as inputs or constants, and constrain input cells' domains

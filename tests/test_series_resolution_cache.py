@@ -73,7 +73,6 @@ def _build_graph(config, *, cache_dir: Path):
         workbook_path=config.workbook_path,
         targets=config.targets,
         constraints=config.constraints,
-        bindings_path=config.bindings_path,
         dynamic_refs=dynamic_refs,
         cache_dir=cache_dir,
     )
@@ -102,6 +101,7 @@ def test_series_resolution_cache_roundtrip(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     second = get_or_build_series_resolution(
@@ -109,6 +109,7 @@ def test_series_resolution_cache_roundtrip(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
 
@@ -121,7 +122,8 @@ def test_series_resolution_cache_roundtrip(
     assert first.constant_series == second.constant_series
     assert first.input_series
     assert first.output_series
-    assert list(first.constant_series) == []
+    assert list(first.constant_series)
+    assert first.constant_series[0]["id"] == "input_bias"
 
 
 def test_series_resolution_cache_matches_live_derive(
@@ -136,6 +138,7 @@ def test_series_resolution_cache_matches_live_derive(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     assert cached.input_series == derive_input_series(
@@ -164,6 +167,7 @@ def test_series_resolution_cache_force_rebuild(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     second = get_or_build_series_resolution(
@@ -171,6 +175,7 @@ def test_series_resolution_cache_force_rebuild(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
         force_rebuild=True,
     )
@@ -192,6 +197,7 @@ def test_series_resolution_cache_no_cache_bypasses_disk(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
         no_cache=True,
     )
@@ -203,9 +209,38 @@ def test_series_resolution_cache_no_cache_bypasses_disk(
     )
 
 
-def test_series_resolution_cache_key_follows_graph_cache_key() -> None:
-    first = series_resolution_cache_key(graph_cache_key="abc")
-    second = series_resolution_cache_key(graph_cache_key="def")
+def test_series_resolution_cache_key_follows_graph_cache_key(
+    synthetic_config,
+) -> None:
+    first = series_resolution_cache_key(
+        graph_cache_key="abc",
+        bindings_path=synthetic_config.bindings_path,
+    )
+    second = series_resolution_cache_key(
+        graph_cache_key="def",
+        bindings_path=synthetic_config.bindings_path,
+    )
+    assert first != second
+
+
+def test_series_resolution_cache_key_follows_bindings_fingerprint(
+    synthetic_config,
+    tmp_path: Path,
+) -> None:
+    alternate_bindings = tmp_path / "bindings"
+    alternate_bindings.mkdir()
+    for binding_file in synthetic_config.bindings_path.glob("*.bindings.yaml"):
+        content = binding_file.read_text(encoding="utf-8") + "\n# cache-bust\n"
+        (alternate_bindings / binding_file.name).write_text(content, encoding="utf-8")
+
+    first = series_resolution_cache_key(
+        graph_cache_key="same-graph-key",
+        bindings_path=synthetic_config.bindings_path,
+    )
+    second = series_resolution_cache_key(
+        graph_cache_key="same-graph-key",
+        bindings_path=alternate_bindings,
+    )
     assert first != second
 
 
@@ -221,6 +256,7 @@ def test_series_resolution_cache_miss_when_graph_cache_key_changes(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     other_graph_key = hashlib.sha256(b"other-graph-key").hexdigest()
@@ -229,6 +265,7 @@ def test_series_resolution_cache_miss_when_graph_cache_key_changes(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=other_graph_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
 
@@ -249,6 +286,7 @@ def test_corrupt_series_resolution_cache_is_rebuilt(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     payload_path = series_cache_dir / f"{first.cache_key}.pkl.gz"
@@ -259,6 +297,7 @@ def test_corrupt_series_resolution_cache_is_rebuilt(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     assert not second.cache_hit
@@ -276,7 +315,10 @@ def test_legacy_three_tuple_series_resolution_cache_is_rebuilt(
 
     graph_result = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
     bindings = _load_bindings(synthetic_config)
-    cache_key = series_resolution_cache_key(graph_cache_key=graph_result.cache_key)
+    cache_key = series_resolution_cache_key(
+        graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
+    )
     series_cache_dir.mkdir(parents=True, exist_ok=True)
     payload_path = series_cache_dir / f"{cache_key}.pkl.gz"
     with gzip.open(payload_path, "wb", compresslevel=1) as handle:
@@ -287,6 +329,7 @@ def test_legacy_three_tuple_series_resolution_cache_is_rebuilt(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     assert not result.cache_hit
@@ -308,6 +351,7 @@ def test_clear_series_resolution_cache_removes_entries(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     payload_path = series_cache_dir / f"{result.cache_key}.pkl.gz"
@@ -348,6 +392,7 @@ def test_get_or_build_series_resolution_prunes_other_excel_grapher_versions(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
     _write_versioned_cache_pair(
@@ -364,6 +409,7 @@ def test_get_or_build_series_resolution_prunes_other_excel_grapher_versions(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=series_cache_dir,
     )
 

@@ -61,11 +61,6 @@ _MODULE_NOT_FOUND_PATTERN = re.compile(
 )
 _OPTIONAL_IMPORT_PATTERN = re.compile(r"`Import (?P<name>[^`]+)` failed")
 
-_NAME_ERROR_PATTERN = re.compile(
-    r"NameError: (?P<message>.+)",
-    re.DOTALL,
-)
-
 
 @dataclass(frozen=True)
 class PythonCell:
@@ -114,13 +109,6 @@ def parse_missing_package(error_text: str) -> str | None:
     if module_match is not None:
         return module_match.group("name")
     return None
-
-
-def parse_name_error(error_text: str) -> str | None:
-    match = _NAME_ERROR_PATTERN.search(error_text)
-    if match is None:
-        return None
-    return match.group("message").strip()
 
 
 def merge_dev_dependencies(
@@ -320,7 +308,7 @@ def referenced_api_symbols(source: str, allowed: frozenset[str]) -> frozenset[st
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id in allowed
+            and (node.func.id in allowed)
         ):
             found.add(node.func.id)
     return frozenset(found)

@@ -44,9 +44,7 @@ async def map_as_completed[T, K, V](
             item = tasks[task]
             try:
                 key, value = task.result()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
+            except BaseException as exc:  # noqa: BLE001
                 if on_error is not None:
                     on_error(item, exc)
                 if raise_on_error and batch_error is None:

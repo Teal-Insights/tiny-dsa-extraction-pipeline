@@ -6,12 +6,34 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.extraction_pipeline import (
+    build_pipeline_graph,
     count_provenance_edges,
     export_generated_package,
     extract_dependency_graph,
     main,
 )
 from src.pipeline_config import load_pipeline_config
+
+
+def _write_empty_placeholder_bindings(bindings_dir: Path) -> None:
+    """Bootstrap shards with empty series lists and divergent concept schemes."""
+    bindings_dir.mkdir(parents=True, exist_ok=True)
+    for name, scheme_id in (
+        ("inputs.bindings.yaml", "inputs_placeholder"),
+        ("outputs.bindings.yaml", "outputs_placeholder"),
+        ("internals.bindings.yaml", "internals_placeholder"),
+    ):
+        (bindings_dir / name).write_text(
+            (
+                "schema_version: 1.13.0\n"
+                "workbook: workbook.xlsx\n"
+                "concept_scheme:\n"
+                f"  id: {scheme_id}\n"
+                "  concepts: []\n"
+                "series: []\n"
+            ),
+            encoding="utf-8",
+        )
 
 
 def test_count_provenance_edges_on_synthetic_graph(synthetic_graph) -> None:
@@ -49,8 +71,74 @@ def test_extract_dependency_graph_writes_artifacts(
     assert summary["stage_timings"]
     assert summary["elapsed_seconds"] >= sum(summary["stage_timings"].values()) - 0.01
     assert summary["output_paths"]["index_html"].endswith("dependency-graph/index.html")
-    assert result.graph_result.graph_cache_key
-    assert len(result.graph_result.graph) == 6
+    assert result.graph_cache_key
+    assert len(result.graph) == 6
+
+
+def test_extract_dependency_graph_succeeds_with_empty_binding_shards(
+    synthetic_pipeline_config_fixture,
+    tmp_path: Path,
+) -> None:
+    """Extract is graph-first: empty placeholder shards must not block the graph."""
+    bindings = tmp_path / "bindings"
+    _write_empty_placeholder_bindings(bindings)
+    output_dir = tmp_path / "dependency-graph"
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        bindings_path=bindings,
+        graph_output_dir=output_dir,
+    )
+
+    result = extract_dependency_graph(config)
+
+    assert (output_dir / "index.html").is_file()
+    assert (output_dir / "dependency-graph.json").is_file()
+    assert (output_dir / "extraction-summary.json").is_file()
+    assert result.graph_cache_key
+    assert len(result.graph) == 6
+
+
+def test_build_pipeline_graph_accepts_empty_binding_shards(
+    synthetic_pipeline_config_fixture,
+    tmp_path: Path,
+) -> None:
+    """excel-grapher 5.1.4+ loads empty ``series: []`` placeholders (unioned schemes)."""
+    bindings = tmp_path / "bindings"
+    _write_empty_placeholder_bindings(bindings)
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        bindings_path=bindings,
+        graph_output_dir=tmp_path / "dependency-graph",
+    )
+
+    result = build_pipeline_graph(config)
+
+    assert result.series_bindings["series"] == []
+    assert result.input_series == []
+    assert result.output_series == []
+    assert result.internal_series == []
+    assert result.graph_cache_key
+    assert len(result.graph) == 6
+
+
+def test_extract_dependency_graph_succeeds_without_binding_yaml_files(
+    synthetic_pipeline_config_fixture,
+    tmp_path: Path,
+) -> None:
+    bindings = tmp_path / "bindings"
+    bindings.mkdir()
+    output_dir = tmp_path / "dependency-graph"
+    config = replace(
+        synthetic_pipeline_config_fixture,
+        bindings_path=bindings,
+        graph_output_dir=output_dir,
+    )
+
+    result = extract_dependency_graph(config)
+
+    assert (output_dir / "index.html").is_file()
+    assert result.graph_cache_key
+    assert len(result.graph) == 6
 
 
 def test_extract_graph_cli_exits_zero_on_synthetic_workbook(
@@ -63,9 +151,11 @@ def test_extract_graph_cli_exits_zero_on_synthetic_workbook(
         graph_output_dir=output_dir,
     )
 
-    with patch("src.extraction_pipeline.load_pipeline_config", return_value=config):
-        with patch("src.extraction_pipeline.validate_pipeline_config"):
-            main(["--extract-graph"])
+    with (
+        patch("src.extraction_pipeline.load_pipeline_config", return_value=config),
+        patch("src.extraction_pipeline.validate_pipeline_config"),
+    ):
+        main(["--extract-graph"])
 
     assert (output_dir / "extraction-summary.json").is_file()
 
@@ -79,9 +169,9 @@ def test_main_without_extract_graph_flag_runs_full_pipeline(
             return_value=synthetic_pipeline_config_fixture,
         ),
         patch("src.extraction_pipeline.validate_pipeline_config"),
+        patch("src.extraction_pipeline.run_pipeline") as pipeline,
     ):
-        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-            main([])
+        main([])
 
     pipeline.assert_called_once()
     assert pipeline.call_args.kwargs["stop_after_stage"] == "document"
@@ -299,9 +389,9 @@ def test_main_passes_cli_variation_mode_to_pipeline(
             return_value=synthetic_pipeline_config_fixture,
         ),
         patch("src.extraction_pipeline.validate_pipeline_config"),
+        patch("src.extraction_pipeline.run_pipeline") as pipeline,
     ):
-        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-            main(["--variation-mode", "dominant_key_only"])
+        main(["--variation-mode", "dominant_key_only"])
 
     pipeline.assert_called_once()
     assert pipeline.call_args.args[0].variation_mode == "dominant_key_only"
@@ -316,9 +406,9 @@ def test_main_passes_cli_clustering_mode_to_pipeline(
             return_value=synthetic_pipeline_config_fixture,
         ),
         patch("src.extraction_pipeline.validate_pipeline_config"),
+        patch("src.extraction_pipeline.run_pipeline") as pipeline,
     ):
-        with patch("src.extraction_pipeline.run_pipeline") as pipeline:
-            main(["--clustering-mode", "ast"])
+        main(["--clustering-mode", "ast"])
 
     pipeline.assert_called_once()
     assert pipeline.call_args.args[0].clustering_mode == "ast"

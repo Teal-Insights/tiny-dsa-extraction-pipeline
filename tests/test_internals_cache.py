@@ -58,9 +58,11 @@ def _key_kwargs(
     mechanical_body_schema_version: str = MECHANICAL_BODY_SCHEMA_VERSION,
     parity_gate_schema_version: str = PARITY_GATE_SCHEMA_VERSION,
     mechanical_refactor_bodies: str = "1",
-    refactor_model: str = "gpt-5.5",
+    refactor_model: str | None = None,
     excel_grapher_version: str | None = None,
 ) -> _InternalsKeyKwargs:
+    from src.internals_refactor import refactor_model as current_refactor_model
+
     return {
         "codegen_cache_key": codegen_cache_key,
         "clusters_cache_key": clusters_cache_key,
@@ -68,7 +70,9 @@ def _key_kwargs(
         "mechanical_body_schema_version": mechanical_body_schema_version,
         "parity_gate_schema_version": parity_gate_schema_version,
         "mechanical_refactor_bodies": mechanical_refactor_bodies,
-        "refactor_model": refactor_model,
+        "refactor_model": (
+            current_refactor_model() if refactor_model is None else refactor_model
+        ),
         "excel_grapher_version": (
             excel_grapher_version
             if excel_grapher_version is not None
@@ -94,7 +98,6 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
             documentation_url="https://example.com/",
         ),
         docstring_callback_name="series_docs",
-        projection_layout=None,
         canonical_api_example_path=repo_root / "templates" / "canonical-api-usage.md",
         binding_authoring_prompt_path=repo_root
         / "templates"

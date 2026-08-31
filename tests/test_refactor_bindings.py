@@ -11,7 +11,6 @@ from src.refactor_bindings import (
     KeyConceptSpec,
     build_address_to_series_id,
     build_bound_address_keys,
-    engine_column_from_member_keys,
     expected_member_keys_for_cluster,
     helper_parameters_for_varying_keys,
     key_concept_vocabulary_from_bindings,
@@ -19,7 +18,6 @@ from src.refactor_bindings import (
     resolve_dimension_key,
     varying_key_concepts,
 )
-from src.workbook_addresses import ProjectionColumnLayout
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SHARED_TIME_PERIOD_BINDINGS = FIXTURES / "bindings_shared_time_period"
@@ -49,7 +47,7 @@ def test_load_key_concept_vocabulary_falls_back_to_concept_when_id_omitted(
     bindings.mkdir()
     (bindings / "internals.bindings.yaml").write_text(
         """
-schema_version: 1.10.0
+schema_version: 1.13.0
 workbook: workbook.xlsx
 concept_scheme:
   id: legacy
@@ -186,11 +184,7 @@ def test_build_bound_address_keys_internal_overrides_constant_on_shared_address(
     assert bound["Engine!C10"] == {"TIME_PERIOD": 2000}
 
 
-def test_varying_and_expected_member_keys_use_dimension_ids(
-    tmp_path: Path,
-) -> None:
-    workbook = tmp_path / "workbook.xlsx"
-    workbook.write_bytes(b"")
+def test_varying_and_expected_member_keys_use_dimension_ids() -> None:
     bound = {
         "Engine!C10": {"PROJECTION_PERIOD": 1, "REFERENCE_PERIOD": 0},
         "Engine!D10": {"PROJECTION_PERIOD": 2, "REFERENCE_PERIOD": 0},
@@ -198,56 +192,16 @@ def test_varying_and_expected_member_keys_use_dimension_ids(
     varying = varying_key_concepts(
         ("Engine!C10", "Engine!D10"),
         bound_address_keys=bound,
-        workbook_path=workbook,
     )
     assert varying == frozenset({"PROJECTION_PERIOD"})
     expected = expected_member_keys_for_cluster(
         ("Engine!C10", "Engine!D10"),
         bound_address_keys=bound,
-        workbook_path=workbook,
     )
     assert expected == {
         "Engine!C10": {"PROJECTION_PERIOD": 1},
         "Engine!D10": {"PROJECTION_PERIOD": 2},
     }
-
-
-def test_engine_column_from_member_keys_uses_projection_dimension_id() -> None:
-    layout = ProjectionColumnLayout(
-        engine_sheet="Engine",
-        engine_columns=("C", "D"),
-        outputs_sheet="Outputs",
-        outputs_column_to_engine={},
-        time_period_to_engine_column={1: "C", 2: "D"},
-        projection_dimension_id="PROJECTION_PERIOD",
-    )
-    assert (
-        engine_column_from_member_keys(
-            {"PROJECTION_PERIOD": 2, "REFERENCE_PERIOD": 0},
-            address="Engine!D10",
-            layout=layout,
-        )
-        == "D"
-    )
-
-
-def test_engine_column_from_member_keys_falls_back_to_time_period_concept() -> None:
-    layout = ProjectionColumnLayout(
-        engine_sheet="Engine",
-        engine_columns=("C", "D"),
-        outputs_sheet="Outputs",
-        outputs_column_to_engine={},
-        time_period_to_engine_column={1: "C", 2: "D"},
-        projection_dimension_id="PROJECTION_PERIOD",
-    )
-    assert (
-        engine_column_from_member_keys(
-            {"TIME_PERIOD": 1},
-            address="Engine!C10",
-            layout=layout,
-        )
-        == "C"
-    )
 
 
 def test_helper_parameters_for_varying_keys_indexes_by_dimension_id() -> None:

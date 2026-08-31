@@ -33,7 +33,12 @@ from fastpyxl.utils.cell import (
 )
 
 AuditSeverity = Literal["error", "warning"]
-DIRECTIONS: tuple[BindingDirection, ...] = ("input", "output", "internal")
+DIRECTIONS: tuple[BindingDirection, ...] = (
+    "input",
+    "output",
+    "internal",
+    "constant",
+)
 
 
 @dataclass(frozen=True)

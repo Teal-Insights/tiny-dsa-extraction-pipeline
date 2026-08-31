@@ -22,10 +22,14 @@ from excel_grapher.series_bindings import (
 )
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
-from src.graph_cache import prune_cache_entries_for_other_excel_grapher_versions
+from src.graph_cache import (
+    bindings_fingerprint,
+    prune_cache_entries_for_other_excel_grapher_versions,
+)
 
+# 1.2.0: key includes bindings_fingerprint independently of graph_cache_key.
 # 1.1.0: payload is (input, output, internal, constant); 1.0.0 was a 3-tuple.
-SERIES_RESOLUTION_CACHE_SCHEMA_VERSION = "1.1.0"
+SERIES_RESOLUTION_CACHE_SCHEMA_VERSION = "1.2.0"
 DEFAULT_SERIES_RESOLUTION_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "series-resolution"
 )
@@ -44,10 +48,11 @@ def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def series_resolution_cache_key(*, graph_cache_key: str) -> str:
+def series_resolution_cache_key(*, graph_cache_key: str, bindings_path: Path) -> str:
     payload = {
         "cache_schema_version": SERIES_RESOLUTION_CACHE_SCHEMA_VERSION,
         "graph_cache_key": graph_cache_key,
+        "bindings_fingerprint": bindings_fingerprint(bindings_path),
         "excel_grapher_version": version("excel-grapher"),
     }
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
@@ -187,12 +192,16 @@ def get_or_build_series_resolution(
     *,
     workbook_path: Path,
     graph_cache_key: str,
+    bindings_path: Path,
     cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
 ) -> SeriesResolutionCacheResult:
     resolved_cache_dir = _series_resolution_cache_dir(cache_dir)
-    cache_key = series_resolution_cache_key(graph_cache_key=graph_cache_key)
+    cache_key = series_resolution_cache_key(
+        graph_cache_key=graph_cache_key,
+        bindings_path=bindings_path,
+    )
     started = time.perf_counter()
     if not no_cache and not force_rebuild:
         loaded = load_series_resolution_payload(cache_key, cache_dir=resolved_cache_dir)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Literal
 
 import pytest
@@ -769,6 +770,40 @@ def test_sample_input_vectors_respects_domains_and_is_deterministic() -> None:
         seed=0,
     )
     assert vectors == again
+
+
+def test_sample_input_vectors_flattens_exported_sparse_leaf_stores() -> None:
+    """Parity sampling is NodeKey-keyed even when data.py uses LeafStore maps."""
+    constraints = {
+        "Inputs!C16": Annotated[float, RealBetween(-10.0, 15.0)],
+        "Inputs!B21": Annotated[int, Between(1, 5)],
+    }
+    default_inputs = {
+        "Inputs": {(16, 3): 3.5, (21, 2): 2},
+    }
+    constants = MappingProxyType(
+        {
+            "Inputs": MappingProxyType({(10, 1): "Borvelia"}),
+            "Engine": MappingProxyType({(5, 3): 1}),
+        }
+    )
+
+    vectors = sample_input_vectors(
+        constraints=constraints,
+        default_inputs=default_inputs,
+        constants=constants,
+        count=0,
+        seed=0,
+    )
+
+    assert vectors[0]["Inputs!C16"] == 3.5
+    assert vectors[0]["Inputs!B21"] == 2
+    assert vectors[0]["Inputs!A10"] == "Borvelia"
+    assert vectors[0]["Engine!C5"] == 1
+    probe_vectors = vectors[1:]
+    assert {
+        (vector["Inputs!C16"], vector["Inputs!B21"]) for vector in probe_vectors
+    } == {(-10.0, 2), (15.0, 2), (0.0, 2), (3.5, 1), (3.5, 5)}
 
 
 RECURRENCE_PRISTINE = (

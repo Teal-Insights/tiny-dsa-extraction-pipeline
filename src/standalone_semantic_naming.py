@@ -153,7 +153,7 @@ def _is_suspected_mechanical_helper(node: ast.FunctionDef) -> bool:
     """
     if node.name.startswith("cell_") or node.name.startswith("_"):
         return False
-    return bool(node.args.args and node.args.args[0].arg == "ctx")
+    return not (not node.args.args or node.args.args[0].arg != "ctx")
 
 
 def build_standalone_naming_prompt(helper: DiscoveredNamingHelper) -> str:

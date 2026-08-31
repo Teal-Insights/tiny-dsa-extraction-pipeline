@@ -17,10 +17,10 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ContextManager, Protocol
+from typing import Any, Protocol
 
 from src.pipeline_monitor import StageTimer
 
@@ -202,7 +202,7 @@ def _detached_stage() -> Iterator[StageTimer]:
 def stage_span(
     timings: PipelineTimings | None,
     name: str,
-) -> ContextManager[StageTimer]:
+) -> AbstractContextManager[StageTimer]:
     """Open stage ``name``, recording it only when ``timings`` was threaded in.
 
     Stage entry points are also callable standalone (scripts, tests), where

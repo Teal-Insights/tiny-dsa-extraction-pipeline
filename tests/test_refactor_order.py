@@ -50,15 +50,23 @@ def _interleaved_family_cycle_schedule(
     return _InterleavedProjection(), (cluster_a, cluster_b)
 
 
-def test_refactor_projection_uses_optimal_compression(synthetic_graph) -> None:
-    projection = build_refactor_projection(synthetic_graph)
+def test_refactor_projection_uses_optimal_compression(
+    synthetic_graph,
+    synthetic_series_bindings,
+    synthetic_workbook_path,
+) -> None:
+    projection = build_refactor_projection(
+        synthetic_graph,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_workbook_path,
+    )
     manifest = projection.manifest
     assert isinstance(manifest, BaseProjectionManifest)
     assert manifest.kind == "optimal_compression"
     assert len(projection) <= len(synthetic_graph)
 
 
-def test_cluster_graph_formulas_finds_parallel_engine_row(
+def test_cluster_graph_formulas_finds_parallel_outputs_row(
     synthetic_projection,
     synthetic_bound_address_keys,
     synthetic_pipeline_config_fixture,
@@ -68,12 +76,13 @@ def test_cluster_graph_formulas_finds_parallel_engine_row(
         bound_address_keys=synthetic_bound_address_keys,
         clustering_mode="ast",
         workbook_path=synthetic_pipeline_config_fixture.workbook_path,
-        layout=synthetic_pipeline_config_fixture.projection_layout,
     )
     parallel = next(
-        cluster for cluster in clusters if cluster.members == ("Engine!B2", "Engine!C2")
+        cluster
+        for cluster in clusters
+        if cluster.members == ("Outputs!B1", "Outputs!C1")
     )
-    assert parallel.row == 2
+    assert parallel.row == 1
 
 
 def test_compute_cluster_refactor_order_respects_dependencies(
@@ -86,13 +95,11 @@ def test_compute_cluster_refactor_order_respects_dependencies(
         bound_address_keys=synthetic_bound_address_keys,
         clustering_mode="ast",
         workbook_path=synthetic_pipeline_config_fixture.workbook_path,
-        layout=synthetic_pipeline_config_fixture.projection_layout,
     )
     ordered = compute_cluster_refactor_order(synthetic_projection, clusters)
 
-    assert len(ordered) == 2
-    assert ordered[0].members == ("Engine!B2", "Engine!C2")
-    assert ordered[1].members == ("Outputs!B1", "Outputs!C1")
+    assert len(ordered) == 1
+    assert ordered[0].members == ("Outputs!B1", "Outputs!C1")
     assert_valid_cluster_refactor_order(synthetic_projection, ordered)
     assert len({cluster.cluster_id for cluster in ordered}) == len(ordered)
 
@@ -140,7 +147,6 @@ def test_compute_cluster_refactor_order_includes_all_eligible_clusters(
         bound_address_keys=synthetic_bound_address_keys,
         clustering_mode="ast",
         workbook_path=synthetic_pipeline_config_fixture.workbook_path,
-        layout=synthetic_pipeline_config_fixture.projection_layout,
     )
     eligible = [cluster for cluster in clusters if cluster.members]
     ordered = compute_cluster_refactor_order(synthetic_projection, clusters)
@@ -158,7 +164,6 @@ def test_compute_refactor_schedule_dag_matches_cluster_order(
         bound_address_keys=synthetic_bound_address_keys,
         clustering_mode="ast",
         workbook_path=synthetic_pipeline_config_fixture.workbook_path,
-        layout=synthetic_pipeline_config_fixture.projection_layout,
     )
     ordered_clusters = compute_cluster_refactor_order(synthetic_projection, clusters)
     units = compute_refactor_schedule(synthetic_projection, clusters)

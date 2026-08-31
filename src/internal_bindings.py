@@ -99,11 +99,12 @@ def binding_node_labels(
 
         node = graph.get_node(key)
         parts = [key]
-        if include_formula_on_nodes and node is not None and node.formula:
-            formula = node.formula
-            if max_formula_length is not None and len(formula) > max_formula_length:
-                formula = f"{formula[:max_formula_length]}..."
-            parts.append(formula)
+        if include_formula_on_nodes and node is not None:
+            formula = node.formula or node.normalized_formula
+            if formula is not None:
+                if max_formula_length is not None and len(formula) > max_formula_length:
+                    formula = f"{formula[:max_formula_length]}..."
+                parts.append(formula)
         if key_text is not None:
             parts.append(f"keys: {key_text}")
         if record_text is not None:

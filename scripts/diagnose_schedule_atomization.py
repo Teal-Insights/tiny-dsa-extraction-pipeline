@@ -15,19 +15,22 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.extraction_pipeline import build_pipeline_graph  # noqa: E402
-from src.formula_clustering import FormulaCluster, cluster_graph_formulas  # noqa: E402
-from src.pipeline_config import load_pipeline_config, validate_pipeline_config  # noqa: E402
-from src.refactor_order import (  # noqa: E402
+from src.extraction_pipeline import build_pipeline_graph
+from src.formula_clustering import FormulaCluster, cluster_graph_formulas
+from src.pipeline_config import (
+    load_pipeline_config,
+    validate_pipeline_config,
+)
+from src.refactor_order import (
     ScheduleDiagnostics,
     compute_refactor_schedule_with_diagnostics,
 )
-from src.series_remodel_diagnostics import (  # noqa: E402
+from src.series_remodel_diagnostics import (
     format_remodel_recommendations,
     recommend_series_remodels,
     shredded_series_from_schedule,
 )
-from src.subgraph_projection import build_refactor_projection  # noqa: E402
+from src.subgraph_projection import build_refactor_projection
 
 
 def _percentile(sorted_values: list[int], fraction: float) -> float:
@@ -237,6 +240,8 @@ def main() -> None:
     graph_result = build_pipeline_graph(config, no_cache=args.no_cache)
     projection = build_refactor_projection(
         graph_result.graph,
+        series_bindings=graph_result.series_bindings,
+        bindings_workbook=config.workbook_path,
         graph_cache_key=graph_result.graph_cache_key,
         no_cache=args.no_cache,
     )
@@ -250,7 +255,6 @@ def main() -> None:
         clustering_mode=config.clustering_mode,
         address_to_series_id=address_to_series_id,
         workbook_path=config.workbook_path,
-        layout=config.projection_layout,
     )
     clusters_by_id = {cluster.cluster_id: cluster for cluster in clusters}
 

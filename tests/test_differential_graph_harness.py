@@ -235,8 +235,15 @@ def test_parse_args_rejects_removed_warn_flag() -> None:
         harness.parse_args(["--warn-on-error-values"])
 
 
-def test_run_differential_test_requires_scenarios(tmp_path: Path) -> None:
+def test_run_differential_test_requires_scenarios(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gate stays empty-hooks even when derived repos author a real matrix."""
     harness = _load_harness_module()
+    monkeypatch.setattr(harness, "build_axes", lambda: ())
+    monkeypatch.setattr(harness, "build_scenarios", lambda: ())
+    monkeypatch.setattr(harness, "output_cell_labels", lambda: ())
+    (tmp_path / "workbook.xlsx").write_bytes(b"stub")
     config = harness.GraphDifferentialConfig(
         repo_root=tmp_path,
         workbook_path=tmp_path / "workbook.xlsx",
@@ -257,19 +264,35 @@ def test_parse_address_after_normalize_key_handles_spaced_sheet_names() -> None:
     )
 
 
-def test_mvp_graph_driver_normalizes_sheet_names_with_spaces(tmp_path: Path) -> None:
-    harness = _load_harness_module()
-    canonical_key = normalize_key("Discrete Risks!H2")
+def _mock_graph_with_leaf(canonical_key: str) -> MagicMock:
     mock_graph = MagicMock()
     mock_graph.leaf_keys.return_value = [canonical_key]
     mock_graph.formula_keys.return_value = []
     mock_node = MagicMock()
     mock_node.value = 0
     mock_graph.get_node.return_value = mock_node
+    return mock_graph
+
+
+def _cached_graph_result(graph: MagicMock):
+    from src.graph_cache import DependencyGraphCacheResult
+
+    return DependencyGraphCacheResult(
+        graph=graph,
+        cache_key="hit-key",
+        cache_hit=True,
+        elapsed_seconds=0.0,
+    )
+
+
+def test_mvp_graph_driver_normalizes_sheet_names_with_spaces(tmp_path: Path) -> None:
+    harness = _load_harness_module()
+    canonical_key = normalize_key("Discrete Risks!H2")
+    mock_graph = _mock_graph_with_leaf(canonical_key)
 
     with patch(
-        "tests.differential.differential_test_graph.create_dependency_graph",
-        return_value=mock_graph,
+        "tests.differential.differential_test_graph.try_load_cached_dependency_graph",
+        return_value=_cached_graph_result(mock_graph),
     ):
         driver = harness.MvpGraphDriver(
             tmp_path / "workbook.xlsx",
@@ -280,6 +303,92 @@ def test_mvp_graph_driver_normalizes_sheet_names_with_spaces(tmp_path: Path) -> 
     driver.set_inputs({"Discrete Risks!H2": 42})
     assert "Discrete Risks!H2" not in driver.missing_cells
     mock_graph.set_node_value.assert_called_once_with(canonical_key, 42)
+
+
+def test_mvp_graph_driver_prefers_committed_warm_cache(tmp_path: Path) -> None:
+    """Warm committed cache hit must not cold-build or write via get_or_build."""
+    from src.graph_cache import COMMITTED_GRAPH_CACHE_DIR
+
+    harness = _load_harness_module()
+    mock_graph = _mock_graph_with_leaf(normalize_key("Inputs!A1"))
+    workbook = tmp_path / "workbook.xlsx"
+    targets = ("Outputs!B1",)
+    constraints = {"Inputs!A1": float}
+
+    with (
+        patch(
+            "tests.differential.differential_test_graph.try_load_cached_dependency_graph",
+            return_value=_cached_graph_result(mock_graph),
+        ) as try_load,
+        patch(
+            "tests.differential.differential_test_graph.get_or_build_dependency_graph",
+        ) as get_or_build,
+        patch("src.graph_cache.create_dependency_graph") as create,
+    ):
+        driver = harness.MvpGraphDriver(
+            workbook,
+            targets=targets,
+            constraints=constraints,
+        )
+
+    assert driver._graph is mock_graph
+    try_load.assert_called_once()
+    kwargs = try_load.call_args.kwargs
+    assert kwargs["workbook_path"] == workbook
+    assert kwargs["targets"] == targets
+    assert kwargs["constraints"] == constraints
+    assert kwargs["load_values"] is True
+    assert kwargs["capture_dependency_provenance"] is True
+    assert kwargs["cache_dir"] is COMMITTED_GRAPH_CACHE_DIR
+    get_or_build.assert_not_called()
+    create.assert_not_called()
+
+
+def test_mvp_graph_driver_builds_via_cache_helper_on_committed_miss(
+    tmp_path: Path,
+) -> None:
+    """Cache miss must use get_or_build (save), never bare create_dependency_graph."""
+    from src.graph_cache import DEFAULT_GRAPH_CACHE_DIR
+
+    harness = _load_harness_module()
+    mock_graph = _mock_graph_with_leaf(normalize_key("Inputs!A1"))
+    workbook = tmp_path / "workbook.xlsx"
+    targets = ("Outputs!B1",)
+    constraints = {"Inputs!A1": float}
+    built = _cached_graph_result(mock_graph)
+
+    with (
+        patch(
+            "tests.differential.differential_test_graph.try_load_cached_dependency_graph",
+            return_value=None,
+        ) as try_load,
+        patch(
+            "tests.differential.differential_test_graph.get_or_build_dependency_graph",
+            return_value=built,
+        ) as get_or_build,
+        patch("src.graph_cache.create_dependency_graph") as create,
+    ):
+        driver = harness.MvpGraphDriver(
+            workbook,
+            targets=targets,
+            constraints=constraints,
+        )
+
+    assert driver._graph is mock_graph
+    try_load.assert_called_once()
+    get_or_build.assert_called_once()
+    kwargs = get_or_build.call_args.kwargs
+    assert kwargs["workbook_path"] == workbook
+    assert kwargs["targets"] == targets
+    assert kwargs["constraints"] == constraints
+    assert kwargs["load_values"] is True
+    assert kwargs["capture_dependency_provenance"] is True
+    assert (
+        kwargs.get("cache_dir") is None
+        or kwargs["cache_dir"] is DEFAULT_GRAPH_CACHE_DIR
+    )
+    assert "dynamic_refs" in kwargs
+    create.assert_not_called()
 
 
 def test_absent_input_preflight_uses_normalized_keys() -> None:

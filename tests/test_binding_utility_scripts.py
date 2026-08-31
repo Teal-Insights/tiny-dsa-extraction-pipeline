@@ -15,7 +15,6 @@ from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.resolve import BindingDirection
 
-from scripts.internal_binding_burndown import load_graph
 from scripts.regenerate_graph_cache import (
     graph_cache_target_bundles,
     regenerate_graph_cache,
@@ -39,6 +38,7 @@ from src.cluster_cache import COMMITTED_CLUSTER_CACHE_DIR
 from src.graph_cache import (
     dependency_graph_cache_key,
     load_dependency_graph,
+    load_pipeline_dependency_graph,
     prune_stale_graph_cache_entries,
     save_dependency_graph,
 )
@@ -187,10 +187,6 @@ def _monkeypatch_temp_graph_cache(
         cluster_cache,
         "COMMITTED_CLUSTER_CACHE_DIR",
         resolved_cluster_cache_dir,
-    )
-    monkeypatch.setattr(
-        "scripts.internal_binding_burndown.DEFAULT_GRAPH_CACHE_DIR",
-        cache_dir,
     )
     monkeypatch.setattr(
         "scripts.regenerate_graph_cache.COMMITTED_GRAPH_CACHE_DIR",
@@ -572,7 +568,6 @@ def test_committed_graph_cache_is_fresh_when_present(
         workbook_path=config.workbook_path,
         targets=config.targets,
         constraints=config.constraints,
-        bindings_path=config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -619,7 +614,7 @@ def test_internal_binding_burndown_groups_unbound_formula_cells(
     _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
     regenerate_graph_cache(force=True)
 
-    graph, _cache_key = load_graph(config)
+    graph, _cache_key = load_pipeline_dependency_graph(config)
     bindings = load_series_bindings(config.bindings_path)
     unbound = find_unbound_internal_formula_cells_from_manifest(
         graph=graph,
@@ -638,7 +633,7 @@ def test_internal_binding_burndown_groups_unbound_formula_cells(
     assert suggested_layout_for_row(grouped["Engine"][2]) == "row_series"
 
 
-def test_internal_binding_burndown_warns_when_cached_graph_is_stale(
+def test_internal_binding_burndown_does_not_warn_when_only_bindings_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -671,14 +666,51 @@ def test_internal_binding_burndown_warns_when_cached_graph_is_stale(
         encoding="utf-8",
     )
 
-    load_graph(config)
+    load_pipeline_dependency_graph(config)
+    captured = capsys.readouterr()
+
+    assert "Warning: newest cached graph key does not match" not in captured.out
+
+
+def test_internal_binding_burndown_warns_when_cached_graph_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workbook_path = tmp_path / "workbook.xlsx"
+    write_synthetic_workbook(workbook_path)
+    bindings_path = tmp_path / "bindings"
+    bindings_path.mkdir()
+    fixture_bindings = Path(__file__).resolve().parent / "fixtures" / "synthetic"
+    for name in (
+        "inputs.bindings.yaml",
+        "outputs.bindings.yaml",
+        "internals.bindings.yaml",
+    ):
+        source = fixture_bindings / name
+        (bindings_path / name).write_text(source.read_text(encoding="utf-8"))
+
+    config = replace(
+        synthetic_pipeline_config(workbook_path=workbook_path),
+        bindings_path=bindings_path,
+    )
+    cache_dir = tmp_path / "dependency-graph"
+
+    _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
+    regenerate_graph_cache(force=True)
+
+    workbook_path.write_bytes(workbook_path.read_bytes() + b"changed")
+
+    load_pipeline_dependency_graph(config)
     captured = capsys.readouterr()
 
     assert "Warning: newest cached graph key does not match" in captured.out
     assert "regenerate_graph_cache" in captured.out
+    warning_line = captured.out.split("Warning:", 1)[1].split("\n", 1)[0]
+    assert "bindings" not in warning_line
 
 
-def test_load_graph_prefers_fingerprint_match_over_newer_stale_pickle(
+def test_load_pipeline_dependency_graph_prefers_fingerprint_match_over_newer_stale_pickle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -694,7 +726,6 @@ def test_load_graph_prefers_fingerprint_match_over_newer_stale_pickle(
         workbook_path=config.workbook_path,
         targets=config.targets,
         constraints=config.constraints,
-        bindings_path=config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -714,7 +745,7 @@ def test_load_graph_prefers_fingerprint_match_over_newer_stale_pickle(
     newer_mtime = matched_payload.stat().st_mtime + 10
     os.utime(stale_payload, (newer_mtime, newer_mtime))
 
-    graph, cache_key = load_graph(config)
+    graph, cache_key = load_pipeline_dependency_graph(config)
     captured = capsys.readouterr()
 
     assert cache_key == expected_key
@@ -735,15 +766,11 @@ def test_internal_binding_burndown_reports_no_unbound_cells_for_synthetic(
 
     monkeypatch.setattr(graph_cache, "DEFAULT_GRAPH_CACHE_DIR", cache_dir)
     monkeypatch.setattr(
-        "scripts.internal_binding_burndown.DEFAULT_GRAPH_CACHE_DIR",
-        cache_dir,
-    )
-    monkeypatch.setattr(
         "scripts.internal_binding_burndown.load_pipeline_config",
         lambda: config,
     )
 
-    graph, _cache_key = load_graph(config)
+    graph, _cache_key = load_pipeline_dependency_graph(config)
     bindings = load_series_bindings(config.bindings_path)
     unbound = find_unbound_internal_formula_cells_from_manifest(
         graph=graph,
@@ -765,7 +792,7 @@ def test_binding_catalog_roundtrip_matches_synthetic_fixtures(
     catalog = load_binding_catalog(catalog_path)
     documents = build_binding_documents(catalog)
 
-    for direction in ("inputs", "outputs", "internals"):
+    for direction in ("inputs", "outputs", "internals", "constants"):
         fixture_path = (
             Path(__file__).resolve().parent
             / "fixtures"
@@ -834,6 +861,59 @@ def test_binding_guidance_documents_unique_vs_shared_compute_names() -> None:
     assert "compute_/set_" in prompt or "compute_" in prompt
 
 
+def test_binding_guidance_documents_constant_direction() -> None:
+    """Authoring materials teach constant: {} for reader-only graph leaves."""
+    root = Path(__file__).resolve().parents[1]
+    bindings_readme = (root / "bindings" / "README.md").read_text(encoding="utf-8")
+    pipeline_readme = (root / "README.md").read_text(encoding="utf-8")
+    prompt = (root / "templates" / "binding-authoring-prompt.txt").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (bindings_readme, pipeline_readme, prompt):
+        lowered = text.lower()
+        assert "constant: {}" in text
+        assert "constants.bindings.yaml" in lowered
+        assert "read_" in lowered
+        assert "set_" in lowered
+        assert (
+            "xl_cell" in lowered
+            or "formula-body" in lowered
+            or "phase 2" in lowered
+            or "body rewrite" in lowered
+        )
+
+    assert "non_leaf_constant_overlap" in bindings_readme
+    assert "bind.kind: constant" in bindings_readme
+    assert (
+        "derive_constant_series" in pipeline_readme
+        or "derive_constant_series" in prompt
+    )
+
+
+def test_binding_resolution_audit_directions_include_constant() -> None:
+    from src.binding_resolution_audit import DIRECTIONS
+
+    assert DIRECTIONS == ("input", "output", "internal", "constant")
+
+
+def test_binding_catalog_emits_constants_sidecar() -> None:
+    catalog_path = (
+        Path(__file__).resolve().parents[1]
+        / "templates"
+        / "binding-catalog.example.yaml"
+    )
+    documents = build_binding_documents(load_binding_catalog(catalog_path))
+    assert "constants.bindings.yaml" in documents
+    constants = documents["constants.bindings.yaml"]["series"]
+    assert len(constants) == 1
+    assert constants[0]["id"] == "input_bias"
+    assert constants[0]["constant"] == {}
+    assert "input" not in constants[0]
+    assert "output" not in constants[0]
+    assert "internal" not in constants[0]
+
+
 def test_emit_bindings_from_catalog_validates_against_synthetic_workbook(
     tmp_path: Path,
 ) -> None:
@@ -854,7 +934,7 @@ def test_emit_bindings_from_catalog_validates_against_synthetic_workbook(
         validate=True,
     )
 
-    assert len(written) == 3
+    assert len(written) == 4
     assert validation is not None
     assert validation["report"]["ok"] is True
 
@@ -992,7 +1072,7 @@ def test_audit_binding_resolutions_reuses_one_workbook_for_sparse_checks(
     import src.binding_resolution_audit as audit_mod
 
     fixture = _prepare_sparse_years_audit_fixture(tmp_path, monkeypatch)
-    graph, _ = load_graph(fixture.config)
+    graph, _ = load_pipeline_dependency_graph(fixture.config)
 
     sparse_workbook_handles: list[fastpyxl.Workbook | None] = []
     real_sparse = audit_mod.find_sparse_label_bind_issues
@@ -1032,7 +1112,7 @@ def test_find_sparse_label_bind_issues_without_fill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _prepare_sparse_years_audit_fixture(tmp_path, monkeypatch)
-    graph, _ = load_graph(fixture.config)
+    graph, _ = load_pipeline_dependency_graph(fixture.config)
 
     sparse = find_sparse_label_bind_issues(
         graph,
@@ -1165,7 +1245,7 @@ def test_binding_resolution_audit_reports_duplicate_internal_cell_bindings(
     cache_dir = tmp_path / "dependency-graph"
     _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
     regenerate_graph_cache(force=True)
-    graph, _ = load_graph(config)
+    graph, _ = load_pipeline_dependency_graph(config)
     bindings = load_series_bindings(bindings_path)
 
     findings = find_duplicate_internal_formula_cell_bindings(
@@ -1201,7 +1281,7 @@ def test_binding_resolution_audit_clean_for_synthetic(
     cache_dir = tmp_path / "dependency-graph"
     _monkeypatch_temp_graph_cache(monkeypatch, cache_dir=cache_dir, config=config)
     regenerate_graph_cache(force=True)
-    graph, _ = load_graph(config)
+    graph, _ = load_pipeline_dependency_graph(config)
     bindings = load_series_bindings(config.bindings_path)
 
     report = audit_binding_resolutions(

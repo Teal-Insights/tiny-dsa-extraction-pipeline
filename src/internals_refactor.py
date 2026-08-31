@@ -47,7 +47,6 @@ from src.refactor_bindings import (
     BindingKeyValue,
     KeyConceptSpec,
     dimension_id_to_param_name,
-    engine_column_from_member_keys,
     expected_member_keys_for_cluster,
     format_binding_key_literal,
     helper_parameters_for_varying_keys,
@@ -80,7 +79,6 @@ from src.refactor_return_types import (
     merge_callee_return_hints,
     merge_callee_return_hints_from_functions,
     normalize_return_type_hint_for_allowlist,
-    validate_scalar_return_type_hint,
 )
 from src.runtime_symbols import (
     allowed_runtime_module_symbols,
@@ -97,7 +95,7 @@ from src.semantic_naming import (
     sole_series_id_for_addresses,
     validate_semantic_identifier,
 )
-from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
+from src.workbook_addresses import parse_workbook_address
 
 repo_root = Path(__file__).resolve().parents[1]
 
@@ -281,16 +279,6 @@ def _emit_pass1_unit_timing(timing: Pass1UnitTiming) -> None:
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     with jsonl_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(timing.as_log_fields(), sort_keys=True) + "\n")
-
-
-def fingerprint_fallback_count() -> int:
-    """Return how many clusters fell back to the legacy sampled dump this process."""
-    return _FINGERPRINT_FALLBACK_COUNT
-
-
-def reset_fingerprint_fallback_count() -> None:
-    global _FINGERPRINT_FALLBACK_COUNT
-    _FINGERPRINT_FALLBACK_COUNT = 0
 
 
 def _record_fingerprint_fallback(reason: str, *, cluster_id: int) -> None:
@@ -543,7 +531,7 @@ def _log_mechanical_pass1_failure(
             context=context(),
             source="mechanical",
         )
-    except Exception as dump_error:
+    except Exception as dump_error:  # noqa: BLE001
         logger.error(
             "failed to write mechanical refactor diagnostic kind=%s target=%s: %s",
             kind,
@@ -665,6 +653,7 @@ class MemberContext:
     address: str
     function_name: str
     engine_column: str
+    """Column letter of ``address``."""
     normalized_formula: str
     python_source: str
     dependency_addresses: tuple[str, ...]
@@ -705,7 +694,6 @@ class ClusterRefactorContext:
     """Multi-regime series plan used by the ``key_dispatch`` contract."""
     key_dispatch_bound_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None = None
     """Bound-address keys used to synthesize each regime body."""
-    layout: ProjectionColumnLayout | None = None
     package_root: Path | None = None
 
 
@@ -730,16 +718,6 @@ class HelperParameter(BaseModel):
         ),
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_concept_as_dimension_id(cls, data: object) -> object:
-        if not isinstance(data, dict):
-            return data
-        payload = dict(data)
-        if payload.get("dimension_id") is None and payload.get("concept") is not None:
-            payload["dimension_id"] = payload["concept"]
-        return payload
-
 
 class MemberKeyEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -752,17 +730,6 @@ class MemberKeyEntry(BaseModel):
     value: str | int | float | bool = Field(
         description="Literal binding key value for this dimension."
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_concept_as_dimension_id(cls, data: object) -> object:
-        if not isinstance(data, dict):
-            return data
-        payload = dict(data)
-        if payload.get("dimension_id") is None and payload.get("concept") is not None:
-            payload["dimension_id"] = payload["concept"]
-        payload.pop("concept", None)
-        return payload
 
 
 class MemberKeys(BaseModel):
@@ -829,14 +796,14 @@ class RefactorDeclaredError(RuntimeError):
         super().__init__(reason)
 
 
-class LlmResponseWithDeclaredError(Protocol):
-    """Structural shape shared by refactor/naming LLM response models."""
+class _LlmErrorCapable(Protocol):
+    """LLM response models that expose the shared error / error_reason fields."""
 
     error: bool | None
     error_reason: str | None
 
 
-def _validate_llm_response_error_or_success[T: LlmResponseWithDeclaredError](
+def _validate_llm_response_error_or_success[T: _LlmErrorCapable](
     response: T,
     *,
     success_fields: tuple[str, ...],
@@ -883,7 +850,7 @@ def _validate_llm_response_error_or_success[T: LlmResponseWithDeclaredError](
 
 
 def raise_if_llm_declared_error(
-    response: LlmResponseWithDeclaredError,
+    response: _LlmErrorCapable,
     *,
     kind: Literal["singleton", "cluster"],
     target: str,
@@ -978,7 +945,6 @@ class SingletonRefactorContext:
     """``(cell_function_name, replacement_call_source)`` pairs for every
     dependency call site that resolves to a provably inlinable thin wrapper."""
     package_root: Path | None = None
-    layout: ProjectionColumnLayout | None = None
 
 
 class SingletonRefactorResponse(BaseModel):
@@ -1108,40 +1074,9 @@ def address_to_function_name(address: str) -> str:
     return f"cell_{base}"
 
 
-def _resolved_projection_layout(
-    layout: ProjectionColumnLayout | None = None,
-) -> ProjectionColumnLayout | None:
-    return layout
-
-
-def _member_engine_column(
-    address: str,
-    layout: ProjectionColumnLayout | None,
-) -> str | None:
-    if layout is not None:
-        column = layout.engine_column_for_address(address)
-        if column is not None:
-            return column
+def _member_engine_column(address: str) -> str:
     _, column, _row = parse_workbook_address(address)
     return column
-
-
-def _engine_column_for_time_period(
-    time_period: int,
-    layout: ProjectionColumnLayout | None,
-) -> str | None:
-    if layout is None:
-        return None
-    return layout.time_period_to_engine_column.get(time_period)
-
-
-def _time_period_for_engine_column(
-    column: str,
-    layout: ProjectionColumnLayout | None,
-) -> int | None:
-    if layout is None:
-        return None
-    return layout.time_period_for_engine_column(column)
 
 
 def _binding_hints_for_address(
@@ -1161,10 +1096,6 @@ def _binding_hints_for_address(
     )
 
 
-def _default_source_graph() -> DependencyGraph | None:
-    return None
-
-
 def _default_key_vocabulary(bindings_path: Path) -> tuple[KeyConceptSpec, ...]:
     return load_key_concept_vocabulary(bindings_path)
 
@@ -1180,7 +1111,6 @@ def build_cluster_refactor_context(
     bindings_path: Path,
     source_graph: DependencyGraph | None = None,
     internal_binding_index: InternalBindingIndex | None = None,
-    layout: ProjectionColumnLayout | None = None,
     internals_index: InternalsSourceIndex | None = None,
     address_to_series_id: Mapping[str, str] | None = None,
     address_to_helper_name: Mapping[str, str] | None = None,
@@ -1189,8 +1119,6 @@ def build_cluster_refactor_context(
 ) -> ClusterRefactorContext | None:
     if len(cluster.members) < 2:
         return None
-
-    resolved_layout = _resolved_projection_layout(layout)
 
     index = _resolve_internals_index(internals_path, internals_index=internals_index)
     source = index.source
@@ -1207,9 +1135,7 @@ def build_cluster_refactor_context(
         if function_name not in defined_functions:
             continue
 
-        engine_column = _member_engine_column(address, resolved_layout)
-        if engine_column is None:
-            continue
+        engine_column = _member_engine_column(address)
 
         node = projection.get_node(address)
         if node is None or node.normalized_formula is None:
@@ -1259,8 +1185,6 @@ def build_cluster_refactor_context(
     expected_member_keys = expected_member_keys_for_cluster(
         member_address_list,
         bound_address_keys=resolved_bound_keys,
-        workbook_path=workbook_path,
-        layout=resolved_layout,
     )
     varying_dimension_ids = frozenset(
         dimension_id for keys in expected_member_keys.values() for dimension_id in keys
@@ -1274,7 +1198,6 @@ def build_cluster_refactor_context(
         varying_dimension_ids,
         key_vocabulary=resolved_vocabulary,
         workbook_path=workbook_path,
-        layout=resolved_layout,
     )
     key_dispatch_plan: KeyDispatchPlan | None = None
     gate_rejected_operand_variation = False
@@ -1329,7 +1252,6 @@ def build_cluster_refactor_context(
         address_to_series_id=address_to_series_id,
         address_to_helper_name=address_to_helper_name,
         bound_address_keys=resolved_bound_keys,
-        layout=resolved_layout,
     )
     external_dependencies = tuple(
         sorted(
@@ -1352,7 +1274,6 @@ def build_cluster_refactor_context(
         expected_member_keys=expected_member_keys,
         bound_address_keys=resolved_bound_keys,
         workbook_path=workbook_path,
-        layout=resolved_layout,
         address_to_series_id=address_to_series_id,
         semantic_dependencies=semantic_refs,
     )
@@ -1425,11 +1346,7 @@ def build_cluster_refactor_context(
         call_sites=scan_call_sites(
             source, member_addresses, member_functions, index=index
         ),
-        first_year_column=(
-            resolved_layout.engine_columns[0]
-            if resolved_layout is not None and resolved_layout.engine_columns
-            else members[0].engine_column
-        ),
+        first_year_column=members[0].engine_column,
         allowed_runtime_symbols=allowed_runtime_symbols(package_root),
         key_vocabulary=resolved_vocabulary,
         expected_member_keys=expected_member_keys,
@@ -1449,7 +1366,6 @@ def build_cluster_refactor_context(
         key_dispatch_bound_keys=(
             dict(resolved_bound_keys) if key_dispatch_plan is not None else None
         ),
-        layout=resolved_layout,
         package_root=package_root,
     )
 
@@ -1495,14 +1411,12 @@ def build_singleton_refactor_context(
     bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None = None,
     expected_helper_name: str | None = None,
     existing_helper_names: frozenset[str] | None = None,
-    layout: ProjectionColumnLayout | None = None,
 ) -> SingletonRefactorContext | None:
     if len(cluster.members) != 1:
         return None
 
     address = cluster.members[0]
     package_root = internals_path.parent
-    resolved_layout = _resolved_projection_layout(layout)
 
     index = _resolve_internals_index(internals_path, internals_index=internals_index)
     source = index.source
@@ -1524,7 +1438,6 @@ def build_singleton_refactor_context(
         address_to_series_id=address_to_series_id,
         address_to_helper_name=address_to_helper_name,
         bound_address_keys=bound_address_keys,
-        layout=resolved_layout,
     )
     external_dependencies = tuple(
         sorted(
@@ -1575,7 +1488,6 @@ def build_singleton_refactor_context(
             python_source, dependency_addresses, index
         ),
         package_root=package_root,
-        layout=resolved_layout,
     )
 
 
@@ -1844,10 +1756,13 @@ def _patch_function_docstring_in_source(source: str, docstring: str) -> str:
         function_def.body.insert(0, ast.Expr(value=ast.Constant(value=docstring)))
         return ast.unparse(module) + "\n"
     first = function_def.body[0]
-    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
-        if isinstance(first.value.value, str):
-            first.value.value = docstring
-            return ast.unparse(module) + "\n"
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        first.value.value = docstring
+        return ast.unparse(module) + "\n"
     function_def.body.insert(0, ast.Expr(value=ast.Constant(value=docstring)))
     return ast.unparse(module) + "\n"
 
@@ -2359,23 +2274,6 @@ def validate_cluster_refactor_response(
                     f"{dimension_id}={actual_value!r}, "
                     f"expected {expected_value!r}"
                 )
-        layout = _resolved_projection_layout(ctx.layout)
-        if layout is not None:
-            engine_column = engine_column_from_member_keys(
-                entry_keys,
-                address=entry.address,
-                layout=layout,
-            )
-            if engine_column is None:
-                raise ValueError(
-                    f"member_keys for {entry.address} do not resolve "
-                    "to an engine column"
-                )
-            if engine_column != member.engine_column:
-                raise ValueError(
-                    f"member_keys for {entry.address} resolve to engine column "
-                    f"{engine_column!r}, expected {member.engine_column!r}"
-                )
 
     if not response.helper_name.isidentifier():
         raise ValueError(
@@ -2618,17 +2516,6 @@ def inject_signature_return_type_hint(signature: str, return_hint: str) -> str:
     return f"{without_return} -> {return_hint}:"
 
 
-def validate_singleton_return_type_hint(hint: str) -> None:
-    validate_scalar_return_type_hint(hint)
-
-
-def _parse_symbol_name_from_signature(signature: str) -> str:
-    match = re.match(r"def\s+(\w+)\s*\(", signature.strip())
-    if match is None:
-        raise ValueError(f"invalid function signature: {signature!r}")
-    return match.group(1)
-
-
 def build_locked_helper_signature(
     helper_name: str,
     *,
@@ -2836,8 +2723,7 @@ def _build_dependency_stubs(
             for name in semantic_names
         ),
     ]
-    # Two blank lines between top-level defs, matching Ruff's Python layout.
-    return "\n\n\n".join(stubs)
+    return "\n\n".join(stubs)
 
 
 def build_singleton_refactor_context_dump(
@@ -3148,23 +3034,6 @@ def _yaml_scalar(value: object) -> str:
     return str(value)
 
 
-def _format_label_group_yaml(labels: object) -> list[str]:
-    if not isinstance(labels, list) or not labels:
-        return ["[]"]
-    lines: list[str] = []
-    for item in labels:
-        if not isinstance(item, Mapping):
-            continue
-        label = item.get("label")
-        if label is None:
-            continue
-        lines.append(f"  - label: {_yaml_scalar(label)}")
-        concept = item.get("concept")
-        if concept is not None:
-            lines.append(f"    concept: {concept}")
-    return lines if lines else ["[]"]
-
-
 def _format_key_vocabulary_yaml(
     key_vocabulary: Sequence[KeyConceptSpec],
 ) -> str:
@@ -3284,8 +3153,7 @@ def _build_cluster_dependency_stubs(
             for name in semantic_names
         ),
     ]
-    # Two blank lines between top-level defs, matching Ruff's Python layout.
-    return "\n\n\n".join(stubs)
+    return "\n\n".join(stubs)
 
 
 def sample_indices_for_prompt(
@@ -3789,29 +3657,12 @@ def validate_singleton_refactor_response(
     validate_allowed_global_references(symbol_def, allowed_names=allowed_names)
 
 
-def _replace_function_definition(
-    source: str,
-    old_name: str,
-    new_source: str,
-    *,
-    module: ast.Module | None = None,
-) -> str:
-    tree = module if module is not None else ast.parse(source)
-    span = _function_def_char_span(source, tree, old_name)
-    if span is None:
-        raise KeyError(f"Function {old_name!r} not found")
-    start, end = span
-    replacement = new_source.strip() + "\n\n"
-    return source[:start] + replacement + source[end:]
-
-
 def _unify_peel_split_entrypoints(
     source: str,
     *,
     scheduled_helper_by_address: Mapping[str, str],
     address_to_series_id: Mapping[str, str],
     bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None,
-    layout: ProjectionColumnLayout | None,
 ) -> str:
     """Make each peel-split published series' base helper span the full range (#143).
 
@@ -3824,17 +3675,12 @@ def _unify_peel_split_entrypoints(
     """
     if not bound_address_keys:
         return source
-    projection_dimension_id = (
-        layout.projection_dimension_id if layout is not None else "TIME_PERIOD"
-    )
     address_time_periods: dict[str, int] = {}
     for address in scheduled_helper_by_address:
         keys = bound_address_keys.get(address)
         if not keys:
             continue
-        period = keys.get(projection_dimension_id)
-        if period is None and projection_dimension_id != "TIME_PERIOD":
-            period = keys.get("TIME_PERIOD")
+        period = keys.get("TIME_PERIOD")
         if isinstance(period, int):
             address_time_periods[address] = period
     if not address_time_periods:
@@ -3956,7 +3802,6 @@ def apply_cluster_collapses_batch(
     batch does not re-parse the module once per response.
     """
     package_root = ctx.package_root if ctx is not None else None
-    layout = ctx.layout if ctx is not None else None
     if not responses:
         return source, 0
     needed_imports: set[str] = set()
@@ -3990,7 +3835,7 @@ def apply_cluster_collapses_batch(
     )
     dispatch_updates: AddressDispatch = {}
     for response in responses:
-        dispatch_updates.update(_dispatch_entries_for_collapse(response, layout=layout))
+        dispatch_updates.update(_dispatch_entries_for_collapse(response))
     if dispatch_updates and RESOLVER_SECTION_MARKER in updated:
         dispatch = _parse_address_dispatch(updated, module=tree) or {}
         dispatch.update(dispatch_updates)
@@ -4011,18 +3856,15 @@ def _parameter_literals(
 
 def _dispatch_entries_for_collapse(
     response: ClusterRefactorResponse,
-    *,
-    layout: ProjectionColumnLayout | None = None,
 ) -> AddressDispatch:
-    dispatch: AddressDispatch = {}
-    for entry in response.member_keys:
-        if not address_needs_resolver_dispatch(entry.address, layout=layout):
-            continue
-        dispatch[entry.address] = (
+    """Route every collapsed member address to its helper call in the resolver."""
+    return {
+        entry.address: (
             response.helper_name,
             _parameter_literals(response.parameters, entry.keys_dict()),
         )
-    return dispatch
+        for entry in response.member_keys
+    }
 
 
 def _line_start_offsets(source: str) -> list[int]:
@@ -4156,40 +3998,15 @@ def collect_static_cell_function_references(source: str) -> frozenset[str]:
     return frozenset(references)
 
 
-def parse_thin_wrapper(
-    function_def: ast.FunctionDef,
-    *,
-    layout: ProjectionColumnLayout | None = None,
-) -> tuple[str, str] | None:
-    """Return ``(helper_name, engine_column)`` for legacy column-literal wrappers."""
-    parsed = _parse_thin_helper_return(function_def, layout=layout)
-    if parsed is None:
-        return None
-    helper_name, key_kwargs = parsed
-    if len(key_kwargs) != 1 or "time_period" not in key_kwargs:
-        return None
-    column = _engine_column_for_time_period(
-        int(key_kwargs["time_period"]),
-        layout,
-    )
-    if column is None:
-        return None
-    return helper_name, column
-
-
 def parse_thin_literal_wrapper(
     function_def: ast.FunctionDef,
-    *,
-    layout: ProjectionColumnLayout | None = None,
 ) -> tuple[str, dict[str, BindingKeyValue]] | None:
     """Return ``(helper_name, key_kwargs)`` for a one-line semantic helper wrapper."""
-    return _parse_thin_helper_return(function_def, layout=layout)
+    return _parse_thin_helper_return(function_def)
 
 
 def _parse_thin_helper_return(
     function_def: ast.FunctionDef,
-    *,
-    layout: ProjectionColumnLayout | None = None,
 ) -> tuple[str, dict[str, BindingKeyValue]] | None:
     body = function_def.body
     start = 0
@@ -4227,28 +4044,16 @@ def _parse_thin_helper_return(
                 return None
             key_kwargs[keyword.arg] = literal
         return call.func.id, key_kwargs
-    if (
-        len(call.args) == 2
-        and isinstance(call.args[1], ast.Constant)
-        and isinstance(call.args[1].value, str)
-    ):
-        time_period = _time_period_for_engine_column(
-            call.args[1].value,
-            layout,
-        )
-        if time_period is None:
-            return None
-        return call.func.id, {"time_period": time_period}
     return None
 
 
-_ENGINE_ADDRESS_PATTERN = re.compile(
+_SHEET_ADDRESS_PATTERN = re.compile(
     r"^(?P<sheet>.+!)(?P<column>[A-Za-z]+)(?P<row>\d+)$"
 )
 
 
 def _column_address_template(address: str) -> str:
-    match = _ENGINE_ADDRESS_PATTERN.match(address)
+    match = _SHEET_ADDRESS_PATTERN.match(address)
     if match is None:
         return address
     return f"{match.group('sheet')}{{col}}{match.group('row')}"
@@ -4262,9 +4067,11 @@ def resolve_semantic_dependencies(
     address_to_series_id: Mapping[str, str] | None = None,
     address_to_helper_name: Mapping[str, str] | None = None,
     bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]] | None = None,
-    layout: ProjectionColumnLayout | None = None,
 ) -> tuple[tuple[SemanticDependency, ...], tuple[str, ...]]:
     """Resolve external ``cell_*`` dependencies to the semantic helpers wrapping them.
+
+    A dependency whose per-cell ``cell_*`` function is still defined has not been
+    collapsed yet, so it is reported unresolved.
 
     ``address_to_series_id`` lets a collapsed dependency resolve by its series id
     (which equals its helper name) when its per-cell wrapper is gone and the
@@ -4285,17 +4092,10 @@ def resolve_semantic_dependencies(
     defined_functions = resolved.functions
     grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
     unresolved: set[str] = set()
-    semantic_helpers = resolved.semantic_helper_names
     for address in dependency_addresses:
         function_name = address_to_function_name(address)
-        node = defined_functions.get(function_name)
-        if node is not None:
-            wrapper = parse_thin_wrapper(node, layout=layout)
-            if wrapper is None or wrapper[0] not in semantic_helpers:
-                unresolved.add(function_name)
-                continue
-            helper_name, column = wrapper
-            grouped[helper_name].append((address, column))
+        if function_name in defined_functions:
+            unresolved.add(function_name)
             continue
 
         collapsed = _infer_collapsed_semantic_dependency(
@@ -4375,7 +4175,7 @@ def _address_in_docstring_range(docstring: str, address: str) -> bool:
         return False
     if address.replace("$", "") in covered:
         return True
-    match = _ENGINE_ADDRESS_PATTERN.match(address)
+    match = _SHEET_ADDRESS_PATTERN.match(address)
     if match is None:
         return False
     sheet = match.group("sheet")
@@ -4760,18 +4560,6 @@ def function_name_to_workbook_address(function_name: str) -> str | None:
     return _caller_address(function_name)
 
 
-def address_needs_resolver_dispatch(
-    address: str,
-    *,
-    layout: ProjectionColumnLayout | None = None,
-) -> bool:
-    """Engine cells are reached via helpers; only external entry addresses need dispatch."""
-    sheet, _, _ = parse_workbook_address(address)
-    if layout is not None:
-        return sheet != layout.engine_sheet
-    return not address.startswith("Engine!")
-
-
 def _top_level_function_char_span(
     source: str,
     node: ast.FunctionDef,
@@ -4857,11 +4645,7 @@ def rehome_unrefactored_cell_functions(source: str) -> str:
     return "".join(parts)
 
 
-def apply_phase_c(
-    source: str,
-    *,
-    layout: ProjectionColumnLayout | None = None,
-) -> tuple[str, int]:
+def apply_phase_c(source: str) -> tuple[str, int]:
     """Drop unreferenced thin ``cell_*`` wrappers and route them via ``_ADDRESS_DISPATCH``."""
     referenced = collect_static_cell_function_references(source)
     module = ast.parse(source)
@@ -4871,7 +4655,7 @@ def apply_phase_c(
     for node in module.body:
         if not isinstance(node, ast.FunctionDef) or not node.name.startswith("cell_"):
             continue
-        thin_wrapper = parse_thin_literal_wrapper(node, layout=layout)
+        thin_wrapper = parse_thin_literal_wrapper(node)
         if thin_wrapper is None:
             continue
         if node.name in referenced:
@@ -4880,12 +4664,11 @@ def apply_phase_c(
         if address is None:
             continue
         helper_name, key_kwargs = thin_wrapper
-        if address_needs_resolver_dispatch(address, layout=layout):
-            dispatch[address] = (helper_name, key_kwargs)
+        dispatch[address] = (helper_name, key_kwargs)
         to_prune.add(node.name)
 
     if not to_prune:
-        return _trim_engine_dispatch_entries(source, layout=layout)
+        return source, 0
 
     updated = _remove_function_definitions(source, frozenset(to_prune))
     existing_dispatch = _parse_address_dispatch(updated) or {}
@@ -4895,8 +4678,7 @@ def apply_phase_c(
         existing_dispatch,
         symbol_dispatch=_parse_symbol_dispatch(source),
     )
-    updated, trimmed = _trim_engine_dispatch_entries(updated, layout=layout)
-    return updated, len(to_prune) + trimmed
+    return updated, len(to_prune)
 
 
 def _parse_address_dispatch(
@@ -4934,41 +4716,18 @@ def _parse_address_dispatch(
                             and isinstance(kw_key.value, str)
                             and isinstance(kw_value, ast.Constant)
                         ):
-                            raise ValueError(
+                            raise TypeError(
                                 "_ADDRESS_DISPATCH keyword args must be constant literals"
                             )
                         literal = kw_value.value
                         if not isinstance(literal, (str, int, float, bool)):
-                            raise ValueError(
+                            raise TypeError(
                                 "_ADDRESS_DISPATCH keyword args must be scalar literals"
                             )
                         key_kwargs[kw_key.value] = literal
                     dispatch[key.value] = (value.elts[0].value, key_kwargs)
                 return dispatch
     return None
-
-
-def _trim_engine_dispatch_entries(
-    source: str,
-    *,
-    layout: ProjectionColumnLayout | None = None,
-) -> tuple[str, int]:
-    dispatch = _parse_address_dispatch(source)
-    if dispatch is None:
-        return source, 0
-    trimmed = {
-        address: spec
-        for address, spec in dispatch.items()
-        if address_needs_resolver_dispatch(address, layout=layout)
-    }
-    removed = len(dispatch) - len(trimmed)
-    if removed == 0:
-        return source, 0
-    return _replace_resolver_section(
-        source,
-        trimmed,
-        symbol_dispatch=_parse_symbol_dispatch(source),
-    ), removed
 
 
 def _parse_symbol_dispatch(
@@ -4992,7 +4751,7 @@ def _parse_symbol_dispatch(
                         and isinstance(value, ast.Constant)
                         and isinstance(value.value, str)
                     ):
-                        raise ValueError("_SYMBOL_DISPATCH has unexpected entry shape")
+                        raise TypeError("_SYMBOL_DISPATCH has unexpected entry shape")
                     dispatch[key.value] = value.value
                 return dispatch
     return {}
@@ -5120,13 +4879,6 @@ def insert_helper_source(source: str, helper_source: str) -> str:
     return source[:insert_at] + helper_source + "\n\n" + source[insert_at:]
 
 
-def _engine_row_from_address(address: str) -> int:
-    match = re.search(r"\d+", address.split("!", 1)[1])
-    if match is None:
-        raise ValueError(f"Cannot parse engine row from address {address!r}")
-    return int(match.group())
-
-
 def _xl_eval_address_arg(node: ast.Call) -> str | None:
     if len(node.args) < 2:
         return None
@@ -5168,8 +4920,7 @@ def _xl_eval_matches_collapse(
     if address_pattern == binding.address:
         return callee_function == binding.function_name
 
-    row = _engine_row_from_address(binding.address)
-    if address_pattern == f"Engine!{{col}}{row}":
+    if address_pattern == _column_address_template(binding.address):
         return callee_function == binding.function_name
     return False
 
@@ -5865,7 +5616,6 @@ def refactor_internals_all_clusters(
     bound_address_keys: dict[str, dict[str, BindingKeyValue]] | None = None,
     key_vocabulary: tuple[KeyConceptSpec, ...] | None = None,
     parity_gate: bool = True,
-    layout: ProjectionColumnLayout | None = None,
     constraints: Mapping[str, object] | None = None,
     refactor_schedule: tuple[RefactorUnit, ...] | None = None,
     timer: StageTimer | None = None,
@@ -6243,7 +5993,6 @@ def refactor_internals_all_clusters(
                 bound_address_keys=bound_address_keys,
                 expected_helper_name=helper_name,
                 existing_helper_names=reserved_for_others,
-                layout=layout,
             )
             context_s = time.perf_counter() - context_started
             pass1_context_seconds += context_s
@@ -6294,8 +6043,8 @@ def refactor_internals_all_clusters(
                         target=diagnostic_target,
                         error=error,
                         prepared_response=prepared_dump,
-                        context=lambda: _mechanical_singleton_failure_context(
-                            singleton_ctx, draft
+                        context=lambda ctx=singleton_ctx, d=draft: (
+                            _mechanical_singleton_failure_context(ctx, d)
                         ),
                         log_message=(
                             "singleton mechanical refactor failed address=%s "
@@ -6402,7 +6151,6 @@ def refactor_internals_all_clusters(
             key_vocabulary=key_vocabulary,
             bindings_path=bindings_path,
             workbook_path=workbook_path,
-            layout=layout,
             internals_index=internals_index,
             address_to_series_id=address_to_series_id,
             address_to_helper_name=scheduled_helper_by_address,
@@ -6453,8 +6201,8 @@ def refactor_internals_all_clusters(
                     target=diagnostic_target,
                     error=error,
                     prepared_response=prepared_dump,
-                    context=lambda: _mechanical_cluster_failure_context(
-                        cluster_ctx, draft
+                    context=lambda ctx=cluster_ctx, d=draft: (
+                        _mechanical_cluster_failure_context(ctx, d)
                     ),
                     log_message=(
                         "cluster mechanical refactor failed cluster_id=%s "
@@ -6622,14 +6370,13 @@ def refactor_internals_all_clusters(
     phase_c_started = time.perf_counter()
     if not dry_run and refactored_any:
         source = internals_path.read_text(encoding="utf-8")
-        updated, phase_c_pruned = apply_phase_c(source, layout=layout)
+        updated, phase_c_pruned = apply_phase_c(source)
         updated = rehome_unrefactored_cell_functions(updated)
         updated = _unify_peel_split_entrypoints(
             updated,
             scheduled_helper_by_address=scheduled_helper_by_address,
             address_to_series_id=address_to_series_id,
             bound_address_keys=bound_address_keys,
-            layout=layout,
         )
         validate_refactored_internals(updated)
         internals_path.write_text(updated, encoding="utf-8", newline="\n")
@@ -7059,7 +6806,6 @@ def _synthesize_key_dispatch_cluster_body(
             expected_member_keys=sweep_keys,
             bound_address_keys=bound_keys,
             workbook_path=None,
-            layout=None,
             semantic_dependencies=semantic_refs,
         )
         draft = synthesize_cluster_body(
@@ -7629,13 +7375,3 @@ def _function_names(
     return frozenset(
         node.name for node in module.body if isinstance(node, ast.FunctionDef)
     )
-
-
-def _collect_assigned_and_loaded_names(function_def: ast.FunctionDef) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(function_def):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            names.add(node.id)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            names.add(node.id)
-    return names

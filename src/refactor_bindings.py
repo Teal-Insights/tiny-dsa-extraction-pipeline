@@ -7,12 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import fastpyxl
 from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.normalize import effective_dimension_id
 from excel_grapher.series_bindings.types import Scalar, WorkbookSeriesBindings
-
-from src.workbook_addresses import ProjectionColumnLayout
 
 BindingKeyValue = str | int | float | bool
 
@@ -34,11 +31,6 @@ class KeyConceptSpec:
 
 def dimension_id_to_param_name(dimension_id: str) -> str:
     return dimension_id.lower()
-
-
-def concept_to_param_name(concept: str) -> str:
-    """Backward-compatible alias; prefer ``dimension_id_to_param_name``."""
-    return dimension_id_to_param_name(concept)
 
 
 def resolve_dimension_key(
@@ -134,13 +126,6 @@ def build_bound_address_keys(
     return index
 
 
-def internal_series_cell_owners(
-    internal_series: Sequence[Mapping[str, Any]],
-) -> dict[str, tuple[str, ...]]:
-    """Map each internal-series cell address to the series ids that claim it."""
-    return series_cell_owners(internal_series)
-
-
 def series_cell_owners(
     series_list: Sequence[Mapping[str, Any]],
 ) -> dict[str, tuple[str, ...]]:
@@ -219,50 +204,16 @@ def build_address_to_series_id(
     return address_to_series_id
 
 
-def _read_engine_time_period(
-    column: str,
-    workbook_path: Path,
-    *,
-    layout: ProjectionColumnLayout,
-) -> int | None:
-    keep_vba = workbook_path.suffix.lower() == ".xlsm"
-    workbook = fastpyxl.load_workbook(
-        workbook_path,
-        data_only=True,
-        read_only=True,
-        keep_vba=keep_vba,
-    )
-    value = workbook[layout.engine_sheet][
-        f"{column}{layout.time_period_header_row}"
-    ].value
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
-
-
 def expected_keys_for_address(
     address: str,
     *,
     bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]],
-    workbook_path: Path,
-    layout: ProjectionColumnLayout | None = None,
 ) -> dict[str, BindingKeyValue]:
+    """Return the coerced cell-scope binding keys declared for one address."""
     bound = bound_address_keys.get(address)
-    if bound is not None:
-        return _coerce_binding_keys(bound)
-    if layout is None:
+    if bound is None:
         return {}
-    column = layout.logical_engine_column(address)
-    if column is None:
-        return {}
-    time_period = _read_engine_time_period(column, workbook_path, layout=layout)
-    if time_period is None:
-        return {}
-    return {layout.projection_dimension_id: time_period}
+    return _coerce_binding_keys(bound)
 
 
 def _coerce_binding_keys(keys: Mapping[str, Scalar]) -> dict[str, BindingKeyValue]:
@@ -277,16 +228,9 @@ def varying_key_concepts(
     addresses: Sequence[str],
     *,
     bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]],
-    workbook_path: Path,
-    layout: ProjectionColumnLayout | None = None,
 ) -> frozenset[str]:
     keys_by_address = [
-        expected_keys_for_address(
-            address,
-            bound_address_keys=bound_address_keys,
-            workbook_path=workbook_path,
-            layout=layout,
-        )
+        expected_keys_for_address(address, bound_address_keys=bound_address_keys)
         for address in addresses
     ]
     dimension_ids = {key for keys in keys_by_address for key in keys}
@@ -301,56 +245,21 @@ def expected_member_keys_for_cluster(
     addresses: Sequence[str],
     *,
     bound_address_keys: Mapping[str, Mapping[str, BindingKeyValue]],
-    workbook_path: Path,
-    layout: ProjectionColumnLayout | None = None,
 ) -> dict[str, dict[str, BindingKeyValue]]:
     varying = varying_key_concepts(
         addresses,
         bound_address_keys=bound_address_keys,
-        workbook_path=workbook_path,
-        layout=layout,
     )
     return {
         address: {
             dimension_id: expected_keys_for_address(
                 address,
                 bound_address_keys=bound_address_keys,
-                workbook_path=workbook_path,
-                layout=layout,
             )[dimension_id]
             for dimension_id in varying
         }
         for address in addresses
     }
-
-
-def _projection_period_from_keys(
-    keys: Mapping[str, BindingKeyValue],
-    *,
-    layout: ProjectionColumnLayout,
-) -> BindingKeyValue | None:
-    if layout.projection_dimension_id in keys:
-        return keys[layout.projection_dimension_id]
-    if layout.projection_dimension_id != "TIME_PERIOD":
-        return keys.get("TIME_PERIOD")
-    return None
-
-
-def engine_column_from_member_keys(
-    keys: Mapping[str, BindingKeyValue],
-    *,
-    address: str,
-    layout: ProjectionColumnLayout | None = None,
-) -> str | None:
-    if layout is not None:
-        time_period = _projection_period_from_keys(keys, layout=layout)
-        if isinstance(time_period, int):
-            column = layout.time_period_to_engine_column.get(time_period)
-            if column is not None:
-                return column
-    if layout is None:
-        return None
-    return layout.logical_engine_column(address)
 
 
 def format_binding_key_literal(value: BindingKeyValue) -> str:

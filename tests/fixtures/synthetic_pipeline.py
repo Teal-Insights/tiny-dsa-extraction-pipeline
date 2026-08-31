@@ -16,7 +16,6 @@ from src.extraction_pipeline import build_pipeline_graph
 from src.graph_dependency_audit import GraphAuditCase
 from src.pipeline_config import DistProjectMetadata, PipelineConfig
 from src.subgraph_projection import build_refactor_projection
-from src.workbook_addresses import ProjectionColumnLayout
 
 FIXTURES_ROOT = Path(__file__).resolve().parent / "synthetic"
 BINDINGS_PATH = FIXTURES_ROOT
@@ -27,14 +26,6 @@ CONSTRAINTS: dict[str, object] = {
     "Inputs!A1": Annotated[float, RealBetween(0.0, 100.0)],
     "Inputs!B1": Literal[0],
 }
-
-PROJECTION_LAYOUT = ProjectionColumnLayout(
-    engine_sheet="Engine",
-    engine_columns=("B", "C"),
-    outputs_sheet="Outputs",
-    outputs_column_to_engine={"B": "B", "C": "C"},
-    time_period_to_engine_column={1: "B", 2: "C"},
-)
 
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = (
     GraphAuditCase(
@@ -97,8 +88,15 @@ def write_synthetic_workbook(path: Path) -> Path:
 
 def build_synthetic_projection(
     graph: DependencyGraph,
+    *,
+    series_bindings: WorkbookSeriesBindings | None = None,
+    bindings_workbook: Path | None = None,
 ) -> ProjectionResult:
-    return build_refactor_projection(graph)
+    return build_refactor_projection(
+        graph,
+        series_bindings=series_bindings,
+        bindings_workbook=bindings_workbook,
+    )
 
 
 def load_synthetic_series_bindings(
@@ -134,7 +132,6 @@ def synthetic_pipeline_config(
             repository_url=None,
         ),
         docstring_callback_name="series_docs",
-        projection_layout=PROJECTION_LAYOUT,
         canonical_api_example_path=templates_root / "canonical-api-usage.md",
         binding_authoring_prompt_path=templates_root / "binding-authoring-prompt.txt",
         section_rewrite_introduction_focus_path=(

@@ -157,8 +157,14 @@ def synthetic_graph(synthetic_configured_pipeline: SyntheticConfiguredPipeline):
 
 
 @pytest.fixture(scope="session")
-def synthetic_projection(synthetic_graph):
-    return build_synthetic_projection(synthetic_graph)
+def synthetic_projection(
+    synthetic_graph, synthetic_series_bindings, synthetic_workbook_path
+):
+    return build_synthetic_projection(
+        synthetic_graph,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_workbook_path,
+    )
 
 
 @pytest.fixture(scope="session")

@@ -16,13 +16,18 @@ from excel_grapher.grapher import (
     DependencyGraph,
     DynamicRefConfig,
     create_dependency_graph,
+    dump_graph,
+    load_graph,
 )
 
-GRAPH_CACHE_SCHEMA_VERSION = "1.0.0"
+from src.pipeline_config import PipelineConfig
+
+GRAPH_CACHE_SCHEMA_VERSION = "1.1.0"
 DEFAULT_GRAPH_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "dependency-graph"
 )
 COMMITTED_GRAPH_CACHE_DIR = DEFAULT_GRAPH_CACHE_DIR
+_EGDG_MAGIC = b"EGDG"
 
 # Same-process reuse of loaded graphs keyed by (cache_dir, cache_key). Callers
 # that mutate the returned DependencyGraph (e.g. projection) share those
@@ -47,15 +52,20 @@ def file_fingerprint(path: Path) -> str:
 
 
 def bindings_fingerprint(bindings_path: Path) -> str:
-    """Hash binding YAML files under ``bindings_path`` in stable sorted order."""
+    """Hash binding YAML files under ``bindings_path`` in stable sorted order.
+
+    Missing directories and directories with no ``*.bindings.yaml`` files share a
+    stable empty digest so binding-sensitive cache keys stay well-defined during
+    bootstrap extract before bindings are authored.
+    """
     resolved = bindings_path.resolve()
+    if not resolved.exists():
+        return hashlib.sha256(b"").hexdigest()
     if not resolved.is_dir():
         raise NotADirectoryError(f"Bindings path is not a directory: {resolved}")
     binding_files = sorted(resolved.glob("*.bindings.yaml"))
     if not binding_files:
-        raise FileNotFoundError(
-            f"No *.bindings.yaml files found under bindings path: {resolved}"
-        )
+        return hashlib.sha256(b"").hexdigest()
     digest = hashlib.sha256()
     for binding_file in binding_files:
         digest.update(binding_file.name.encode("utf-8"))
@@ -70,14 +80,12 @@ def dependency_graph_cache_key(
     workbook_path: Path,
     targets: Sequence[str],
     constraints: Mapping[str, object],
-    bindings_path: Path,
     load_values: bool,
     capture_dependency_provenance: bool,
 ) -> str:
     payload = {
         "cache_schema_version": GRAPH_CACHE_SCHEMA_VERSION,
         "workbook_fingerprint": file_fingerprint(workbook_path),
-        "bindings_fingerprint": bindings_fingerprint(bindings_path),
         "targets": sorted(targets),
         "constraints": dict(constraints),
         "load_values": load_values,
@@ -126,8 +134,9 @@ def save_dependency_graph(
     resolved_cache_dir = _graph_cache_dir(cache_dir)
     resolved_cache_dir.mkdir(parents=True, exist_ok=True)
     payload_path, meta_path = _cache_paths(resolved_cache_dir, cache_key)
-    with gzip.open(payload_path, "wb", compresslevel=1) as handle:
-        pickle.dump(graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    # excel-grapher 5.1.5+ EGDG multipart format keeps unpickle peak near final
+    # resident size; prefer dump_graph over gzip+pickle.dump for warm caches.
+    dump_graph(graph, payload_path)
     _write_graph_meta(
         meta_path,
         cache_key=cache_key,
@@ -141,18 +150,27 @@ def load_dependency_graph(
     cache_key: str,
     *,
     cache_dir: Path | None = None,
+    unlink_corrupt: bool = True,
 ) -> DependencyGraph | None:
     payload_path, _meta_path = _cache_paths(_graph_cache_dir(cache_dir), cache_key)
     if not payload_path.is_file():
         return None
     try:
+        # Require excel-grapher 5.1.5+ EGDG multipart payloads. Reject pre-5.1.5
+        # single-object gzip pickles even though load_graph still opens them.
         with gzip.open(payload_path, "rb") as handle:
-            graph = pickle.load(handle)
-    except (OSError, EOFError, pickle.UnpicklingError):
-        payload_path.unlink(missing_ok=True)
+            magic = handle.read(len(_EGDG_MAGIC))
+        if magic != _EGDG_MAGIC:
+            payload_path.unlink(missing_ok=True)
+            return None
+        graph = load_graph(payload_path)
+    except (OSError, EOFError, pickle.UnpicklingError, TypeError, ValueError):
+        if unlink_corrupt:
+            payload_path.unlink(missing_ok=True)
         return None
     if not isinstance(graph, DependencyGraph):
-        payload_path.unlink(missing_ok=True)
+        if unlink_corrupt:
+            payload_path.unlink(missing_ok=True)
         return None
     return graph
 
@@ -165,6 +183,45 @@ class DependencyGraphCacheResult:
     elapsed_seconds: float
 
 
+def try_load_cached_dependency_graph(
+    *,
+    workbook_path: Path,
+    targets: Sequence[str],
+    constraints: Mapping[str, object],
+    load_values: bool = True,
+    capture_dependency_provenance: bool = True,
+    cache_dir: Path | None = None,
+) -> DependencyGraphCacheResult | None:
+    """Load a warm dependency-graph cache entry without building or writing.
+
+    Intended for read-only consumers (e.g. the opt-in workbook LLM audit under
+    pytest's redirected ``DEFAULT_GRAPH_CACHE_DIR``). Corrupt payloads are left
+    in place (``unlink_corrupt=False``).
+    """
+    resolved_cache_dir = _graph_cache_dir(cache_dir)
+    cache_key = dependency_graph_cache_key(
+        workbook_path=workbook_path,
+        targets=targets,
+        constraints=constraints,
+        load_values=load_values,
+        capture_dependency_provenance=capture_dependency_provenance,
+    )
+    started = time.perf_counter()
+    cached = load_dependency_graph(
+        cache_key,
+        cache_dir=resolved_cache_dir,
+        unlink_corrupt=False,
+    )
+    if cached is None:
+        return None
+    return DependencyGraphCacheResult(
+        graph=cached,
+        cache_key=cache_key,
+        cache_hit=True,
+        elapsed_seconds=time.perf_counter() - started,
+    )
+
+
 def _process_cache_slot(cache_dir: Path, cache_key: str) -> tuple[str, str]:
     return (str(cache_dir.resolve()), cache_key)
 
@@ -174,7 +231,6 @@ def get_or_build_dependency_graph(
     workbook_path: Path,
     targets: Sequence[str],
     constraints: Mapping[str, object],
-    bindings_path: Path,
     dynamic_refs: DynamicRefConfig,
     load_values: bool = True,
     capture_dependency_provenance: bool = True,
@@ -188,7 +244,6 @@ def get_or_build_dependency_graph(
         workbook_path=workbook_path,
         targets=targets,
         constraints=constraints,
-        bindings_path=bindings_path,
         load_values=load_values,
         capture_dependency_provenance=capture_dependency_provenance,
     )
@@ -376,3 +431,68 @@ def prune_cache_entries_for_other_excel_grapher_versions(
                 path.unlink()
                 pruned.append(path.name)
     return pruned
+
+
+def _pipeline_dependency_graph_cache_key(config: PipelineConfig) -> str:
+    return dependency_graph_cache_key(
+        workbook_path=config.workbook_path,
+        targets=config.targets,
+        constraints=config.constraints,
+        load_values=True,
+        capture_dependency_provenance=True,
+    )
+
+
+def _warn_if_cached_graph_is_stale(config: PipelineConfig, cache_key: str) -> None:
+    expected_key = _pipeline_dependency_graph_cache_key(config)
+    if cache_key == expected_key:
+        return
+    print(
+        "Warning: newest cached graph key does not match the current workbook "
+        "or targets fingerprint. Results may be stale; run "
+        "uv run python -m scripts.regenerate_graph_cache to refresh."
+    )
+
+
+def load_pipeline_dependency_graph(
+    config: PipelineConfig,
+    *,
+    cache_dir: Path | None = None,
+) -> tuple[DependencyGraph, str | None]:
+    """Load a dependency graph for binding utility CLIs.
+
+    Prefers the fingerprint-matching cache entry when present; otherwise falls
+    back to the newest cached pickle (with a stale-key warning), then builds.
+    """
+    resolved_cache_dir = _graph_cache_dir(cache_dir)
+    expected_key = _pipeline_dependency_graph_cache_key(config)
+    matched = load_dependency_graph(expected_key, cache_dir=resolved_cache_dir)
+    if matched is not None:
+        print(
+            f"Loaded cached graph key={expected_key[:12]} "
+            f"from {resolved_cache_dir} ({len(matched)} nodes)"
+        )
+        return matched, expected_key
+
+    cached = load_newest_cached_dependency_graph(cache_dir=resolved_cache_dir)
+    if cached is not None:
+        graph, cache_key = cached
+        print(
+            f"Loaded cached graph key={cache_key[:12]} "
+            f"from {resolved_cache_dir} ({len(graph)} nodes)"
+        )
+        _warn_if_cached_graph_is_stale(config, cache_key)
+        return graph, cache_key
+
+    dynamic_ref_config = DynamicRefConfig.from_constraints(config.constraints, {})
+    result = get_or_build_dependency_graph(
+        workbook_path=config.workbook_path,
+        targets=config.targets,
+        constraints=config.constraints,
+        dynamic_refs=dynamic_ref_config,
+        load_values=True,
+        capture_dependency_provenance=True,
+        cache_dir=resolved_cache_dir,
+    )
+    print(f"Built graph key={result.cache_key[:12]} ({len(result.graph)} nodes)")
+    return result.graph, result.cache_key

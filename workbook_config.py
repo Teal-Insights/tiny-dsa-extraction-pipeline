@@ -14,7 +14,6 @@ from excel_grapher.core.cell_types import Between, RealBetween
 from src.graph_dependency_audit import GraphAuditCase
 from src.internal_binding_coverage import InternalBindingValidationMode
 from src.pipeline_config import DistProjectMetadata
-from src.workbook_addresses import ProjectionColumnLayout
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -77,36 +76,15 @@ DIST_METADATA = DistProjectMetadata(
 
 DOCSTRING_CALLBACK_NAME = "series_docs"
 
-PROJECTION_LAYOUT = ProjectionColumnLayout(
-    engine_sheet="Engine",
-    engine_columns=("C", "D", "E", "F", "G"),
-    outputs_sheet="Outputs",
-    outputs_column_to_engine={
-        "B": "C",
-        "C": "D",
-        "D": "E",
-        "E": "F",
-        "F": "G",
-    },
-    time_period_to_engine_column={
-        1: "C",
-        2: "D",
-        3: "E",
-        4: "F",
-        5: "G",
-    },
-    # Effective dimension id for the projection axis (defaults to TIME_PERIOD).
-    # Use an explicit id when bindings distinguish projection from other
-    # TIME_PERIOD dimensions, e.g. projection_dimension_id="PROJECTION_PERIOD".
-)
-
 DIFFERENTIAL_WORKBOOK_REL = Path("data/tiny-dsa.xlsx")
 DIFFERENTIAL_REPORT_DIR_REL = Path("data/differential/exported_library")
 DIFFERENTIAL_GRAPH_REPORT_DIR_REL = Path("data/differential/graph")
 
-# Optional per-parent formula cells for LLM direct-dependency graph audits
-# (``pytest tests/test_extraction_graph_accuracy.py --run-skipped``). Loaded
-# through :func:`src.pipeline_config.load_pipeline_config` as
+# Optional per-parent formula cells that steer LLM direct-dependency graph audits
+# (``pytest tests/test_extraction_graph_accuracy.py --run-skipped``). Empty means
+# auto-select from the warm graph. Declared cases overlay discovery: ``required``
+# pins always run first; labels/focuses win for matching keys. Loaded through
+# :func:`src.pipeline_config.load_pipeline_config` as
 # ``PipelineConfig.graph_audit_cases``. Provider and model come from
 # ``LLM_GRAPH_AUDIT_MODEL`` (see ``.env.example``).
 GRAPH_AUDIT_CASES: tuple[GraphAuditCase, ...] = ()

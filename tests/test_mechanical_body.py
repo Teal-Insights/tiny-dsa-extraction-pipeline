@@ -76,7 +76,6 @@ def test_identity_sweep_xl_cell_reads_become_column_lookup() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     draft = synthesize_cluster_body(
@@ -133,7 +132,6 @@ def test_identity_sweep_xl_eval_reads_become_column_lookup() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     draft = synthesize_cluster_body(
@@ -177,7 +175,6 @@ def test_constant_address_xl_eval_dependency_is_left_alone() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     draft = synthesize_cluster_body(
@@ -227,7 +224,6 @@ def test_accessor_offset_read_becomes_derived_argument() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id={
             "Data!D4": "price",
             "Data!E4": "price",
@@ -286,7 +282,6 @@ def test_self_recurrence_with_anchor_group_routes_by_period() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     assert len(summary.groups) == 2
@@ -362,7 +357,6 @@ def test_tuple_lookup_accessor_read_becomes_tuple_subscript() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id={
             "Hist!B2": "hist",
             "Hist!B3": "hist",
@@ -460,7 +454,6 @@ def test_self_recurrence_with_tuple_derived_period_routes_by_pair() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     assert len(summary.groups) == 2
@@ -511,7 +504,6 @@ def test_unmatched_read_site_fails_synthesis() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id={"Data!D4": "price", "Data!E4": "price"},
     )
     assert summary.fallback_reason is None
@@ -548,7 +540,6 @@ def _constant_range_summary(bodies: tuple[str, str]):
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     return summary, expected
@@ -624,7 +615,6 @@ def test_varying_range_endpoints_fail_synthesis() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     with pytest.raises(MechanicalSynthesisError, match="range_endpoints_vary"):
@@ -689,7 +679,6 @@ def _index_family_summary(
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id=address_to_series_id,
     )
     assert summary.fallback_reason is None
@@ -785,7 +774,6 @@ def test_index_ref_tuple_sheet_mismatch_fails_fingerprint() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id={"Data!A1": "label"},
     )
     assert summary.fallback_reason is not None
@@ -1037,7 +1025,6 @@ def test_mixed_ref_series_regimes_split_then_synthesize() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id={
             "Anchor!B5": "anchor_series",
             "Macro!AE15": "macrofiscal_gdp_deflator_growth",
@@ -1158,7 +1145,6 @@ def test_peel_boundary_lag_routes_to_sibling_helper_not_xl_cell() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id=address_to_series_id,
         semantic_dependencies=semantic_dependencies,
     )

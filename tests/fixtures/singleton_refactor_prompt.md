@@ -75,10 +75,10 @@ Mechanical source may already contain `_tN = …` statements. Your primary job i
 
 ```python
 def cell_some_sheet_z22(ctx):
-    """Formula: =AnotherSheet!Z20-AnotherSheet!Z6."""
+    '''Formula: =AnotherSheet!Z20-AnotherSheet!Z6.'''
     _t1 = united_states_total_deaths(ctx)
     _t2 = united_states_expected_deaths(ctx)
-    return xl_number(_t1) - xl_number(_t2)
+    return (xl_number(_t1) - xl_number(_t2))
 ```
 
 Rename `_t1` / `_t2` to domain-meaningful locals and keep the residual `xl_number(...)` coercions on the return line:

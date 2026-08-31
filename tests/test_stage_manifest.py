@@ -48,7 +48,6 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
             documentation_url="https://example.com/",
         ),
         docstring_callback_name="series_docs",
-        projection_layout=None,
         canonical_api_example_path=repo_root / "templates" / "canonical-api-usage.md",
         binding_authoring_prompt_path=repo_root
         / "templates"
@@ -99,60 +98,6 @@ def test_compute_input_fingerprints_labels(tmp_path: Path) -> None:
         fingerprints["guide"]
         == hashlib.sha256(config.guide_path.read_bytes()).hexdigest()
     )
-    assert "projection_layout" in fingerprints
-
-
-def test_compute_input_fingerprints_projection_layout_changes(tmp_path: Path) -> None:
-    from src.workbook_addresses import ProjectionColumnLayout
-
-    config = _sample_config(tmp_path)
-    layout_a = ProjectionColumnLayout(
-        engine_sheet="Engine",
-        engine_columns=("B", "C"),
-        outputs_sheet="Outputs",
-        outputs_column_to_engine={"B": "B", "C": "C"},
-        time_period_to_engine_column={1: "B", 2: "C"},
-    )
-    layout_b = replace(
-        layout_a,
-        engine_columns=("B", "C", "D"),
-        time_period_to_engine_column={1: "B", 2: "C", 3: "D"},
-    )
-    with_a = compute_input_fingerprints(replace(config, projection_layout=layout_a))
-    with_b = compute_input_fingerprints(replace(config, projection_layout=layout_b))
-    without = compute_input_fingerprints(replace(config, projection_layout=None))
-
-    assert with_a["projection_layout"] != with_b["projection_layout"]
-    assert with_a["projection_layout"] != without["projection_layout"]
-
-
-def test_assert_manifest_fresh_names_drifted_projection_layout(tmp_path: Path) -> None:
-    from src.workbook_addresses import ProjectionColumnLayout
-
-    layout_a = ProjectionColumnLayout(
-        engine_sheet="Engine",
-        engine_columns=("B", "C"),
-        outputs_sheet="Outputs",
-        outputs_column_to_engine={"B": "B", "C": "C"},
-        time_period_to_engine_column={1: "B", 2: "C"},
-    )
-    layout_b = replace(
-        layout_a,
-        engine_columns=("B", "C", "D"),
-        time_period_to_engine_column={1: "B", 2: "C", 3: "D"},
-    )
-    config = replace(_sample_config(tmp_path), projection_layout=layout_a)
-    manifest = write_stage_manifest(
-        config,
-        stage="export",
-        cache_keys={"codegen_cache_key": "c" * 64},
-        upstream_keys={},
-        fingerprints=compute_input_fingerprints(config),
-    )
-    drifted = replace(config, projection_layout=layout_b)
-
-    with pytest.raises(StageManifestDriftError, match="projection_layout"):
-        assert_manifest_fresh(manifest, drifted)
 
 
 def test_load_stage_manifest_rejects_unsupported_schema_version(tmp_path: Path) -> None:
@@ -262,14 +207,13 @@ def test_assert_manifest_fresh_rejects_manifest_missing_a_newer_fingerprint(
     """A manifest written before a fingerprint label existed cannot be verified.
 
     Iterating only the stored labels would pass this manifest and silently skip
-    the new input, which is how the ``projection_layout`` label shipped without
-    invalidating older manifests. The label set is a separate axis from
+    the new input. The label set is a separate axis from
     ``STAGE_MANIFEST_SCHEMA_VERSION``, so this must not depend on a version bump.
     """
     config = _sample_config(tmp_path)
     full = compute_input_fingerprints(config)
-    assert "projection_layout" in full
-    older = {name: value for name, value in full.items() if name != "projection_layout"}
+    assert "variation_mode" in full
+    older = {name: value for name, value in full.items() if name != "variation_mode"}
     manifest = write_stage_manifest(
         config,
         stage="extract",
@@ -278,7 +222,7 @@ def test_assert_manifest_fresh_rejects_manifest_missing_a_newer_fingerprint(
         fingerprints=older,
     )
 
-    with pytest.raises(StageManifestDriftError, match="projection_layout"):
+    with pytest.raises(StageManifestDriftError, match="variation_mode"):
         assert_manifest_fresh(manifest, config)
 
 

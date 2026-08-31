@@ -93,9 +93,9 @@ Written by every `run_pipeline` invocation (`uv run python -m src.extraction_pip
 
 `caches` keys: `dependency-graph`, `bindings-validation`, `series-resolution`, `series-derived`, `projection`, `codegen`, `clusters`, `internals`.
 
-Spans are non-overlapping leaf measurements: do not invent a total by summing them with a parent rollup. A full `run_pipeline` records `extract`, `export`, `refactor`, `validate`, and `document` in order. Graph-build spans (`create_dependency_graph`, `derive_series`, `validate_series_bindings`, …) land under `extract`; projection/codegen spans (`build_refactor_projection`, `codegen`, `write_export_package`) land under `export`. Extract alone appears when `stop_after_stage=extract` (or `--extract-graph`).
+Spans are non-overlapping leaf measurements: do not invent a total by summing them with a parent rollup. A full `run_pipeline` records `extract`, `export`, `refactor`, `validate`, and `document` in order. Graph-build spans (`create_dependency_graph`, …) land under `extract`; binding post-processing (`load_series_bindings`, `validate_series_bindings`, `derive_series`, `series_derived`) and projection/codegen spans land under `export`. Extract alone appears when `stop_after_stage=extract` (or `--extract-graph`).
 
-Notable spans: `create_dependency_graph`, `derive_series`, `validate_series_bindings` (extract); `build_refactor_projection`, `codegen`, `write_export_package` (export); `build_refactor_bindings`, `cluster_graph_formulas`, `pass1_context`, `pass1_synthesize`, `pass1_apply`, `pass1_validate`, `pass1_reindex`, `mechanical_parity_gate`, `pass2_semantic_naming`, `phase_c` (refactor); `post_refactor_differential`, `export_reference_reports` (validate).
+Notable spans: `create_dependency_graph` (extract); `load_series_bindings`, `validate_series_bindings`, `derive_series`, `series_derived`, `build_refactor_projection`, `codegen`, `write_export_package` (export); `build_refactor_bindings`, `cluster_graph_formulas`, `pass1_context`, `pass1_synthesize`, `pass1_apply`, `pass1_validate`, `pass1_reindex`, `mechanical_parity_gate`, `pass2_semantic_naming`, `phase_c` (refactor); `post_refactor_differential`, `export_reference_reports` (validate).
 
 ### cProfile output
 

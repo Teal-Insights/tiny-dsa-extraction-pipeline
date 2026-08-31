@@ -1,0 +1,18 @@
+schema_version: 1.13.0
+workbook: workbook.xlsx
+series:
+  - id: input_bias
+    sheet: Inputs
+    data_range: Inputs!B1
+    layout: scalar
+    constant: {}
+    structure:
+      measure:
+        concept: OBS_VALUE
+        dtype: float
+        bind:
+          kind: data_cell
+          read: float
+      dimensions: []
+    key: []
+    notes: Fixed bias leaf (Literal[0]); reader-only, not a public setter.

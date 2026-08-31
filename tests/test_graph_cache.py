@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
+import pickle
 from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
@@ -12,12 +14,13 @@ import pytest
 from excel_grapher.core.cell_types import RealBetween
 from excel_grapher.exporter import CodeGenerator
 from excel_grapher.exporter.codegen import GraphLike
-from excel_grapher.grapher import DynamicRefConfig
+from excel_grapher.grapher import DependencyGraph, DynamicRefConfig
 
 from src.bindings_validation_cache import DEFAULT_BINDINGS_VALIDATION_CACHE_DIR
 from src.cluster_cache import DEFAULT_CLUSTER_CACHE_DIR
 from src.codegen_cache import DEFAULT_CODEGEN_CACHE_DIR
 from src.graph_cache import (
+    COMMITTED_GRAPH_CACHE_DIR,
     DEFAULT_GRAPH_CACHE_DIR,
     bindings_fingerprint,
     clear_dependency_graph_cache,
@@ -26,6 +29,8 @@ from src.graph_cache import (
     get_or_build_dependency_graph,
     load_dependency_graph,
     prune_cache_entries_for_other_excel_grapher_versions,
+    save_dependency_graph,
+    try_load_cached_dependency_graph,
 )
 from src.internals_refactor import DEFAULT_INTERNALS_CACHE_DIR
 from src.projection_cache import (
@@ -82,6 +87,12 @@ def test_pytest_uses_isolated_pipeline_disk_cache() -> None:
     assert DEFAULT_INTERNALS_CACHE_DIR != REPO_INTERNALS_CACHE_DIR
 
 
+def test_committed_graph_cache_dir_stays_on_repo_path_under_pytest_redirect() -> None:
+    """Opt-in workbook audits must read the repo cache, not pytest's temp redirect."""
+    assert COMMITTED_GRAPH_CACHE_DIR == REPO_GRAPH_CACHE_DIR
+    assert COMMITTED_GRAPH_CACHE_DIR != DEFAULT_GRAPH_CACHE_DIR
+
+
 @pytest.fixture
 def graph_cache_dir(tmp_path: Path) -> Path:
     return tmp_path / "dependency-graph"
@@ -105,7 +116,6 @@ def _build_graph(config, *, cache_dir: Path, **kwargs):
         workbook_path=config.workbook_path,
         targets=config.targets,
         constraints=config.constraints,
-        bindings_path=config.bindings_path,
         dynamic_refs=dynamic_refs,
         cache_dir=cache_dir,
         **kwargs,
@@ -280,7 +290,6 @@ def test_dependency_graph_cache_key_changes_when_targets_change(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
-        bindings_path=synthetic_config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -289,7 +298,6 @@ def test_dependency_graph_cache_key_changes_when_targets_change(
         workbook_path=changed.workbook_path,
         targets=changed.targets,
         constraints=changed.constraints,
-        bindings_path=changed.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -303,7 +311,6 @@ def test_dependency_graph_cache_key_changes_when_constraints_change(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
-        bindings_path=synthetic_config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -313,7 +320,6 @@ def test_dependency_graph_cache_key_changes_when_constraints_change(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=changed_constraints,
-        bindings_path=synthetic_config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -328,7 +334,6 @@ def test_dependency_graph_cache_key_changes_when_workbook_changes(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
-        bindings_path=synthetic_config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -339,22 +344,36 @@ def test_dependency_graph_cache_key_changes_when_workbook_changes(
         workbook_path=other_workbook,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
-        bindings_path=synthetic_config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
     assert base_key != changed_key
 
 
-def test_dependency_graph_cache_key_changes_when_bindings_change(
+def test_bindings_fingerprint_stable_for_empty_bindings_dir(tmp_path: Path) -> None:
+    empty_dir = tmp_path / "bindings"
+    empty_dir.mkdir()
+    digest = bindings_fingerprint(empty_dir)
+    assert digest == bindings_fingerprint(empty_dir)
+    assert len(digest) == 64
+
+
+def test_bindings_fingerprint_stable_for_missing_bindings_dir(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist"
+    digest = bindings_fingerprint(missing)
+    assert digest == bindings_fingerprint(missing)
+    assert digest == bindings_fingerprint(tmp_path / "also-missing")
+
+
+def test_dependency_graph_cache_key_stable_when_bindings_change(
     synthetic_config,
     tmp_path: Path,
 ) -> None:
+    """Bindings are not an input to graph construction (#272)."""
     base_key = dependency_graph_cache_key(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
-        bindings_path=synthetic_config.bindings_path,
         load_values=True,
         capture_dependency_provenance=True,
     )
@@ -366,15 +385,15 @@ def test_dependency_graph_cache_key_changes_when_bindings_change(
             content = content.replace("input_rate", "input_rate_alt")
         (alternate_bindings / binding_file.name).write_text(content, encoding="utf-8")
 
+    # Graph key ignores bindings_path; only workbook/targets/constraints matter.
     changed_key = dependency_graph_cache_key(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
-        bindings_path=alternate_bindings,
         load_values=True,
         capture_dependency_provenance=True,
     )
-    assert base_key != changed_key
+    assert base_key == changed_key
     assert bindings_fingerprint(synthetic_config.bindings_path) != bindings_fingerprint(
         alternate_bindings
     )
@@ -397,7 +416,7 @@ def test_dependency_graph_cache_miss_after_workbook_change(
     assert first.cache_key != second.cache_key
 
 
-def test_dependency_graph_cache_miss_after_bindings_change(
+def test_dependency_graph_cache_hit_after_bindings_change(
     synthetic_config,
     graph_cache_dir: Path,
     tmp_path: Path,
@@ -412,8 +431,8 @@ def test_dependency_graph_cache_miss_after_bindings_change(
     changed_config = replace(synthetic_config, bindings_path=alternate_bindings)
 
     second = _build_graph(changed_config, cache_dir=graph_cache_dir)
-    assert not second.cache_hit
-    assert first.cache_key != second.cache_key
+    assert second.cache_hit
+    assert first.cache_key == second.cache_key
 
 
 def test_corrupt_dependency_graph_cache_is_rebuilt(
@@ -431,8 +450,161 @@ def test_corrupt_dependency_graph_cache_is_rebuilt(
     assert payload_path.is_file()
 
 
+def test_try_load_cached_dependency_graph_miss_does_not_build_or_write(
+    synthetic_config,
+    graph_cache_dir: Path,
+) -> None:
+    clear_process_dependency_graph_cache(cache_dir=graph_cache_dir)
+    with (
+        patch("src.graph_cache.create_dependency_graph") as create,
+        patch("src.graph_cache.save_dependency_graph") as save,
+    ):
+        result = try_load_cached_dependency_graph(
+            workbook_path=synthetic_config.workbook_path,
+            targets=synthetic_config.targets,
+            constraints=synthetic_config.constraints,
+            cache_dir=graph_cache_dir,
+        )
+
+    assert result is None
+    create.assert_not_called()
+    save.assert_not_called()
+    assert list(graph_cache_dir.glob("*")) == []
+
+
+def test_try_load_cached_dependency_graph_hit_does_not_rewrite(
+    synthetic_config,
+    graph_cache_dir: Path,
+) -> None:
+    first = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    clear_process_dependency_graph_cache(cache_dir=graph_cache_dir)
+    payload_path = graph_cache_dir / f"{first.cache_key}.pkl.gz"
+    before = payload_path.read_bytes()
+    mtime_before = payload_path.stat().st_mtime_ns
+
+    with patch("src.graph_cache.save_dependency_graph") as save:
+        loaded = try_load_cached_dependency_graph(
+            workbook_path=synthetic_config.workbook_path,
+            targets=synthetic_config.targets,
+            constraints=synthetic_config.constraints,
+            cache_dir=graph_cache_dir,
+        )
+
+    assert loaded is not None
+    assert loaded.cache_hit
+    assert loaded.cache_key == first.cache_key
+    assert len(loaded.graph) == len(first.graph)
+    save.assert_not_called()
+    assert payload_path.read_bytes() == before
+    assert payload_path.stat().st_mtime_ns == mtime_before
+
+
+def test_try_load_cached_dependency_graph_leaves_corrupt_payload(
+    synthetic_config,
+    graph_cache_dir: Path,
+) -> None:
+    first = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    clear_process_dependency_graph_cache(cache_dir=graph_cache_dir)
+    payload_path = graph_cache_dir / f"{first.cache_key}.pkl.gz"
+    corrupt = b"not-a-valid-gzip-pickle"
+    payload_path.write_bytes(corrupt)
+
+    loaded = try_load_cached_dependency_graph(
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        constraints=synthetic_config.constraints,
+        cache_dir=graph_cache_dir,
+    )
+
+    assert loaded is None
+    assert payload_path.is_file()
+    assert payload_path.read_bytes() == corrupt
+
+
+def test_load_dependency_graph_unlink_corrupt_false_preserves_payload(
+    graph_cache_dir: Path,
+) -> None:
+    graph_cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_key = "corrupt-key"
+    payload_path = graph_cache_dir / f"{cache_key}.pkl.gz"
+    corrupt = b"not-a-valid-gzip-pickle"
+    payload_path.write_bytes(corrupt)
+
+    assert (
+        load_dependency_graph(
+            cache_key,
+            cache_dir=graph_cache_dir,
+            unlink_corrupt=False,
+        )
+        is None
+    )
+    assert payload_path.read_bytes() == corrupt
+
+
+def test_dependency_graph_cache_writes_egdg_multipart_payload(
+    synthetic_config,
+    graph_cache_dir: Path,
+) -> None:
+    """Warm-cache files must use excel-grapher's low-peak EGDG format."""
+    result = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    payload_path = graph_cache_dir / f"{result.cache_key}.pkl.gz"
+
+    with gzip.open(payload_path, "rb") as handle:
+        magic = handle.read(4)
+
+    assert magic == b"EGDG"
+
+
+def test_load_dependency_graph_rejects_legacy_gzip_pickle(
+    synthetic_config,
+    graph_cache_dir: Path,
+) -> None:
+    """Pre-5.1.5 single-object gzip pickles are not loadable; rebuild from scratch."""
+    first = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    clear_process_dependency_graph_cache(cache_dir=graph_cache_dir)
+    payload_path = graph_cache_dir / f"{first.cache_key}.pkl.gz"
+    with gzip.open(payload_path, "wb", compresslevel=1) as handle:
+        pickle.dump(first.graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    assert load_dependency_graph(first.cache_key, cache_dir=graph_cache_dir) is None
+    assert not payload_path.is_file()
+
+    rebuilt = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    assert not rebuilt.cache_hit
+    with gzip.open(graph_cache_dir / f"{rebuilt.cache_key}.pkl.gz", "rb") as handle:
+        assert handle.read(4) == b"EGDG"
+
+
+def test_save_dependency_graph_uses_dump_graph(
+    synthetic_config,
+    graph_cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
+    calls: list[Path] = []
+
+    def fake_dump_graph(graph: DependencyGraph, path: str | Path, **_kwargs) -> None:
+        dest = Path(path)
+        calls.append(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"egdg-stub")
+
+    monkeypatch.setattr("src.graph_cache.dump_graph", fake_dump_graph)
+    save_dependency_graph(
+        first.graph,
+        cache_key="spy-key",
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        cache_dir=graph_cache_dir,
+    )
+
+    assert calls == [graph_cache_dir / "spy-key.pkl.gz"]
+    assert (graph_cache_dir / "spy-key.pkl.gz").read_bytes() == b"egdg-stub"
+
+
 def test_projection_cache_roundtrip(
     synthetic_config,
+    synthetic_series_bindings,
     graph_cache_dir: Path,
     projection_cache_dir: Path,
 ) -> None:
@@ -440,11 +612,15 @@ def test_projection_cache_roundtrip(
     first = get_or_build_refactor_projection(
         graph_result.graph,
         graph_cache_key=graph_result.cache_key,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_config.workbook_path,
         cache_dir=projection_cache_dir,
     )
     second = get_or_build_refactor_projection(
         graph_result.graph,
         graph_cache_key=graph_result.cache_key,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_config.workbook_path,
         cache_dir=projection_cache_dir,
     )
 
@@ -462,6 +638,8 @@ def test_rehydrated_projection_supports_codegen(
     graph_result = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
     projection = build_refactor_projection(
         graph_result.graph,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
     )
     modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
@@ -480,6 +658,7 @@ def test_projection_cache_key_follows_graph_cache_key() -> None:
 
 def test_projection_cache_miss_when_graph_cache_key_changes(
     synthetic_config,
+    synthetic_series_bindings,
     graph_cache_dir: Path,
     projection_cache_dir: Path,
 ) -> None:
@@ -487,12 +666,16 @@ def test_projection_cache_miss_when_graph_cache_key_changes(
     first = get_or_build_refactor_projection(
         graph_result.graph,
         graph_cache_key=graph_result.cache_key,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_config.workbook_path,
         cache_dir=projection_cache_dir,
     )
     other_graph_key = hashlib.sha256(b"other-graph-key").hexdigest()
     second = get_or_build_refactor_projection(
         graph_result.graph,
         graph_cache_key=other_graph_key,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_config.workbook_path,
         cache_dir=projection_cache_dir,
     )
     assert not first.cache_hit
@@ -502,11 +685,19 @@ def test_projection_cache_miss_when_graph_cache_key_changes(
 
 def test_rehydrate_projection_result_uses_original_graph(
     synthetic_graph,
+    synthetic_series_bindings,
+    synthetic_workbook_path,
 ) -> None:
-    live = build_refactor_projection(synthetic_graph)
+    live = build_refactor_projection(
+        synthetic_graph,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_workbook_path,
+    )
     cached = get_or_build_refactor_projection(
         synthetic_graph,
         graph_cache_key="synthetic-graph-key",
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_workbook_path,
         no_cache=True,
     ).projection
     rehydrated = rehydrate_projection_result(
@@ -532,6 +723,7 @@ def test_clear_dependency_graph_cache_removes_entries(
 
 def test_clear_projection_cache_removes_entries(
     synthetic_config,
+    synthetic_series_bindings,
     graph_cache_dir: Path,
     projection_cache_dir: Path,
 ) -> None:
@@ -539,6 +731,8 @@ def test_clear_projection_cache_removes_entries(
     projection_result = get_or_build_refactor_projection(
         graph_result.graph,
         graph_cache_key=graph_result.cache_key,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_config.workbook_path,
         cache_dir=projection_cache_dir,
     )
     payload_path = projection_cache_dir / f"{projection_result.cache_key}.pkl.gz"
@@ -564,9 +758,9 @@ def test_extract_graph_cli_supports_no_cache(
             return_value=synthetic_config,
         ),
         patch("src.extraction_pipeline.validate_pipeline_config"),
+        patch("src.extraction_pipeline.extract_dependency_graph") as extract,
     ):
-        with patch("src.extraction_pipeline.extract_dependency_graph") as extract:
-            main(["--extract-graph", "--no-cache"])
+        main(["--extract-graph", "--no-cache"])
 
     extract.assert_called_once_with(
         synthetic_config, no_cache=True, force_rebuild=False, timings=ANY

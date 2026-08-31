@@ -38,7 +38,6 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
             documentation_url="https://example.com/",
         ),
         docstring_callback_name="series_docs",
-        projection_layout=None,
         canonical_api_example_path=repo_root / "templates" / "canonical-api-usage.md",
         binding_authoring_prompt_path=repo_root
         / "templates"

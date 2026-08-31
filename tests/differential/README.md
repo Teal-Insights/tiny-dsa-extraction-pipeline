@@ -123,6 +123,22 @@ step copies the exported-library harness, workbook fixture, and reports into
 Microsoft Excel must be installed locally — `xlwings` drives it through COM automation.
 `xlwings` is already in `pyproject.toml`'s dev dependencies.
 
+**Graph harness prerequisite:** load a warm dependency-graph cache first so the
+MVP oracle does not cold-build. Run extract (or regenerate) for the current
+workbook / targets / constraints:
+
+```bash
+uv run python -m src.extraction_pipeline --only-stage extract
+# or
+uv run python -m scripts.regenerate_graph_cache
+```
+
+`MvpGraphDriver` prefers a read-only hit from committed
+`.cache/dependency-graph/` (`COMMITTED_GRAPH_CACHE_DIR`, same split as the
+opt-in LLM graph audit under pytest). On miss it builds and saves via
+`get_or_build_dependency_graph` into the writable default cache (pipeline
+extract policy) and logs a hint to warm the cache first.
+
 ```bash
 # Graph oracle (extraction repo — run before export)
 uv run python -m tests.differential.differential_test_graph

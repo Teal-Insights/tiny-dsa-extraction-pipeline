@@ -477,7 +477,6 @@ Result: PASS
             documentation_url="https://example.com/",
         ),
         docstring_callback_name="series_docs",
-        projection_layout=None,
         canonical_api_example_path=templates / "canonical-api-usage.md",
         binding_authoring_prompt_path=templates / "binding-authoring-prompt.txt",
         section_rewrite_introduction_focus_path=(

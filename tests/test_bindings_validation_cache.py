@@ -68,7 +68,6 @@ def _build_graph(config, *, cache_dir: Path):
         workbook_path=config.workbook_path,
         targets=config.targets,
         constraints=config.constraints,
-        bindings_path=config.bindings_path,
         dynamic_refs=dynamic_refs,
         cache_dir=cache_dir,
     )
@@ -97,6 +96,7 @@ def test_bindings_validation_cache_roundtrip(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     second = get_or_build_bindings_validation(
@@ -104,6 +104,7 @@ def test_bindings_validation_cache_roundtrip(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
 
@@ -126,6 +127,7 @@ def test_bindings_validation_cache_matches_live_validate(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     live = validate_series_bindings(
@@ -148,6 +150,7 @@ def test_bindings_validation_cache_force_rebuild(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     second = get_or_build_bindings_validation(
@@ -155,6 +158,7 @@ def test_bindings_validation_cache_force_rebuild(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
         force_rebuild=True,
     )
@@ -176,6 +180,7 @@ def test_bindings_validation_cache_no_cache_bypasses_disk(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
         no_cache=True,
     )
@@ -189,9 +194,38 @@ def test_bindings_validation_cache_no_cache_bypasses_disk(
     )
 
 
-def test_bindings_validation_cache_key_follows_graph_cache_key() -> None:
-    first = bindings_validation_cache_key(graph_cache_key="abc")
-    second = bindings_validation_cache_key(graph_cache_key="def")
+def test_bindings_validation_cache_key_follows_graph_cache_key(
+    synthetic_config,
+) -> None:
+    first = bindings_validation_cache_key(
+        graph_cache_key="abc",
+        bindings_path=synthetic_config.bindings_path,
+    )
+    second = bindings_validation_cache_key(
+        graph_cache_key="def",
+        bindings_path=synthetic_config.bindings_path,
+    )
+    assert first != second
+
+
+def test_bindings_validation_cache_key_follows_bindings_fingerprint(
+    synthetic_config,
+    tmp_path: Path,
+) -> None:
+    alternate_bindings = tmp_path / "bindings"
+    alternate_bindings.mkdir()
+    for binding_file in synthetic_config.bindings_path.glob("*.bindings.yaml"):
+        content = binding_file.read_text(encoding="utf-8") + "\n# cache-bust\n"
+        (alternate_bindings / binding_file.name).write_text(content, encoding="utf-8")
+
+    first = bindings_validation_cache_key(
+        graph_cache_key="same-graph-key",
+        bindings_path=synthetic_config.bindings_path,
+    )
+    second = bindings_validation_cache_key(
+        graph_cache_key="same-graph-key",
+        bindings_path=alternate_bindings,
+    )
     assert first != second
 
 
@@ -207,6 +241,7 @@ def test_bindings_validation_cache_miss_when_graph_cache_key_changes(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     other_graph_key = hashlib.sha256(b"other-graph-key").hexdigest()
@@ -215,6 +250,7 @@ def test_bindings_validation_cache_miss_when_graph_cache_key_changes(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=other_graph_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
 
@@ -235,6 +271,7 @@ def test_corrupt_bindings_validation_cache_is_rebuilt(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     payload_path = validation_cache_dir / f"{first.cache_key}.pkl.gz"
@@ -245,6 +282,7 @@ def test_corrupt_bindings_validation_cache_is_rebuilt(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     assert not second.cache_hit
@@ -263,6 +301,7 @@ def test_clear_bindings_validation_cache_removes_entries(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     payload_path = validation_cache_dir / f"{result.cache_key}.pkl.gz"
@@ -303,6 +342,7 @@ def test_get_or_build_bindings_validation_prunes_other_excel_grapher_versions(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
     _write_versioned_cache_pair(
@@ -319,6 +359,7 @@ def test_get_or_build_bindings_validation_prunes_other_excel_grapher_versions(
         bindings,
         workbook_path=synthetic_config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         cache_dir=validation_cache_dir,
     )
 

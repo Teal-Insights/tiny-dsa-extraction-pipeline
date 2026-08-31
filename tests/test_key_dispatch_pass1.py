@@ -280,7 +280,6 @@ def test_cluster_contract_bucket_reports_key_dispatch_for_multi_regime(
         graph,  # type: ignore[arg-type]
         DSPB_LIKE_CLUSTER,
         DSPB_LIKE_INTERNALS,
-        layout=None,
         bound_address_keys={**DSPB_LIKE_MEMBER_KEYS, **DSPB_LIKE_OPERAND_KEYS},
         key_vocabulary=DSPB_LIKE_VOCABULARY,
         workbook_path=tmp_path / "workbook.xlsx",

@@ -51,7 +51,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Import the canonical configuration from workbook_config so the differential
 # always tests the same shape the pipeline ships.
-from src.pipeline_config import load_pipeline_config  # noqa: E402
+from src.pipeline_config import load_pipeline_config
 
 _pipeline = load_pipeline_config(repo_root=PROJECT_ROOT)
 PIPELINE_CONSTRAINTS = _pipeline.constraints
@@ -520,7 +520,7 @@ def run_sweep() -> tuple[list[Trial], list[str]]:
         for point in axis.points
         for cell in materialize(point.inputs, names)
     }
-    missing_inputs_in_graph = sorted(all_input_cells - mvp._known_keys)  # noqa: SLF001
+    missing_inputs_in_graph = sorted(all_input_cells - mvp._known_keys)
     if missing_inputs_in_graph:
         print(
             "  ! mvp graph is missing these input cells "
@@ -536,7 +536,7 @@ def run_sweep() -> tuple[list[Trial], list[str]]:
                     g_val = golden.read(cell)
                     try:
                         m_val: Any = mvp.read(cell)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         m_val = f"<{type(exc).__name__}: {exc}>"
                         match, abs_d, rel_d, note = False, None, None, "mvp raised"
                     else:

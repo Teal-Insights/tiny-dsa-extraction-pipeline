@@ -2,13 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias, cast, get_args
+from typing import Literal, TypeAliasType, cast, get_args
 
-VariationMode: TypeAlias = Literal["independent", "dominant_key_only"]
-ClusteringMode: TypeAlias = Literal["series", "series_ast", "ast"]
+type VariationMode = Literal["independent", "dominant_key_only"]
+type ClusteringMode = Literal["series", "series_ast", "ast"]
 
-_VARIATION_MODE_CHOICES: tuple[str, ...] = get_args(VariationMode)
-_CLUSTERING_MODE_CHOICES: tuple[str, ...] = get_args(ClusteringMode)
+
+def unwrap_annotation(annotation: object) -> object:
+    """Resolve PEP 695 ``type`` aliases to their evaluated ``__value__``.
+
+    ``typing.get_args`` / ``get_origin`` do not evaluate ``TypeAliasType``, so
+    callers that introspect ``Literal`` (or other) aliases at runtime must
+    unwrap first.
+    """
+    while isinstance(annotation, TypeAliasType):
+        annotation = annotation.__value__
+    return annotation
+
+
+def _literal_args(alias: object) -> tuple[object, ...]:
+    return get_args(unwrap_annotation(alias))
+
+
+_VARIATION_MODE_CHOICES: tuple[str, ...] = cast(
+    tuple[str, ...], _literal_args(VariationMode)
+)
+_CLUSTERING_MODE_CHOICES: tuple[str, ...] = cast(
+    tuple[str, ...], _literal_args(ClusteringMode)
+)
 
 VARIATION_MODE_CLI_HELP = (
     "Formula-cluster variation mode for internals refactor clustering "

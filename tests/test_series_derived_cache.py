@@ -75,7 +75,6 @@ def _build_graph(config, *, cache_dir: Path):
         workbook_path=config.workbook_path,
         targets=config.targets,
         constraints=config.constraints,
-        bindings_path=config.bindings_path,
         dynamic_refs=dynamic_refs,
         cache_dir=cache_dir,
     )
@@ -88,6 +87,7 @@ def _resolve_series(config, graph_result):
         bindings,
         workbook_path=config.workbook_path,
         graph_cache_key=graph_result.cache_key,
+        bindings_path=config.bindings_path,
         cache_dir=None,
         no_cache=True,
     )
@@ -130,6 +130,7 @@ def _get_or_build_derived(
         graph_cache_key=(
             graph_cache_key if graph_cache_key is not None else graph_result.cache_key
         ),
+        bindings_path=config.bindings_path,
         cache_dir=cache_dir,
         no_cache=no_cache,
         force_rebuild=force_rebuild,
@@ -256,33 +257,67 @@ def test_series_derived_cache_no_cache_bypasses_disk(
     )
 
 
-def test_series_derived_cache_key_follows_graph_cache_key() -> None:
+def test_series_derived_cache_key_follows_graph_cache_key(
+    synthetic_config,
+) -> None:
     first = series_derived_cache_key(
         graph_cache_key="abc",
+        bindings_path=synthetic_config.bindings_path,
         validation_mode="warn",
         exempt_cells=frozenset(),
     )
     second = series_derived_cache_key(
         graph_cache_key="def",
+        bindings_path=synthetic_config.bindings_path,
         validation_mode="warn",
         exempt_cells=frozenset(),
     )
     assert first != second
 
 
-def test_series_derived_cache_key_follows_mode_and_exemptions() -> None:
+def test_series_derived_cache_key_follows_bindings_fingerprint(
+    synthetic_config,
+    tmp_path: Path,
+) -> None:
+    alternate_bindings = tmp_path / "bindings"
+    alternate_bindings.mkdir()
+    for binding_file in synthetic_config.bindings_path.glob("*.bindings.yaml"):
+        content = binding_file.read_text(encoding="utf-8") + "\n# cache-bust\n"
+        (alternate_bindings / binding_file.name).write_text(content, encoding="utf-8")
+
+    first = series_derived_cache_key(
+        graph_cache_key="same-graph-key",
+        bindings_path=synthetic_config.bindings_path,
+        validation_mode="warn",
+        exempt_cells=frozenset(),
+    )
+    second = series_derived_cache_key(
+        graph_cache_key="same-graph-key",
+        bindings_path=alternate_bindings,
+        validation_mode="warn",
+        exempt_cells=frozenset(),
+    )
+    assert first != second
+
+
+def test_series_derived_cache_key_follows_mode_and_exemptions(
+    synthetic_config,
+) -> None:
     base = series_derived_cache_key(
         graph_cache_key="abc",
+        bindings_path=synthetic_config.bindings_path,
         validation_mode="warn",
         exempt_cells=frozenset(),
     )
     mode_changed = series_derived_cache_key(
         graph_cache_key="abc",
+        bindings_path=synthetic_config.bindings_path,
         validation_mode="error",
         exempt_cells=frozenset(),
     )
     exempt_changed = series_derived_cache_key(
         graph_cache_key="abc",
+        bindings_path=synthetic_config.bindings_path,
         validation_mode="warn",
         exempt_cells=frozenset({"Sheet!A1"}),
     )
@@ -346,6 +381,7 @@ def test_legacy_short_tuple_series_derived_cache_is_rebuilt(
     series_result = _resolve_series(synthetic_config, graph_result)
     cache_key = series_derived_cache_key(
         graph_cache_key=graph_result.cache_key,
+        bindings_path=synthetic_config.bindings_path,
         validation_mode=synthetic_config.internal_binding_validation_mode,
         exempt_cells=synthetic_config.internal_binding_exempt_cells,
     )
@@ -494,6 +530,7 @@ def test_require_bound_address_keys_fails_loudly_on_cache_miss(
     with pytest.raises(RuntimeError, match="series-derived cache miss"):
         require_bound_address_keys_from_series_derived_cache(
             graph_cache_key="missing",
+            bindings_path=tmp_path / "bindings",
             validation_mode="warn",
             exempt_cells=frozenset(),
             cache_dir=tmp_path / "series-derived",

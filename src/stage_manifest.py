@@ -62,7 +62,7 @@ class StageManifest:
         cls, payload: Mapping[str, object], *, path: Path
     ) -> StageManifest:
         if not isinstance(payload, dict):
-            raise ValueError(f"invalid stage manifest payload: {path}")
+            raise TypeError(f"invalid stage manifest payload: {path}")
         stage = payload.get("stage")
         schema_version = payload.get("schema_version")
         cache_keys = payload.get("cache_keys")
@@ -111,25 +111,6 @@ def stage_manifest_path(repo_root: Path, stage: str) -> Path:
 
 def compute_input_fingerprints(config: PipelineConfig) -> dict[str, str]:
     """Return labeled fingerprints for pipeline inputs that gate stage entry."""
-    layout = config.projection_layout
-    layout_payload: object
-    if layout is None:
-        layout_payload = None
-    else:
-        layout_payload = {
-            "engine_sheet": layout.engine_sheet,
-            "engine_columns": list(layout.engine_columns),
-            "outputs_sheet": layout.outputs_sheet,
-            "outputs_column_to_engine": dict(layout.outputs_column_to_engine),
-            "time_period_to_engine_column": {
-                str(period): column
-                for period, column in sorted(
-                    layout.time_period_to_engine_column.items()
-                )
-            },
-            "time_period_header_row": layout.time_period_header_row,
-            "projection_dimension_id": layout.projection_dimension_id,
-        }
     return {
         "workbook": file_fingerprint(config.workbook_path),
         "bindings": bindings_fingerprint(config.bindings_path),
@@ -148,9 +129,6 @@ def compute_input_fingerprints(config: PipelineConfig) -> dict[str, str]:
         ),
         "internal_binding_exempt_cells": hashlib.sha256(
             stable_json(sorted(config.internal_binding_exempt_cells)).encode()
-        ).hexdigest(),
-        "projection_layout": hashlib.sha256(
-            stable_json(layout_payload).encode()
         ).hexdigest(),
     }
 

@@ -99,10 +99,10 @@ Suppose the dump shows fingerprint `=IF(ref_0[REPORTING_PERIOD]>=ref_1,1,0)` ove
 
 ```python
 def cell_forecast_b12(ctx):
-    """Formula: =IF(Forecast!B4>=Assumptions!C2,1,0)."""
-    _t1 = xl_cell(ctx, "Forecast!B4")
-    _t2 = xl_cell(ctx, "Assumptions!C2")
-    _t3 = xl_compare(">=", _t1, _t2)
+    '''Formula: =IF(Forecast!B4>=Assumptions!C2,1,0).'''
+    _t1 = xl_cell(ctx, 'Forecast!B4')
+    _t2 = xl_cell(ctx, 'Assumptions!C2')
+    _t3 = xl_compare('>=', _t1, _t2)
     return 1.0 if _t3 else 0.0
 ```
 

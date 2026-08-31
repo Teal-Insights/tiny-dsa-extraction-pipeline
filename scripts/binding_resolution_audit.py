@@ -8,7 +8,7 @@ formula cells claimed by more than one internal series.
 
 Run: ``uv run python -m scripts.binding_resolution_audit``
 
-Uses ``load_graph`` from ``internal_binding_burndown``: prefers the
+Uses ``load_pipeline_dependency_graph`` from ``src.graph_cache``: prefers the
 fingerprint-matching cache entry when present; otherwise falls back to the
 newest cached graph pickle (with a stale-key warning).
 """
@@ -24,16 +24,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from excel_grapher.series_bindings import load_series_bindings  # noqa: E402
-from excel_grapher.series_bindings.resolve import BindingDirection  # noqa: E402
+from excel_grapher.series_bindings import load_series_bindings
+from excel_grapher.series_bindings.resolve import BindingDirection
 
-from scripts.internal_binding_burndown import load_graph  # noqa: E402
-from src.binding_resolution_audit import (  # noqa: E402
+from src.binding_resolution_audit import (
     DIRECTIONS,
     audit_binding_resolutions,
     format_audit_findings,
 )
-from src.pipeline_config import (  # noqa: E402
+from src.graph_cache import load_pipeline_dependency_graph
+from src.pipeline_config import (
     load_pipeline_config,
     validate_pipeline_config,
 )
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_pipeline_config()
     validate_pipeline_config(config)
-    graph, _cache_key = load_graph(config)
+    graph, _cache_key = load_pipeline_dependency_graph(config)
     bindings = load_series_bindings(config.bindings_path)
     directions = _parse_directions(args.direction)
 

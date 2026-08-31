@@ -5,7 +5,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, NoReturn, cast
 
@@ -145,7 +145,7 @@ class XlErrorException(Exception):
         super().__init__(code.value)
 
 
-_EXCEL_EPOCH = datetime(1899, 12, 30, tzinfo=UTC)
+_EXCEL_EPOCH = datetime(1899, 12, 30)  # noqa: DTZ001
 
 
 def _escape_sheet_for_formula(sheet: str) -> str:
@@ -175,8 +175,7 @@ def _raise_if_error_value(value: CellValue) -> CellValue:
 def datetime_to_excel_serial(value: datetime) -> float:
     """Convert a naive datetime to an Excel day serial (1900 date system)."""
     naive = value.replace(tzinfo=None) if value.tzinfo is not None else value
-    epoch = _EXCEL_EPOCH.replace(tzinfo=None)
-    delta = naive - epoch
+    delta = naive - _EXCEL_EPOCH
     return delta.days + (delta.seconds + delta.microseconds / 1_000_000) / 86_400.0
 
 

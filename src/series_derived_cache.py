@@ -15,7 +15,10 @@ from typing import Any, cast
 
 from excel_grapher.grapher.graph import DependencyGraph
 
-from src.graph_cache import prune_cache_entries_for_other_excel_grapher_versions
+from src.graph_cache import (
+    bindings_fingerprint,
+    prune_cache_entries_for_other_excel_grapher_versions,
+)
 from src.internal_binding_coverage import (
     InternalBindingCoverageReport,
     InternalBindingValidationContext,
@@ -30,7 +33,7 @@ from src.refactor_bindings import (
     build_bound_address_keys,
 )
 
-SERIES_DERIVED_SCHEMA_VERSION = "1.0.0"
+SERIES_DERIVED_SCHEMA_VERSION = "1.1.0"
 DEFAULT_SERIES_DERIVED_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "series-derived"
 )
@@ -55,12 +58,14 @@ def stable_json(value: object) -> str:
 def series_derived_cache_key(
     *,
     graph_cache_key: str,
+    bindings_path: Path,
     validation_mode: InternalBindingValidationMode,
     exempt_cells: frozenset[str] | set[str] | Sequence[str],
 ) -> str:
     payload = {
         "cache_schema_version": SERIES_DERIVED_SCHEMA_VERSION,
         "graph_cache_key": graph_cache_key,
+        "bindings_fingerprint": bindings_fingerprint(bindings_path),
         "excel_grapher_version": version("excel-grapher"),
         "internal_binding_validation_mode": validation_mode,
         "exempt_cells": sorted(exempt_cells),
@@ -257,6 +262,7 @@ def get_or_build_series_derived(
     validation_mode: InternalBindingValidationMode,
     context: InternalBindingValidationContext,
     graph_cache_key: str,
+    bindings_path: Path,
     cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
@@ -266,6 +272,7 @@ def get_or_build_series_derived(
     resolved_cache_dir = _series_derived_cache_dir(cache_dir)
     cache_key = series_derived_cache_key(
         graph_cache_key=graph_cache_key,
+        bindings_path=bindings_path,
         validation_mode=validation_mode,
         exempt_cells=exempt_cells,
     )
@@ -370,6 +377,7 @@ def get_or_build_series_derived(
 def require_bound_address_keys_from_series_derived_cache(
     *,
     graph_cache_key: str,
+    bindings_path: Path,
     validation_mode: InternalBindingValidationMode,
     exempt_cells: frozenset[str],
     cache_dir: Path | None = None,
@@ -378,6 +386,7 @@ def require_bound_address_keys_from_series_derived_cache(
     resolved_cache_dir = _series_derived_cache_dir(cache_dir)
     cache_key = series_derived_cache_key(
         graph_cache_key=graph_cache_key,
+        bindings_path=bindings_path,
         validation_mode=validation_mode,
         exempt_cells=exempt_cells,
     )

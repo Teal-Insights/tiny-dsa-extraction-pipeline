@@ -16,7 +16,7 @@ from src.formula_clustering import (
     structural_fingerprint,
 )
 from src.refactor_bindings import expected_keys_for_address
-from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
+from src.workbook_addresses import parse_workbook_address
 
 
 def _formula_node(sheet: str, column: str, row: int, formula: str) -> Node:
@@ -127,14 +127,6 @@ VARIABLE_COUNTRY_PAIR_BINDINGS = {
     "Inputs!B12": {"REF_AREA": "JP", "TIME_PERIOD": 1},
     "Inputs!C12": {"REF_AREA": "KR", "TIME_PERIOD": 1},
 }
-
-ENGINE_REF_LAYOUT = ProjectionColumnLayout(
-    engine_sheet="Engine",
-    engine_columns=("C", "D", "E", "F"),
-    outputs_sheet="Outputs",
-    outputs_column_to_engine={"B": "C"},
-    time_period_to_engine_column={1: "C", 2: "D", 3: "E", 4: "F"},
-)
 
 
 def test_structural_fingerprint_abstracts_cell_addresses_but_preserves_literals() -> (
@@ -411,7 +403,7 @@ def test_cluster_graph_formulas_requires_bound_address_keys(
         cluster_graph_formulas(synthetic_projection, bound_address_keys=None)
 
 
-def test_cluster_graph_formulas_groups_parallel_row_on_synthetic_projection(
+def test_cluster_graph_formulas_groups_parallel_outputs_on_synthetic_projection(
     synthetic_projection,
     synthetic_bound_address_keys,
     synthetic_pipeline_config_fixture,
@@ -421,15 +413,14 @@ def test_cluster_graph_formulas_groups_parallel_row_on_synthetic_projection(
         bound_address_keys=synthetic_bound_address_keys,
         clustering_mode="ast",
         workbook_path=synthetic_pipeline_config_fixture.workbook_path,
-        layout=synthetic_pipeline_config_fixture.projection_layout,
     )
-    engine_cluster = next(
+    outputs_cluster = next(
         cluster
         for cluster in clusters
-        if set(cluster.members) == {"Engine!B2", "Engine!C2"}
+        if set(cluster.members) == {"Outputs!B1", "Outputs!C1"}
     )
-    assert engine_cluster.row == 2
-    assert engine_cluster.canonical_template == "=Inputs!A1+Inputs!B1+1"
+    assert outputs_cluster.row == 1
+    assert outputs_cluster.canonical_template == "=Inputs!A1+Inputs!B1+1"
 
 
 def test_cluster_graph_formulas_groups_trade_balance_with_binding_keys() -> None:
@@ -481,7 +472,6 @@ def test_dominant_key_only_split_resolves_each_member_once() -> None:
         bound_address_keys,
         *,
         workbook_path: Path | None = None,
-        layout: ProjectionColumnLayout | None = None,
         key_cache=None,
     ):
         call_counts[member_address] = call_counts.get(member_address, 0) + 1
@@ -490,7 +480,6 @@ def test_dominant_key_only_split_resolves_each_member_once() -> None:
             formula,
             bound_address_keys,
             workbook_path=workbook_path,
-            layout=layout,
             key_cache=key_cache,
         )
 
@@ -555,11 +544,11 @@ def test_cluster_graph_formulas_groups_debt_recurrence_chain_with_binding_keys()
     }
 
 
-def test_dominant_key_only_split_passes_layout_to_ref_key_resolution(
+def test_dominant_key_only_split_passes_workbook_path_to_ref_key_resolution(
     synthetic_workbook_path: Path,
     monkeypatch,
 ) -> None:
-    """dominant_key_only splitting must resolve operand keys with workbook layout."""
+    """dominant_key_only splitting must resolve operand keys against the workbook."""
     from src import formula_clustering
 
     bindings = {
@@ -589,7 +578,6 @@ def test_dominant_key_only_split_passes_layout_to_ref_key_resolution(
         bound_address_keys,
         *,
         workbook_path: Path | None = None,
-        layout: ProjectionColumnLayout | None = None,
         key_cache=None,
     ):
         captured_workbook_paths.append(workbook_path)
@@ -598,7 +586,6 @@ def test_dominant_key_only_split_passes_layout_to_ref_key_resolution(
             formula,
             bound_address_keys,
             workbook_path=workbook_path,
-            layout=layout,
             key_cache=key_cache,
         )
 
@@ -610,7 +597,6 @@ def test_dominant_key_only_split_passes_layout_to_ref_key_resolution(
         clustering_mode="ast",
         variation_mode="dominant_key_only",
         workbook_path=synthetic_workbook_path,
-        layout=ENGINE_REF_LAYOUT,
     )
 
     assert any(path == synthetic_workbook_path for path in captured_workbook_paths)
@@ -651,7 +637,6 @@ def test_cluster_graph_formulas_caches_resolved_binding_keys(
             bound_address_keys=bound_address_keys,
             clustering_mode="ast",
             workbook_path=synthetic_workbook_path,
-            layout=ENGINE_REF_LAYOUT,
         )
 
     assert resolver.call_count <= max_expected_resolutions
@@ -687,7 +672,6 @@ def test_cluster_graph_formulas_parses_each_formula_once(
             bound_address_keys=bound_address_keys,
             clustering_mode="ast",
             workbook_path=synthetic_workbook_path,
-            layout=ENGINE_REF_LAYOUT,
         )
 
     assert parser.call_count <= len(formulas)

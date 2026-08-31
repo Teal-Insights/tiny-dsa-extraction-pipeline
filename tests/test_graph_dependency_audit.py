@@ -9,6 +9,8 @@ from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import Node
 
 from src.graph_dependency_audit import (
+    DEFAULT_MAX_CHILDREN,
+    DEFAULT_MAX_FORMULA_LENGTH,
     SYSTEM_PROMPT,
     GraphAuditCase,
     GraphDependencyAuditVerdict,
@@ -17,6 +19,7 @@ from src.graph_dependency_audit import (
     build_graph_audit_client,
     build_parent_audit_prompt,
     collect_parent_audit_evidence,
+    discover_audit_case_candidates,
     format_audit_failure,
     select_audit_cases,
     validate_and_sanitize_audit_verdict,
@@ -179,6 +182,86 @@ def test_select_audit_cases_prefers_required_cases() -> None:
     selected = select_audit_cases(graph, cases, case_count=1, seed=0)
     assert len(selected) == 1
     assert selected[0].label == "a"
+
+
+def test_evidence_limits_raised_for_modern_context_windows() -> None:
+    assert DEFAULT_MAX_CHILDREN == 300
+    assert DEFAULT_MAX_FORMULA_LENGTH == 8000
+
+
+def test_discover_audit_case_candidates_ranks_formula_parents() -> None:
+    graph = _sample_graph()
+    candidates = discover_audit_case_candidates(graph)
+    assert [case.parent_key for case in candidates] == [
+        "Baseline!D11",
+        "'Output Baseline'!C5",
+    ]
+    assert all(not case.required for case in candidates)
+    assert candidates[0].label.startswith("auto:")
+
+
+def test_discover_audit_case_candidates_excludes_fan_out_above_limit() -> None:
+    graph = _parent_with_many_children_graph()
+    graph.add_node(_formula_node("Small", "A", 1, "=B1"))
+    graph.add_node(_leaf_node("Small", "B", 1))
+    graph.add_edge("Small!A1", "Small!B1")
+
+    candidates = discover_audit_case_candidates(graph, max_children=2)
+    assert [case.parent_key for case in candidates] == ["Small!A1"]
+
+
+def test_select_audit_cases_auto_discovers_when_declaration_empty() -> None:
+    graph = _sample_graph()
+    selected = select_audit_cases(graph, (), case_count=1, seed=0)
+    assert len(selected) == 1
+    assert selected[0].parent_key in {"Baseline!D11", "'Output Baseline'!C5"}
+
+
+def test_select_audit_cases_seed_is_stable_for_auto_discovery() -> None:
+    graph = DependencyGraph()
+    for index in range(8):
+        parent = f"Sheet!A{index + 1}"
+        graph.add_node(_formula_node("Sheet", "A", index + 1, f"=B{index + 1}"))
+        graph.add_node(_leaf_node("Sheet", "B", index + 1))
+        graph.add_edge(parent, f"Sheet!B{index + 1}")
+
+    first = select_audit_cases(graph, (), case_count=3, seed=7)
+    second = select_audit_cases(graph, (), case_count=3, seed=7)
+    third = select_audit_cases(graph, (), case_count=3, seed=8)
+    assert [case.parent_key for case in first] == [case.parent_key for case in second]
+    assert [case.parent_key for case in first] != [case.parent_key for case in third]
+
+
+def test_select_audit_cases_required_overlay_plus_auto_fill() -> None:
+    graph = _sample_graph()
+    graph.add_node(_formula_node("Extra", "A", 1, "=B1"))
+    graph.add_node(_leaf_node("Extra", "B", 1))
+    graph.add_edge("Extra!A1", "Extra!B1")
+    declared = (
+        GraphAuditCase(
+            "Output Baseline!C5",
+            "pinned",
+            "declared focus",
+            required=True,
+        ),
+    )
+    selected = select_audit_cases(graph, declared, case_count=2, seed=0)
+    assert len(selected) == 2
+    assert selected[0].label == "pinned"
+    assert selected[0].parent_key == "Output Baseline!C5"
+    assert selected[1].parent_key in {"Baseline!D11", "Extra!A1"}
+    assert selected[1].label.startswith("auto:")
+
+
+def test_select_audit_cases_declared_keys_win_over_discovered_labels() -> None:
+    graph = _sample_graph()
+    declared = (GraphAuditCase("Baseline!D11", "declared_baseline", "custom focus"),)
+    selected = select_audit_cases(graph, declared, case_count=2, seed=0)
+    by_key = {case.parent_key: case for case in selected}
+    assert "Baseline!D11" in by_key
+    assert by_key["Baseline!D11"].label == "declared_baseline"
+    assert by_key["Baseline!D11"].focus == "custom focus"
+    assert any(case.label.startswith("auto:") for case in selected)
 
 
 def test_format_audit_failure_is_parent_specific() -> None:

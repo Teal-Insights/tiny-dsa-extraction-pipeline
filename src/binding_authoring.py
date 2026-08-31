@@ -12,11 +12,17 @@ from excel_grapher.series_bindings.workflow import (
     validate_bindings_workbook,
 )
 
-BINDING_DIRECTIONS: tuple[str, ...] = ("inputs", "outputs", "internals")
+BINDING_DIRECTIONS: tuple[str, ...] = (
+    "inputs",
+    "outputs",
+    "internals",
+    "constants",
+)
 BINDING_FILENAMES: dict[str, str] = {
     "inputs": "inputs.bindings.yaml",
     "outputs": "outputs.bindings.yaml",
     "internals": "internals.bindings.yaml",
+    "constants": "constants.bindings.yaml",
 }
 
 
@@ -44,7 +50,7 @@ def load_binding_catalog(path: Path) -> dict[str, Any]:
 
 
 def build_binding_documents(catalog: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """Split a catalog into the three workbook binding sidecar documents."""
+    """Split a catalog into workbook binding sidecar documents by direction."""
     schema_version = catalog["schema_version"]
     workbook = catalog.get("workbook")
     concept_scheme = catalog.get("concept_scheme")

@@ -107,7 +107,6 @@ def xl_cell(ctx: EvalContext, address: str) -> CellValue:
     """Read a single workbook cell by address."""
     # ...
 
-
 def xl_compare(op: str, left: CellValue, right: CellValue) -> bool:
     """Compare two scalar cell values using an Excel comparison operator."""
     # ...

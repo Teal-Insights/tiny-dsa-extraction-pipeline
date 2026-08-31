@@ -19,9 +19,12 @@ from excel_grapher.series_bindings.types import (
     WorkbookSeriesBindings,
 )
 
-from src.graph_cache import prune_cache_entries_for_other_excel_grapher_versions
+from src.graph_cache import (
+    bindings_fingerprint,
+    prune_cache_entries_for_other_excel_grapher_versions,
+)
 
-BINDINGS_VALIDATION_CACHE_SCHEMA_VERSION = "1.0.0"
+BINDINGS_VALIDATION_CACHE_SCHEMA_VERSION = "1.1.0"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BINDINGS_VALIDATION_CACHE_DIR = _REPO_ROOT / ".cache" / "bindings-validation"
 # Pytest redirects DEFAULT_* to an isolated temp dir; session fixtures and the
@@ -39,10 +42,11 @@ def stable_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def bindings_validation_cache_key(*, graph_cache_key: str) -> str:
+def bindings_validation_cache_key(*, graph_cache_key: str, bindings_path: Path) -> str:
     payload = {
         "cache_schema_version": BINDINGS_VALIDATION_CACHE_SCHEMA_VERSION,
         "graph_cache_key": graph_cache_key,
+        "bindings_fingerprint": bindings_fingerprint(bindings_path),
         "excel_grapher_version": version("excel-grapher"),
     }
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
@@ -163,12 +167,16 @@ def get_or_build_bindings_validation(
     *,
     workbook_path: Path,
     graph_cache_key: str,
+    bindings_path: Path,
     cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
 ) -> BindingsValidationCacheResult:
     resolved_cache_dir = _bindings_validation_cache_dir(cache_dir)
-    cache_key = bindings_validation_cache_key(graph_cache_key=graph_cache_key)
+    cache_key = bindings_validation_cache_key(
+        graph_cache_key=graph_cache_key,
+        bindings_path=bindings_path,
+    )
     started = time.perf_counter()
     if not no_cache and not force_rebuild:
         loaded = load_bindings_validation_report(

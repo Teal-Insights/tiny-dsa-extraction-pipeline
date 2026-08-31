@@ -226,30 +226,31 @@ def test_refactor_buckets_cover_all_eligible_targets(
     )
 
 
-def test_refactor_buckets_include_expected_singleton_and_cluster_members(
+def test_refactor_buckets_include_expected_post_inline_output_members(
     refactor_buckets_report: dict[str, Any],
 ) -> None:
     buckets = refactor_buckets_report["buckets"]
     members = {address for bucket in buckets for address in bucket["members"]}
-    assert "Engine!B2" in members
-    assert "Engine!C2" in members
+    # Singleton Engine hops are inlined into Outputs under OptimalCompression.
+    assert "Engine!B2" not in members
+    assert "Engine!C2" not in members
     assert "Outputs!B1" in members
     assert "Outputs!C1" in members
-    # series_ast keeps parallel engine cells in separate series-owned units
-    engine_buckets = [
+    # series_ast keeps each public output series in its own singleton unit
+    output_buckets = [
         bucket
         for bucket in buckets
-        if set(bucket["members"]) & {"Engine!B2", "Engine!C2"}
+        if set(bucket["members"]) & {"Outputs!B1", "Outputs!C1"}
     ]
-    assert len(engine_buckets) == 2
-    assert all(bucket["kind"] == "singleton" for bucket in engine_buckets)
-    assert {frozenset(bucket["series_ids"]) for bucket in engine_buckets} == {
-        frozenset({"engine_b2"}),
-        frozenset({"engine_c2"}),
+    assert len(output_buckets) == 2
+    assert all(bucket["kind"] == "singleton" for bucket in output_buckets)
+    assert {frozenset(bucket["series_ids"]) for bucket in output_buckets} == {
+        frozenset({"result_a"}),
+        frozenset({"result_b"}),
     }
 
 
-def test_refactor_buckets_include_series_ids_for_internal_members(
+def test_refactor_buckets_omit_inlined_internal_engine_members(
     refactor_buckets_report: dict[str, Any],
 ) -> None:
     engine_buckets = [
@@ -257,9 +258,7 @@ def test_refactor_buckets_include_series_ids_for_internal_members(
         for bucket in refactor_buckets_report["buckets"]
         if any(address.startswith("Engine!") for address in bucket["members"])
     ]
-    assert engine_buckets
-    assert all(bucket["series_ids"] for bucket in engine_buckets)
-    assert any("engine_b2" in bucket["series_ids"] for bucket in engine_buckets)
+    assert engine_buckets == []
 
 
 def test_refactor_buckets_include_public_output_series_ids(
@@ -291,14 +290,14 @@ def test_refactor_buckets_document_series_partition_note(
     assert "not automatically singleton" in markdown
 
 
-def test_member_engine_column_falls_back_without_projection_layout() -> None:
+def test_member_engine_column_uses_the_address_column_letter() -> None:
     from src.record_refactor_buckets import _member_engine_column
 
-    assert _member_engine_column("'Hot Adapted'!AA11", None) == "AA"
-    assert _member_engine_column("Outputs!B14", None) == "B"
+    assert _member_engine_column("'Hot Adapted'!AA11") == "AA"
+    assert _member_engine_column("Outputs!B14") == "B"
 
 
-def test_cluster_contract_resolves_without_projection_layout(
+def test_cluster_contract_resolves_from_bindings(
     synthetic_graph,
     synthetic_bound_address_keys,
     synthetic_pipeline_config_fixture: PipelineConfig,
@@ -323,7 +322,6 @@ def test_cluster_contract_resolves_without_projection_layout(
         synthetic_graph,
         cluster,
         internals_source,
-        layout=None,
         bound_address_keys=synthetic_bound_address_keys,
         key_vocabulary=load_key_concept_vocabulary(
             synthetic_pipeline_config_fixture.bindings_path
@@ -449,7 +447,6 @@ def test_record_refactor_buckets_requires_bound_address_keys(
             graph=synthetic_projection,
             internals_path=None,
             internal_binding_index=None,
-            layout=None,
             compression="none",
             bound_address_keys=None,
         )
@@ -465,7 +462,6 @@ def test_record_refactor_buckets_schedules_inter_cluster_cycle_mcve(
         graph=graph,
         internals_path=None,
         internal_binding_index=None,
-        layout=None,
         compression="none",
         bound_address_keys=bindings,
     )
@@ -525,7 +521,6 @@ def test_record_refactor_buckets_allocates_against_semantic_helper_names(
             internals_path=internals_path,
             refactor_graph=cast(ProjectionResult, graph),
             internal_binding_index=None,
-            layout=None,
             compression="optimal",
             bound_address_keys=bindings,
             address_to_series_id={

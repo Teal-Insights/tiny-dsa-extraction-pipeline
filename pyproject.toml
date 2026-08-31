@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "excel-grapher>=3.19.0",
+    "excel-grapher>=11.5.0",
     "openai>=2.38.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
@@ -13,7 +13,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "fastpyxl>=1.0.9",
+    "fastpyxl>=1.1.0",
     "pywin32>=311; sys_platform == 'win32'",
     "pre-commit>=4.6.0",
     "pytest>=9.0.3",
@@ -32,16 +32,22 @@ dev = [
 [tool.pytest.ini_options]
 addopts = "-v -p no:faulthandler -p no:cacheprovider"
 
-[tool.ruff]
-# Golden prompt/context Markdown fixtures stay in sync with Ruff 0.16's
-# Markdown Python code-block formatter.
-
 [tool.ruff.lint]
-# Freeze the pre-0.16 default lint set until we deliberately adopt the expanded
-# rule set.
-select = ["E4", "E7", "E9", "F"]
+# Ruff 0.16+ expanded defaults (413 rules): see
+# https://docs.astral.sh/ruff/default-rules/
+# Keep those defaults; do not blanket-ignore BLE001 / S102 / DTZ001 / B010.
+# Intentional targeted `# noqa`s remain for:
+# - BLE001: blind except around diagnostic I/O and differential sweep capture
+# - S102: exec of generated / parity / test modules
+# - DTZ001: naive Excel epoch datetime
+# - B010: setattr marker on a patched function (ty rejects direct assignment)
+# Prefer fixing the code over adding noqa when cheap (e.g. typed attribute
+# access instead of getattr(..., "const")).
 
 [tool.ruff.format]
 # Keep formatted Python on LF so Windows checkouts cannot reintroduce the CRLF
 # bytes that `git diff --check` flags as trailing whitespace.
 line-ending = "lf"
+# Golden Markdown fixtures embed exact Python dumps; Ruff 0.16 formats fenced
+# code blocks by default and would churn those expected strings.
+exclude = ["tests/fixtures/**/*.md"]

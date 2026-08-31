@@ -69,7 +69,7 @@ from src.semantic_naming import (
     collect_semantic_helper_names,
 )
 from src.subgraph_projection import build_refactor_projection
-from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
+from src.workbook_addresses import parse_workbook_address
 
 REFACTOR_BUCKETS_SCHEMA_VERSION = "1.4.0"
 
@@ -148,19 +148,8 @@ def _defined_function_names(internals_source: str) -> set[str]:
     return {node.name for node in module.body if isinstance(node, ast.FunctionDef)}
 
 
-def _member_engine_column(
-    address: str,
-    layout: ProjectionColumnLayout | None,
-) -> str | None:
-    """Mirror ``internals_refactor._member_engine_column`` for eligibility checks.
-
-    When no projection layout is configured, fall back to the address column letter
-    so non-engine public series (scenario sheets, etc.) are not false-skipped.
-    """
-    if layout is not None:
-        column = layout.logical_engine_column(address)
-        if column is not None:
-            return column
+def _member_engine_column(address: str) -> str:
+    """Mirror ``internals_refactor._member_engine_column`` for eligibility checks."""
     _, column, _row = parse_workbook_address(address)
     return column
 
@@ -201,7 +190,6 @@ def _cluster_contract_and_skip_reason(
     cluster: FormulaCluster,
     internals_source: str,
     *,
-    layout: ProjectionColumnLayout | None,
     bound_address_keys: BoundAddressKeys,
     key_vocabulary: tuple[KeyConceptSpec, ...],
     workbook_path: Path | None = None,
@@ -214,8 +202,6 @@ def _cluster_contract_and_skip_reason(
     for address in cluster.members:
         function_name = address_to_function_name(address)
         if function_name not in defined_functions:
-            continue
-        if _member_engine_column(address, layout) is None:
             continue
         node = graph.get_node(address)
         if node is None or node.normalized_formula is None:
@@ -231,8 +217,6 @@ def _cluster_contract_and_skip_reason(
     varying = varying_key_concepts(
         cluster.members,
         bound_address_keys=bound_address_keys,
-        workbook_path=workbook_path,
-        layout=layout,
     )
     formula_nodes = formula_nodes_for_clustering(graph)
     contract = select_cluster_refactor_contract(
@@ -242,7 +226,6 @@ def _cluster_contract_and_skip_reason(
         varying,
         key_vocabulary=key_vocabulary,
         workbook_path=workbook_path,
-        layout=layout,
     )
     if contract is None:
         from src.key_dispatch_synthesis import plan_key_dispatch
@@ -251,8 +234,6 @@ def _cluster_contract_and_skip_reason(
         member_keys = expected_member_keys_for_cluster(
             cluster.members,
             bound_address_keys=bound_address_keys,
-            workbook_path=workbook_path,
-            layout=layout,
         )
         plan = plan_key_dispatch(
             cluster,
@@ -294,11 +275,16 @@ def export_generated_modules(
     """
     refactor_projection = build_refactor_projection(
         graph,
+        series_bindings=series_bindings,
+        bindings_workbook=config.workbook_path,
         graph_cache_key=graph_cache_key,
         no_cache=no_cache,
         force_rebuild=force_rebuild,
     )
-    proj_cache_key = projection_cache_key(graph_cache_key=graph_cache_key)
+    proj_cache_key = projection_cache_key(
+        graph_cache_key=graph_cache_key,
+        series_bindings_preserve=True,
+    )
     targets = list(config.targets)
     unpack_return = True
     docstring_renderer = "google"
@@ -340,7 +326,6 @@ def record_refactor_buckets(
     graph: ClusterableGraph,
     internals_path: Path | None,
     internal_binding_index: InternalBindingIndex | None,
-    layout: ProjectionColumnLayout | None,
     compression: CompressionMode = "optimal",
     refactor_graph: ProjectionResult | None = None,
     bound_address_keys: BoundAddressKeys | None,
@@ -361,9 +346,11 @@ def record_refactor_buckets(
             bound_address_keys=resolved_bound_keys,
             address_to_series_id=address_to_series_id,
             workbook_path=config.workbook_path,
-            layout=layout,
             bindings_path=config.bindings_path,
-            projection_cache_key=projection_cache_key(graph_cache_key=graph_cache_key),
+            projection_cache_key=projection_cache_key(
+                graph_cache_key=graph_cache_key,
+                series_bindings_preserve=True,
+            ),
             variation_mode=config.variation_mode,
             clustering_mode=config.clustering_mode,
             no_cache=no_cache,
@@ -380,7 +367,6 @@ def record_refactor_buckets(
             clustering_mode=config.clustering_mode,
             address_to_series_id=address_to_series_id,
             workbook_path=config.workbook_path,
-            layout=layout,
         )
         ordered_units = compute_refactor_schedule(graph, clusters)
 
@@ -438,7 +424,6 @@ def record_refactor_buckets(
                     bound_address_keys=resolved_bound_keys,
                     expected_helper_name=helper_name,
                     existing_helper_names=reserved_for_others,
-                    layout=layout,
                 )
             )
         else:
@@ -446,7 +431,6 @@ def record_refactor_buckets(
                 graph,
                 cluster,
                 internals_source,
-                layout=layout,
                 bound_address_keys=resolved_bound_keys,
                 key_vocabulary=key_vocabulary,
                 workbook_path=config.workbook_path,
@@ -461,7 +445,6 @@ def record_refactor_buckets(
                     internal_binding_index=internal_binding_index,
                     bindings_path=config.bindings_path,
                     workbook_path=config.workbook_path,
-                    layout=layout,
                     bound_address_keys=resolved_bound_keys,
                     key_vocabulary=key_vocabulary,
                     address_to_series_id=resolved_address_to_series_id,
@@ -746,13 +729,12 @@ def run_record_refactor_buckets(
     graph_result = build_pipeline_graph(config, no_cache=no_cache)
     projection = build_refactor_projection(
         graph_result.graph,
+        series_bindings=graph_result.series_bindings,
+        bindings_workbook=config.workbook_path,
         graph_cache_key=graph_result.graph_cache_key,
         no_cache=no_cache,
     )
 
-    import workbook_config
-
-    layout = getattr(workbook_config, "PROJECTION_LAYOUT", None)
     internals_path: Path | None = None
     internal_binding_index: InternalBindingIndex | None = None
 
@@ -782,7 +764,6 @@ def run_record_refactor_buckets(
         graph=cluster_graph,
         internals_path=internals_path,
         internal_binding_index=internal_binding_index,
-        layout=layout,
         compression=compression,
         refactor_graph=projection if compression == "optimal" else None,
         bound_address_keys=bound_address_keys,

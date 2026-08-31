@@ -29,7 +29,7 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 | Criterion | Pass condition |
 |---|---|
 | **Targets declared** | Every published output is a named target (range name or sheet-qualified address) driving target-driven graph extraction. |
-| **Series bindings authored** | `bindings/inputs.bindings.yaml` and `bindings/outputs.bindings.yaml` exist, use `schema_version: 1.10.0`, and declare one logical scalar/series/table per public I/O function. Every dimension should have an explicit `id`; record/key fields and refactor parameters use the effective dimension id, with concept as semantic metadata and unambiguous fallback. |
+| **Series bindings authored** | `bindings/inputs.bindings.yaml` and `bindings/outputs.bindings.yaml` exist, use `schema_version: 1.13.0`, and declare one logical scalar/series/table per public I/O function. Every dimension should have an explicit `id`; record/key fields and refactor parameters use the effective dimension id, with concept as semantic metadata. Reader-only fixed leaves that formulas should call via `read_*` are declared with `constant: {}` (typically in `bindings/constants.bindings.yaml`). |
 | **Bindings validated against graph** | `validate_series_bindings(...)` reports `ok`; input bindings overlap graph leaves, output bindings overlap target nodes. |
 | **Dynamic refs resolved** | All `OFFSET` / `INDEX` / `MATCH` / `CHOOSE` dependencies are resolved via `DynamicRefConfig.from_constraints(...)` without `DynamicRefError`. |
 | **Every mutable leaf is bound** | Each leaf classified as `input` appears in `inputs.bindings.yaml`; unbound mutable leaves fail the pipeline. |
@@ -62,7 +62,7 @@ Configure checklist (workbook-neutral):
 | **Graph is inspectable** | DAG from outputs to inputs; manual review confirms expected sheets, no spurious nodes, no missing shock/engine paths. |
 | **Provenance captured** | `capture_dependency_provenance=True` so later compression/refactor projections are safe and auditable. |
 | **Series derive cleanly** | `derive_input_series` / `derive_output_series` resolve every binding to concrete cell addresses. |
-| **Dependency chains pass AI-powered spot-checking** | Optional: declare `GRAPH_AUDIT_CASES` in `workbook_config.py` (loaded via `PipelineConfig.graph_audit_cases`), set `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`; name prefix selects OpenAI, Z.AI, or DeepSeek), and run `pytest tests/test_extraction_graph_accuracy.py --run-skipped` with the matching provider API key. The synthetic smoke-test audit runs without copying cases into `workbook_config.py`. Per-parent audits spot-check direct dependency sets; they do not exhaust every conditional path. `LLM_GRAPH_AUDIT_CASES` optionally caps how many declared cases are selected per run. Audits skip the LLM and return `inconclusive` when dependency evidence is truncated; returned addresses are normalized and validated (`spurious_dependencies` must be direct graph children; unknown addresses are flagged separately). Only `verdict: "correct"` counts as a pass. |
+| **Dependency chains pass AI-powered spot-checking** | Optional: set `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`; name prefix selects OpenAI, Z.AI, or DeepSeek), ensure a warm committed `.cache/dependency-graph/` entry exists (from `--only-stage extract` / `scripts.regenerate_graph_cache`), and run `pytest tests/test_extraction_graph_accuracy.py --run-skipped` with the matching provider API key. Empty `GRAPH_AUDIT_CASES` auto-selects difficulty-ranked formula parents (fan-out filtered so evidence is not truncated); declared cases are optional steering (`required` pins and labeled focuses). The synthetic smoke-test audit runs without copying cases into `workbook_config.py`. Per-parent audits spot-check direct dependency sets; they do not exhaust every conditional path. `LLM_GRAPH_AUDIT_CASES` caps how many parents are selected per run. Audits skip the LLM and return `inconclusive` when dependency evidence is truncated; returned addresses are normalized and validated (`spurious_dependencies` must be direct graph children; unknown addresses are flagged separately). Only `verdict: "correct"` counts as a pass. |
 
 #### 3. Export
 
@@ -116,13 +116,14 @@ Ordered to match the onboarding checklist in [README.md](README.md#clone-and-con
 [ ] Ingest: workbook and guide populated; stale bindings, dist/, and .cache/ cleared
 [ ] Audit: pre-extraction workbook audit reviewed; blocking automation resolved
 [ ] Configure: outputs declared as extraction targets
-[ ] Configure: bindings/inputs.bindings.yaml + outputs.bindings.yaml validated
+[ ] Configure: bindings/inputs.bindings.yaml + outputs.bindings.yaml validated; constant leaves that need read_* bound in constants.bindings.yaml when applicable
 [ ] Configure: dynamic-ref constraint candidates constrained
 [ ] Configure: all leaves classified; mutable leaves bound
 [ ] Configure: public enum input labels resolved to workbook reference literals
 [ ] Extract: graph extracts with provenance (--extract-graph)
 [ ] Review graph: manual completeness review done; optional LLM dependency audit passed
 [ ] Verify graph: scenario matrix defined in tests/differential/; graph-oracle parity passes (uv run python -m tests.differential.differential_test_graph)
+[ ] Cluster diagnostics: compare_cluster_variation_modes run; VARIATION_MODE chosen; shredded families remodeled (row↔column series or consolidate to matrix) or explicitly accepted
 [ ] Export: dist package builds; semantic API scenario runs
 [ ] Export: validation bundle exported; exported-library differential parity passes
 [ ] Document / refactor: public API uses domain language; docstrings present

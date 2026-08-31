@@ -24,8 +24,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.binding_authoring import emit_bindings_from_catalog  # noqa: E402
-from src.pipeline_config import load_pipeline_config, validate_pipeline_config  # noqa: E402
+from src.binding_authoring import emit_bindings_from_catalog
+from src.pipeline_config import (
+    load_pipeline_config,
+    validate_pipeline_config,
+)
 
 
 def main() -> None:
@@ -36,7 +39,7 @@ def main() -> None:
         "--catalog",
         type=Path,
         default=REPO_ROOT / "templates" / "binding-catalog.example.yaml",
-        help="Declarative catalog describing inputs/outputs/internals series.",
+        help="Declarative catalog describing inputs/outputs/internals/constants series.",
     )
     parser.add_argument(
         "--bindings-dir",

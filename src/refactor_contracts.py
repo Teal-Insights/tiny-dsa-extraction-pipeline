@@ -44,7 +44,6 @@ from src.refactor_bindings import (
     KeyConceptSpec,
     expected_keys_for_address,
 )
-from src.workbook_addresses import ProjectionColumnLayout
 
 type ClusterRefactorContract = Literal[
     "member_sweep",
@@ -79,7 +78,6 @@ def _dimensions_with_operand_variation(
     varying_dimension_ids: frozenset[str],
     *,
     workbook_path: Path | None,
-    layout: ProjectionColumnLayout | None,
 ) -> frozenset[str]:
     return frozenset(
         dimension_id
@@ -90,7 +88,6 @@ def _dimensions_with_operand_variation(
             bound_address_keys,
             frozenset({dimension_id}),
             workbook_path=workbook_path,
-            layout=layout,
         )
     )
 
@@ -98,18 +95,11 @@ def _dimensions_with_operand_variation(
 def _member_key_values(
     address: str,
     bound_address_keys: BoundAddressKeys,
-    *,
-    workbook_path: Path | None,
-    layout: ProjectionColumnLayout | None,
 ) -> dict[str, BindingKeyValue]:
-    if workbook_path is not None:
-        return expected_keys_for_address(
-            address,
-            bound_address_keys=bound_address_keys,
-            workbook_path=workbook_path,
-            layout=layout,
-        )
-    return dict(bound_address_keys.get(address) or {})
+    return expected_keys_for_address(
+        address,
+        bound_address_keys=bound_address_keys,
+    )
 
 
 def _position_covered_by_dimension(
@@ -150,7 +140,6 @@ def select_cluster_refactor_contract(
     *,
     key_vocabulary: Sequence[KeyConceptSpec],
     workbook_path: Path | None = None,
-    layout: ProjectionColumnLayout | None = None,
 ) -> ClusterRefactorContract | None:
     """Select the refactor contract for one cluster from its shape.
 
@@ -169,19 +158,13 @@ def select_cluster_refactor_contract(
         bound_address_keys,
         varying_dimension_ids,
         workbook_path=workbook_path,
-        layout=layout,
     )
     if not flagged:
         return "member_sweep"
 
     concept_by_dimension = {item.dimension_id: item.concept for item in key_vocabulary}
     member_keys = {
-        member: _member_key_values(
-            member,
-            bound_address_keys,
-            workbook_path=workbook_path,
-            layout=layout,
-        )
+        member: _member_key_values(member, bound_address_keys)
         for member in cluster.members
     }
     ref_values_by_member = {
@@ -190,7 +173,6 @@ def select_cluster_refactor_contract(
             formula_nodes[member],
             bound_address_keys,
             workbook_path=workbook_path,
-            layout=layout,
         )
         for member in cluster.members
     }

@@ -89,7 +89,7 @@ def read_package_cache_keys(dist_root: Path) -> PackageCacheKeys | None:
         return None
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError(f"invalid package cache keys payload: {path}")
+        raise TypeError(f"invalid package cache keys payload: {path}")
     codegen_key = payload.get("codegen_key")
     if not isinstance(codegen_key, str) or not codegen_key:
         raise ValueError(f"package cache keys missing codegen_key: {path}")
@@ -97,14 +97,14 @@ def read_package_cache_keys(dist_root: Path) -> PackageCacheKeys | None:
     if internals_key is not None and not isinstance(internals_key, str):
         raise ValueError(f"package cache keys have non-string internals_key: {path}")
     internals_inputs = payload.get("internals_inputs")
-    if internals_inputs is not None:
-        if not isinstance(internals_inputs, dict) or not all(
+    if internals_inputs is not None and (
+        not isinstance(internals_inputs, dict)
+        or not all(
             isinstance(key, str) and isinstance(value, str)
             for key, value in internals_inputs.items()
-        ):
-            raise ValueError(
-                f"package cache keys have invalid internals_inputs: {path}"
-            )
+        )
+    ):
+        raise ValueError(f"package cache keys have invalid internals_inputs: {path}")
     return PackageCacheKeys(
         codegen_key=codegen_key,
         internals_key=internals_key,

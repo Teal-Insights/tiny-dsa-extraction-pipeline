@@ -17,7 +17,6 @@ from src.refactor_fingerprints import (
     estimate_legacy_dump_tokens,
     format_cluster_fingerprint_dump,
 )
-from src.workbook_addresses import ProjectionColumnLayout
 
 
 def _member(
@@ -192,7 +191,6 @@ def test_dump_renders_tuple_lookup_table() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     assert summary.relation_tiers == ("lookup",)
@@ -293,19 +291,11 @@ def test_build_summary_uniform_sweep_single_group() -> None:
         address: {"TIME_PERIOD": bound_keys[address]["TIME_PERIOD"]}
         for address in ("Data!E20", "Data!F20", "Data!G20")
     }
-    layout = ProjectionColumnLayout(
-        engine_sheet="Data",
-        engine_columns=("E", "F", "G"),
-        outputs_sheet="Outputs",
-        outputs_column_to_engine={},
-        time_period_to_engine_column={4: "E", 5: "F", 6: "G"},
-    )
     summary = build_cluster_fingerprint_summary(
         members,
         expected_member_keys=expected_member_keys,
         bound_address_keys=bound_keys,
         workbook_path=Path("/tmp/unused.xlsx"),
-        layout=layout,
         address_to_series_id={
             "Data!E4": "DEBT_STOCK",
             "Data!F4": "DEBT_STOCK",
@@ -349,7 +339,6 @@ def test_build_summary_missing_ref_keys_falls_back() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is not None
     assert (
@@ -389,7 +378,6 @@ def test_build_summary_multi_dim_and_dump_mentions_all_members() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     assert len(summary.groups) == 1
@@ -418,7 +406,6 @@ def test_token_estimates_fingerprint_smaller_than_legacy_for_large_cluster() -> 
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
     )
     assert summary.fallback_reason is None
     legacy = estimate_legacy_dump_tokens(members, member_limit=30)
@@ -506,7 +493,6 @@ def test_build_summary_splits_groups_when_ref_slot_series_mix() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id=address_to_series_id,
     )
     assert summary.fallback_reason is None
@@ -566,7 +552,6 @@ def test_build_summary_keeps_uniform_ref_series_together() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id={
             "Anchor!B5": "anchor_series",
             "Inflation!B9": "inflation_convergence_trajectory",
@@ -645,7 +630,6 @@ def test_build_summary_splits_groups_when_ref_slot_helper_mix() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id=address_to_series_id,
         semantic_dependencies=semantic_dependencies,
     )
@@ -699,7 +683,6 @@ def test_build_summary_falls_back_when_unbound_refs_mix_sheet_row() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         # Only Y is bound; X and W share regime (None,) after series partition.
         address_to_series_id={"Y!A1": "ya"},
     )
@@ -729,7 +712,6 @@ def test_build_summary_keeps_same_geometry_unbound_refs_together() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         # Partial map: neither operand bound, but geometry agrees on (X, 1).
         address_to_series_id={
             "Result!B1": "result_series",
@@ -805,7 +787,6 @@ def test_build_summary_splits_peel_boundary_lag_from_self_recurrence() -> None:
         expected_member_keys=expected,
         bound_address_keys=bound_keys,
         workbook_path=None,
-        layout=None,
         address_to_series_id=address_to_series_id,
         semantic_dependencies=semantic_dependencies,
     )

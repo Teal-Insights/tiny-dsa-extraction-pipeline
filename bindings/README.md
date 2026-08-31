@@ -1,14 +1,68 @@
 # Series bindings
 
-Author `inputs.bindings.yaml`, `outputs.bindings.yaml`, and `internals.bindings.yaml` here before running the pipeline.
+Author `inputs.bindings.yaml`, `outputs.bindings.yaml`, `internals.bindings.yaml`,
+and (when needed) `constants.bindings.yaml` here.
 
-Use schema version `1.10.0` and the prompt in [templates/binding-authoring-prompt.txt](../templates/binding-authoring-prompt.txt).
+Bootstrap extract (`--extract-graph` / `--stop-after-stage extract`) is graph-first: empty `series: []` placeholder shards are fine so you can review `artifacts/dependency-graph/` before bindings exist. excel-grapher 5.1.4+ also loads and merges those placeholders (including divergent `concept_scheme` blocks). Author real series before export so the public API and leaf coverage are complete.
+
+Use schema version `1.13.0` and the prompt in [templates/binding-authoring-prompt.txt](../templates/binding-authoring-prompt.txt). Prefer authoring from an extracted graph rather than guessing sheet geometry up front.
+
+## Constant bindings (reader-only leaves)
+
+Use `constant: {}` for graph **leaves** that formulas read as fixed parameters,
+scenario knobs, or lookup seeds, but that should **not** appear as user-editable
+Records inputs (`set_*`) or published outputs (`compute_*`). Without a constant
+binding, those leaves stay as bare `xl_cell(ctx, 'Sheet!A1')` in generated
+formula bodies even when the domain model already names them.
+
+Put constant series in `constants.bindings.yaml` (or any mergeable
+`*.bindings.yaml` shard). Same YAML shape as public bindings; declare
+`constant: {}` instead of `input` / `output` / `internal`:
+
+```yaml
+schema_version: 1.13.0
+series:
+  - id: shock_year_anchor
+    sheet: Engine
+    data_range: Engine!C5
+    layout: scalar
+    constant: {}
+    structure:
+      measure:
+        concept: OBS_VALUE
+        dtype: float
+        bind: {kind: data_cell, read: float}
+      dimensions: []
+    key: []
+```
+
+| Rule | Detail |
+|---|---|
+| Leaf-only | `data_range` must intersect graph **leaves** (inverse of `internal`, which requires formula nodes). Non-leaf overlap → `non_leaf_constant_overlap`; no leaf overlap → `no_leaf_constant_targets`. |
+| Exclusive | Mutually exclusive with `input`, `output`, and `internal` on the same series. |
+| Codegen | Emits `read_*` (optional `constant.reader.name`, else `read_<series_id>`), leaf index, `list_readers`, and Phase 2 body rewrite. **No** `set_*` / `compute_*`. |
+| Mutability | Values still live in export `CONSTANTS` / `ctx.inputs` like other constant leaves; there is no public Records write surface. |
+| Validate | `validate_series_bindings(...)`, then `derive_constant_series(...)`. Include `constant` when running `scripts.binding_resolution_audit`. |
+
+**Leaf classification vs constant bindings.** `CONSTRAINTS` with a single-value
+`Literal[...]` classifies a leaf as `constant` for codegen `CONSTANTS` vs
+`DEFAULT_INPUTS`. That is necessary but not sufficient for a semantic reader:
+add a `constant: {}` series when formulas should call `read_*` instead of
+`xl_cell`. Mutable leaves still need `input` / `set_*` in `inputs.bindings.yaml`.
+
+**Do not confuse** the `constant` **direction** with `bind.kind: constant` (a
+fixed dimension / attribute scalar in `structure`). The direction binds a
+spreadsheet leaf; the bind kind fills a coordinate without reading a cell.
+
+Synthetic example: [tests/fixtures/synthetic/constants.bindings.yaml](../tests/fixtures/synthetic/constants.bindings.yaml)
+(`Inputs!B1` bias leaf). Schema reference: excel-grapher
+`user_guide/05-series-bindings.qmd` (constant direction, schema 1.11.0+).
 
 ## Output compute helpers
 
 When an internals helper covers a published output series' leaves, declare
 `output.compute.helper` so generated `compute_*` calls the helper from record
-dims instead of `xl_cell(address)` (excel-grapher schema 1.10.0):
+dims instead of `xl_cell(address)` (excel-grapher schema 1.13.0):
 
 ```yaml
 output:

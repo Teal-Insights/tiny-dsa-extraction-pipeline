@@ -19,7 +19,7 @@
 #   (e.g. compute_scenario_primary_expenditure_pct_gdp_paris vs _moderate).
 #   Sharing a name across those paths merges definitions at export and can
 #   leave most scenario paths unreachable in the exported library.
-schema_version: 1.10.0
+schema_version: 1.13.0
 workbook: workbook.xlsx
 
 concept_scheme:

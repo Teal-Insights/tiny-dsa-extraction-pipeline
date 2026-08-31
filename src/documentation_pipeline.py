@@ -417,14 +417,6 @@ def extract_markdown_section(markdown_text: str, heading: str) -> str:
     return match.group(1).strip()
 
 
-def extract_qmd_section(qmd_text: str, heading: str) -> str:
-    pattern = rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)"
-    match = re.search(pattern, qmd_text, flags=re.DOTALL | re.MULTILINE)
-    if not match:
-        raise ValueError(f"Could not find qmd heading: {heading}")
-    return match.group(1).strip()
-
-
 def load_canonical_api_example(config: PipelineConfig) -> str:
     return (
         config.canonical_api_example_path.read_text(encoding="utf-8")

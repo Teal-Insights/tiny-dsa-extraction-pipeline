@@ -2,8 +2,9 @@ Function to refactor:
 
 ```python
 def cell_some_sheet_z22(ctx):
-    return xl_number(united_states_total_deaths(ctx)) - xl_number(
-        united_states_expected_deaths(ctx)
+    return (
+        xl_number(united_states_total_deaths(ctx))
+        - xl_number(united_states_expected_deaths(ctx))
     )
 ```
 
@@ -24,7 +25,6 @@ def xl_number(value: CellValue) -> float:
     """Coerce a scalar cell value to a number, raising on Excel errors."""
     # ...
 
-
 def united_states_expected_deaths(ctx: EvalContext) -> float:
     """
     Expected deaths for the United States.
@@ -37,7 +37,6 @@ def united_states_expected_deaths(ctx: EvalContext) -> float:
         would have occurred in the absence of the shock.
     """
     # ...
-
 
 def united_states_total_deaths(ctx: EvalContext) -> float:
     """

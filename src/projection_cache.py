@@ -18,8 +18,11 @@ from excel_grapher.exporter import (
     ProjectionResult,
 )
 from excel_grapher.grapher.graph import DependencyGraph
+from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
-PROJECTION_CACHE_SCHEMA_VERSION = "1.0.0"
+from src.projection_preserve import public_series_bindings_for_preserve
+
+PROJECTION_CACHE_SCHEMA_VERSION = "1.2.0"
 PROJECTION_STRATEGY = "optimal_compression"
 DEFAULT_PROJECTION_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "projection"
@@ -37,12 +40,17 @@ def stable_json(value: object) -> str:
 
 
 def projection_cache_key(
-    *, graph_cache_key: str, strategy: str = PROJECTION_STRATEGY
+    *,
+    graph_cache_key: str,
+    strategy: str = PROJECTION_STRATEGY,
+    series_bindings_preserve: bool = False,
 ) -> str:
     payload = {
         "cache_schema_version": PROJECTION_CACHE_SCHEMA_VERSION,
         "graph_cache_key": graph_cache_key,
         "strategy": strategy,
+        # Public-only preserve (internals remain eligible for singleton inlining).
+        "preserve_scope": "public" if series_bindings_preserve else "none",
         "excel_grapher_version": version("excel-grapher"),
     }
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
@@ -147,12 +155,24 @@ def get_or_build_refactor_projection(
     graph: DependencyGraph,
     *,
     graph_cache_key: str,
+    series_bindings: WorkbookSeriesBindings | None = None,
+    bindings_workbook: Path | str | None = None,
     cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
 ) -> ProjectionCacheResult:
+    if series_bindings is not None and bindings_workbook is None:
+        raise ValueError("bindings_workbook is required when series_bindings is set")
+    preserve_bindings = (
+        public_series_bindings_for_preserve(series_bindings)
+        if series_bindings is not None
+        else None
+    )
     resolved_cache_dir = _projection_cache_dir(cache_dir)
-    cache_key = projection_cache_key(graph_cache_key=graph_cache_key)
+    cache_key = projection_cache_key(
+        graph_cache_key=graph_cache_key,
+        series_bindings_preserve=preserve_bindings is not None,
+    )
     started = time.perf_counter()
     if not no_cache and not force_rebuild:
         loaded = load_projection_payload(cache_key, cache_dir=resolved_cache_dir)
@@ -175,7 +195,10 @@ def get_or_build_refactor_projection(
             )
 
     build_started = time.perf_counter()
-    projection = OptimalCompression().project(graph)
+    projection = OptimalCompression(
+        series_bindings=preserve_bindings,
+        bindings_workbook=bindings_workbook,
+    ).project(graph)
     build_elapsed = time.perf_counter() - build_started
 
     if not no_cache:

@@ -17,12 +17,13 @@ Binding schema and conventions:
       .read_text(encoding="utf-8")
   )
 
-- Use schema_version: 1.10.0.
-- Create a bindings/ directory with three files:
+- Use schema_version: 1.13.0.
+- Create a bindings/ directory with four files (empty `series: []` placeholders are fine during bootstrap):
   - inputs.bindings.yaml for public input setters.
   - outputs.bindings.yaml for public output compute functions.
   - internals.bindings.yaml for internal formula-cell triangulation (`internal: {}`).
-- Use one series[] entry per logical public input, output, or internal formula series.
+  - constants.bindings.yaml for reader-only graph leaves (`constant: {}`) that should emit `read_*` without `set_*` / `compute_*`.
+- Use one series[] entry per logical public input, output, internal formula series, or constant leaf group.
 - Use layout: scalar for one-cell inputs and layout: row_series for one-row time series.
 - Use structure.measure.concept: OBS_VALUE with bind.kind: data_cell.
 - Use key fields only for record matching. For row time series, use TIME_PERIOD from the column header row. For scalar parameters, use keyless bindings (`key: []`) and keep PARAMETER in series_context. For keyed tables, use the header that identifies each record as the key.
@@ -49,6 +50,7 @@ Binding schema and conventions:
 - Add input.setter.name values matching set_[a-z][a-z0-9_]* for input series.
 - Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
 - Add internal series with `internal: {}` for formula cells that need concept-key triangulation during internals refactor. Internal series do not generate public setter or compute code.
+- Add constant series with `constant: {}` for graph leaves that formulas should read via `read_*` without a public `set_*`. Optional `constant.reader.name` overrides the default `read_<series_id>`. Constant bindings require leaf overlap (`non_leaf_constant_overlap` / `no_leaf_constant_targets` otherwise) and are mutually exclusive with input/output/internal. Do not confuse the constant direction with bind.kind: constant (a fixed structure scalar). Leaf classification via Literal[...] CONSTRAINTS is separate: it seeds CONSTANTS vs DEFAULT_INPUTS; a constant binding is what rewrites xl_cell to read_*.
 - Include useful series_context and UNIT_MEASURE attributes where they clarify records.
 - Do not include internal engine calculations or read-only lookup/profile data as public API bindings unless the guide says downstream users should set or read them directly.
 
@@ -56,13 +58,15 @@ Task:
 1. Read the guide's public API table and functional overview.
 2. Identify public input series that require user configuration.
 3. Identify public output series that downstream users should read.
-4. Identify internal formula cells that need concept-key triangulation for refactor.
-5. Cross-check each proposed series against the extracted graph:
+4. Identify fixed graph leaves that need reader-only constant bindings (not set_*).
+5. Identify internal formula cells that need concept-key triangulation for refactor.
+6. Cross-check each proposed series against the extracted graph:
    - input bindings should overlap graph leaves;
+   - constant bindings should overlap graph leaves (not formula nodes);
    - output bindings should overlap graph target/output nodes;
    - internal bindings should overlap formula nodes.
-6. Write bindings/inputs.bindings.yaml, bindings/outputs.bindings.yaml, and bindings/internals.bindings.yaml.
-7. Validate by loading the binding directory with load_series_bindings("bindings"), then running validate_series_bindings(graph, bindings, workbook=workbook_path), derive_input_series(...), derive_output_series(...), and derive_internal_series(...).
-8. Run `uv run python -m scripts.binding_resolution_audit` (see issue #101 / bindings/README.md) before treating export as ready. It catches codegen-fatal bind failures — sparse labels without fill, partial resolves, empty public series — that validate_series_bindings / derive_* can miss.
+7. Write bindings/inputs.bindings.yaml, bindings/outputs.bindings.yaml, bindings/internals.bindings.yaml, and bindings/constants.bindings.yaml (empty series: [] is fine when a direction has nothing to bind).
+8. Validate by loading the binding directory with load_series_bindings("bindings"), then running validate_series_bindings(graph, bindings, workbook=workbook_path), derive_input_series(...), derive_output_series(...), derive_internal_series(...), and derive_constant_series(...).
+9. Run `uv run python -m scripts.binding_resolution_audit` (see issue #101 / bindings/README.md) before treating export as ready. It catches codegen-fatal bind failures — sparse labels without fill, partial resolves, empty public series — that validate_series_bindings / derive_* can miss.
 
-Return the three YAML files and a short validation summary. If any series is ambiguous, explain the ambiguity instead of guessing.
+Return the binding YAML files and a short validation summary. If any series is ambiguous, explain the ambiguity instead of guessing.

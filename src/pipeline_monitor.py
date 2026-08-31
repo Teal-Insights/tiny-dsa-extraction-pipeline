@@ -93,13 +93,6 @@ class StageTimer:
         """Record a sub-stage the caller timed itself, without printing."""
         self.stages.append((name, seconds))
 
-    def log_stage(self, name: str, seconds: float, **metrics: float | str) -> None:
-        """Record a completed sub-stage and print one diagnostic line."""
-        self.record(name, seconds)
-        metric_text = ", ".join(f"{key}={value}" for key, value in metrics.items())
-        suffix = f" ({metric_text})" if metric_text else ""
-        print(f"  {name}: {seconds:.1f}s{suffix}")
-
     def _begin(self, name: str) -> None:
         self._current_stage = name
         self._current_started = time.perf_counter()

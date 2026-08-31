@@ -34,7 +34,7 @@ from src.formula_clustering import (
     structural_fingerprint,
 )
 from src.refactor_bindings import BindingKeyValue
-from src.workbook_addresses import ProjectionColumnLayout, parse_workbook_address
+from src.workbook_addresses import parse_workbook_address
 
 if TYPE_CHECKING:
     from src.internals_refactor import MemberContext
@@ -702,23 +702,27 @@ def _key_space_from_expected(
     }
 
 
-def _key_to_column_from_layout(
+def _key_to_column_from_members(
     key_space: Mapping[str, tuple[BindingKeyValue, ...]],
-    layout: ProjectionColumnLayout | None,
+    members: Sequence[MemberContext],
+    expected_member_keys: Mapping[str, Mapping[str, BindingKeyValue]],
 ) -> dict[BindingKeyValue, str] | None:
-    if layout is None:
-        return None
-    period_dim = layout.projection_dimension_id
-    if period_dim not in key_space and "TIME_PERIOD" in key_space:
-        period_dim = "TIME_PERIOD"
-    if period_dim not in key_space:
+    """Map each member's projection-period key to that member's column letter."""
+    if "TIME_PERIOD" in key_space:
+        period_dimension_id = "TIME_PERIOD"
+    elif "PROJECTION_PERIOD" in key_space:
+        period_dimension_id = "PROJECTION_PERIOD"
+    else:
         return None
     mapping: dict[BindingKeyValue, str] = {}
-    for value in key_space[period_dim]:
-        if isinstance(value, int):
-            column = layout.time_period_to_engine_column.get(value)
-            if column is not None:
-                mapping[value] = column
+    for member in members:
+        keys = expected_member_keys.get(member.address)
+        if keys is None:
+            continue
+        value = keys.get(period_dimension_id)
+        if value is None:
+            continue
+        mapping.setdefault(value, member.engine_column)
     return mapping or None
 
 
@@ -727,13 +731,14 @@ def _fallback_summary(
     *,
     members: Sequence[MemberContext],
     expected_member_keys: Mapping[str, Mapping[str, BindingKeyValue]],
-    layout: ProjectionColumnLayout | None,
 ) -> ClusterFingerprintSummary:
     key_space = _key_space_from_expected(expected_member_keys)
     return ClusterFingerprintSummary(
         groups=(),
         key_space=key_space,
-        key_to_column=_key_to_column_from_layout(key_space, layout),
+        key_to_column=_key_to_column_from_members(
+            key_space, members, expected_member_keys
+        ),
         fallback_reason=reason,
         legacy_token_estimate=estimate_legacy_dump_tokens(members),
         fingerprint_token_estimate=None,
@@ -746,7 +751,6 @@ def build_cluster_fingerprint_summary(
     expected_member_keys: Mapping[str, Mapping[str, BindingKeyValue]],
     bound_address_keys: BoundAddressKeys,
     workbook_path: Path | None = None,
-    layout: ProjectionColumnLayout | None = None,
     address_to_series_id: Mapping[str, str] | None = None,
     semantic_dependencies: Sequence[SemanticDependencyRef] = (),
     key_cache: _ClusteringKeyCache | None = None,
@@ -757,7 +761,6 @@ def build_cluster_fingerprint_summary(
             "empty_cluster",
             members=members,
             expected_member_keys=expected_member_keys,
-            layout=layout,
         )
 
     cluster_addresses = frozenset(member.address for member in members)
@@ -778,14 +781,12 @@ def build_cluster_fingerprint_summary(
                 member.normalized_formula,
                 bound_address_keys=bound_address_keys,
                 workbook_path=workbook_path,
-                layout=layout,
             )
         if fingerprint is None:
             return _fallback_summary(
                 "unparseable_formula",
                 members=members,
                 expected_member_keys=expected_member_keys,
-                layout=layout,
             )
         skeleton, refs = fingerprint
         refs_by_address[member.address] = refs
@@ -812,7 +813,6 @@ def build_cluster_fingerprint_summary(
                     geometry_conflict,
                     members=members,
                     expected_member_keys=expected_member_keys,
-                    layout=layout,
                 )
 
             member_addresses = tuple(member.address for member in group_members)
@@ -831,7 +831,6 @@ def build_cluster_fingerprint_summary(
                     "ref_count_mismatch",
                     members=members,
                     expected_member_keys=expected_member_keys,
-                    layout=layout,
                 )
 
             ref_values_by_member: dict[str, list[dict[str, BindingKeyValue]]] = {}
@@ -841,7 +840,6 @@ def build_cluster_fingerprint_summary(
                     formula_by_address[address],
                     bound_address_keys,
                     workbook_path=workbook_path,
-                    layout=layout,
                     key_cache=key_cache,
                 )
                 if ref_values is None:
@@ -849,7 +847,6 @@ def build_cluster_fingerprint_summary(
                         "missing_ref_key_values",
                         members=members,
                         expected_member_keys=expected_member_keys,
-                        layout=layout,
                     )
                 ref_values_by_member[address] = ref_values
 
@@ -901,7 +898,9 @@ def build_cluster_fingerprint_summary(
             )
 
     key_space = _key_space_from_expected(expected_member_keys)
-    key_to_column = _key_to_column_from_layout(key_space, layout)
+    key_to_column = _key_to_column_from_members(
+        key_space, members, expected_member_keys
+    )
     summary = ClusterFingerprintSummary(
         groups=tuple(group_records),
         key_space=key_space,

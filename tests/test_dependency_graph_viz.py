@@ -10,7 +10,6 @@ from excel_grapher.series_bindings import (
 from src.dependency_graph_viz import (
     build_cytoscape_preset_payload,
     build_dot_with_clusters,
-    build_dot_with_sheet_clusters,
     constant_keys_from_leaf_classification,
     parse_graphviz_json,
     series_cell_keys,
@@ -19,12 +18,12 @@ from src.dependency_graph_viz import (
 from src.internal_bindings import binding_node_labels, build_internal_binding_index
 
 
-def test_build_dot_with_sheet_clusters_wraps_to_graphviz_nodes(
+def test_build_dot_with_clusters_wraps_to_graphviz_nodes(
     tiny_dsa_configured_pipeline,
 ) -> None:
     tiny_graph = tiny_dsa_configured_pipeline.graph
     flat = to_graphviz(tiny_graph, max_formula_length=40)
-    clustered = build_dot_with_sheet_clusters(tiny_graph, max_formula_length=40)
+    clustered = build_dot_with_clusters(tiny_graph, max_formula_length=40)
     assert "subgraph" in clustered
     assert "cluster_sheet_" in clustered
     for line in flat.splitlines():
@@ -36,7 +35,7 @@ def test_build_dot_with_sheet_clusters_wraps_to_graphviz_nodes(
 def test_parse_graphviz_json_and_build_payload(tiny_dsa_configured_pipeline) -> None:
     pipeline = tiny_dsa_configured_pipeline
     tiny_graph = pipeline.graph
-    dot_text = build_dot_with_sheet_clusters(tiny_graph, max_formula_length=40)
+    dot_text = build_dot_with_clusters(tiny_graph, max_formula_length=40)
     graphviz_json = parse_graphviz_json(dot_text)
     bindings_path = Path(__file__).resolve().parents[1] / "bindings"
     series_bindings = load_series_bindings(bindings_path)
@@ -121,7 +120,8 @@ def test_binding_node_labels_include_key_and_record_metadata(
         keys=["Engine!C10"],
     )
 
-    formula = tiny_graph.get_node("Engine!C10").formula
+    node = tiny_graph.get_node("Engine!C10")
+    formula = node.formula or node.normalized_formula
     assert formula is not None
     assert labels == {
         "Engine!C10": (
@@ -150,7 +150,7 @@ def test_payload_node_data_includes_internal_binding_fields(
             }
         ]
     )
-    dot_text = build_dot_with_sheet_clusters(tiny_graph, max_formula_length=40)
+    dot_text = build_dot_with_clusters(tiny_graph, max_formula_length=40)
     graphviz_json = parse_graphviz_json(dot_text)
     payload = build_cytoscape_preset_payload(
         tiny_graph,

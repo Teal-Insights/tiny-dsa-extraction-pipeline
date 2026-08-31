@@ -17,18 +17,28 @@ def _base_manifest(manifest: object) -> BaseProjectionManifest:
     return manifest
 
 
-def test_refactor_projection_preserves_targets_and_parallel_members(
+def test_refactor_projection_inlines_singleton_engine_into_outputs(
     synthetic_graph,
+    synthetic_series_bindings,
+    synthetic_workbook_path,
 ) -> None:
-    projection = build_refactor_projection(synthetic_graph)
+    projection = build_refactor_projection(
+        synthetic_graph,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_workbook_path,
+    )
     manifest = _base_manifest(projection.manifest)
 
     assert manifest.kind == "optimal_compression"
-    assert "Engine!B2" in projection
-    assert "Engine!C2" in projection
+    # Public targets stay; singleton Engine transit cells are inlined away.
     assert "Outputs!B1" in projection
     assert "Outputs!C1" in projection
     assert "Inputs!A1" in projection
+    assert "Engine!B2" not in projection
+    assert "Engine!C2" not in projection
+    outputs_b1 = projection.get_node("Outputs!B1")
+    assert outputs_b1 is not None
+    assert outputs_b1.normalized_formula == "=Inputs!A1+Inputs!B1+1"
 
 
 def test_build_refactor_projection_forwards_cache_dir(
@@ -46,8 +56,10 @@ def test_build_refactor_projection_forwards_cache_dir(
         cache_dir: Path | None = None,
         no_cache: bool = False,
         force_rebuild: bool = False,
+        series_bindings: object | None = None,
+        bindings_workbook: object | None = None,
     ) -> object:
-        del graph, no_cache, force_rebuild
+        del graph, no_cache, force_rebuild, series_bindings, bindings_workbook
         captured["graph_cache_key"] = graph_cache_key
         captured["cache_dir"] = cache_dir
 
@@ -77,7 +89,11 @@ def test_projected_codegen_preserves_public_series_api(
     synthetic_series_bindings,
     synthetic_workbook_path,
 ) -> None:
-    projection = build_refactor_projection(synthetic_graph)
+    projection = build_refactor_projection(
+        synthetic_graph,
+        series_bindings=synthetic_series_bindings,
+        bindings_workbook=synthetic_workbook_path,
+    )
     modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
         list(synthetic_graph.target_keys()),
         series_bindings=synthetic_series_bindings,
@@ -87,10 +103,11 @@ def test_projected_codegen_preserves_public_series_api(
     assert "def compute_result_a" in modules["api.py"]
     assert "def compute_result_b" in modules["api.py"]
     assert "def set_input_rate" in modules["api.py"]
-    assert (
-        "def cell_engine_b2" in modules["internals.py"]
-        or "Engine!B2" in modules["internals.py"]
-    )
+    # Engine singleton hops are inlined into Outputs; projected internals expose
+    # the retained output cells (and may omit cell_engine_* wrappers).
+    assert "def cell_outputs_b1" in modules["internals.py"]
+    assert "Engine!B2" not in modules["internals.py"]
+    assert "def cell_engine_b2" not in modules["internals.py"]
 
     package_dir = tmp_path / "synthetic_model_projected"
     package_dir.mkdir()

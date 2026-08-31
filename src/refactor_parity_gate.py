@@ -34,19 +34,40 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
 
+from excel_grapher.core.address_keys import format_cell_key
 from excel_grapher.core.cell_types import Between, RealBetween
+from excel_grapher.runtime.leaves import as_leaf_store
+from fastpyxl.utils.cell import get_column_letter
 
 from src.helper_memoization import (
     clear_side_helper_memos,
     install_helper_memoization,
     memoize_namespace_helpers,
 )
+from src.refactor_types import unwrap_annotation
 from src.runtime_symbols import (
     discover_allowed_reader_symbols,
     discover_allowed_runtime_symbols,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _nodekey_leaf_map(values: Mapping[str, object]) -> dict[str, object]:
+    """Return a NodeKey-keyed copy of exported leaf values.
+
+    Generated ``data.py`` stores leaves as nested sheet -> (row, col) maps
+    (CONSTANTS may be ``MappingProxyType`` at each level). Constraint sampling
+    and gate cell writes use sheet-qualified A1 keys.
+    """
+    store = as_leaf_store(values)
+    flattened: dict[str, object] = {}
+    for sheet, cells in store.items():
+        for coord, value in cells.items():
+            row, col = coord
+            flattened[format_cell_key(sheet, get_column_letter(col), row)] = value
+    return flattened
+
 
 if TYPE_CHECKING:
     from src.internals_refactor import (
@@ -68,8 +89,6 @@ _MAX_REPORTED_MISMATCHES = 10
 _BATCHED_PROGRESS_EVERY_CHECKS = 5_000
 _BATCHED_PROGRESS_EVERY_SECONDS = 30.0
 
-repo_root = Path(__file__).resolve().parents[1]
-
 
 def _resolved_package_root(package_root: Path) -> str:
     return str(package_root.resolve())
@@ -77,14 +96,6 @@ def _resolved_package_root(package_root: Path) -> str:
 
 def _runtime_path(package_root: Path) -> Path:
     return Path(_resolved_package_root(package_root)) / "runtime.py"
-
-
-def _readers_path(package_root: Path) -> Path:
-    return Path(_resolved_package_root(package_root)) / "_readers.py"
-
-
-def _data_path(package_root: Path) -> Path:
-    return Path(_resolved_package_root(package_root)) / "data.py"
 
 
 InputVector = Mapping[str, Any]
@@ -809,8 +820,9 @@ def _sample_constraint(
             if isinstance(meta, Between):
                 return rng.randint(meta.min, meta.max)
         return default
-    if get_origin(annotation) is Literal:
-        choices = get_args(annotation)
+    resolved = unwrap_annotation(annotation)
+    if get_origin(resolved) is Literal:
+        choices = get_args(resolved)
         if len(choices) <= 1:
             return default
         return rng.choice(choices)
@@ -833,7 +845,12 @@ def sample_input_vectors(
     while other inputs stay at their defaults. Additional vectors keep constants
     fixed and perturb every default input within its declared constraint domain.
     Sampling is deterministic for a given seed so the gate is reproducible.
+
+    Leaf tables may arrive as NodeKey dicts or as the nested coordinate stores
+    excel-grapher emits in ``data.py``; both are flattened to NodeKey dicts.
     """
+    default_inputs = _nodekey_leaf_map(default_inputs)
+    constants = _nodekey_leaf_map(constants)
     base = {**default_inputs, **constants}
     vectors: list[dict[str, object]] = [dict(base)]
     sampled_addresses = [
