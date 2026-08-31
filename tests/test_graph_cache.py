@@ -8,7 +8,7 @@ from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated, cast
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from excel_grapher.core.cell_types import RealBetween
@@ -326,6 +326,99 @@ def test_dependency_graph_cache_key_changes_when_constraints_change(
     assert base_key != changed_key
 
 
+def test_dependency_graph_cache_key_changes_when_blank_ranges_change(
+    synthetic_config,
+) -> None:
+    base_key = dependency_graph_cache_key(
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        constraints=synthetic_config.constraints,
+        load_values=True,
+        capture_dependency_provenance=True,
+    )
+    changed_key = dependency_graph_cache_key(
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        constraints=synthetic_config.constraints,
+        load_values=True,
+        capture_dependency_provenance=True,
+        blank_ranges=("'Chart Data'!D46:X46",),
+    )
+    assert base_key != changed_key
+
+
+def test_dependency_graph_cache_key_uses_normalized_blank_range_specs(
+    synthetic_config,
+) -> None:
+    key_a = dependency_graph_cache_key(
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        constraints=synthetic_config.constraints,
+        load_values=True,
+        capture_dependency_provenance=True,
+        blank_ranges=("Sheet1!B2:D4",),
+    )
+    key_b = dependency_graph_cache_key(
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        constraints=synthetic_config.constraints,
+        load_values=True,
+        capture_dependency_provenance=True,
+        blank_ranges=("Sheet1!D4:B2",),
+    )
+    assert key_a == key_b
+
+
+def test_dependency_graph_cache_key_blank_ranges_order_independent(
+    synthetic_config,
+) -> None:
+    key_a = dependency_graph_cache_key(
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        constraints=synthetic_config.constraints,
+        load_values=True,
+        capture_dependency_provenance=True,
+        blank_ranges=("Sheet1!A1", "Sheet1!B2:D4"),
+    )
+    key_b = dependency_graph_cache_key(
+        workbook_path=synthetic_config.workbook_path,
+        targets=synthetic_config.targets,
+        constraints=synthetic_config.constraints,
+        load_values=True,
+        capture_dependency_provenance=True,
+        blank_ranges=("Sheet1!B2:D4", "Sheet1!A1"),
+    )
+    assert key_a == key_b
+
+
+def test_get_or_build_dependency_graph_forwards_blank_ranges(
+    synthetic_config,
+    graph_cache_dir: Path,
+) -> None:
+    blank_ranges = ("'Chart Data'!D46:X46", "Engine!Z1")
+    fake_graph = MagicMock()
+    clear_process_dependency_graph_cache(cache_dir=graph_cache_dir)
+    with (
+        patch(
+            "src.graph_cache.create_dependency_graph", return_value=fake_graph
+        ) as create,
+        patch("src.graph_cache.save_dependency_graph"),
+    ):
+        get_or_build_dependency_graph(
+            workbook_path=synthetic_config.workbook_path,
+            targets=synthetic_config.targets,
+            constraints=synthetic_config.constraints,
+            dynamic_refs=DynamicRefConfig.from_constraints(
+                synthetic_config.constraints, {}
+            ),
+            blank_ranges=blank_ranges,
+            cache_dir=graph_cache_dir,
+            no_cache=True,
+        )
+    create.assert_called_once()
+    assert create.call_args.kwargs["blank_ranges"] == blank_ranges
+
+
 def test_dependency_graph_cache_key_changes_when_workbook_changes(
     synthetic_config,
     tmp_path: Path,
@@ -385,7 +478,7 @@ def test_dependency_graph_cache_key_stable_when_bindings_change(
             content = content.replace("input_rate", "input_rate_alt")
         (alternate_bindings / binding_file.name).write_text(content, encoding="utf-8")
 
-    # Graph key ignores bindings_path; only workbook/targets/constraints matter.
+    # Graph key ignores bindings_path; workbook/targets/constraints/blank_ranges matter.
     changed_key = dependency_graph_cache_key(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,

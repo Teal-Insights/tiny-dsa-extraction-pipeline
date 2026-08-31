@@ -301,6 +301,7 @@ def export_generated_modules(
                 bindings_workbook=config.workbook_path,
                 series_docstring_callback=callback_name,
                 docstring_renderer=docstring_renderer,
+                blank_ranges=config.blank_ranges,
             )
 
     codegen_result = get_or_build_codegen_modules(

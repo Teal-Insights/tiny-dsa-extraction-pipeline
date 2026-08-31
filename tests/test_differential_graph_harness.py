@@ -391,6 +391,35 @@ def test_mvp_graph_driver_builds_via_cache_helper_on_committed_miss(
     create.assert_not_called()
 
 
+def test_mvp_graph_driver_forwards_blank_ranges_to_cache_and_evaluator(
+    tmp_path: Path,
+) -> None:
+    harness = _load_harness_module()
+    mock_graph = _mock_graph_with_leaf(normalize_key("Inputs!A1"))
+    workbook = tmp_path / "workbook.xlsx"
+    blank_ranges = ("'Chart Data'!D46:X46", "Engine!Z1")
+
+    with (
+        patch(
+            "tests.differential.differential_test_graph.try_load_cached_dependency_graph",
+            return_value=_cached_graph_result(mock_graph),
+        ) as try_load,
+        patch(
+            "tests.differential.differential_test_graph.FormulaEvaluator",
+        ) as evaluator_cls,
+    ):
+        harness.MvpGraphDriver(
+            workbook,
+            targets=("Outputs!B1",),
+            constraints={"Inputs!A1": float},
+            blank_ranges=blank_ranges,
+        )
+
+    assert try_load.call_args.kwargs["blank_ranges"] == blank_ranges
+    evaluator_cls.assert_called_once()
+    assert evaluator_cls.call_args.kwargs["blank_ranges"] == blank_ranges
+
+
 def test_absent_input_preflight_uses_normalized_keys() -> None:
     canonical_key = normalize_key("Discrete Risks!H2")
     known_keys = frozenset({canonical_key})

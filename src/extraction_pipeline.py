@@ -604,6 +604,7 @@ def build_dependency_graph(
             dynamic_refs=dynamic_ref_config,
             load_values=True,
             capture_dependency_provenance=True,
+            blank_ranges=config.blank_ranges,
             no_cache=no_cache,
             force_rebuild=force_rebuild,
         )
@@ -853,6 +854,7 @@ def _generate_export_package(
                 bindings_workbook=config.workbook_path,
                 series_docstring_callback=callback_name,
                 docstring_renderer=docstring_renderer,
+                blank_ranges=config.blank_ranges,
             )
 
     codegen_started = time.perf_counter()

@@ -19,6 +19,7 @@ from excel_grapher.grapher import (
     dump_graph,
     load_graph,
 )
+from excel_grapher.grapher.blank_ranges import normalize_blank_range_specs
 
 from src.pipeline_config import PipelineConfig
 
@@ -82,12 +83,15 @@ def dependency_graph_cache_key(
     constraints: Mapping[str, object],
     load_values: bool,
     capture_dependency_provenance: bool,
+    blank_ranges: Sequence[str] = (),
 ) -> str:
+    """Hash workbook + targets + constraints + blank_ranges + flags + excel-grapher version."""
     payload = {
         "cache_schema_version": GRAPH_CACHE_SCHEMA_VERSION,
         "workbook_fingerprint": file_fingerprint(workbook_path),
         "targets": sorted(targets),
         "constraints": dict(constraints),
+        "blank_ranges": sorted(normalize_blank_range_specs(blank_ranges)),
         "load_values": load_values,
         "capture_dependency_provenance": capture_dependency_provenance,
         "excel_grapher_version": version("excel-grapher"),
@@ -190,6 +194,7 @@ def try_load_cached_dependency_graph(
     constraints: Mapping[str, object],
     load_values: bool = True,
     capture_dependency_provenance: bool = True,
+    blank_ranges: Sequence[str] = (),
     cache_dir: Path | None = None,
 ) -> DependencyGraphCacheResult | None:
     """Load a warm dependency-graph cache entry without building or writing.
@@ -205,6 +210,7 @@ def try_load_cached_dependency_graph(
         constraints=constraints,
         load_values=load_values,
         capture_dependency_provenance=capture_dependency_provenance,
+        blank_ranges=blank_ranges,
     )
     started = time.perf_counter()
     cached = load_dependency_graph(
@@ -234,6 +240,7 @@ def get_or_build_dependency_graph(
     dynamic_refs: DynamicRefConfig,
     load_values: bool = True,
     capture_dependency_provenance: bool = True,
+    blank_ranges: Sequence[str] = (),
     cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
@@ -246,6 +253,7 @@ def get_or_build_dependency_graph(
         constraints=constraints,
         load_values=load_values,
         capture_dependency_provenance=capture_dependency_provenance,
+        blank_ranges=blank_ranges,
     )
     process_slot = _process_cache_slot(resolved_cache_dir, cache_key)
     started = time.perf_counter()
@@ -291,6 +299,7 @@ def get_or_build_dependency_graph(
             load_values=load_values,
             dynamic_refs=dynamic_refs,
             capture_dependency_provenance=capture_dependency_provenance,
+            blank_ranges=blank_ranges,
         )
     else:
         graph = build()
@@ -440,6 +449,7 @@ def _pipeline_dependency_graph_cache_key(config: PipelineConfig) -> str:
         constraints=config.constraints,
         load_values=True,
         capture_dependency_provenance=True,
+        blank_ranges=config.blank_ranges,
     )
 
 
@@ -448,8 +458,8 @@ def _warn_if_cached_graph_is_stale(config: PipelineConfig, cache_key: str) -> No
     if cache_key == expected_key:
         return
     print(
-        "Warning: newest cached graph key does not match the current workbook "
-        "or targets fingerprint. Results may be stale; run "
+        "Warning: newest cached graph key does not match the current workbook, "
+        "targets, constraints, or blank_ranges fingerprint. Results may be stale; run "
         "uv run python -m scripts.regenerate_graph_cache to refresh."
     )
 
@@ -492,6 +502,7 @@ def load_pipeline_dependency_graph(
         dynamic_refs=dynamic_ref_config,
         load_values=True,
         capture_dependency_provenance=True,
+        blank_ranges=config.blank_ranges,
         cache_dir=resolved_cache_dir,
     )
     print(f"Built graph key={result.cache_key[:12]} ({len(result.graph)} nodes)")

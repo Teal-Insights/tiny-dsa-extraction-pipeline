@@ -97,6 +97,7 @@ class PipelineConfig:
     graph_output_dir: Path
     graph_audit_cases: tuple[GraphAuditCase, ...] = ()
     graph_cache_target_bundles: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    blank_ranges: tuple[str, ...] = ()
     internal_binding_validation_mode: InternalBindingValidationMode = "warn"
     internal_binding_exempt_cells: frozenset[str] = frozenset()
     variation_mode: VariationMode = "independent"
@@ -208,6 +209,26 @@ def _load_runnable_cell_rules(value: object) -> tuple[RunnableCellRule, ...]:
     return tuple(rules)
 
 
+def _load_blank_ranges(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        raise TypeError(
+            "BLANK_RANGES must be a sequence of sheet-qualified A1 rectangles, "
+            "not a single string"
+        )
+    if not isinstance(value, (tuple, list)):
+        raise TypeError("BLANK_RANGES must be a tuple or list of strings")
+    ranges: list[str] = []
+    for index, spec in enumerate(value):
+        if not isinstance(spec, str) or not spec:
+            raise ValueError(
+                f"BLANK_RANGES[{index}] must be a non-empty string; got {spec!r}"
+            )
+        ranges.append(spec)
+    return tuple(ranges)
+
+
 def add_variation_mode_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--variation-mode",
@@ -253,6 +274,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     dist_root = root / "dist"
     targets = tuple(user_config.TARGETS)
     constraints = dict(user_config.CONSTRAINTS)
+    blank_ranges = _load_blank_ranges(getattr(user_config, "BLANK_RANGES", ()))
     dist_metadata = user_config.DIST_METADATA
     docstring_callback_name = str(user_config.DOCSTRING_CALLBACK_NAME)
 
@@ -346,6 +368,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         graph_output_dir=graph_output_dir,
         graph_audit_cases=graph_audit_cases,
         graph_cache_target_bundles=graph_cache_target_bundles,
+        blank_ranges=blank_ranges,
         internal_binding_validation_mode=internal_binding_validation_mode,
         internal_binding_exempt_cells=internal_binding_exempt_cells,
         variation_mode=variation_mode,

@@ -12,7 +12,7 @@ Follow this order when adapting the template to a new workbook. Each step has a 
 |---|---|---|
 | 1. Ingest | **Config author** | Clone the repo. Replace `data/workbook.xlsx` and `data/guide.md`. Clear workbook-specific state: reset `bindings/*.bindings.yaml` to empty `series: []` placeholders (or delete them), and delete `dist/` and `.cache/`. Point [workbook_config.py](workbook_config.py) paths at the new workbook. |
 | 2. Audit | **Config author** | Run `uv run python -m src.workbook_audit --output artifacts/workbook-audit.md`. Resolve blocking automation (VBA, macros, external links) before graph work. |
-| 3. Configure | **Config author** | Declare extraction targets and dynamic-ref constraints (empty `series: []` binding placeholders are fine). See [Configure](#1-configure) below. |
+| 3. Configure | **Config author** | Declare extraction targets, `BLANK_RANGES`, and dynamic-ref constraints (empty `series: []` binding placeholders are fine). See [Configure](#1-configure) below. |
 | 4. Extract | **Config author** | Run `uv run python -m src.extraction_pipeline --extract-graph`. Confirm the graph builds without `DynamicRefError` (bindings are not required yet). |
 | 5. Review graph | **Graph reviewer** | Inspect `artifacts/dependency-graph/` (see [artifacts/README.md](artifacts/README.md)). Confirm expected sheets, no spurious nodes, and complete shock/engine paths. Optionally run opt-in LLM dependency audits: `uv run pytest tests/test_extraction_graph_accuracy.py --run-skipped` (workbook audits auto-select parents from the warm committed `.cache/dependency-graph/` entry — run `--only-stage extract` or `scripts.regenerate_graph_cache` first; `GRAPH_AUDIT_CASES` is optional steering only. The synthetic smoke-test audit runs without extra configuration). Set the provider API key for `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`). |
 | 6. Verify graph | **Parity owner** | Define a scenario matrix in `tests/differential/` and run graph-oracle differential parity before export (see [Verify graph](#3-verify-graph)). Prefer a warm `.cache/dependency-graph/` from extract first. Do not proceed to export until graph-oracle parity passes. |
@@ -31,6 +31,7 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Workbook | `data/workbook.xlsx` | Source Excel model |
 | Human guide | `data/guide.md` | Domain usage, public I/O catalog, scenario narrative |
 | Targets | `workbook_config.py` → `TARGETS` | Named ranges or addresses driving graph extraction |
+| Blank ranges | `workbook_config.py` → `BLANK_RANGES` | Sheet-qualified A1 rectangles of structurally empty cells omitted from the graph (same strings to graph build, `FormulaEvaluator`, and codegen) |
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml`, `bindings/constants.bindings.yaml` | Records-shaped public API, internal formula-cell triangulation, and reader-only constant leaves |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
@@ -48,9 +49,9 @@ Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.
 
 The linear `configure → extract` summary is a stage gate, not a one-shot workflow. Expect several passes:
 
-1. **Draft** `TARGETS` and dynamic-ref `CONSTRAINTS`. Keep `bindings/*.bindings.yaml` as empty `series: []` placeholders (or draft shards) — extract does not load or merge series bindings.
+1. **Draft** `TARGETS`, `BLANK_RANGES`, and dynamic-ref `CONSTRAINTS`. Keep `bindings/*.bindings.yaml` as empty `series: []` placeholders (or draft shards) — extract does not load or merge series bindings.
 2. **Extract** with `--extract-graph` and review `artifacts/dependency-graph/`.
-3. **Constrain** any remaining unconstrained graph leaves (for input/constant classification), then author / refine bindings using what the graph reveals.
+3. **Declare structural blanks**, then **constrain** any remaining unconstrained graph leaves (for input/constant classification), then author / refine bindings using what the graph reveals.
 4. **Re-extract** as needed for graph review; run export (or `build_pipeline_graph`) only once bindings are mergeable and complete.
 
 Extract is graph-first. Binding load, validation, derivation, and internal-coverage enforcement run at export (and any other bindings-ready path). Empty placeholder shards are expected during bootstrap.
@@ -73,9 +74,9 @@ flowchart LR
 
 ### 1. Configure
 
-1. Edit [workbook_config.py](workbook_config.py): paths, `TARGETS`, `CONSTRAINTS`, and `DIST_METADATA`. Keep `bindings/*.bindings.yaml` as empty `series: []` placeholders until after the first extract if needed.
+1. Edit [workbook_config.py](workbook_config.py): paths, `TARGETS`, `BLANK_RANGES`, `CONSTRAINTS`, and `DIST_METADATA`. Keep `bindings/*.bindings.yaml` as empty `series: []` placeholders until after the first extract if needed.
 2. **Dynamic-ref pass** — list leaves that need domains to resolve `OFFSET` / `INDIRECT` / `INDEX` (`excel_grapher.list_dynamic_ref_constraint_candidates` against `TARGETS`), constrain them, and iterate until `--extract-graph` succeeds without `DynamicRefError`. That lister only covers dynamic-ref argument leaves; it will not enumerate every leaf that later appears in the finished graph.
-3. **Leaf-classification pass** — after a successful extract, constrain every remaining unconstrained graph leaf (`graph.leaf_keys()` minus `CONSTRAINTS`) so each leaf classifies as `input` or `constant`. Every mutable input leaf must appear in `inputs.bindings.yaml`. Fixed leaves that formulas should read via `read_*` (not `xl_cell`) need a `constant: {}` series in `constants.bindings.yaml` (see [Authoring constants](#authoring-constants)).
+3. **Leaf-classification pass** — after a successful extract, review empty leaves that sit in the graph only because a formula rectangle names them (`INDEX`/`MATCH` padding, far-right `NPV`/`SUM` year-window overflow, unused ladder copies, separator rows). Declare those sheet-qualified A1 rectangles in `BLANK_RANGES` and re-extract: BFS does not create the nodes, edges that name them are kept, and OFFSET/INDEX leaves inside the rects are **not** required in `CONSTRAINTS`. Pass the **same** sequence to graph build, `FormulaEvaluator`, and codegen (the pipeline does this from `workbook_config.BLANK_RANGES`). Do **not** bind these as inputs or constants, do **not** drop them by narrowing a year domain (`C18`-style — the ranges are literal `:BB` / `:BD`), and do **not** put user-fillable yellow slots in `BLANK_RANGES`. `Literal[None]` freezes dynamic-ref *classification*; it does not omit nodes from the graph. Then constrain every remaining unconstrained graph leaf (`graph.leaf_keys()` minus `CONSTRAINTS`) so each leaf classifies as `input` or `constant`. Every mutable input leaf must appear in `inputs.bindings.yaml`. Fixed leaves that formulas should read via `read_*` (not `xl_cell`) need a `constant: {}` series in `constants.bindings.yaml` (see [Authoring constants](#authoring-constants)).
 4. Author I/O `bindings/*.bindings.yaml` (schema version `1.13.0`, one logical series per public API function or input/constant group). Empty `series: []` placeholders load (excel-grapher 5.1.4+); author real series before export.
 5. Bind every internal formula cell in `internals.bindings.yaml` (see [Authoring internals](#authoring-internals) below).
 
@@ -114,6 +115,7 @@ graph = create_dependency_graph(
     load_values=True,
     dynamic_refs=DynamicRefConfig.from_constraints(constraints, {}),
     capture_dependency_provenance=True,
+    blank_ranges=blank_ranges,
 )
 ```
 
@@ -142,6 +144,8 @@ Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qm
 #### Authoring constants
 
 Author `constants.bindings.yaml` for graph **leaves** that formulas depend on but that are not user-editable public inputs. Classification via `Literal[...]` in `CONSTRAINTS` marks those leaves as `constant` for codegen `CONSTANTS`; a `constant: {}` binding additionally emits a semantic `read_*` and rewrites formula bodies off bare `xl_cell`.
+
+Structural blanks are a different lever. Cells that formulas *name* but users never fill belong in `BLANK_RANGES`, not `CONSTRAINTS` + `constants.bindings.yaml`. If those nodes are deleted without `blank_ranges`, `FormulaEvaluator.evaluate()` raises `KeyError` (`Cell … not found in graph`); a still-present empty leaf returns `None`. The supported way to drop the nodes without breaking eval/export is the same sheet-qualified A1 sequence passed to `create_dependency_graph`, `FormulaEvaluator`, and `CodeGenerator.generate` / `generate_modules`.
 
 - **Same YAML shape as public bindings** — use `constant: {}` instead of `input` / `output` / `internal`. Mutually exclusive with those directions.
 - **Leaf-only** — `data_range` must cover graph leaves (not formula nodes). Formula triangulation stays in `internals.bindings.yaml`.
@@ -172,7 +176,7 @@ Use `warn` while iterating locally; treat pytest failures as the CI gate once ex
 
 | Utility | Command | When to use |
 |---|---|---|
-| Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints, or excel-grapher. Add `--force` to rebuild even when entries exist; `--force` also clears and prunes `.cache/series-resolution/`, `.cache/series-derived/`, and `.cache/bindings-validation/`, and clears `.cache/clusters/` and `.cache/internals/`. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
+| Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints/`BLANK_RANGES`, or excel-grapher. Add `--force` to rebuild even when entries exist; `--force` also clears and prunes `.cache/series-resolution/`, `.cache/series-derived/`, and `.cache/bindings-validation/`, and clears `.cache/clusters/` and `.cache/internals/`. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
 | Internal-binding burndown | `uv run python -m scripts.internal_binding_burndown` | After `--extract-graph` to see which formula rows still need `internals.bindings.yaml` entries. Supports `--per-sheet` and `--max-rows`. Reuses the newest cached graph even when bindings changed. |
 | Programmatic binding emission | `uv run python -m scripts.author_bindings` | Large, regular binding surfaces defined in a declarative catalog (`templates/binding-catalog.example.yaml`). Complements [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt). |
 
@@ -433,6 +437,7 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 - [ ] **Configure:** Outputs declared as extraction targets in `workbook_config.py`
 - [ ] **Configure:** Dynamic-ref constraint candidates constrained (`list_dynamic_ref_constraint_candidates`; graph builds without `DynamicRefError`)
 - [ ] **Extract:** Graph extracts with provenance (`--extract-graph`; empty `series: []` placeholders OK)
+- [ ] **Configure:** Empty leaves reviewed; structural blank rectangles declared in `BLANK_RANGES` rather than constraining each cell `Literal[None]`
 - [ ] **Configure:** Remaining graph leaves constrained and classified; mutable leaves bound
 - [ ] **Configure:** `bindings/inputs.bindings.yaml` + `outputs.bindings.yaml` authored and validated
 - [ ] **Configure:** Fixed leaves that need semantic `read_*` bound in `bindings/constants.bindings.yaml` (`constant: {}`)

@@ -51,6 +51,7 @@ Binding schema and conventions:
 - Add output.compute.name values matching compute_[a-z][a-z0-9_]* for output series.
 - Add internal series with `internal: {}` for formula cells that need concept-key triangulation during internals refactor. Internal series do not generate public setter or compute code.
 - Add constant series with `constant: {}` for graph leaves that formulas should read via `read_*` without a public `set_*`. Optional `constant.reader.name` overrides the default `read_<series_id>`. Constant bindings require leaf overlap (`non_leaf_constant_overlap` / `no_leaf_constant_targets` otherwise) and are mutually exclusive with input/output/internal. Do not confuse the constant direction with bind.kind: constant (a fixed structure scalar). Leaf classification via Literal[...] CONSTRAINTS is separate: it seeds CONSTANTS vs DEFAULT_INPUTS; a constant binding is what rewrites xl_cell to read_*.
+- Do not bind structurally empty cells (INDEX/MATCH padding, NPV/SUM year-window overflow, unused ladder copies, separator rows). Those belong in workbook_config.BLANK_RANGES (sheet-qualified A1 rectangles passed to graph build, FormulaEvaluator, and codegen), not inputs/constants. Do not put user-fillable yellow slots in BLANK_RANGES.
 - Include useful series_context and UNIT_MEASURE attributes where they clarify records.
 - Do not include internal engine calculations or read-only lookup/profile data as public API bindings unless the guide says downstream users should set or read them directly.
 

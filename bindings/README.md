@@ -50,6 +50,11 @@ series:
 add a `constant: {}` series when formulas should call `read_*` instead of
 `xl_cell`. Mutable leaves still need `input` / `set_*` in `inputs.bindings.yaml`.
 
+**Structural blanks are not constants.** Padding inside `INDEX`/`MATCH` arrays,
+far-right `NPV`/`SUM` overflow, unused ladder copies, and separator rows belong
+in `workbook_config.BLANK_RANGES`, not `CONSTRAINTS` + `constants.bindings.yaml`.
+`Literal[None]` classifies a still-present leaf; it does not omit the node.
+
 **Do not confuse** the `constant` **direction** with `bind.kind: constant` (a
 fixed dimension / attribute scalar in `structure`). The direction binds a
 spreadsheet leaf; the bind kind fills a coordinate without reading a cell.

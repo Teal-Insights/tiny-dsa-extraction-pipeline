@@ -20,7 +20,7 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 
 | Role | Signs off on |
 |---|---|
-| **Config author** | Ingest, configure, extract, document, and refactor stages — targets, bindings, constraints, and committed parity evidence |
+| **Config author** | Ingest, configure, extract, document, and refactor stages — targets, blank ranges, bindings, constraints, and committed parity evidence |
 | **Graph reviewer** | Extract completeness — manual graph review and optional LLM dependency audits |
 | **Parity owner** | Export and test — full pipeline run and differential parity (including Windows Excel when available) |
 
@@ -34,7 +34,8 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 | **Dynamic refs resolved** | All `OFFSET` / `INDEX` / `MATCH` / `CHOOSE` dependencies are resolved via `DynamicRefConfig.from_constraints(...)` without `DynamicRefError`. |
 | **Every mutable leaf is bound** | Each leaf classified as `input` appears in `inputs.bindings.yaml`; unbound mutable leaves fail the pipeline. |
 | **Constants distinguished from inputs** | Single-value `Literal[...]` constraints mark lookup/structural data; range constraints mark user-editable inputs. |
-| **Constraints cover all leaves** | Every graph leaf has a typed constraint (`Literal`, `Between`, `RealBetween`, etc.) for codegen, testing, and documentation. |
+| **Structural blanks omitted via `BLANK_RANGES`** | Cells that formulas name but users never fill (INDEX/MATCH padding, NPV/SUM overflow, unused ladder copies, separator rows) are declared as sheet-qualified A1 rectangles in `BLANK_RANGES` and passed to graph build, `FormulaEvaluator`, and codegen. Do not bind them as inputs/constants, do not constrain each cell `Literal[None]` to drop them, and do not put user-fillable slots here. |
+| **Constraints cover all remaining leaves** | Every graph leaf not omitted by `BLANK_RANGES` has a typed constraint (`Literal`, `Between`, `RealBetween`, etc.) for codegen, testing, and documentation. |
 | **Public input labels resolved** | Every scenario value written to an enum public input cell matches a workbook reference label exactly. A configure test fails if any scenario input cannot be resolved or if `CONSTRAINTS` literals diverge from reference cells. |
 
 **Address keys:** `excel-grapher` stores sheet-qualified addresses in canonical form (e.g. `'Discrete Risks'!H2`). Human-authored `CONSTRAINTS` keys and graph `leaf_keys()` may differ in quoting but normalize to the same form via `normalize_cell_type_env_key()` (constraint matching) and `normalize_key()` (graph lookup). Harnesses and audits must normalize before comparing config addresses to graph keys. See [issue #51](https://github.com/Teal-Insights/extraction-pipeline-template/issues/51).
@@ -58,7 +59,7 @@ Configure checklist (workbook-neutral):
 
 | Criterion | Pass condition |
 |---|---|
-| **Graph builds cleanly** | `create_dependency_graph(..., load_values=True, dynamic_refs=..., capture_dependency_provenance=True)` succeeds. |
+| **Graph builds cleanly** | `create_dependency_graph(..., load_values=True, dynamic_refs=..., capture_dependency_provenance=True, blank_ranges=...)` succeeds. |
 | **Graph is inspectable** | DAG from outputs to inputs; manual review confirms expected sheets, no spurious nodes, no missing shock/engine paths. |
 | **Provenance captured** | `capture_dependency_provenance=True` so later compression/refactor projections are safe and auditable. |
 | **Series derive cleanly** | `derive_input_series` / `derive_output_series` resolve every binding to concrete cell addresses. |

@@ -23,6 +23,13 @@ BINDINGS_PATH = REPO_ROOT / "bindings"
 
 TARGETS: list[str] = ["output_baseline", "output_shocked", "output_delta"]
 
+# Sheet-qualified A1 rectangles of structurally empty cells that formulas name
+# but users never fill (INDEX/MATCH padding, NPV/SUM year-window overflow,
+# unused ladder copies, separator rows). Passed unchanged to graph build,
+# FormulaEvaluator, and CodeGenerator. Do not put user-fillable slots here.
+# Single cells are 1×1 rectangles. Never a bare string.
+BLANK_RANGES: tuple[str, ...] = ()
+
 _cols = ("C", "D", "E", "F", "G")
 
 CONSTRAINTS: dict[str, object] = {

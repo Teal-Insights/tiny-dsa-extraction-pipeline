@@ -2,10 +2,11 @@
 
 Warm pytest and CI runs can read these caches to skip cold graph builds,
 ``derive_*_series`` work, and ``validate_series_bindings``. Cache keys
-fingerprint the workbook, bindings YAML, targets/constraints, and the
-excel-grapher version. Rerun after changing the workbook,
-``bindings/*.bindings.yaml``, ``workbook_config.py`` targets/constraints,
-or upgrading excel-grapher:
+fingerprint the workbook, bindings YAML, targets/constraints/blank_ranges, and
+the excel-grapher version. Rerun after changing the workbook,
+``bindings/*.bindings.yaml``, ``workbook_config.py`` targets/constraints/
+``BLANK_RANGES``, or upgrading excel-grapher (``--force`` after a
+``BLANK_RANGES`` edit as well):
 
     uv run python -m scripts.regenerate_graph_cache
 
@@ -115,6 +116,7 @@ def regenerate_graph_cache(
             dynamic_refs=dynamic_refs,
             load_values=True,
             capture_dependency_provenance=True,
+            blank_ranges=config.blank_ranges,
             cache_dir=COMMITTED_GRAPH_CACHE_DIR,
             force_rebuild=force,
         )

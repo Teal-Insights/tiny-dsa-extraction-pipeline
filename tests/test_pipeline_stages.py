@@ -149,6 +149,47 @@ def test_run_export_stage_prints_codegen_stage_boundary(
     assert "codegen: 1 modules (" in captured
 
 
+def test_run_export_stage_forwards_blank_ranges_to_generate_modules(
+    tmp_path: Path,
+) -> None:
+    blank_ranges = ("'Chart Data'!D46:X46",)
+    config = replace(_sample_config(tmp_path), blank_ranges=blank_ranges)
+    (tmp_path / "dist" / "my_model").mkdir(parents=True)
+    config.guide_path.write_text("guide\n", encoding="utf-8")
+
+    with (
+        patch(
+            "src.extraction_pipeline.build_pipeline_graph",
+            return_value=MagicMock(
+                graph=MagicMock(),
+                series_bindings=MagicMock(),
+                input_series=(),
+                output_series=(),
+                internal_series=(),
+                constant_series=(),
+                graph_cache_key="cache-key",
+            ),
+        ),
+        patch(
+            "src.extraction_pipeline.build_refactor_projection",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "src.extraction_pipeline.configure_docstring_callback",
+            return_value="series_docs",
+        ),
+        patch("src.extraction_pipeline.CodeGenerator") as generator_cls,
+        patch("src.extraction_pipeline.materialize_package"),
+        patch("src.package_materialize.seed_validation_harness"),
+    ):
+        generator = generator_cls.return_value.__enter__.return_value
+        generator.generate_modules.return_value = {"internals.py": "pass\n"}
+        run_export_stage(config, no_cache=True)
+
+    generator.generate_modules.assert_called()
+    assert generator.generate_modules.call_args.kwargs["blank_ranges"] == blank_ranges
+
+
 def test_run_refactor_stage_prints_clustering_and_refactor_boundaries(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

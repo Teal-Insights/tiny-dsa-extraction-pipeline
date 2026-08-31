@@ -86,12 +86,13 @@ def _load_workbook_graph_for_audit(config: PipelineConfig) -> DependencyGraph:
         constraints=config.constraints,
         load_values=True,
         capture_dependency_provenance=True,
+        blank_ranges=config.blank_ranges,
         cache_dir=COMMITTED_GRAPH_CACHE_DIR,
     )
     if cached is None:
         pytest.skip(
             "No warm committed dependency-graph cache for the current workbook/"
-            "targets/constraints. Run `uv run python -m src.extraction_pipeline "
+            "targets/constraints/blank_ranges. Run `uv run python -m src.extraction_pipeline "
             "--only-stage extract` (or `uv run python -m scripts.regenerate_graph_cache`) "
             "first, then re-run with --run-skipped."
         )

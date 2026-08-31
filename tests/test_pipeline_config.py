@@ -27,6 +27,7 @@ def test_load_pipeline_config_reads_workbook_config() -> None:
     assert config.graph_audit_cases == ()
     assert config.variation_mode == "independent"
     assert config.clustering_mode == "series"
+    assert config.blank_ranges == ()
     assert config.canonical_api_example_path.name == "canonical-api-usage.md"
     assert (
         config.repo_relative_posix_path(config.canonical_api_example_path)
@@ -77,6 +78,41 @@ def test_load_pipeline_config_rejects_invalid_clustering_mode(
 def test_load_pipeline_config_defaults_to_no_runnable_cell_rules() -> None:
     config = load_pipeline_config()
     assert config.runnable_cell_rules == ()
+
+
+def test_load_pipeline_config_reads_blank_ranges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    ranges = (
+        "'Chart Data'!D46:X46",
+        "PV_LC_NR1!AF30:BB30",
+        "'Input 5 - Local-debt Financing'!AF108",
+    )
+    monkeypatch.setattr(workbook_config, "BLANK_RANGES", ranges)
+    config = load_pipeline_config()
+    assert config.blank_ranges == ranges
+
+
+def test_load_pipeline_config_rejects_bare_string_blank_ranges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    monkeypatch.setattr(workbook_config, "BLANK_RANGES", "Chart Data!D46:X46")
+    with pytest.raises(TypeError, match="BLANK_RANGES"):
+        load_pipeline_config()
+
+
+def test_load_pipeline_config_defaults_blank_ranges_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    monkeypatch.delattr(workbook_config, "BLANK_RANGES")
+    config = load_pipeline_config()
+    assert config.blank_ranges == ()
 
 
 def test_load_pipeline_config_reads_runnable_cell_rules(

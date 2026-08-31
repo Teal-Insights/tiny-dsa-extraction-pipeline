@@ -4,8 +4,9 @@ Compare Microsoft Excel (golden master via ``xlwings``) against an in-memory
 ``excel-grapher`` dependency graph evaluated with ``FormulaEvaluator``. The
 graph is loaded through the same cache helpers as extract
 (``try_load_cached_dependency_graph`` / ``get_or_build_dependency_graph``),
-keyed by workbook + targets + constraints + flags + ``excel-grapher`` version,
-so this differential stays in lockstep with extraction as the pipeline evolves.
+keyed by workbook + targets + constraints + blank_ranges + flags +
+``excel-grapher`` version, so this differential stays in lockstep with
+extraction as the pipeline evolves.
 
 Prefer a warm ``.cache/dependency-graph/`` entry from
 ``uv run python -m src.extraction_pipeline --only-stage extract`` (or
@@ -81,6 +82,7 @@ class GraphDifferentialConfig:
     atol: float = ATOL
     rtol: float = RTOL
     allow_matched_errors: bool = False
+    blank_ranges: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -186,6 +188,7 @@ def resolve_config(
         targets=pipeline.targets,
         constraints=pipeline.constraints,
         library_name=pipeline.dist_metadata.library_name,
+        blank_ranges=pipeline.blank_ranges,
     )
 
     return GraphDifferentialConfig(
@@ -198,6 +201,7 @@ def resolve_config(
         atol=ATOL,
         rtol=RTOL,
         allow_matched_errors=allow_matched_errors,
+        blank_ranges=defaults.blank_ranges,
     )
 
 
@@ -268,8 +272,8 @@ class MvpGraphDriver:
 
     Loads the graph through the same cache helpers as extract
     (``try_load_cached_dependency_graph`` / ``get_or_build_dependency_graph``),
-    keyed by workbook + targets + constraints + ``load_values`` + provenance +
-    ``excel-grapher`` version. Prefers a warm hit from
+    keyed by workbook + targets + constraints + blank_ranges + ``load_values`` +
+    provenance + ``excel-grapher`` version. Prefers a warm hit from
     ``COMMITTED_GRAPH_CACHE_DIR`` (repo ``.cache/dependency-graph/``, even when
     pytest redirects ``DEFAULT_GRAPH_CACHE_DIR``). On miss, builds and saves via
     the writable default cache so a subsequent run does not cold-build again.
@@ -281,6 +285,7 @@ class MvpGraphDriver:
         *,
         targets: tuple[str, ...],
         constraints: dict[str, object],
+        blank_ranges: tuple[str, ...] = (),
     ) -> None:
         config = DynamicRefConfig.from_constraints(constraints, {})
         cached = try_load_cached_dependency_graph(
@@ -289,6 +294,7 @@ class MvpGraphDriver:
             constraints=constraints,
             load_values=True,
             capture_dependency_provenance=True,
+            blank_ranges=blank_ranges,
             cache_dir=COMMITTED_GRAPH_CACHE_DIR,
         )
         if cached is None:
@@ -299,6 +305,7 @@ class MvpGraphDriver:
                 dynamic_refs=config,
                 load_values=True,
                 capture_dependency_provenance=True,
+                blank_ranges=blank_ranges,
             )
             if cached.cache_hit:
                 logger.info(
@@ -324,7 +331,7 @@ class MvpGraphDriver:
                 cached.elapsed_seconds,
             )
         self._graph: DependencyGraph = cached.graph
-        self._evaluator = FormulaEvaluator(self._graph)
+        self._evaluator = FormulaEvaluator(self._graph, blank_ranges=blank_ranges)
         self._known_keys = frozenset(self._graph.leaf_keys()) | frozenset(
             self._graph.formula_keys()
         )
@@ -601,6 +608,7 @@ def run_sweep(config: GraphDifferentialConfig) -> tuple[list[Trial], list[str]]:
         config.workbook_path,
         targets=config.targets,
         constraints=config.constraints,
+        blank_ranges=config.blank_ranges,
     )
     all_input_cells = collect_scenario_input_addresses(axes, inputs_for_excel)
     missing_inputs_in_graph = sorted(
