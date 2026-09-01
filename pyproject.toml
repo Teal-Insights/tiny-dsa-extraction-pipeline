@@ -53,4 +53,4 @@ line-ending = "lf"
 exclude = ["tests/fixtures/**/*.md"]
 
 [tool.uv.sources]
-excel-grapher = { git = "https://github.com/Teal-Insights/excel-grapher.git", rev = "cursor/inverted-tree-codegen-a356" }
+excel-grapher = { git = "https://github.com/Teal-Insights/excel-grapher.git", rev = "3c759a472f85c115359e9cb14c05eac86432e093" }

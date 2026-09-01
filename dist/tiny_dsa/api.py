@@ -10,7 +10,7 @@ from collections.abc import Sequence
 
 from . import internals
 from .data import COUNTRY_PROFILE_NAMES, ENGINE_YEAR_LABELS
-from .runtime import require_aligned, trim
+from .runtime import require_length
 
 
 def compute_output_baseline(
@@ -22,25 +22,26 @@ def compute_output_baseline(
     primary_balance_baseline: Sequence[float],
     country_profile_names: Sequence[str] = COUNTRY_PROFILE_NAMES,
 ) -> tuple[float, ...]:
-    """Compute the baseline debt-to-GDP path for projection years 1 through 5.
+    """Compute the baseline debt-to-GDP path for the Outputs sheet from the leaf inputs.
 
-    Return the baseline trajectory that feeds the documented output_baseline result from the engine's internal calculation.
+    Returns the five-year baseline debt-to-GDP trajectory stored in `output_baseline`.
 
     Args:
-        country_name: User-selected country name, drawn from the country profile lookup table.
-        country_initial_debt: Sequence of initial debt-to-GDP ratios corresponding to each country in country_profile_names, in the same order.
-        growth_baseline: Real GDP growth rates for projection years 1 through 5, in percent per annum.
-        interest_baseline: Real interest rates for projection years 1 through 5, in percent per annum.
-        primary_balance_baseline: Primary balances for projection years 1 through 5, expressed as a percent of GDP; positive values denote a surplus.
-        country_profile_names: Sequence of country profile names in the lookup table; defaults to the standard profile set.
+        country_name: Name of the selected country, matched against `country_profile_names` to resolve initial debt.
+        country_initial_debt: Sequence of initial debt-to-GDP ratios for each country profile, used with the selected country to determine the starting debt level.
+        growth_baseline: Five-year sequence of real GDP growth rates, percent per annum.
+        interest_baseline: Five-year sequence of effective real interest rates on outstanding debt, percent per annum.
+        primary_balance_baseline: Five-year sequence of primary balances as percent of GDP, positive for surplus.
+        country_profile_names: Sequence of country profile names corresponding to `country_initial_debt`; used to look up the selected country.
 
     Returns:
-        A tuple of floats giving the baseline debt-to-GDP ratio (in percent of GDP) for each projection year, typically years 1 through 5.
+        A tuple of five floats giving the baseline debt-to-GDP path for years 1 through 5.
     """
-    horizon = min(require_aligned(growth_baseline, interest_baseline, primary_balance_baseline), 5)
-    growth_baseline = trim(growth_baseline, horizon)
-    interest_baseline = trim(interest_baseline, horizon)
-    primary_balance_baseline = trim(primary_balance_baseline, horizon)
+    require_length(country_initial_debt, 3)
+    require_length(growth_baseline, 5)
+    require_length(interest_baseline, 5)
+    require_length(primary_balance_baseline, 5)
+    require_length(country_profile_names, 3)
     initial_debt_resolved = internals.initial_debt_resolved(country_profile_names, country_name, country_initial_debt)
     engine_initial_debt_baseline = internals.engine_initial_debt_baseline(initial_debt_resolved)
     baseline_path_internal = internals.baseline_path_internal(engine_initial_debt_baseline, growth_baseline, interest_baseline, primary_balance_baseline)
@@ -62,28 +63,30 @@ def compute_output_shocked(
 ) -> tuple[float, ...]:
     """Compute the shocked debt-to-GDP path for projection years 1 through 5.
 
-    Return the `output_shocked` series for the Outputs sheet by applying a configured shock to the baseline debt-dynamics recursion.
+    Return the shocked debt-to-GDP series after applying the configured shock to the baseline parameter path.
 
     Args:
-        country_name: The user-selected country name, drawn from the country profile table.
-        country_initial_debt: Initial debt-to-GDP ratios for the country profiles, in percent of GDP, aligned with `country_profile_names`.
-        growth_baseline: Real GDP growth rates for years 1 through 5, in percent per annum.
-        interest_baseline: Real interest rates for years 1 through 5, in percent per annum.
-        primary_balance_baseline: Primary balance for years 1 through 5, expressed as a percent of GDP, with positive values denoting a surplus.
-        shock_year: The year in which the shock begins, an integer between 1 and 5.
-        shock_type: The parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, and 3 for the primary balance.
-        shock_magnitudes: Shock magnitudes for each shock type, in percentage points. Only the magnitude corresponding to `shock_type` is applied.
-        country_profile_names: Names of the country profiles in the lookup table, used to resolve the initial debt for the selected `country_name`.
-        engine_year_labels: Year labels used by the engine recursion, typically 1 through 5.
+        country_name: Name of the selected country from the country profile table; used to resolve the initial debt-to-GDP ratio.
+        country_initial_debt: Sequence of length 3 containing initial debt-to-GDP ratios (percent of GDP) for the three country profiles, aligned with country_profile_names.
+        growth_baseline: Baseline real GDP growth rates (percent per annum) for years 1 through 5.
+        interest_baseline: Baseline real interest rates (percent per annum) for years 1 through 5.
+        primary_balance_baseline: Baseline primary balance (percent of GDP, positive surplus) for years 1 through 5.
+        shock_year: Year (1 to 5) in which the shock first takes effect, applying through the end of the horizon.
+        shock_type: Integer 1, 2, or 3 indicating which parameter the shock affects: 1 for real GDP growth, 2 for the real interest rate, 3 for the primary balance.
+        shock_magnitudes: Sequence of length 3 shock magnitudes in percentage points, one per shock type, of which only the selected type's magnitude is applied.
+        country_profile_names: Sequence of length 3 country profile names used to look up the selected country's initial debt; defaults to built-in profile names.
+        engine_year_labels: Sequence of length 5 year labels (1 through 5) used to determine shock activation; defaults to built-in engine year labels.
 
     Returns:
-        The shocked debt-to-GDP path for projection years 1 through 5, expressed as percentages of GDP.
+        Tuple of five floats containing the shocked debt-to-GDP ratios (percent of GDP) for years 1 through 5.
     """
-    horizon = min(require_aligned(growth_baseline, interest_baseline, primary_balance_baseline), 5)
-    growth_baseline = trim(growth_baseline, horizon)
-    interest_baseline = trim(interest_baseline, horizon)
-    primary_balance_baseline = trim(primary_balance_baseline, horizon)
-    engine_year_labels = trim(engine_year_labels, horizon)
+    require_length(country_initial_debt, 3)
+    require_length(growth_baseline, 5)
+    require_length(interest_baseline, 5)
+    require_length(primary_balance_baseline, 5)
+    require_length(shock_magnitudes, 3)
+    require_length(country_profile_names, 3)
+    require_length(engine_year_labels, 5)
     initial_debt_resolved = internals.initial_debt_resolved(country_profile_names, country_name, country_initial_debt)
     shock_magnitude_resolved = internals.shock_magnitude_resolved(shock_type, shock_magnitudes)
     shock_active = internals.shock_active(engine_year_labels, shock_year)
@@ -108,30 +111,32 @@ def compute_output_delta(
     country_profile_names: Sequence[str] = COUNTRY_PROFILE_NAMES,
     engine_year_labels: Sequence[int] = ENGINE_YEAR_LABELS,
 ) -> tuple[float, ...]:
-    """Compute the difference between the shocked and baseline debt-to-GDP paths in percentage points.
+    """Compute the difference between shocked and baseline debt-to-GDP paths, in percentage points.
 
-    Return the output_delta series, the shock impact on the debt ratio relative to the baseline path.
+    Return the output_delta series for the Outputs sheet, representing the impact of the configured shock on the debt-to-GDP path.
 
     Args:
-        country_name: User-selected country name, drawn from the country profile table (e.g., 'Borvelia').
-        country_initial_debt: Initial debt-to-GDP ratios for the candidate countries, aligned with country_profile_names; the selected country's value is looked up by name.
+        country_name: User-selected country, drawn from the country profile table. Determines the initial debt-to-GDP ratio via lookup.
+        country_initial_debt: Initial debt-to-GDP ratios for each country profile, in percent of GDP. The ratio for the selected country is resolved from these values.
         growth_baseline: Real GDP growth rates for years 1 through 5, in percent per annum.
-        interest_baseline: Real interest rates for years 1 through 5, in percent per annum.
-        primary_balance_baseline: Primary balance as a percent of GDP for years 1 through 5; positive values denote a surplus.
-        shock_year: Year in which the shock begins (integer between 1 and 5).
-        shock_type: Parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, 3 for the primary balance.
-        shock_magnitudes: Shock magnitudes in percentage points, one per shock type; the magnitude for the selected shock_type is applied.
-        country_profile_names: Names of the available country profiles, used to resolve the selected country's initial debt.
-        engine_year_labels: Year labels for the engine horizon, used to determine shock activation.
+        interest_baseline: Real interest rates paid on outstanding debt for years 1 through 5, in percent per annum.
+        primary_balance_baseline: Primary balance for years 1 through 5, expressed as a percent of GDP. Positive values denote a surplus.
+        shock_year: The year in which the shock begins, as an integer between 1 and 5. The shock applies from this year through the end of the horizon.
+        shock_type: The parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, 3 for the primary balance.
+        shock_magnitudes: Shock magnitudes for each shock type, in percentage points. The magnitude corresponding to the selected shock type is applied from the shock year onwards.
+        country_profile_names: Names of the country profiles in the lookup table (for example, Borvelia, Litellia, Aurelium). Used to resolve the initial debt-to-GDP ratio for the selected country.
+        engine_year_labels: Year labels for the five-year horizon (typically 1 through 5). Used to determine the shock-active indicator for each year.
 
     Returns:
-        Tuple of output_delta values, the difference between the shocked and baseline debt-to-GDP paths in percentage points.
+        A tuple of five floats representing the output delta series: the difference between the shocked and baseline debt-to-GDP paths, in percentage points, for years 1 through 5.
     """
-    horizon = min(require_aligned(growth_baseline, interest_baseline, primary_balance_baseline), 5)
-    growth_baseline = trim(growth_baseline, horizon)
-    interest_baseline = trim(interest_baseline, horizon)
-    primary_balance_baseline = trim(primary_balance_baseline, horizon)
-    engine_year_labels = trim(engine_year_labels, horizon)
+    require_length(country_initial_debt, 3)
+    require_length(growth_baseline, 5)
+    require_length(interest_baseline, 5)
+    require_length(primary_balance_baseline, 5)
+    require_length(shock_magnitudes, 3)
+    require_length(country_profile_names, 3)
+    require_length(engine_year_labels, 5)
     initial_debt_resolved = internals.initial_debt_resolved(country_profile_names, country_name, country_initial_debt)
     shock_magnitude_resolved = internals.shock_magnitude_resolved(shock_type, shock_magnitudes)
     shock_active = internals.shock_active(engine_year_labels, shock_year)

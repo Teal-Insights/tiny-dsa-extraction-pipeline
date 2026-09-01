@@ -231,21 +231,20 @@ def test_pipeline_graph_formula_evaluator_parity(
     assert shocked == pytest.approx(_DEFAULT_SHOCKED, abs=1e-9)
 
 
-def test_year_prefix_does_not_require_full_constant_labels(inverted_tree_pkg) -> None:
+def test_compute_requires_catalog_order_full_length(inverted_tree_pkg) -> None:
+    """Public compute_* takes catalog-order arrays; prefixes fail closed."""
     data = inverted_tree_pkg.data
     source = inspect.getsource(inverted_tree_pkg.compute_output_shocked)
-    assert (
-        "require_aligned(growth_baseline, interest_baseline, primary_balance_baseline)"
-    ) in source
-    assert "engine_year_labels" not in source.split("horizon =", 1)[1].split("\n", 1)[0]
-    result = inverted_tree_pkg.compute_output_shocked(
-        country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
-        growth_baseline=data.GROWTH_BASELINE_DEFAULT[:1],
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT[:1],
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT[:1],
-        shock_year=data.SHOCK_YEAR_DEFAULT,
-        shock_type=data.SHOCK_TYPE_DEFAULT,
-        shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
-    )
-    assert result == pytest.approx((_DEFAULT_SHOCKED[0],), abs=1e-9)
+    assert "require_length(growth_baseline, 5)" in source
+    assert "require_length(engine_year_labels, 5)" in source
+    with pytest.raises(ValueError, match="expected length 5, got 1"):
+        inverted_tree_pkg.compute_output_shocked(
+            country_name=data.COUNTRY_NAME_DEFAULT,
+            country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
+            growth_baseline=data.GROWTH_BASELINE_DEFAULT[:1],
+            interest_baseline=data.INTEREST_BASELINE_DEFAULT[:1],
+            primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT[:1],
+            shock_year=data.SHOCK_YEAR_DEFAULT,
+            shock_type=data.SHOCK_TYPE_DEFAULT,
+            shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
+        )

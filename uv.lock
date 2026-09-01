@@ -533,7 +533,7 @@ wheels = [
 [[package]]
 name = "excel-grapher"
 version = "12.3.1"
-source = { git = "https://github.com/Teal-Insights/excel-grapher.git?rev=cursor%2Finverted-tree-codegen-a356#0d89087efc3161e627fc77c49b5190e4c50ab903" }
+source = { git = "https://github.com/Teal-Insights/excel-grapher.git?rev=3c759a472f85c115359e9cb14c05eac86432e093#3c759a472f85c115359e9cb14c05eac86432e093" }
 dependencies = [
     { name = "fastpyxl" },
     { name = "jsonschema" },
@@ -2494,7 +2494,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "excel-grapher", git = "https://github.com/Teal-Insights/excel-grapher.git?rev=cursor%2Finverted-tree-codegen-a356" },
+    { name = "excel-grapher", git = "https://github.com/Teal-Insights/excel-grapher.git?rev=3c759a472f85c115359e9cb14c05eac86432e093" },
     { name = "openai", specifier = ">=2.38.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

@@ -1,16 +1,16 @@
 """Exported-library differential test harness.
 
-Compare the generated standalone package against Microsoft Excel via xlwings.
-Workbook-specific scenario definitions live in the ``Workbook-specific hooks``
-section at the bottom of this module.
+Compare the generated standalone package against the extraction graph evaluated
+with ``FormulaEvaluator``. Workbook-specific scenario definitions live in the
+``Workbook-specific hooks`` section at the bottom of this module.
 
 Run from the extraction repo after export::
 
     uv run python -m tests.differential.differential_test_exported_library
 
-From the exported ``dist/`` project (Windows + Excel)::
+From the exported ``dist/`` project (graph cache + ``excel-grapher`` required)::
 
-    uv run --project dist --group validation python -m tests.differential.differential_test_exported_library --layout exported
+    uv run --project dist python -m tests.differential.differential_test_exported_library --layout exported
 """
 
 from __future__ import annotations
@@ -21,17 +21,14 @@ import hashlib
 import importlib
 import logging
 import platform
-import re
 import sys
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal
-
-from excel_grapher.core.address_keys import normalize_key, parse_address
-from fastpyxl.utils.cell import column_index_from_string, get_column_letter
 
 from .comparison_utils import classify_comparison
 from .differential_excel import (
@@ -39,13 +36,14 @@ from .differential_excel import (
     matched_error_values,
     parity_exit_code,
 )
-from .differential_types import ATOL, RTOL, Scenario
+from .differential_scenario_inputs import collect_scenario_input_addresses
+from .differential_types import ATOL, RTOL, Axis, AxisPoint, Scenario
 
 logger = logging.getLogger(__name__)
 
 LayoutName = Literal["repo", "exported"]
 
-ExcelOracle = Callable[[Scenario, tuple[str, ...]], dict[str, Any]]
+GraphOracle = Callable[[Scenario, tuple[str, ...]], dict[str, Any]]
 MvpOracle = Callable[[Scenario], dict[str, Any]]
 
 
@@ -62,6 +60,9 @@ class DifferentialConfig:
     atol: float = ATOL
     rtol: float = RTOL
     allow_matched_errors: bool = False
+    targets: tuple[str, ...] = ()
+    constraints: dict[str, object] = field(default_factory=dict)
+    blank_ranges: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ class Comparison:
     scenario_id: str
     cell_address: str
     cell_label: str
-    excel_value: Any
+    graph_value: Any
     mvp_value: Any
     abs_diff: float | None
     rel_diff: float | None
@@ -83,7 +84,7 @@ CSV_COLUMNS: tuple[str, ...] = (
     "scenario_id",
     "cell_address",
     "cell_label",
-    "excel_value",
+    "graph_value",
     "mvp_value",
     "abs_diff",
     "rel_diff",
@@ -97,7 +98,6 @@ _REQUIRED_WORKBOOK_HOOKS: tuple[str, ...] = (
     "build_scenarios",
     "output_cell_labels",
     "inputs_for_excel",
-    "apply_inputs_to_mvp",
     "mvp_outputs_for_scenario",
 )
 
@@ -190,6 +190,9 @@ def resolve_config(
             import_root=dist_root,
             report_dir=tests_root / "results" / "local",
             library_name=library_name,
+            targets=pipeline.targets,
+            constraints=pipeline.constraints,
+            blank_ranges=pipeline.blank_ranges,
         )
     else:
         defaults = DifferentialConfig(
@@ -199,6 +202,9 @@ def resolve_config(
             import_root=project_root,
             report_dir=project_root / pipeline.differential_report_dir_rel,
             library_name=library_name,
+            targets=pipeline.targets,
+            constraints=pipeline.constraints,
+            blank_ranges=pipeline.blank_ranges,
         )
 
     return DifferentialConfig(
@@ -211,6 +217,9 @@ def resolve_config(
         atol=ATOL,
         rtol=RTOL,
         allow_matched_errors=allow_matched_errors,
+        targets=defaults.targets,
+        constraints=defaults.constraints,
+        blank_ranges=defaults.blank_ranges,
     )
 
 
@@ -230,7 +239,7 @@ def compare_cell(
     scenario_id: str,
     cell_address: str,
     cell_label: str,
-    excel: Any,
+    graph: Any,
     mvp: Any,
     *,
     atol: float,
@@ -238,31 +247,31 @@ def compare_cell(
     expects_error_values: bool = False,
 ) -> Comparison:
     passed, _healthy, _outcome, abs_diff, rel_diff, _note = classify_comparison(
-        excel, mvp, atol=atol, rtol=rtol
+        graph, mvp, atol=atol, rtol=rtol
     )
-    excel_c = coerce_excel_error(excel)
+    graph_c = coerce_excel_error(graph)
     mvp_c = coerce_excel_error(mvp)
-    matched_error = matched_error_values(excel, mvp) and passed
+    matched_error = matched_error_values(graph, mvp) and passed
 
-    excel_out: Any = excel_c
+    graph_out: Any = graph_c
     mvp_out: Any = mvp_c
     if (
         abs_diff is not None
-        and isinstance(excel_c, int | float)
+        and isinstance(graph_c, int | float)
         and isinstance(mvp_c, int | float)
-        and not isinstance(excel_c, bool)
+        and not isinstance(graph_c, bool)
         and not isinstance(mvp_c, bool)
     ):
-        excel_out = float(excel_c)
+        graph_out = float(graph_c)
         mvp_out = float(mvp_c)
     elif (
-        isinstance(excel_c, int | float)
+        isinstance(graph_c, int | float)
         and isinstance(mvp_c, int | float)
-        and not isinstance(excel_c, bool)
+        and not isinstance(graph_c, bool)
         and not isinstance(mvp_c, bool)
     ):
         try:
-            excel_out = float(excel_c)
+            graph_out = float(graph_c)
             mvp_out = float(mvp_c)
         except OverflowError:
             pass
@@ -271,7 +280,7 @@ def compare_cell(
         scenario_id,
         cell_address,
         cell_label,
-        excel_out,
+        graph_out,
         mvp_out,
         abs_diff,
         rel_diff,
@@ -283,7 +292,7 @@ def compare_cell(
 
 def compare_scenario(
     scenario: Scenario,
-    excel_outputs: dict[str, Any],
+    graph_outputs: dict[str, Any],
     mvp_outputs: dict[str, Any],
     cell_labels: tuple[tuple[str, str], ...],
     *,
@@ -295,7 +304,7 @@ def compare_scenario(
             scenario.id,
             cell_address,
             cell_label,
-            excel_outputs.get(cell_address),
+            graph_outputs.get(cell_address),
             mvp_outputs.get(cell_label),
             atol=atol,
             rtol=rtol,
@@ -311,7 +320,7 @@ def crash_comparisons(
     exc: BaseException,
     *,
     crashed_oracle: str = "unknown",
-    excel_outputs: Mapping[str, Any] | None = None,
+    graph_outputs: Mapping[str, Any] | None = None,
     mvp_outputs: Mapping[str, Any] | None = None,
 ) -> list[Comparison]:
     err_repr = f"<exception: {type(exc).__name__}: {exc}>"
@@ -321,10 +330,10 @@ def crash_comparisons(
             scenario_id=scenario.id,
             cell_address=cell_address,
             cell_label=cell_label,
-            excel_value=(
+            graph_value=(
                 err_repr
-                if crashed_oracle == "excel"
-                else (excel_outputs or {}).get(cell_address)
+                if crashed_oracle == "graph"
+                else (graph_outputs or {}).get(cell_address)
             ),
             mvp_value=(
                 err_repr
@@ -351,7 +360,7 @@ def write_csv_report(comparisons: list[Comparison], path: Path) -> None:
                     comparison.scenario_id,
                     comparison.cell_address,
                     comparison.cell_label,
-                    comparison.excel_value,
+                    comparison.graph_value,
                     comparison.mvp_value,
                     comparison.abs_diff,
                     comparison.rel_diff,
@@ -363,18 +372,15 @@ def write_csv_report(comparisons: list[Comparison], path: Path) -> None:
             )
 
 
-def _environment_info(excel_version: str | None) -> dict[str, str]:
+def _environment_info() -> dict[str, str]:
     try:
-        import xlwings
-
-        xlwings_version = xlwings.__version__
-    except Exception:  # noqa: BLE001  # pragma: no cover - xlwings always present in this repo
-        xlwings_version = "unavailable"
+        excel_grapher_version = version("excel-grapher")
+    except Exception:  # noqa: BLE001
+        excel_grapher_version = "unavailable"
     return {
         "python": sys.version.split()[0],
         "os": platform.platform(),
-        "xlwings": xlwings_version,
-        "excel": excel_version or "not launched",
+        "excel_grapher": excel_grapher_version,
     }
 
 
@@ -400,20 +406,23 @@ def write_txt_summary(
 
     with path.open("w", encoding="utf-8") as handle:
         handle.write(
-            f"Parity report: exported {config.library_name} standalone library vs Excel\n"
+            f"Parity report: exported {config.library_name} standalone library vs FormulaEvaluator\n"
         )
         handle.write(f"Generated: {datetime.now(UTC).isoformat(timespec='seconds')}\n")
         handle.write(f"Workbook:  {config.workbook_path}\n")
         handle.write(
             f"Package:   {config.package_dir} (imported as {config.package_name})\n"
         )
+        handle.write(
+            "Oracles:   excel-grapher graph + FormulaEvaluator [golden] vs "
+            "exported package compute_* [mvp]\n"
+        )
         handle.write(f"Tolerance: atol = {config.atol}, rtol = {config.rtol}\n\n")
         handle.write(f"Workbook SHA-256: {workbook_sha256}\n\n")
         handle.write("ENVIRONMENT\n")
         handle.write(f"  Python:  {environment['python']}\n")
         handle.write(f"  OS:      {environment['os']}\n")
-        handle.write(f"  xlwings: {environment['xlwings']}\n")
-        handle.write(f"  Excel:   {environment['excel']}\n\n")
+        handle.write(f"  excel-grapher: {environment['excel_grapher']}\n\n")
         handle.write(f"Total comparisons: {total}\n")
         handle.write(f"Passed:            {passed}\n")
         handle.write(f"Failed:            {len(failures)}\n")
@@ -431,7 +440,7 @@ def write_txt_summary(
             handle.write("\nFirst divergence:\n")
             handle.write(f"  scenario:  {first.scenario_id}\n")
             handle.write(f"  cell:      {first.cell_address}  ({first.cell_label})\n")
-            handle.write(f"  excel:     {first.excel_value!r}\n")
+            handle.write(f"  graph:     {first.graph_value!r}\n")
             handle.write(f"  mvp:       {first.mvp_value!r}\n")
             handle.write(f"  abs_diff:  {first.abs_diff!r}\n")
             handle.write(f"  rel_diff:  {first.rel_diff!r}\n")
@@ -440,7 +449,7 @@ def write_txt_summary(
             for comparison in failures:
                 handle.write(
                     f"  {comparison.scenario_id} :: {comparison.cell_address} "
-                    f"({comparison.cell_label}) excel={comparison.excel_value!r} "
+                    f"({comparison.cell_label}) graph={comparison.graph_value!r} "
                     f"mvp={comparison.mvp_value!r} abs_diff={comparison.abs_diff!r}\n"
                 )
         if flagged:
@@ -452,7 +461,7 @@ def write_txt_summary(
             for comparison in flagged:
                 handle.write(f"  {comparison.scenario_id} :: ")
                 handle.write(f"{comparison.cell_address} ({comparison.cell_label})\n")
-                handle.write(f"    excel: {comparison.excel_value!r}\n")
+                handle.write(f"    graph: {comparison.graph_value!r}\n")
                 handle.write(f"    mvp:   {comparison.mvp_value!r}\n")
 
 
@@ -463,61 +472,43 @@ def load_exported_library(import_root: Path, package_name: str) -> ModuleType:
     return importlib.import_module(package_name)
 
 
-def read_cells_batched(sheets: Any, addresses: Sequence[str]) -> dict[str, Any]:
-    """Read cells with one COM span-read per (sheet, row) instead of per cell."""
-    parsed: dict[tuple[str, str], list[tuple[str, str]]] = {}
-    for address in addresses:
-        sheet, cell = parse_address(normalize_key(address))
-        match = re.match(r"([A-Z]+)(\d+)", cell)
-        if match is None:
-            raise ValueError(f"Cannot parse cell reference {cell!r} from {address!r}")
-        column, row = match.groups()
-        parsed.setdefault((sheet, row), []).append((column, address))
+class FormulaEvaluatorGraphOracle:
+    """Golden oracle: ``FormulaEvaluator`` over the extraction dependency graph."""
 
-    values: dict[str, Any] = {}
-    for (sheet, row), columns in parsed.items():
-        indices = sorted(column_index_from_string(c) for c, _ in columns)
-        first, last = indices[0], indices[-1]
-        span = (
-            f"{get_column_letter(first)}{row}"
-            if first == last
-            else f"{get_column_letter(first)}{row}:{get_column_letter(last)}{row}"
+    def __init__(self, config: DifferentialConfig) -> None:
+        if not config.targets:
+            raise RuntimeError(
+                "DifferentialConfig.targets is empty; cannot build the graph oracle."
+            )
+        if not config.constraints:
+            raise RuntimeError(
+                "DifferentialConfig.constraints is empty; cannot build the graph oracle."
+            )
+        from tests.differential.differential_test_graph import MvpGraphDriver
+
+        self._driver = MvpGraphDriver(
+            config.workbook_path,
+            targets=config.targets,
+            constraints=config.constraints,
+            blank_ranges=config.blank_ranges,
         )
-        raw = sheets[sheet].range(span).options(err_to_str=True).value
-        row_values = [raw] if first == last else list(raw)
-        for column, address in columns:
-            values[address] = row_values[column_index_from_string(column) - first]
-    return values
+        self._baselines_recorded = False
 
-
-class XlwingsExcelOracle:
-    """Golden-master oracle: fresh isolated Excel instance per scenario."""
-
-    def __init__(self, workbook_path: Path) -> None:
-        self.workbook_path = workbook_path
-        self.excel_version: str | None = None
+    def record_baselines(self, cells: frozenset[str]) -> None:
+        self._driver.record_input_baselines(cells)
+        self._baselines_recorded = True
 
     def __call__(
         self, scenario: Scenario, output_addresses: tuple[str, ...]
     ) -> dict[str, Any]:
-        import xlwings as xw
-
-        logger.info("Excel oracle: %s", scenario.id)
-        app = xw.App(visible=False, add_book=False)
-        try:
-            self.excel_version = str(app.version)
-            workbook = app.books.open(str(self.workbook_path))
-            try:
-                app.calculation = "manual"
-                for address, value in inputs_for_excel(scenario).items():
-                    sheet, cell = parse_address(normalize_key(address))
-                    workbook.sheets[sheet].range(cell).value = value
-                workbook.app.calculate()
-                return read_cells_batched(workbook.sheets, output_addresses)
-            finally:
-                workbook.close()
-        finally:
-            app.quit()
+        if not self._baselines_recorded:
+            raise RuntimeError(
+                "Graph oracle baselines were not recorded before the sweep."
+            )
+        logger.info("Graph oracle: %s", scenario.id)
+        self._driver.reset_inputs()
+        self._driver.set_inputs(inputs_for_excel(scenario))
+        return {address: self._driver.read(address) for address in output_addresses}
 
 
 def _verify_paths(config: DifferentialConfig) -> None:
@@ -546,7 +537,7 @@ def _workbook_sha256(path: Path) -> str:
 
 
 def _verify_input_symmetry(scenarios: tuple[Scenario, ...]) -> None:
-    """Every Excel write must be expressible via a public setter when configured."""
+    """Every graph write must be expressible as a ``compute_*`` argument when configured."""
     expressible = expressible_input_cells()
     if expressible is None:
         return
@@ -561,10 +552,10 @@ def _verify_input_symmetry(scenarios: tuple[Scenario, ...]) -> None:
             f"{scenario_id}: {cells}" for scenario_id, cells in offenders.items()
         )
         raise RuntimeError(
-            "Input-symmetry pre-flight failed — these Excel writes have no "
-            f"public-setter counterpart in the exported API: {details}. "
+            "Input-symmetry pre-flight failed — these graph writes have no "
+            f"compute_* counterpart in the exported API: {details}. "
             "Either bind them as inputs (and re-export) or remove them from "
-            "the scenario's Excel writes."
+            "the scenario's graph writes."
         )
 
 
@@ -597,7 +588,6 @@ def _validate_workbook_hooks() -> None:
         "build_scenarios": build_scenarios,
         "output_cell_labels": output_cell_labels,
         "inputs_for_excel": inputs_for_excel,
-        "apply_inputs_to_mvp": apply_inputs_to_mvp,
         "mvp_outputs_for_scenario": mvp_outputs_for_scenario,
     }
     missing = [name for name in _REQUIRED_WORKBOOK_HOOKS if not callable(hooks[name])]
@@ -610,7 +600,7 @@ def _validate_workbook_hooks() -> None:
     if not build_scenarios():
         raise RuntimeError(
             "No differential scenarios configured. Author build_scenarios(), "
-            "output_cell_labels(), inputs_for_excel(), apply_inputs_to_mvp(), and "
+            "output_cell_labels(), inputs_for_excel(), and "
             "mvp_outputs_for_scenario() in "
             "tests/differential/differential_test_exported_library.py."
         )
@@ -624,7 +614,7 @@ def _validate_workbook_hooks() -> None:
 def run_differential_test(
     config: DifferentialConfig,
     *,
-    excel_oracle: ExcelOracle | None = None,
+    graph_oracle: GraphOracle | None = None,
     mvp_oracle: MvpOracle | None = None,
 ) -> int:
     _verify_paths(config)
@@ -637,8 +627,21 @@ def run_differential_test(
     cell_labels = output_cell_labels()
     output_addresses = tuple(address for _, address in cell_labels)
 
-    if excel_oracle is None:
-        excel_oracle = XlwingsExcelOracle(config.workbook_path)
+    if graph_oracle is None:
+        graph_driver = FormulaEvaluatorGraphOracle(config)
+        axes = (
+            Axis(
+                name="scenarios",
+                points=tuple(
+                    AxisPoint(label=scenario.id, scenario=scenario)
+                    for scenario in scenarios
+                ),
+            ),
+        )
+        graph_driver.record_baselines(
+            collect_scenario_input_addresses(axes, inputs_for_excel)
+        )
+        graph_oracle = graph_driver
     if mvp_oracle is None:
 
         def mvp_oracle(scenario: Scenario) -> dict[str, Any]:
@@ -647,11 +650,11 @@ def run_differential_test(
     comparisons: list[Comparison] = []
     for scenario in scenarios:
         try:
-            excel_outputs = excel_oracle(scenario, output_addresses)
+            graph_outputs = graph_oracle(scenario, output_addresses)
         except Exception as exc:
-            logger.exception("Excel oracle crashed on %s.", scenario.id)
+            logger.exception("Graph oracle crashed on %s.", scenario.id)
             comparisons.extend(
-                crash_comparisons(scenario, cell_labels, exc, crashed_oracle="excel")
+                crash_comparisons(scenario, cell_labels, exc, crashed_oracle="graph")
             )
             continue
         try:
@@ -664,7 +667,7 @@ def run_differential_test(
                     cell_labels,
                     exc,
                     crashed_oracle="mvp",
-                    excel_outputs=excel_outputs,
+                    graph_outputs=graph_outputs,
                 )
             )
             continue
@@ -672,7 +675,7 @@ def run_differential_test(
             comparisons.extend(
                 compare_scenario(
                     scenario,
-                    excel_outputs,
+                    graph_outputs,
                     mvp_outputs,
                     cell_labels,
                     atol=config.atol,
@@ -689,14 +692,14 @@ def run_differential_test(
                     cell_labels,
                     exc,
                     crashed_oracle="comparison",
-                    excel_outputs=excel_outputs,
+                    graph_outputs=graph_outputs,
                     mvp_outputs=mvp_outputs,
                 )
             )
             continue
 
     workbook_sha256 = _workbook_sha256(config.workbook_path)
-    environment = _environment_info(getattr(excel_oracle, "excel_version", None))
+    environment = _environment_info()
 
     config.report_dir.mkdir(parents=True, exist_ok=True)
     write_csv_report(comparisons, config.report_dir / "parity_report.csv")
@@ -767,7 +770,6 @@ class Inputs:
 COUNTRIES: tuple[str, ...] = ("Borvelia", "Litellia", "Aurelium")
 SHOCK_TYPES: tuple[int, ...] = (1, 2, 3)
 SHOCK_YEARS: tuple[int, ...] = (1, 2, 3, 4, 5)
-SHOCK_PARAMETER_LABELS: tuple[str, str, str] = ("Growth", "Interest", "Primary balance")
 CONTINUOUS_AXES: tuple[tuple[str, str, tuple[float, ...]], ...] = (
     ("growth", "growth_baseline", (0.0, 1.5, 3.5, 5.5, 7.0)),
     ("interest", "interest_baseline", (0.0, 2.0, 4.0, 6.0, 8.0)),
@@ -953,51 +955,55 @@ def inputs_for_excel(scenario: Scenario) -> dict[str, Any]:
     return _inputs_for_excel(_as_inputs(scenario))
 
 
-def _time_series_records(values: tuple[float, ...]) -> list[dict[str, Any]]:
-    return [
-        {"TIME_PERIOD": i + 1, "OBS_VALUE": value} for i, value in enumerate(values)
-    ]
-
-
-def apply_inputs_to_mvp(api: ModuleType, ctx: Any, scenario: Scenario) -> None:
-    inputs = _as_inputs(scenario)
-    api.set_country_name(
-        ctx, [{"PARAMETER": "country_name", "OBS_VALUE": inputs.country_name}]
-    )
-    api.set_shock_year(
-        ctx, [{"PARAMETER": "shock_year", "OBS_VALUE": inputs.shock_year}]
-    )
-    api.set_shock_type(
-        ctx, [{"PARAMETER": "shock_type", "OBS_VALUE": inputs.shock_type}]
-    )
-    api.set_growth_baseline(ctx, _time_series_records(inputs.growth_baseline))
-    api.set_interest_baseline(ctx, _time_series_records(inputs.interest_baseline))
-    api.set_primary_balance_baseline(
-        ctx, _time_series_records(inputs.primary_balance_baseline)
-    )
-    api.set_shock_magnitudes(
-        ctx,
-        [
-            {"SHOCK_PARAMETER": label, "OBS_VALUE": magnitude}
-            for label, magnitude in zip(
-                SHOCK_PARAMETER_LABELS, inputs.shock_table, strict=True
-            )
-        ],
-    )
-
-
 def mvp_outputs_for_scenario(api: ModuleType, scenario: Scenario) -> dict[str, Any]:
-    ctx = api.make_context()
-    apply_inputs_to_mvp(api, ctx, scenario)
+    inputs = _as_inputs(scenario)
+    if api.__package__ is None:
+        raise RuntimeError(
+            f"Exported API module {api.__name__!r} has no package; cannot load data.py."
+        )
+    data = importlib.import_module(f"{api.__package__}.data")
+    initial_debt = data.COUNTRY_INITIAL_DEBT_DEFAULT
+    compute_baseline = api.compute_output_baseline
+    compute_shocked = api.compute_output_shocked
+    compute_delta = api.compute_output_delta
+    computed = {
+        "output_baseline": compute_baseline(
+            country_name=inputs.country_name,
+            country_initial_debt=initial_debt,
+            growth_baseline=inputs.growth_baseline,
+            interest_baseline=inputs.interest_baseline,
+            primary_balance_baseline=inputs.primary_balance_baseline,
+        ),
+        "output_shocked": compute_shocked(
+            country_name=inputs.country_name,
+            country_initial_debt=initial_debt,
+            growth_baseline=inputs.growth_baseline,
+            interest_baseline=inputs.interest_baseline,
+            primary_balance_baseline=inputs.primary_balance_baseline,
+            shock_year=inputs.shock_year,
+            shock_type=inputs.shock_type,
+            shock_magnitudes=inputs.shock_table,
+        ),
+        "output_delta": compute_delta(
+            country_name=inputs.country_name,
+            country_initial_debt=initial_debt,
+            growth_baseline=inputs.growth_baseline,
+            interest_baseline=inputs.interest_baseline,
+            primary_balance_baseline=inputs.primary_balance_baseline,
+            shock_year=inputs.shock_year,
+            shock_type=inputs.shock_type,
+            shock_magnitudes=inputs.shock_table,
+        ),
+    }
     outputs: dict[str, Any] = {}
     for name, cells in OUTPUT_RANGES:
-        records = getattr(api, f"compute_{name}")(ctx=ctx)
-        if len(records) != len(cells):
+        values = tuple(computed[name])
+        if len(values) != len(cells):
             raise ValueError(
-                f"expected {len(cells)} records from compute_{name}, got {len(records)}"
+                f"expected {len(cells)} values from compute_{name}, got {len(values)}"
             )
-        for index, record in enumerate(records):
-            outputs[f"{name}[year={index + 1}]"] = record["OBS_VALUE"]
+        for index, value in enumerate(values):
+            outputs[f"{name}[year={index + 1}]"] = value
     return outputs
 
 
