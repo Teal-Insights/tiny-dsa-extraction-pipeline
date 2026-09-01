@@ -256,6 +256,28 @@ def test_run_differential_test_requires_scenarios(
         harness.run_differential_test(config)
 
 
+def test_authored_graph_hooks_cover_the_tiny_dsa_scenario_matrix() -> None:
+    """Tiny DSA authors the same 118-scenario sweep as the exported-library harness."""
+    from tests.differential.differential_test_graph import (
+        build_scenarios,
+        inputs_for_excel,
+        output_cell_labels,
+    )
+
+    scenarios = build_scenarios()
+    labels = output_cell_labels()
+    assert len(scenarios) == 118
+    assert len(labels) == 15
+    assert {cell for _label, cell in labels} >= {
+        "Outputs!B12",
+        "Outputs!B14",
+        "Outputs!F14",
+    }
+    excel_inputs = inputs_for_excel(scenarios[0])
+    assert excel_inputs["Inputs!B5"] == "Borvelia"
+    assert excel_inputs["Inputs!B21"] == 2
+
+
 def test_parse_address_after_normalize_key_handles_spaced_sheet_names() -> None:
     assert parse_address(normalize_key("Discrete Risks!H2")) == ("Discrete Risks", "H2")
     assert parse_address(normalize_key("'Discrete Risks'!H2")) == (

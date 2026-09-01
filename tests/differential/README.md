@@ -98,7 +98,7 @@ scenarios.
 The graph harness also reports input cells absent from the extracted graph —
 itself a differential signal about extraction coverage.
 
-**Tiny DSA coverage:** 14 axes × 106 input points × 15 output cells.
+**Tiny DSA coverage:** 118 scenarios × 15 output cells = 1,770 comparisons.
 
 ### Exported-library harness hooks
 

@@ -40,7 +40,8 @@ import logging
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -737,13 +738,180 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # --------------------------------------------------------------------------
-# Workbook-specific hooks — replace these when configuring a new extraction.
+# Workbook-specific hooks — Tiny DSA scenario sweep and cell mappings.
 # --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Inputs:
+    """One full Tiny-DSA input configuration; matches the workbook named ranges."""
+
+    country_name: str
+    growth_baseline: tuple[float, ...]
+    interest_baseline: tuple[float, ...]
+    primary_balance_baseline: tuple[float, ...]
+    shock_year: int
+    shock_type: int
+    shock_table: tuple[float, float, float]
+
+
+COUNTRIES: tuple[str, ...] = ("Borvelia", "Litellia", "Aurelium")
+SHOCK_TYPES: tuple[int, ...] = (1, 2, 3)
+SHOCK_YEARS: tuple[int, ...] = (1, 2, 3, 4, 5)
+CONTINUOUS_AXES: tuple[tuple[str, str, tuple[float, ...]], ...] = (
+    ("growth", "growth_baseline", (0.0, 1.5, 3.5, 5.5, 7.0)),
+    ("interest", "interest_baseline", (0.0, 2.0, 4.0, 6.0, 8.0)),
+    ("primary_balance", "primary_balance_baseline", (-3.0, -1.5, 0.0, 1.5, 3.0)),
+)
+PERTURBATION_YEARS: tuple[int, ...] = (1, 3, 5)
+SHOCK_MAGNITUDE_SWEEP: tuple[float, ...] = (-3.0, -2.0, -1.0, 0.0, 1.0)
+
+COUNTRY_NAME_CELL = "Inputs!B5"
+SHOCK_YEAR_CELL = "Inputs!B21"
+SHOCK_TYPE_CELL = "Inputs!B22"
+SHOCK_TABLE_CELLS: tuple[str, str, str] = (
+    "Inputs!B26",
+    "Inputs!C26",
+    "Inputs!D26",
+)
+GROWTH_BASELINE_CELLS = tuple(f"Inputs!{c}16" for c in "CDEFG")
+INTEREST_BASELINE_CELLS = tuple(f"Inputs!{c}17" for c in "CDEFG")
+PRIMARY_BALANCE_BASELINE_CELLS = tuple(f"Inputs!{c}18" for c in "CDEFG")
+OUTPUT_BASELINE_CELLS = tuple(f"Outputs!{c}12" for c in "BCDEF")
+OUTPUT_SHOCKED_CELLS = tuple(f"Outputs!{c}13" for c in "BCDEF")
+OUTPUT_DELTA_CELLS = tuple(f"Outputs!{c}14" for c in "BCDEF")
+OUTPUT_RANGES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("output_baseline", OUTPUT_BASELINE_CELLS),
+    ("output_shocked", OUTPUT_SHOCKED_CELLS),
+    ("output_delta", OUTPUT_DELTA_CELLS),
+)
+
+CANONICAL_BASELINE = Inputs(
+    country_name="Borvelia",
+    growth_baseline=(3.5, 3.5, 3.5, 3.5, 3.5),
+    interest_baseline=(4.0, 4.0, 4.0, 4.0, 4.0),
+    primary_balance_baseline=(-1.0, -0.5, 0.0, 0.5, 1.0),
+    shock_year=2,
+    shock_type=1,
+    shock_table=(0.0, 0.0, 0.0),
+)
+
+
+def _override_year(
+    vec: tuple[float, ...], year: int, value: float
+) -> tuple[float, ...]:
+    return tuple(value if i == year - 1 else v for i, v in enumerate(vec))
+
+
+def _scenario(scenario_id: str, inputs: Inputs) -> Scenario:
+    return Scenario(id=scenario_id, inputs=asdict(inputs))
+
+
+def _as_inputs(scenario: Scenario) -> Inputs:
+    raw = scenario.inputs
+    return Inputs(
+        country_name=str(raw["country_name"]),
+        growth_baseline=tuple(raw["growth_baseline"]),
+        interest_baseline=tuple(raw["interest_baseline"]),
+        primary_balance_baseline=tuple(raw["primary_balance_baseline"]),
+        shock_year=int(raw["shock_year"]),
+        shock_type=int(raw["shock_type"]),
+        shock_table=(
+            float(raw["shock_table"][0]),
+            float(raw["shock_table"][1]),
+            float(raw["shock_table"][2]),
+        ),
+    )
+
+
+def _canonical_scenarios() -> Iterator[Scenario]:
+    for country in COUNTRIES:
+        base = replace(CANONICAL_BASELINE, country_name=country)
+        yield _scenario(f"canonical:{country}:baseline", base)
+        yield _scenario(
+            f"canonical:{country}:growth_shock",
+            replace(base, shock_type=1, shock_table=(-2.0, 0.0, 0.0)),
+        )
+        yield _scenario(
+            f"canonical:{country}:interest_shock",
+            replace(base, shock_type=2, shock_table=(0.0, 2.0, 0.0)),
+        )
+        yield _scenario(
+            f"canonical:{country}:primary_balance_shock",
+            replace(base, shock_type=3, shock_table=(0.0, 0.0, -1.0)),
+        )
+
+
+def _single_axis_perturbations() -> Iterator[Scenario]:
+    for country in COUNTRIES:
+        yield _scenario(
+            f"single_axis:country={country}",
+            replace(CANONICAL_BASELINE, country_name=country),
+        )
+
+    canonical_growth_shock = replace(
+        CANONICAL_BASELINE, shock_type=1, shock_table=(-2.0, 0.0, 0.0)
+    )
+    for year in SHOCK_YEARS:
+        yield _scenario(
+            f"single_axis:shock_year={year}",
+            replace(canonical_growth_shock, shock_year=year),
+        )
+
+    full_shock_table = (-2.0, 2.0, -1.0)
+    for stype in SHOCK_TYPES:
+        yield _scenario(
+            f"single_axis:shock_type={stype}",
+            replace(CANONICAL_BASELINE, shock_type=stype, shock_table=full_shock_table),
+        )
+
+    for magnitude in SHOCK_MAGNITUDE_SWEEP:
+        yield _scenario(
+            f"single_axis:growth_shock_magnitude={magnitude:+.1f}",
+            replace(
+                CANONICAL_BASELINE,
+                shock_type=1,
+                shock_table=(magnitude, 0.0, 0.0),
+            ),
+        )
+
+    for indicator, attr, values in CONTINUOUS_AXES:
+        base_vec: tuple[float, ...] = getattr(CANONICAL_BASELINE, attr)
+        for year in PERTURBATION_YEARS:
+            for value in values:
+                yield _scenario(
+                    f"single_axis:{indicator}[year={year}]={value:+.1f}",
+                    replace(
+                        CANONICAL_BASELINE,
+                        **{attr: _override_year(base_vec, year, value)},
+                    ),
+                )
+
+
+def _categorical_combo_scenarios() -> Iterator[Scenario]:
+    full_shock_table = (-2.0, 2.0, -1.0)
+    for country in COUNTRIES:
+        for stype in SHOCK_TYPES:
+            for year in SHOCK_YEARS:
+                yield _scenario(
+                    f"combo:country={country}:shock_type={stype}:shock_year={year}",
+                    replace(
+                        CANONICAL_BASELINE,
+                        country_name=country,
+                        shock_type=stype,
+                        shock_year=year,
+                        shock_table=full_shock_table,
+                    ),
+                )
 
 
 def build_scenarios() -> tuple[Scenario, ...]:
     """Return a flat scenario sweep for this workbook."""
-    return ()
+    return (
+        *_canonical_scenarios(),
+        *_single_axis_perturbations(),
+        *_categorical_combo_scenarios(),
+    )
 
 
 def build_axes() -> tuple[Axis, ...]:
@@ -753,14 +921,34 @@ def build_axes() -> tuple[Axis, ...]:
 
 def output_cell_labels() -> tuple[tuple[str, str], ...]:
     """Return ``((cell_label, cell_address), ...)`` for every compared output cell."""
-    return ()
+    return tuple(
+        (f"{name}[year={i + 1}]", cell)
+        for name, cells in OUTPUT_RANGES
+        for i, cell in enumerate(cells)
+    )
+
+
+def _inputs_for_excel(inputs: Inputs) -> dict[str, Any]:
+    return {
+        COUNTRY_NAME_CELL: inputs.country_name,
+        SHOCK_YEAR_CELL: inputs.shock_year,
+        SHOCK_TYPE_CELL: inputs.shock_type,
+        **dict(zip(SHOCK_TABLE_CELLS, inputs.shock_table, strict=True)),
+        **dict(zip(GROWTH_BASELINE_CELLS, inputs.growth_baseline, strict=True)),
+        **dict(zip(INTEREST_BASELINE_CELLS, inputs.interest_baseline, strict=True)),
+        **dict(
+            zip(
+                PRIMARY_BALANCE_BASELINE_CELLS,
+                inputs.primary_balance_baseline,
+                strict=True,
+            )
+        ),
+    }
 
 
 def inputs_for_excel(scenario: Scenario) -> dict[str, Any]:
     """Map one scenario to Excel cell writes for the golden-master oracle."""
-    raise NotImplementedError(
-        "Author inputs_for_excel() with cell mappings from bindings/*.bindings.yaml."
-    )
+    return _inputs_for_excel(_as_inputs(scenario))
 
 
 if __name__ == "__main__":
