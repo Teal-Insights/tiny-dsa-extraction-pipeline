@@ -318,29 +318,31 @@ uv run --project . --group validation python -m tests.differential.differential_
     else:
         what_tested = (
             f"The validation checks the exported standalone library, not just the "
-            f"extraction graph. It imports `{package_name}.api`, creates a fresh "
-            f"context for each scenario, sets inputs through the records-shaped "
-            f"public setters, computes the exported output series, and compares "
-            f"those values against the workbook's calculated output cells."
+            f"extraction graph. It imports `{package_name}.api`, calls keyword-only "
+            f"`compute_*` for each scenario, and compares those values against "
+            f"excel-grapher's FormulaEvaluator on the same input cells."
         )
         report_path = "`tests/results/reference/parity_report.txt`"
         harness = "`tests/differential/differential_test_exported_library.py`"
         intro = (
             f"{library_name} includes an exported validation bundle that checks the "
-            f"generated `{package_name}` package against the source Excel workbook. "
-            f"The test drives the workbook with Microsoft Excel through `xlwings`, "
-            f"applies the same inputs through the package's public `set_*` functions, "
-            f"and compares calculated outputs cell by cell."
+            f"generated `{package_name}` package against the extraction graph. "
+            f"The test evaluates the graph with FormulaEvaluator, applies the same "
+            f"inputs through keyword-only `compute_*` functions, and compares "
+            f"outputs cell by cell."
         )
-        sweep = f"The sweep covers **{total}** cell-level comparisons against Excel."
+        sweep = (
+            f"The sweep covers **{total}** cell-level comparisons against the "
+            f"FormulaEvaluator."
+        )
         rerun_note = (
-            "Because the golden-master oracle uses Microsoft Excel through COM "
-            "automation, reruns require Windows with Microsoft Excel installed."
+            "The golden-master oracle is FormulaEvaluator; Microsoft Excel is not "
+            "required. Run the sweep from the extraction repository after export."
         )
-        rerun_block = """To re-run exported-library validation from the exported project:
+        rerun_block = """To re-run exported-library validation from the extraction repo:
 
 ```pwsh
-uv run --project . --group validation python -m tests.differential.differential_test_exported_library --layout exported
+uv run python -m tests.differential.differential_test_exported_library
 ```"""
     return f"""---
 title: "Excel parity validation"

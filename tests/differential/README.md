@@ -20,14 +20,14 @@ A few terms used throughout, in everyday language:
 
 ## Two harnesses
 
-Run the **graph** differential before export to validate extraction fidelity.
-Run the **exported-library** differential after export to validate the artifact
-callers consume.
+Run the **graph** differential before export to validate extraction fidelity
+against Excel. Run the **exported-library** differential after export to
+validate codegen against that graph.
 
-| Harness | SUT | When |
-|---|---|---|
-| [`differential_test_graph.py`](differential_test_graph.py) | In-memory `FormulaEvaluator` over the extracted graph | Before / alongside extraction review |
-| [`differential_test_exported_library.py`](differential_test_exported_library.py) | Generated standalone package public API | After `uv run python -m src.extraction_pipeline` |
+| Harness | Oracle | SUT | When |
+|---|---|---|---|
+| [`differential_test_graph.py`](differential_test_graph.py) | Microsoft Excel (`xlwings`) | In-memory `FormulaEvaluator` | Before / alongside extraction review |
+| [`differential_test_exported_library.py`](differential_test_exported_library.py) | `FormulaEvaluator` on the extracted graph | Generated package `compute_*` | After `uv run python -m src.extraction_pipeline` |
 
 Both harnesses import shared scenario types from
 [`differential_types.py`](differential_types.py) (`Scenario`, optional `Axis` /
@@ -104,14 +104,15 @@ itself a differential signal about extraction coverage.
 
 1. **`build_scenarios()`** — representative input combinations.
 2. **`output_cell_labels()`** — mirror output bindings as `(label, address)` pairs.
-3. **`inputs_for_excel()`** / **`apply_inputs_to_mvp()`** — drive Excel and the exported `dist.tiny_dsa.api` package.
+3. **`inputs_for_excel()`** — map each scenario to graph cell writes (Excel addresses).
+4. **`mvp_outputs_for_scenario()`** — call keyword-only `compute_*` on the exported package.
 
 **Tiny DSA coverage:** 118 scenarios × 15 output cells = 1,770 comparisons.
 
 **Why both matter:** a passing graph differential proves the *extraction* is faithful;
 a passing exported-library differential proves the *code generation* on top of it is
-faithful too. Each harness alone leaves a gap — the second closes the distance between
-"the graph is right" and "the artifact callers consume is right."
+faithful too. Transitivity then gives library ≈ Excel on the same scenarios without
+driving Excel from the library harness.
 
 Commit reference reports under `data/differential/graph/` and
 `data/differential/exported_library/` after passing Windows sweeps. The export
@@ -120,8 +121,11 @@ step copies the exported-library harness, workbook fixture, and reports into
 
 ## Run
 
-Microsoft Excel must be installed locally — `xlwings` drives it through COM automation.
-`xlwings` is already in `pyproject.toml`'s dev dependencies.
+The **graph** harness requires Microsoft Excel locally — `xlwings` drives it through
+COM automation. `xlwings` is already in `pyproject.toml`'s dev dependencies.
+
+The **exported-library** harness does **not** require Excel. It loads the same
+cached extraction graph as extract and compares `compute_*` to `FormulaEvaluator`.
 
 **Graph harness prerequisite:** load a warm dependency-graph cache first so the
 MVP oracle does not cold-build. Run extract (or regenerate) for the current
@@ -146,11 +150,11 @@ uv run python -m tests.differential.differential_test_graph
 # Triage run: matched error cells listed but not treated as failures
 uv run python -m tests.differential.differential_test_graph --allow-matched-errors
 
-# Exported library (extraction repo, after export)
+# Exported library (extraction repo, after export; FormulaEvaluator oracle)
 uv run python -m tests.differential.differential_test_exported_library
 
-# Exported dist project (Windows + Excel)
-uv run --project dist --group validation python -m tests.differential.differential_test_exported_library --layout exported
+# Exported dist project (graph cache + excel-grapher)
+uv run python -m tests.differential.differential_test_exported_library --layout exported
 ```
 
 Comparisons where both oracles return the same Excel error code are always
@@ -170,7 +174,7 @@ exported-library harness helpers (`compare_cell`, `crash_comparisons`,
 `write_csv_report`, `write_txt_summary`) to that standard on every PR — no Excel
 required.
 
-CSV columns use `excel_value` / `mvp_value` as aliases for the standard's
+CSV columns use `graph_value` / `mvp_value` as aliases for the standard's
 `golden_value` / `sut_value` terminology.
 
 ## Output locations
