@@ -13,7 +13,7 @@ from excel_grapher.core.cell_types import Between, RealBetween
 
 from src.graph_dependency_audit import GraphAuditCase
 from src.internal_binding_coverage import InternalBindingValidationMode
-from src.pipeline_config import DistProjectMetadata
+from src.pipeline_config import DistProjectMetadata, RunnableCellRule
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -113,6 +113,20 @@ VARIATION_MODE = "independent"
 # Formula-cluster base mode for internals refactor (series, series_ast, or ast).
 # Override per run with ``--clustering-mode`` on ``src.extraction_pipeline``.
 CLUSTERING_MODE = "series"
+
+RUNNABLE_CELL_RULES: tuple[RunnableCellRule, ...] = (
+    RunnableCellRule(
+        pattern=r"\bmake_context\s*\(",
+        message=(
+            "inverted-tree runnable cells must call keyword-only compute_* "
+            "helpers, not make_context()"
+        ),
+    ),
+    RunnableCellRule(
+        pattern=r"\bset_[A-Za-z_][A-Za-z0-9_]*\s*\(",
+        message="inverted-tree runnable cells must not call set_* setters",
+    ),
+)
 
 # Optional hooks for ``uv run python -m src.workbook_audit`` (pre-extraction audit).
 AUDIT_TITLE = "Tiny DSA Workbook Audit"

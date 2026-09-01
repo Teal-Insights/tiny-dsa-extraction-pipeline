@@ -50,6 +50,7 @@ def codegen_cache_key(
     guide_sha256: str,
     docstring_prompt_version: int = DOCSTRING_PROMPT_VERSION,
     docstring_model: str,
+    paradigm: str = "ctx",
 ) -> str:
     payload = {
         "cache_schema_version": CODEGEN_CACHE_SCHEMA_VERSION,
@@ -61,6 +62,7 @@ def codegen_cache_key(
         "guide_sha256": guide_sha256,
         "docstring_prompt_version": docstring_prompt_version,
         "docstring_model": docstring_model,
+        "paradigm": paradigm,
         "excel_grapher_version": version("excel-grapher"),
     }
     return hashlib.sha256(stable_json(payload).encode()).hexdigest()
@@ -178,6 +180,7 @@ def get_or_build_codegen_modules(
     guide_sha256: str,
     docstring_prompt_version: int = DOCSTRING_PROMPT_VERSION,
     docstring_model: str | None = None,
+    paradigm: str = "ctx",
     build_modules: Callable[[], Mapping[str, str]],
     cache_dir: Path | None = None,
     no_cache: bool = False,
@@ -198,6 +201,7 @@ def get_or_build_codegen_modules(
         guide_sha256=guide_sha256,
         docstring_prompt_version=docstring_prompt_version,
         docstring_model=resolved_model,
+        paradigm=paradigm,
     )
     started = time.perf_counter()
     if not no_cache and not force_rebuild:

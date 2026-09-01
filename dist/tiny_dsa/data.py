@@ -1,49 +1,23 @@
+"""Constant leaves and workbook-default input arrays."""
+
 from __future__ import annotations
 
-from types import MappingProxyType
+COUNTRY_PROFILE_NAMES: tuple[str, ...] = ('Borvelia', 'Litellia', 'Aurelium')
 
-# --- Default inputs (leaf cells) ---
-DEFAULT_INPUTS = {
-    'Inputs': {
-        (5, 2): 'Borvelia',
-        (10, 2): 60,
-        (11, 2): 80,
-        (12, 2): 40,
-        (16, 3): 3.5,
-        (16, 4): 3.5,
-        (16, 5): 3.5,
-        (16, 6): 3.5,
-        (16, 7): 3.5,
-        (17, 3): 4,
-        (17, 4): 4,
-        (17, 5): 4,
-        (17, 6): 4,
-        (17, 7): 4,
-        (18, 3): -1,
-        (18, 4): -0.5,
-        (18, 5): 0,
-        (18, 6): 0.5,
-        (18, 7): 1,
-        (21, 2): 2,
-        (22, 2): 1,
-        (26, 2): -2,
-        (26, 3): 2,
-        (26, 4): -1,
-    },
-}
+ENGINE_YEAR_LABELS: tuple[int, ...] = (1, 2, 3, 4, 5)
 
-# --- Constant leaf values ---
-CONSTANTS = MappingProxyType({
-    'Engine': MappingProxyType({
-        (5, 3): 1,
-        (5, 4): 2,
-        (5, 5): 3,
-        (5, 6): 4,
-        (5, 7): 5,
-    }),
-    'Inputs': MappingProxyType({
-        (10, 1): 'Borvelia',
-        (11, 1): 'Litellia',
-        (12, 1): 'Aurelium',
-    }),
-})
+COUNTRY_NAME_DEFAULT: str = 'Borvelia'
+
+COUNTRY_INITIAL_DEBT_DEFAULT: tuple[float, ...] = (60.0, 80.0, 40.0)
+
+GROWTH_BASELINE_DEFAULT: tuple[float, ...] = (3.5, 3.5, 3.5, 3.5, 3.5)
+
+INTEREST_BASELINE_DEFAULT: tuple[float, ...] = (4.0, 4.0, 4.0, 4.0, 4.0)
+
+PRIMARY_BALANCE_BASELINE_DEFAULT: tuple[float, ...] = (-1.0, -0.5, 0.0, 0.5, 1.0)
+
+SHOCK_YEAR_DEFAULT: int = 2
+
+SHOCK_TYPE_DEFAULT: int = 1
+
+SHOCK_MAGNITUDES_DEFAULT: tuple[float, ...] = (-2.0, 2.0, -1.0)

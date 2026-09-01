@@ -243,11 +243,13 @@ def materialize_package(
     codegen_key: str,
     internals_key: str | None = None,
     include_reference_reports: bool = False,
+    apply_rewrites: bool = True,
 ) -> None:
     """Write the complete ``dist/`` tree from cache plus config.
 
     This is the single writer for the generated package projection. Export and
     mid-pipeline stage entry both call it so ``dist/`` stays disposable.
+    Inverted-tree packages skip ctx export rewrites (``apply_rewrites=False``).
     """
     modules = load_codegen_payload(codegen_key)
     if modules is None:
@@ -255,7 +257,9 @@ def materialize_package(
             f"codegen cache payload missing for key={codegen_key[:12]}; "
             "cannot materialize dist/"
         )
-    modules = apply_export_rewrites(dict(modules))
+    modules = dict(modules)
+    if apply_rewrites:
+        modules = apply_export_rewrites(modules)
     if internals_key is not None:
         modules["internals.py"] = load_refactored_internals(internals_key)
 

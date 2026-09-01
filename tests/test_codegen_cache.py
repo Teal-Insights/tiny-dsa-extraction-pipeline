@@ -25,11 +25,6 @@ _SAMPLE_MODULES = {
     "internals.py": "def internal():\n    pass\n",
 }
 
-# run_export_stage post-processes api.py to import XlErrorException.
-_EXPORTED_API_PY = (
-    "from .runtime import EvalContext, XlErrorException\n\ndef api():\n    return 1\n"
-)
-
 
 class _CodegenKeyKwargs(TypedDict):
     projection_cache_key: str
@@ -40,6 +35,7 @@ class _CodegenKeyKwargs(TypedDict):
     guide_sha256: str
     docstring_prompt_version: int
     docstring_model: str
+    paradigm: str
 
 
 @pytest.fixture
@@ -57,6 +53,7 @@ def _key_kwargs(
     guide_sha256: str = "guide-digest",
     docstring_prompt_version: int = 3,
     docstring_model: str = "gpt-5.5",
+    paradigm: str = "ctx",
 ) -> _CodegenKeyKwargs:
     return {
         "projection_cache_key": projection_cache_key,
@@ -67,6 +64,7 @@ def _key_kwargs(
         "guide_sha256": guide_sha256,
         "docstring_prompt_version": docstring_prompt_version,
         "docstring_model": docstring_model,
+        "paradigm": paradigm,
     }
 
 
@@ -145,6 +143,7 @@ def test_codegen_cache_key_changes_with_docstring_inputs() -> None:
     assert base != codegen_cache_key(**_key_kwargs(docstring_renderer="numpy"))
     assert base != codegen_cache_key(**_key_kwargs(unpack_return=False))
     assert base != codegen_cache_key(**_key_kwargs(targets=["Other!B2"]))
+    assert base != codegen_cache_key(**_key_kwargs(paradigm="inverted_tree"))
 
 
 def test_codegen_cache_miss_when_projection_key_changes(
@@ -267,10 +266,6 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
             "src.extraction_pipeline.build_pipeline_graph",
             return_value=graph_result,
         ),
-        patch(
-            "src.extraction_pipeline.build_refactor_projection",
-            return_value=MagicMock(),
-        ),
         patch("src.extraction_pipeline.profile_if_enabled") as profile_mock,
         patch("src.extraction_pipeline.configure_logging"),
         patch("src.extraction_pipeline.StageTimer") as timer_cls,
@@ -278,7 +273,6 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
         patch("src.package_materialize.seed_validation_harness"),
         patch("src.package_materialize.render_dist_pyproject_toml", return_value=""),
         patch("src.package_materialize.write_dist_readme"),
-        patch("src.extraction_pipeline.configure_docstring_callback") as configure_cb,
         patch("src.extraction_pipeline.CodeGenerator") as codegen_cls,
         patch.object(codegen_cache, "DEFAULT_CODEGEN_CACHE_DIR", codegen_dir),
         patch(
@@ -300,9 +294,9 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
         run_export_stage(config)
         run_export_stage(config)
 
-    assert configure_cb.call_count == 1
     assert generator.generate_modules.call_count == 1
-    assert (config.package_root / "api.py").read_text(
-        encoding="utf-8"
-    ) == _EXPORTED_API_PY
+    assert generator.generate_modules.call_args.kwargs["paradigm"] == "inverted_tree"
+    assert (config.package_root / "api.py").read_text(encoding="utf-8") == sample[
+        "api.py"
+    ]
     assert list(codegen_dir.glob("*.pkl.gz"))

@@ -143,8 +143,8 @@ def test_export_run_records_every_cache_it_reached(
 ) -> None:
     """A full extract+export run observes all on-disk caches under the right stages.
 
-    Only the codegen LLM docstring callback is stubbed; the graph, bindings,
-    series, and projection caches are exercised for real.
+    Codegen is stubbed; the graph, bindings, and series caches are exercised
+    for real. Inverted-tree export does not build a refactor projection.
     """
     from dataclasses import replace
     from unittest.mock import patch
@@ -160,10 +160,6 @@ def test_export_run_records_every_cache_it_reached(
     (config.dist_root / config.dist_metadata.package_name).mkdir(parents=True)
 
     with (
-        patch(
-            "src.extraction_pipeline.configure_docstring_callback",
-            return_value="series_docs",
-        ),
         patch("src.extraction_pipeline.CodeGenerator") as generator_cls,
         patch("src.package_materialize.seed_validation_harness"),
     ):
@@ -179,7 +175,7 @@ def test_export_run_records_every_cache_it_reached(
     assert "derive_series" not in extract_spans
     assert "load_series_bindings" in export_spans
     assert "derive_series" in export_spans
-    assert "build_refactor_projection" in export_spans
+    assert "build_refactor_projection" not in export_spans
     assert "codegen" in export_spans
     assert "write_export_package" in export_spans
     assert "create_dependency_graph" not in export_spans
@@ -189,7 +185,6 @@ def test_export_run_records_every_cache_it_reached(
         "bindings-validation",
         "series-resolution",
         "series-derived",
-        "projection",
         "codegen",
     ):
         assert isinstance(caches[name]["cache_hit"], bool), name

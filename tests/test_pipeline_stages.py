@@ -11,6 +11,7 @@ import pytest
 from src.codegen_cache import DEFAULT_CODEGEN_CACHE_DIR, save_codegen_payload
 from src.extraction_pipeline import (
     PIPELINE_STAGES,
+    AnnotateStageState,
     ExportStageState,
     RefactorLabOptions,
     RefactorStageState,
@@ -39,6 +40,11 @@ _COLD_CLONE_MODULES = {
     "internals.py": "def cell_a1(ctx):\n    return 1.0\n",
 }
 _COLD_CLONE_REFACTORED = "def cell_a1(ctx):\n    return 42.0\n"
+
+
+_SKIP_CTX_REFACTOR_ENTRY = pytest.mark.skip(
+    reason="inverted-tree pipeline no longer runs clustering or internals refactor"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -129,14 +135,6 @@ def test_run_export_stage_prints_codegen_stage_boundary(
                 graph_cache_key="cache-key",
             ),
         ),
-        patch(
-            "src.extraction_pipeline.build_refactor_projection",
-            return_value=MagicMock(),
-        ),
-        patch(
-            "src.extraction_pipeline.configure_docstring_callback",
-            return_value="series_docs",
-        ),
         patch("src.extraction_pipeline.CodeGenerator") as generator_cls,
         patch("src.package_materialize.seed_validation_harness"),
     ):
@@ -170,14 +168,6 @@ def test_run_export_stage_forwards_blank_ranges_to_generate_modules(
                 graph_cache_key="cache-key",
             ),
         ),
-        patch(
-            "src.extraction_pipeline.build_refactor_projection",
-            return_value=MagicMock(),
-        ),
-        patch(
-            "src.extraction_pipeline.configure_docstring_callback",
-            return_value="series_docs",
-        ),
         patch("src.extraction_pipeline.CodeGenerator") as generator_cls,
         patch("src.extraction_pipeline.materialize_package"),
         patch("src.package_materialize.seed_validation_harness"),
@@ -188,13 +178,13 @@ def test_run_export_stage_forwards_blank_ranges_to_generate_modules(
 
     generator.generate_modules.assert_called()
     assert generator.generate_modules.call_args.kwargs["blank_ranges"] == blank_ranges
+    assert generator.generate_modules.call_args.kwargs["paradigm"] == "inverted_tree"
 
 
-def test_run_export_stage_stamps_leaf_classification_on_projection(
+def test_run_export_stage_builds_code_generator_from_graph(
     tmp_path: Path,
 ) -> None:
-    classification = {"Inputs!A1": "input", "Inputs!B1": "constant"}
-    projection = MagicMock()
+    graph = MagicMock()
     config = replace(_sample_config(tmp_path), blank_ranges=())
     (tmp_path / "dist" / "my_model").mkdir(parents=True)
     config.guide_path.write_text("guide\n", encoding="utf-8")
@@ -203,23 +193,15 @@ def test_run_export_stage_stamps_leaf_classification_on_projection(
         patch(
             "src.extraction_pipeline.build_pipeline_graph",
             return_value=MagicMock(
-                graph=MagicMock(),
+                graph=graph,
                 series_bindings=MagicMock(),
                 input_series=(),
                 output_series=(),
                 internal_series=(),
                 constant_series=(),
                 graph_cache_key="cache-key",
-                leaf_classification=classification,
+                leaf_classification={"Inputs!A1": "input"},
             ),
-        ),
-        patch(
-            "src.extraction_pipeline.build_refactor_projection",
-            return_value=projection,
-        ),
-        patch(
-            "src.extraction_pipeline.configure_docstring_callback",
-            return_value="series_docs",
         ),
         patch("src.extraction_pipeline.CodeGenerator") as generator_cls,
         patch("src.extraction_pipeline.materialize_package"),
@@ -229,9 +211,11 @@ def test_run_export_stage_stamps_leaf_classification_on_projection(
         generator.generate_modules.return_value = {"internals.py": "pass\n"}
         run_export_stage(config, no_cache=True)
 
-    assert projection.leaf_classification == classification
+    generator_cls.assert_called_once_with(graph)
+    assert generator.generate_modules.call_args.kwargs["paradigm"] == "inverted_tree"
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_refactor_stage_prints_clustering_and_refactor_boundaries(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -312,7 +296,7 @@ def test_pipeline_stages_order() -> None:
     assert PIPELINE_STAGES == (
         "extract",
         "export",
-        "refactor",
+        "annotate",
         "validate",
         "document",
     )
@@ -324,7 +308,7 @@ def test_run_pipeline_stop_after_extract_skips_later_stages(
     with (
         patch("src.extraction_pipeline.extract_dependency_graph") as extract,
         patch("src.extraction_pipeline.run_export_stage") as export,
-        patch("src.extraction_pipeline.run_refactor_stage") as refactor,
+        patch("src.extraction_pipeline.run_annotate_stage") as annotate,
         patch("src.extraction_pipeline.run_validate_stage") as validate,
         patch("src.documentation_pipeline.run_documentation_pipeline") as document,
     ):
@@ -335,7 +319,7 @@ def test_run_pipeline_stop_after_extract_skips_later_stages(
 
     extract.assert_called_once()
     export.assert_not_called()
-    refactor.assert_not_called()
+    annotate.assert_not_called()
     validate.assert_not_called()
     document.assert_not_called()
 
@@ -356,7 +340,7 @@ def test_run_pipeline_stop_after_export_runs_through_export(
             "src.extraction_pipeline.run_export_stage",
             return_value=export_state,
         ) as export,
-        patch("src.extraction_pipeline.run_refactor_stage") as refactor,
+        patch("src.extraction_pipeline.run_annotate_stage") as annotate,
         patch("src.extraction_pipeline.run_validate_stage") as validate,
         patch("src.documentation_pipeline.run_documentation_pipeline") as document,
     ):
@@ -380,7 +364,7 @@ def test_run_pipeline_stop_after_export_runs_through_export(
         graph=graph,
         graph_cache_key=graph_cache_key,
     )
-    refactor.assert_not_called()
+    annotate.assert_not_called()
     validate.assert_not_called()
     document.assert_not_called()
 
@@ -393,7 +377,7 @@ def test_run_pipeline_full_run_records_extract_then_export(
     graph = object()
     graph_cache_key = "g" * 64
     extract_result = MagicMock(graph=graph, graph_cache_key=graph_cache_key)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -404,8 +388,8 @@ def test_run_pipeline_full_run_records_extract_then_export(
             return_value=export_state,
         ) as export,
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
         ),
         patch("src.extraction_pipeline.run_validate_stage", return_value=0),
         patch("src.extraction_pipeline.run_document_stage"),
@@ -419,6 +403,10 @@ def test_run_pipeline_full_run_records_extract_then_export(
     assert export.call_args.kwargs["graph_cache_key"] is graph_cache_key
 
 
+def _mock_annotate_state(config: PipelineConfig) -> AnnotateStageState:
+    return AnnotateStageState(config=config, codegen_cache_key="c" * 64)
+
+
 def _mock_refactor_state(config: PipelineConfig) -> RefactorStageState:
     return RefactorStageState(
         config=config,
@@ -427,14 +415,14 @@ def _mock_refactor_state(config: PipelineConfig) -> RefactorStageState:
     )
 
 
-def test_run_pipeline_stop_after_refactor_skips_validate_and_document(
+def test_run_pipeline_stop_after_annotate_skips_validate_and_document(
     synthetic_pipeline_config_fixture,
 ) -> None:
     export_state = object()
     graph = object()
     graph_cache_key = "g" * 64
     extract_result = MagicMock(graph=graph, graph_cache_key=graph_cache_key)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -445,26 +433,25 @@ def test_run_pipeline_stop_after_refactor_skips_validate_and_document(
             return_value=export_state,
         ) as export,
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
-        ) as refactor,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
+        ) as annotate,
         patch("src.extraction_pipeline.run_validate_stage") as validate,
         patch("src.documentation_pipeline.run_documentation_pipeline") as document,
     ):
         run_pipeline(
             synthetic_pipeline_config_fixture,
-            stop_after_stage="refactor",
+            stop_after_stage="annotate",
         )
 
     export.assert_called_once()
     assert export.call_args.kwargs["graph"] is graph
     assert export.call_args.kwargs["graph_cache_key"] is graph_cache_key
-    refactor.assert_called_once_with(
+    annotate.assert_called_once_with(
         export_state,
         no_cache=False,
         force_rebuild=False,
         timings=ANY,
-        lab_options=None,
     )
     validate.assert_not_called()
     document.assert_not_called()
@@ -475,7 +462,7 @@ def test_run_pipeline_stop_after_validate_skips_document(
 ) -> None:
     export_state = object()
     extract_result = MagicMock(graph=object(), graph_cache_key="g" * 64)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -486,9 +473,9 @@ def test_run_pipeline_stop_after_validate_skips_document(
             return_value=export_state,
         ),
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
-        ) as refactor,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
+        ) as annotate,
         patch("src.extraction_pipeline.run_validate_stage") as validate,
         patch("src.documentation_pipeline.run_documentation_pipeline") as document,
     ):
@@ -497,14 +484,13 @@ def test_run_pipeline_stop_after_validate_skips_document(
             stop_after_stage="validate",
         )
 
-    refactor.assert_called_once_with(
+    annotate.assert_called_once_with(
         export_state,
         no_cache=False,
         force_rebuild=False,
         timings=ANY,
-        lab_options=None,
     )
-    validate.assert_called_once_with(refactor_state, no_cache=False, timings=ANY)
+    validate.assert_called_once_with(annotate_state, no_cache=False, timings=ANY)
     document.assert_not_called()
 
 
@@ -513,7 +499,7 @@ def test_run_pipeline_default_runs_through_document(
 ) -> None:
     export_state = object()
     extract_result = MagicMock(graph=object(), graph_cache_key="g" * 64)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -524,8 +510,8 @@ def test_run_pipeline_default_runs_through_document(
             return_value=export_state,
         ),
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
         ),
         patch(
             "src.extraction_pipeline.run_validate_stage",
@@ -535,7 +521,7 @@ def test_run_pipeline_default_runs_through_document(
     ):
         run_pipeline(synthetic_pipeline_config_fixture)
 
-    validate.assert_called_once_with(refactor_state, no_cache=False, timings=ANY)
+    validate.assert_called_once_with(annotate_state, no_cache=False, timings=ANY)
     document.assert_called_once_with(synthetic_pipeline_config_fixture)
 
 
@@ -544,7 +530,7 @@ def test_run_pipeline_passes_no_cache_to_validate_stage(
 ) -> None:
     export_state = object()
     extract_result = MagicMock(graph=object(), graph_cache_key="g" * 64)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -555,9 +541,9 @@ def test_run_pipeline_passes_no_cache_to_validate_stage(
             return_value=export_state,
         ),
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
-        ) as refactor,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
+        ) as annotate,
         patch("src.extraction_pipeline.run_validate_stage") as validate,
         patch("src.documentation_pipeline.run_documentation_pipeline"),
     ):
@@ -567,14 +553,13 @@ def test_run_pipeline_passes_no_cache_to_validate_stage(
             no_cache=True,
         )
 
-    refactor.assert_called_once_with(
+    annotate.assert_called_once_with(
         export_state,
         no_cache=True,
         force_rebuild=False,
         timings=ANY,
-        lab_options=None,
     )
-    validate.assert_called_once_with(refactor_state, no_cache=True, timings=ANY)
+    validate.assert_called_once_with(annotate_state, no_cache=True, timings=ANY)
 
 
 def test_run_pipeline_rejects_unknown_stage(
@@ -639,7 +624,7 @@ def test_run_pipeline_skips_document_when_differential_failed(
 ) -> None:
     export_state = object()
     extract_result = MagicMock(graph=object(), graph_cache_key="g" * 64)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -650,8 +635,8 @@ def test_run_pipeline_skips_document_when_differential_failed(
             return_value=export_state,
         ),
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
         ),
         patch(
             "src.extraction_pipeline.run_validate_stage",
@@ -661,7 +646,7 @@ def test_run_pipeline_skips_document_when_differential_failed(
     ):
         run_pipeline(synthetic_pipeline_config_fixture)
 
-    validate.assert_called_once_with(refactor_state, no_cache=False, timings=ANY)
+    validate.assert_called_once_with(annotate_state, no_cache=False, timings=ANY)
     document.assert_not_called()
 
 
@@ -670,7 +655,7 @@ def test_run_pipeline_force_document_runs_docs_after_differential_failure(
 ) -> None:
     export_state = object()
     extract_result = MagicMock(graph=object(), graph_cache_key="g" * 64)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -681,8 +666,8 @@ def test_run_pipeline_force_document_runs_docs_after_differential_failure(
             return_value=export_state,
         ),
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
         ),
         patch(
             "src.extraction_pipeline.run_validate_stage",
@@ -705,7 +690,7 @@ def test_run_pipeline_document_failure_raises_document_stage_error(
 
     export_state = object()
     extract_result = MagicMock(graph=object(), graph_cache_key="g" * 64)
-    refactor_state = _mock_refactor_state(synthetic_pipeline_config_fixture)
+    annotate_state = _mock_annotate_state(synthetic_pipeline_config_fixture)
     with (
         patch(
             "src.extraction_pipeline.extract_dependency_graph",
@@ -716,8 +701,8 @@ def test_run_pipeline_document_failure_raises_document_stage_error(
             return_value=export_state,
         ),
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=refactor_state,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=annotate_state,
         ),
         patch(
             "src.extraction_pipeline.run_validate_stage",
@@ -734,6 +719,7 @@ def test_run_pipeline_document_failure_raises_document_stage_error(
     validate.assert_called_once()
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_refactor_stage_records_spans_and_profiles(tmp_path: Path) -> None:
     config = _sample_config(tmp_path)
     package_root = tmp_path / "dist" / "my_model"
@@ -797,6 +783,7 @@ def test_run_refactor_stage_records_spans_and_profiles(tmp_path: Path) -> None:
     assert "internals_refactor" not in record.spans
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_refactor_stage_forwards_the_stage_timer_to_the_refactor(
     tmp_path: Path,
 ) -> None:
@@ -856,19 +843,17 @@ def test_run_refactor_stage_forwards_the_stage_timer_to_the_refactor(
 
 
 def test_run_validate_stage_records_spans_and_profiles(tmp_path: Path) -> None:
-    state = RefactorStageState(
+    state = AnnotateStageState(
         config=_sample_config(tmp_path),
         codegen_cache_key="c" * 64,
-        internals_cache_key="i" * 64,
     )
     timings = PipelineTimings()
 
     with (
         patch(
-            "src.extraction_pipeline.run_post_refactor_differential",
+            "src.inverted_tree_validate.write_formula_evaluator_parity_reports",
             return_value=0,
         ),
-        patch("src.extraction_pipeline.export_reference_reports"),
         patch("src.extraction_pipeline.profile_if_enabled") as profile,
     ):
         exit_code = run_validate_stage(state, timings=timings)
@@ -877,10 +862,7 @@ def test_run_validate_stage_records_spans_and_profiles(tmp_path: Path) -> None:
     assert profile.call_args.kwargs["basename"] == "validate"
     record = timings.stages[0]
     assert record.name == "validate"
-    assert set(record.spans) == {
-        "post_refactor_differential",
-        "export_reference_reports",
-    }
+    assert set(record.spans) == {"formula_evaluator_parity"}
 
 
 def test_run_pipeline_writes_stage_timings_artifact(
@@ -894,7 +876,7 @@ def test_run_pipeline_writes_stage_timings_artifact(
             return_value=MagicMock(graph=object(), graph_cache_key="g" * 64),
         ),
         patch("src.extraction_pipeline.run_export_stage"),
-        patch("src.extraction_pipeline.run_refactor_stage"),
+        patch("src.extraction_pipeline.run_annotate_stage"),
         patch("src.extraction_pipeline.run_validate_stage", return_value=0),
         patch("src.extraction_pipeline.run_document_stage"),
         patch(
@@ -929,7 +911,7 @@ def test_run_pipeline_threads_one_timings_object_through_every_stage(
             return_value=MagicMock(graph=object(), graph_cache_key="g" * 64),
         ) as extract,
         patch("src.extraction_pipeline.run_export_stage") as export,
-        patch("src.extraction_pipeline.run_refactor_stage") as refactor,
+        patch("src.extraction_pipeline.run_annotate_stage") as annotate,
         patch("src.extraction_pipeline.run_validate_stage", return_value=0) as validate,
         patch("src.extraction_pipeline.run_document_stage") as document,
     ):
@@ -938,7 +920,7 @@ def test_run_pipeline_threads_one_timings_object_through_every_stage(
     timings = extract.call_args.kwargs["timings"]
     assert isinstance(timings, PipelineTimings)
     assert export.call_args.kwargs["timings"] is timings
-    assert refactor.call_args.kwargs["timings"] is timings
+    assert annotate.call_args.kwargs["timings"] is timings
     assert validate.call_args.kwargs["timings"] is timings
     assert document.call_args.kwargs["timings"] is timings
 
@@ -1002,9 +984,9 @@ def test_main_start_from_stage_is_passed(
         patch("src.extraction_pipeline.validate_pipeline_config"),
         patch("src.extraction_pipeline.run_pipeline") as pipeline,
     ):
-        main(["--start-from-stage", "refactor"])
+        main(["--start-from-stage", "annotate"])
 
-    assert pipeline.call_args.kwargs["start_from_stage"] == "refactor"
+    assert pipeline.call_args.kwargs["start_from_stage"] == "annotate"
     assert pipeline.call_args.kwargs["stop_after_stage"] == "document"
     assert pipeline.call_args.kwargs["only_stage"] is None
 
@@ -1037,7 +1019,7 @@ def test_main_rejects_start_from_with_only_stage(
         ),
         pytest.raises(SystemExit),
     ):
-        main(["--start-from-stage", "refactor", "--only-stage", "validate"])
+        main(["--start-from-stage", "annotate", "--only-stage", "validate"])
 
 
 def test_main_rejects_only_stage_with_stop_after_stage(
@@ -1164,7 +1146,7 @@ def _commit_refactored_dist(
     )
 
 
-def test_run_pipeline_start_from_refactor_skips_export(
+def test_run_pipeline_start_from_annotate_skips_export(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
 ) -> None:
@@ -1204,25 +1186,23 @@ def test_run_pipeline_start_from_refactor_skips_export(
         ),
         patch("src.extraction_pipeline.materialize_package") as materialize,
         patch(
-            "src.extraction_pipeline.run_refactor_stage",
-            return_value=RefactorStageState(
-                config=config,
-                codegen_cache_key="c" * 64,
-                internals_cache_key="i" * 64,
-            ),
-        ) as refactor,
+            "src.extraction_pipeline.run_annotate_stage",
+            return_value=_mock_annotate_state(config),
+        ) as annotate,
         patch("src.extraction_pipeline.run_validate_stage") as validate,
         patch("src.extraction_pipeline.run_document_stage") as document,
     ):
         run_pipeline(
             config,
-            start_from_stage="refactor",
-            stop_after_stage="refactor",
+            start_from_stage="annotate",
+            stop_after_stage="annotate",
         )
 
     export.assert_not_called()
-    materialize.assert_called_once_with(config, codegen_key="c" * 64)
-    refactor.assert_called_once()
+    materialize.assert_called_once_with(
+        config, codegen_key="c" * 64, apply_rewrites=False
+    )
+    annotate.assert_called_once()
     validate.assert_not_called()
     document.assert_not_called()
 
@@ -1240,20 +1220,19 @@ def test_run_pipeline_only_stage_validate_materializes_from_manifest(
 
     write_stage_manifest(
         config,
-        stage="refactor",
-        cache_keys={
-            "codegen_cache_key": "c" * 64,
-            "internals_cache_key": "i" * 64,
-            "clusters_cache_key": "k" * 64,
-        },
+        stage="annotate",
+        cache_keys={"codegen_cache_key": "c" * 64},
         upstream_keys={},
         fingerprints=compute_input_fingerprints(config),
     )
 
     with (
         patch("src.extraction_pipeline.run_export_stage") as export,
-        patch("src.extraction_pipeline.run_refactor_stage") as refactor,
+        patch("src.extraction_pipeline.run_annotate_stage") as annotate,
         patch("src.extraction_pipeline.materialize_package") as materialize,
+        patch(
+            "src.inverted_tree_docstrings.annotate_exported_package",
+        ),
         patch(
             "src.extraction_pipeline.run_validate_stage",
             return_value=0,
@@ -1263,17 +1242,17 @@ def test_run_pipeline_only_stage_validate_materializes_from_manifest(
         run_pipeline(config, only_stage="validate")
 
     export.assert_not_called()
-    refactor.assert_not_called()
+    annotate.assert_not_called()
     materialize.assert_called_once_with(
         config,
         codegen_key="c" * 64,
-        internals_key="i" * 64,
+        apply_rewrites=False,
     )
     validate.assert_called_once()
     document.assert_not_called()
 
 
-def test_run_pipeline_start_from_refactor_aborts_on_workbook_drift(
+def test_run_pipeline_start_from_annotate_aborts_on_workbook_drift(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
 ) -> None:
@@ -1298,8 +1277,8 @@ def test_run_pipeline_start_from_refactor_aborts_on_workbook_drift(
     with pytest.raises(StageManifestDriftError, match="workbook"):
         run_pipeline(
             config,
-            start_from_stage="refactor",
-            stop_after_stage="refactor",
+            start_from_stage="annotate",
+            stop_after_stage="annotate",
         )
 
 
@@ -1377,6 +1356,7 @@ def _refactor_entry_probe(
 
 
 @pytest.mark.parametrize("flag", ["force_rebuild", "no_cache"])
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_start_from_refactor_rebuilds_from_pristine_internals(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -1411,6 +1391,7 @@ def test_run_pipeline_start_from_refactor_rebuilds_from_pristine_internals(
     assert seen["internals_at_refactor"] == _COLD_CLONE_MODULES["internals.py"]
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_start_from_refactor_refuses_adopt_on_provenance_drift(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -1450,6 +1431,7 @@ def test_run_pipeline_start_from_refactor_refuses_adopt_on_provenance_drift(
     assert seen["internals_at_refactor"] == _COLD_CLONE_MODULES["internals.py"]
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_start_from_refactor_refuses_adopt_without_provenance(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -1494,6 +1476,7 @@ def test_run_pipeline_start_from_refactor_refuses_adopt_without_provenance(
         ),
     ],
 )
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_lab_options_bypass_warm_cache_short_circuits(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -1526,6 +1509,7 @@ def test_refactor_lab_options_requires_refactor_run_is_false_by_default() -> Non
     assert RefactorLabOptions().requires_refactor_run() is False
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_start_from_refactor_adopts_committed_dist_when_internals_cold(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -1610,6 +1594,7 @@ def test_run_pipeline_start_from_refactor_adopts_committed_dist_when_internals_c
     )
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_start_from_refactor_adopts_when_codegen_and_internals_cold(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -1667,6 +1652,7 @@ def test_run_pipeline_start_from_refactor_adopts_when_codegen_and_internals_cold
     )
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_only_stage_validate_preserves_lab_internals_without_cache_key(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -1726,6 +1712,7 @@ def test_run_pipeline_only_stage_validate_preserves_lab_internals_without_cache_
     ) != _COLD_CLONE_MODULES["internals.py"]
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_run_pipeline_start_from_document_preserves_lab_internals_without_cache_key(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,

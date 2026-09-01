@@ -1,117 +1,112 @@
 ---
-title: "Functional overview"
+title: "Functional Overview"
 ---
 
-Tiny-DSA is organized across three logical surfaces: **inputs**, **engine**, and **outputs**. In the Python API, the same structure is preserved. Use `set_*` functions to configure the input surface, let the package handle the engine calculations, and read stable results with `compute_output_*` functions. The engine calculations are internal and should not be called directly; the `compute_output_*` functions are the stable read-only API for downstream consumers.
+Tiny-DSA is organized around three public output helpers in `tiny_dsa.api`. Input configuration, computation, and results are expressed entirely in Python. Every output helper is keyword-only, accepts leaf inputs as scalars or 1-D sequences, and returns a tuple of floats for projection years 1 through 5. There is no evaluation context to create or mutate; call the helper directly.
 
-### A. API organization
+### A. API input conventions and validation
 
-The `tiny_dsa.api` module provides a direct mapping from workbook named ranges to Python functions. Scalar inputs are set with bare values; series inputs accept 1-D sequences, tidy Polars DataFrames, or keyed records. Positional series must contain one value per key in the canonical order.
+The package enforces a small, explicit input contract through function signatures:
 
-The following validation rules are enforced by the setters:
-
-- `country_name` is restricted to values present in the country profile table.
-- `shock_year` is restricted to integers between 1 and 5.
-- `shock_type` is restricted to integers between 1 and 3.
-
-The stable input/output contract consists of the following API functions:
-
-| Named range | API function | Type |
+| Argument | Shape | Description |
 |---|---|---|
-| `country_name` | `set_country_name` | scalar |
-| `initial_debt_to_gdp` and `country_profile_table` | `set_country_initial_debt` | series keyed by `COUNTRY` |
-| `growth_baseline` | `set_growth_baseline` | series keyed by `TIME_PERIOD` |
-| `interest_baseline` | `set_interest_baseline` | series keyed by `TIME_PERIOD` |
-| `primary_balance_baseline` | `set_primary_balance_baseline` | series keyed by `TIME_PERIOD` |
-| `shock_year` | `set_shock_year` | scalar |
-| `shock_type` | `set_shock_type` | scalar |
-| `shock_table` | `set_shock_magnitudes` | series keyed by `SHOCK_PARAMETER` |
-| `output_baseline` | `compute_output_baseline` | series keyed by `TIME_PERIOD` |
-| `output_shocked` | `compute_output_shocked` | series keyed by `TIME_PERIOD` |
-| `output_delta` | `compute_output_delta` | series keyed by `TIME_PERIOD` |
+| `country_name` | scalar string | User-selected country from the profile table |
+| `country_initial_debt` | 1-D sequence of floats | Initial debt-to-GDP ratios for all countries in the default profile order |
+| `growth_baseline` | 1-D sequence of 5 floats | Real GDP growth, percent per annum, years 1-5 |
+| `interest_baseline` | 1-D sequence of 5 floats | Real interest, percent per annum, years 1-5 |
+| `primary_balance_baseline` | 1-D sequence of 5 floats | Primary balance, percent of GDP, years 1-5 |
+| `shock_year` | scalar int | First shock year, integer 1-5 |
+| `shock_type` | scalar int | Affected parameter: 1 growth, 2 interest, 3 primary balance |
+| `shock_magnitudes` | 1-D sequence of 3 floats | Shock sizes in percentage points, one per shock type |
 
-All setter values are validated against their workbook constraints. The engine ranges (`baseline_path`, `shocked_path`) are internal to the package and are not exposed through the generated API; use the `compute_output_*` functions instead.
+Optional `country_profile_names` and `engine_year_labels` already have defaults in the generated data module; omit them unless you need a nonstandard profile set or horizon.
 
 ### B. Selecting a country
 
-The first step is to choose a country with `set_country_name`. The initial debt-to-GDP ratio is then derived automatically from the country profile table. Three countries are available by default: Borvelia (initial debt 60.0% of GDP), Litellia (80.0%), and Aurelium (40.0%). Other country names are rejected.
+Pass `country_name` as a bare string and `country_initial_debt` as a sequence aligned with the default profile names. The default profile set is Borvelia, Litellia, and Aurelium, with initial debt ratios 60.0, 80.0, and 40.0 percent of GDP, respectively. The selected country's initial debt is resolved from the aligned sequence; no INDEX/MATCH-style lookup is needed by the caller.
 
-The following cells build on the same `ctx`; run them in order.
+### C. Setting the baseline parameters
+
+The baseline scenario is defined by three five-element sequences, one value per projection year.
+
+- `growth_baseline`: real GDP growth, percent per annum. A typical default is flat at 3.5 percent.
+- `interest_baseline`: effective real interest rate on debt, percent per annum. A typical default is flat at 4.0 percent.
+- `primary_balance_baseline`: primary balance as percent of GDP, positive for surplus. A typical consolidation path is [-1.0, -0.5, 0.0, 0.5, 1.0].
+
+### D. Configuring the shock
+
+Specify the shock with three arguments:
+
+- `shock_year`: integer between 1 and 5; default example 2.
+- `shock_type`: integer 1, 2, or 3 for growth, interest, or primary balance; default example 1.
+- `shock_magnitudes`: sequence of three percentage-point shocks in the order [growth, interest, primary balance]. A typical set is [-2.0, 2.0, -1.0]. Only the magnitude at index `shock_type - 1` is applied.
+
+### E. Reading the outputs
+
+Call `compute_output_baseline`, `compute_output_shocked`, and `compute_output_delta` with the same leaf inputs. Each returns a tuple of five floats. Tabulate the results with Polars using year labels and clear column aliases.
 
 ```{python}
 import polars as pl
 from tiny_dsa.api import (
-    make_context,
-    set_country_name,
-    set_country_initial_debt,
-    set_growth_baseline,
-    set_interest_baseline,
-    set_primary_balance_baseline,
-    set_shock_year,
-    set_shock_type,
-    set_shock_magnitudes,
     compute_output_baseline,
-    compute_output_shocked,
     compute_output_delta,
+    compute_output_shocked,
 )
 
-ctx = make_context()
-set_country_name(ctx, 'Borvelia')
-```
+# Default profile order: Borvelia, Litellia, Aurelium
+country_initial_debt = [60.0, 80.0, 40.0]
 
-If you need to adjust or extend the profile table, use `set_country_initial_debt` with keyed records:
+growth_baseline = [3.5, 3.5, 3.5, 3.5, 3.5]
+interest_baseline = [4.0, 4.0, 4.0, 4.0, 4.0]
+primary_balance_baseline = [-1.0, -0.5, 0.0, 0.5, 1.0]
 
-```{python}
-set_country_initial_debt(ctx, [
-    {'COUNTRY': 'Borvelia', 'OBS_VALUE': 60.0},
-    {'COUNTRY': 'Litellia', 'OBS_VALUE': 80.0},
-    {'COUNTRY': 'Aurelium', 'OBS_VALUE': 40.0},
-])
-```
+shock_year = 2
+shock_type = 1
+shock_magnitudes = [-2.0, 2.0, -1.0]
 
-### C. Setting the baseline parameters
+baseline = compute_output_baseline(
+    country_name='Borvelia',
+    country_initial_debt=country_initial_debt,
+    growth_baseline=growth_baseline,
+    interest_baseline=interest_baseline,
+    primary_balance_baseline=primary_balance_baseline,
+)
 
-The baseline scenario is defined by three 5-year series: real GDP growth, real interest rate, and primary balance. All three are passed to `set_*` functions as 1-D sequences in year order. The defaults are flat 3.5% growth, flat 4.0% interest, and a primary balance that consolidates from -1.0% to +1.0% in 0.5 percentage-point increments.
+shocked = compute_output_shocked(
+    country_name='Borvelia',
+    country_initial_debt=country_initial_debt,
+    growth_baseline=growth_baseline,
+    interest_baseline=interest_baseline,
+    primary_balance_baseline=primary_balance_baseline,
+    shock_year=shock_year,
+    shock_type=shock_type,
+    shock_magnitudes=shock_magnitudes,
+)
 
-```{python}
-set_growth_baseline(ctx, [3.5, 3.5, 3.5, 3.5, 3.5])
-set_interest_baseline(ctx, [4.0, 4.0, 4.0, 4.0, 4.0])
-set_primary_balance_baseline(ctx, [-1.0, -0.5, 0.0, 0.5, 1.0])
-```
+delta = compute_output_delta(
+    country_name='Borvelia',
+    country_initial_debt=country_initial_debt,
+    growth_baseline=growth_baseline,
+    interest_baseline=interest_baseline,
+    primary_balance_baseline=primary_balance_baseline,
+    shock_year=shock_year,
+    shock_type=shock_type,
+    shock_magnitudes=shock_magnitudes,
+)
 
-### D. Configuring the shock
-
-The shock is configured with three inputs: shock year, shock type, and shock magnitudes. The shock year and type are scalars; the magnitudes are a series in the canonical order of shock types (growth, interest, primary balance).
-
-```{python}
-set_shock_year(ctx, 2)
-set_shock_type(ctx, 1)  # 1 = growth, 2 = interest, 3 = primary balance
-set_shock_magnitudes(ctx, [-2.0, 2.0, -1.0])
-```
-
-The default shock year is 2, the default shock type is 1 (growth), and the default magnitudes are -2.0, +2.0, and -1.0 percentage points respectively. Only the magnitude associated with the selected shock type is applied; the others are ignored. The engine applies the shock from the shock year through the end of the horizon and computes the shocked path internally.
-
-### E. Reading the outputs
-
-The `compute_output_*` functions return records for years 1 through 5. Each record contains `TIME_PERIOD` and `OBS_VALUE`. Use Polars to tabulate the results and join the three series on `TIME_PERIOD`.
-
-```{python}
-set_shock_type(ctx, "Primary Balance")
-set_shock_magnitudes(ctx, [{"TIME_PERIOD": 1, "OBS_VALUE": -1.0}])
-
-def series_frame(records, alias):
-    return (
-        pl.DataFrame(records)
-        .sort('TIME_PERIOD')
-        .select('TIME_PERIOD', pl.col('OBS_VALUE').alias(alias))
+results = (
+    pl.DataFrame({
+        'year': list(range(1, 6)),
+        'baseline': list(baseline),
+        'shocked': list(shocked),
+        'delta': list(delta),
+    })
+    .select(
+        'year',
+        pl.col('baseline').alias('Baseline debt-to-GDP'),
+        pl.col('shocked').alias('Shocked debt-to-GDP'),
+        pl.col('delta').alias('Delta (percentage points)'),
     )
-
-baseline = series_frame(compute_output_baseline(ctx=ctx), 'Baseline')
-shocked = series_frame(compute_output_shocked(ctx=ctx), 'Shocked')
-delta = series_frame(compute_output_delta(ctx=ctx), 'Delta')
-
-outputs = baseline.join(shocked, on='TIME_PERIOD').join(delta, on='TIME_PERIOD')
-outputs
+)
+results
 ```
-
-The `Baseline` and `Shocked` columns are debt-to-GDP ratios in percent of GDP; `Delta` is the difference in percentage points. Downstream code should consume these output series rather than internal engine calculations.
