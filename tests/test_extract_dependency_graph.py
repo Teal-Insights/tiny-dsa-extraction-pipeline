@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.extraction_pipeline import (
     build_pipeline_graph,
     count_provenance_edges,
@@ -13,6 +15,10 @@ from src.extraction_pipeline import (
     main,
 )
 from src.pipeline_config import load_pipeline_config
+
+_SKIP_CTX_REFACTOR_ENTRY = pytest.mark.skip(
+    reason="inverted-tree pipeline no longer runs clustering or internals refactor"
+)
 
 
 def _write_empty_placeholder_bindings(bindings_dir: Path) -> None:
@@ -274,10 +280,12 @@ def test_export_generated_package_writes_under_isolated_dist_root(
     )
     before = repo_pollution.read_bytes() if repo_pollution.is_file() else None
 
-    _export_generated_package_with_mocked_codegen(
-        config,
-        get_or_build_clusters_and_schedule=MagicMock(),
-    )
+    def _write_package(*_args: object, **_kwargs: object) -> None:
+        config.package_root.mkdir(parents=True, exist_ok=True)
+        (config.package_root / "internals.py").write_text("pass\n", encoding="utf-8")
+
+    with patch("src.extraction_pipeline.run_pipeline", side_effect=_write_package):
+        export_generated_package(config)
 
     written = config.package_root / "internals.py"
     assert written.is_file()
@@ -289,6 +297,7 @@ def test_export_generated_package_writes_under_isolated_dist_root(
         assert repo_pollution.read_bytes() == before
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_export_generated_package_passes_variation_mode_to_cluster_cache(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -309,6 +318,7 @@ def test_export_generated_package_passes_variation_mode_to_cluster_cache(
     assert get_or_build.call_args.kwargs["clustering_mode"] == "series_ast"
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_export_generated_package_passes_clustering_mode_to_cluster_cache(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -328,6 +338,7 @@ def test_export_generated_package_passes_clustering_mode_to_cluster_cache(
     assert get_or_build.call_args.kwargs["clustering_mode"] == "ast"
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_export_generated_package_passes_bound_address_keys_to_refactor(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
@@ -348,6 +359,7 @@ def test_export_generated_package_passes_bound_address_keys_to_refactor(
     assert refactor.call_args.kwargs["bound_address_keys"] is expected_keys
 
 
+@_SKIP_CTX_REFACTOR_ENTRY
 def test_export_generated_package_passes_key_vocabulary_to_refactor(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,

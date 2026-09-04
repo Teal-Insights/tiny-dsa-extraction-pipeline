@@ -1,4 +1,4 @@
-scenario_id,cell_address,cell_label,excel_value,mvp_value,abs_diff,rel_diff,passed,matched_error,flagged_matched_error,note
+scenario_id,cell_address,cell_label,graph_value,mvp_value,abs_diff,rel_diff,passed,matched_error,flagged_matched_error,note
 canonical:Borvelia:baseline,Outputs!B12,output_baseline[year=1],61.28985507246378,61.28985507246378,0.0,0.0,True,False,False,
 canonical:Borvelia:baseline,Outputs!C12,output_baseline[year=2],62.0859413288525,62.0859413288525,0.0,0.0,True,False,False,
 canonical:Borvelia:baseline,Outputs!D12,output_baseline[year=3],62.38587341256677,62.38587341256677,0.0,0.0,True,False,False,

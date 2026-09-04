@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src.export_validation_assets import (
+    _render_tests_readme,
     export_reference_reports,
     export_validation_assets,
     seed_validation_harness,
@@ -136,6 +137,20 @@ def test_seed_validation_harness_copies_harness_and_workbook_without_reports(
     assert (tests_root / "results" / "reference").is_dir()
     assert not (tests_root / "results" / "reference" / "parity_report.csv").exists()
     assert (tests_root / "README.md").exists()
+    readme = (tests_root / "README.md").read_text(encoding="utf-8")
+    assert "FormulaEvaluator" in readme
+    assert "compute_*" in readme
+    assert "set_*" not in readme
+    assert "vs Excel" not in readme
+
+
+def test_dist_tests_readme_names_formula_evaluator_vs_compute() -> None:
+    text = _render_tests_readme(package_name="tiny_dsa", library_name="Tiny DSA")
+    assert "FormulaEvaluator" in text
+    assert "compute_*" in text
+    assert "set_*" not in text
+    assert "vs Excel" not in text
+    assert "xlwings" not in text
 
 
 def test_export_reference_reports_copies_parity_reports(tmp_path: Path) -> None:
