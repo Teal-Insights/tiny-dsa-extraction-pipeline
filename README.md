@@ -1,6 +1,6 @@
 # Extraction Pipeline Template
 
-Cookie-cutter template for turning an Excel financial model into a semantic, distributable Python library using [excel-grapher](https://github.com/Teal-Insights/excel-grapher). The pipeline combines target-driven graph extraction, explicit dynamic-reference constraints, series bindings, LLM-assisted naming and documentation, and Excel-backed parity tests.
+Cookie-cutter template for turning an Excel financial model into a semantic, distributable Python library using [excel-grapher](https://github.com/Teal-Insights/excel-grapher). The pipeline combines target-driven graph extraction, explicit dynamic-reference constraints, series bindings, LLM-assisted naming and documentation, Excel-backed **graph-oracle** parity, and FormulaEvaluator **library** parity.
 
 See [technical_standard.md](technical_standard.md) for the acceptance bar and [lessons-learned.md](lessons-learned.md) for design rationale.
 
@@ -10,15 +10,15 @@ Follow this order when adapting the template to a new workbook. Each step has a 
 
 | Step | Owner | Action |
 |---|---|---|
-| 1. Ingest | **Config author** | Clone the repo. Replace `data/workbook.xlsx` and `data/guide.md`. Clear workbook-specific state: reset `bindings/*.bindings.yaml` to empty `series: []` placeholders (or delete them), and delete `dist/` and `.cache/`. Point [workbook_config.py](workbook_config.py) paths at the new workbook. |
+| 1. Ingest | **Config author** | Clone the repo. This repo uses `data/tiny-dsa.xlsx` and `data/tiny-dsa-guide.md`. When adapting to a new workbook, replace those files. Clear workbook-specific state: reset `bindings/*.bindings.yaml` to empty `series: []` placeholders (or delete them), and delete `dist/` and `.cache/`. Point [workbook_config.py](workbook_config.py) paths at the new workbook. |
 | 2. Audit | **Config author** | Run `uv run python -m src.workbook_audit --output artifacts/workbook-audit.md`. Resolve blocking automation (VBA, macros, external links) before graph work. |
 | 3. Configure | **Config author** | Declare extraction targets, `BLANK_RANGES`, and dynamic-ref constraints (empty `series: []` binding placeholders are fine). See [Configure](#1-configure) below. |
 | 4. Extract | **Config author** | Run `uv run python -m src.extraction_pipeline --extract-graph`. Confirm the graph builds without `DynamicRefError` (bindings are not required yet). |
 | 5. Review graph | **Graph reviewer** | Inspect `artifacts/dependency-graph/` (see [artifacts/README.md](artifacts/README.md)). Confirm expected sheets, no spurious nodes, and complete shock/engine paths. Optionally run opt-in LLM dependency audits: `uv run pytest tests/test_extraction_graph_accuracy.py --run-skipped` (workbook audits auto-select parents from the warm committed `.cache/dependency-graph/` entry — run `--only-stage extract` or `scripts.regenerate_graph_cache` first; `GRAPH_AUDIT_CASES` is optional steering only. The synthetic smoke-test audit runs without extra configuration). Set the provider API key for `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`). |
 | 6. Verify graph | **Parity owner** | Define a scenario matrix in `tests/differential/` and run graph-oracle differential parity before export (see [Verify graph](#3-verify-graph)). Prefer a warm `.cache/dependency-graph/` from extract first. Do not proceed to export until graph-oracle parity passes. |
-| 7. Cluster diagnostics | **Config author** | Before first export, compare clustering modes and remodel shredded bindings (see [Cluster diagnostics](#4-cluster-diagnostics)). Do not run the full pipeline until `VARIATION_MODE` is chosen and shredded families are addressed. |
-| 8. Export and test | **Parity owner** | Run the full pipeline (`uv run python -m src.extraction_pipeline`). Run exported-library differential parity; on Windows with Excel, re-run from the exported project (see [Test](#6-test)). |
-| 9. Document and refactor | **Config author** | Generate docs, refactor internals behind parity gates, and update committed parity evidence under `data/differential/`. |
+| 7. Export | **Parity owner** | Run export (`uv run python -m src.extraction_pipeline --stop-after-stage export` or the full pipeline). Codegen emits keyword-only `compute_*` (`paradigm="inverted_tree"`). See [Export](#4-export). |
+| 8. Annotate and validate | **Parity owner** | Annotate splices LLM docstrings onto `api.py` / `internals.py`. Validate compares `compute_*` to `FormulaEvaluator` on the graph (see [Annotate](#5-annotate) and [Validate](#6-validate)). |
+| 9. Document | **Config author** | Generate economist-facing docs from the exported package (see [Document](#7-document)). |
 
 Copy the checkbox list in [Checklist for a new workbook](#checklist-for-a-new-workbook) into your extraction tracking issue and check items off as you go.
 
@@ -28,15 +28,15 @@ Before running the pipeline, populate this repository with workbook-specific inp
 
 | Input | Location | Purpose |
 |---|---|---|
-| Workbook | `data/workbook.xlsx` | Source Excel model |
-| Human guide | `data/guide.md` | Domain usage, public I/O catalog, scenario narrative |
+| Workbook | `data/tiny-dsa.xlsx` | Source Excel model |
+| Human guide | `data/tiny-dsa-guide.md` | Domain usage, public I/O catalog, scenario narrative |
 | Targets | `workbook_config.py` → `TARGETS` | Named ranges or addresses driving graph extraction |
 | Blank ranges | `workbook_config.py` → `BLANK_RANGES` | Sheet-qualified A1 rectangles of structurally empty cells omitted from the graph (same strings to graph build, `FormulaEvaluator`, and codegen) |
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
-| Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml`, `bindings/constants.bindings.yaml` | Records-shaped public API, internal formula-cell triangulation, and reader-only constant leaves |
+| Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml`, `bindings/constants.bindings.yaml` | Keyword-only `compute_*` public API, internal formula-cell triangulation, and reader-only constant leaves |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
-| Variation mode | `workbook_config.py` → `VARIATION_MODE` | Formula-cluster splitting for internals refactor (see [Cluster diagnostics](#4-cluster-diagnostics) and [Refactor](#8-refactor)) |
-| Clustering mode | `workbook_config.py` → `CLUSTERING_MODE` | Base formula-cluster grouping before variation splitting (see [Refactor](#8-refactor)) |
+| Variation mode | `workbook_config.py` → `VARIATION_MODE` | Leftover clustering knob; unused by the live orchestrator until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55) |
+| Clustering mode | `workbook_config.py` → `CLUSTERING_MODE` | Leftover clustering knob; unused by the live orchestrator until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55) |
 | Internal binding exemptions | `workbook_config.py` → `INTERNAL_BINDING_EXEMPT_CELLS` | Reviewed formula cells allowed to remain unbound |
 | Graph-cache target bundles | `workbook_config.py` → `GRAPH_CACHE_TARGET_BUNDLES` | Optional extra target sets for `scripts/regenerate_graph_cache.py` |
 | Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
@@ -58,18 +58,16 @@ Extract is graph-first. Binding load, validation, derivation, and internal-cover
 
 ## Pipeline stages
 
-The end-to-end workflow follows the stage gates in [technical_standard.md](technical_standard.md):
+The orchestrator is `extract → export → annotate → validate → document` (`PIPELINE_STAGES` in [src/extraction_pipeline.py](src/extraction_pipeline.py)). Configure and graph-vs-Excel review are human gates around that sequence:
 
 ```mermaid
 flowchart LR
   configure[Configure] --> extract[Extract]
   extract --> verifyGraph[Verify graph]
-  verifyGraph --> clusterDiag[Cluster diagnostics]
-  clusterDiag --> export[Export]
-  export --> test[Test]
-  export --> document[Document]
-  export --> refactor[Refactor]
-  refactor --> validate[Validate]
+  verifyGraph --> export[Export]
+  export --> annotate[Annotate]
+  annotate --> validate[Validate]
+  validate --> document[Document]
 ```
 
 ### 1. Configure
@@ -125,7 +123,7 @@ After manual review (onboarding step 5), run graph-oracle differential parity (s
 
 #### Internal series bindings
 
-After bindings are validated (export / bindings-ready path), the pipeline derives **internal series** for formula cells declared with `internal: {}` in `bindings/internals.bindings.yaml`. Each resolved cell carries `{address, key, record}` triangulation data used by the graph explorer and internals refactor. Effective dimension ids live in binding manifests and derived series records, not on graph node metadata.
+After bindings are validated (export / bindings-ready path), the pipeline derives **internal series** for formula cells declared with `internal: {}` in `bindings/internals.bindings.yaml`. Each resolved cell carries `{address, key, record}` triangulation data used by the graph explorer. Effective dimension ids live in binding manifests and derived series records, not on graph node metadata.
 
 #### Authoring internals
 
@@ -134,8 +132,8 @@ Author `internals.bindings.yaml` after `--extract-graph`, when you can see which
 - **One series per logical group** — a single lookup/anchor cell or one formula row/range (e.g. `Engine!C10:G10`), not one entry per cell.
 - **Same YAML shape as public bindings** — use `internal: {}` instead of `input` / `output`. Scalar examples are in [tests/fixtures/synthetic/internals.bindings.yaml](tests/fixtures/synthetic/internals.bindings.yaml).
 - **Scalars vs row series** — lookup and anchor formulas usually use `layout: scalar` with `key: []`. Parallel time-series rows use `layout: row_series` with a key dimension (often concept `TIME_PERIOD`) bound from the **header row that labels that row**; different tables often use different header rows.
-- **Give every dimension an explicit `id`** — `id` names the dimension itself and is the effective key used in records, cell keys, graph labels, and refactor parameters. `concept` is the SDMX-style meaning category. They match unless two dimensions in one series share a concept (e.g. projection axis and reference period both on `TIME_PERIOD`), in which case give each a distinct id such as `PROJECTION_PERIOD` / `REFERENCE_PERIOD`. Parameter names come from the effective id (`projection_period`). Concept-only keys remain valid only when the concept uniquely identifies one dimension.
-- **Reuse public concepts** — prefer concept IDs already in your bindings / `concept_scheme` (`TIME_PERIOD`, `INDICATOR`, `PARAMETER`, etc.) so refactor prompts get meaningful semantic hints even when dimension ids differ.
+- **Give every dimension an explicit `id`** — `id` names the dimension itself and is the effective key used in records, cell keys, and graph labels. `concept` is the SDMX-style meaning category. They match unless two dimensions in one series share a concept (e.g. projection axis and reference period both on `TIME_PERIOD`), in which case give each a distinct id such as `PROJECTION_PERIOD` / `REFERENCE_PERIOD`. Parameter names come from the effective id (`projection_period`). Concept-only keys remain valid only when the concept uniquely identifies one dimension.
+- **Reuse public concepts** — prefer concept IDs already in your bindings / `concept_scheme` (`TIME_PERIOD`, `INDICATOR`, `PARAMETER`, etc.) so generated helpers keep meaningful semantic hints even when dimension ids differ.
 - **Validate** — `validate_series_bindings(...)`, then `derive_internal_series(...)`. Run `uv run pytest tests/test_internal_binding_coverage.py` once `INTERNAL_BINDING_VALIDATION_MODE` is enabled.
 - **Review** — re-run `--extract-graph` and confirm bound formula nodes show `keys:` / `record:` labels in the graph explorer.
 
@@ -168,7 +166,7 @@ Coverage applies to **formula nodes** that are not already covered by public inp
 |---|---|---|
 | `off` | Skipped | Skipped |
 | `warn` | Logs warnings for unbound required formula cells | Fails the test suite |
-| `error` | Raises before export/refactor | Fails the test suite |
+| `error` | Raises before export | Fails the test suite |
 
 Use `warn` while iterating locally; treat pytest failures as the CI gate once exemptions are committed. Add reviewed formula cells to `INTERNAL_BINDING_EXEMPT_CELLS` rather than weakening the mode.
 
@@ -182,19 +180,19 @@ Use `warn` while iterating locally; treat pytest failures as the CI gate once ex
 
 #### Clustering / schedule diagnostics
 
-These CLIs inspect warm caches or recompute clustering without running the full export/refactor pipeline. **Before the first export**, run the compare utility (onboarding step 7); use diagnose/inspect when families shred or a mechanical refactor fails. See [Cluster diagnostics](#4-cluster-diagnostics).
+These CLIs inspect warm caches or recompute clustering. They are leftover until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55) removes the ctx clustering / Pass-1 / Pass-2 tree. The live orchestrator does not cluster or refactor internals.
 
 | Utility | Command | When to use |
 |---|---|---|
-| Compare variation modes | `uv run python -m scripts.compare_cluster_variation_modes` | **Required before first export:** side-by-side `independent` vs `dominant_key_only` series-fingerprint family counts (and bucket diffs). Quiet summary by default; `--include changes members fingerprints` for detail; `--clustering-mode` to override the configured mode. |
-| Schedule atomization | `uv run python -m scripts.diagnose_schedule_atomization` | Neighbor of compare: when fingerprint families shred into many schedule units, reports fan-out stats, worst families, peel samples, shredded series, and cyclical remodel recommendations (`--top-families`, `--peel-samples`, …). |
-| Inspect one cluster | `uv run python -m scripts.inspect_cluster --cluster-id N` | After a mechanical refactor failure: print member addresses/formulas for fingerprint-family `N`. Add `--schedule` for peels, `--sources` (optionally `--internals path`) for `cell_*` bodies. Honors `--variation-mode` / `--clustering-mode` / `--no-cache`. |
+| Compare variation modes | `uv run python -m scripts.compare_cluster_variation_modes` | Inspect `independent` vs `dominant_key_only` series-fingerprint family counts. Quiet summary by default; `--include changes members fingerprints` for detail; `--clustering-mode` to override the configured mode. |
+| Schedule atomization | `uv run python -m scripts.diagnose_schedule_atomization` | When fingerprint families shred into many schedule units, reports fan-out stats, worst families, peel samples, shredded series, and remodel recommendations. |
+| Inspect one cluster | `uv run python -m scripts.inspect_cluster --cluster-id N` | Print member addresses/formulas for fingerprint-family `N`. Add `--schedule` for peels, `--sources` (optionally `--internals path`) for `cell_*` bodies. |
 
 Commit `.cache/dependency-graph/` only when your downstream pipeline vendors the cache for warm CI (override `.gitignore` for that directory). Run `uv run pytest tests/test_binding_utility_scripts.py` to exercise the synthetic fixture path end-to-end.
 
 ### 3. Verify graph
 
-**Why:** Graph-oracle parity isolates extraction, configuration, and dynamic-ref resolution bugs from export and codegen bugs. When export happens first, exported-library differential failures are ambiguous — they may come from the graph, the bindings, or the generated package.
+**Why:** Graph-oracle parity isolates extraction, configuration, and dynamic-ref resolution bugs from codegen bugs. Library-vs-graph (`FormulaEvaluator` vs `compute_*`) cannot tell you the graph itself is wrong.
 
 **What:** A scenario matrix (canonical baselines, single-axis shocks, categorical factorials, and boundary cases) exercised by [`tests/differential/differential_test_graph.py`](tests/differential/differential_test_graph.py). The harness compares Microsoft Excel (golden master via `xlwings`) against the in-memory dependency graph evaluated with `FormulaEvaluator.evaluate`.
 
@@ -213,128 +211,77 @@ Reports land under `data/differential/graph/`. Exit codes: **`0`** all compariso
 
 **Gate:** Do not run the full pipeline until graph-oracle parity passes.
 
-### 4. Cluster diagnostics
+### 4. Export
 
-**Why:** Formula clustering and the refactor schedule depend on binding geometry and `VARIATION_MODE`. Exporting first locks in an expensive codegen/refactor path; shredded fingerprint families produce many tiny schedule units that the mechanical refactor cannot collapse. Comparing modes and remodeling bindings up front avoids re-exporting after the first mechanical failure.
+Export calls `CodeGenerator.generate_modules(..., paradigm="inverted_tree")` with
+`series_docstring_callback="none"`. The package is keyword-only `compute_*`
+functions: scalars stay scalars, series are 1-D sequences in canonical key
+order, and each helper returns `tuple[float, ...]`. There is no `make_context`,
+no `set_*`, and no records-shaped setters. Helpers are named from output
+`series_id` / `output.compute.name`. Package shape: `api.py`, `internals.py`,
+`runtime.py`, `data.py`, `__init__.py`. The validation bundle is copied into
+`dist/tests/`. Docstrings are placeholders until [Annotate](#5-annotate).
 
-**What:** [`scripts/compare_cluster_variation_modes.py`](scripts/compare_cluster_variation_modes.py) builds clusters for `independent` vs `dominant_key_only` and prints series-fingerprint family counts (plus optional `--include changes|members|fingerprints` detail). Its neighbor [`scripts/diagnose_schedule_atomization.py`](scripts/diagnose_schedule_atomization.py) also reports fingerprint-family counts, but focuses on how those families fan out into schedule units (intact vs shredded), not on comparing clustering modes.
+### 5. Annotate
 
-**How:**
+[src/inverted_tree_docstrings.py](src/inverted_tree_docstrings.py) asks
+`DOCSTRING_MODEL` for Google-style docstrings keyed by function signature and
+bindings notes, then splices them onto `api.py` and `internals.py`. Successful
+responses cache under `.cache/inverted-tree-docstrings.json`. The stage fails
+closed if the model returns argument names that do not match the signature.
 
 ```bash
-uv run python -m scripts.compare_cluster_variation_modes
+uv run python -m src.extraction_pipeline --start-from-stage annotate --stop-after-stage annotate
+# equivalent: --only-stage annotate
 ```
 
-Pass `--clustering-mode` to override the configured mode, or `--include changes members fingerprints` for per-bucket detail. When families shred, run:
+### 6. Validate
 
-```bash
-uv run python -m scripts.diagnose_schedule_atomization
-```
+Two oracles, two questions:
 
-In general, fix shredded groups by converting row bindings to column bindings (or vice versa), or by consolidating multiple series bindings into a `layout: matrix` series. Then set `VARIATION_MODE` / `CLUSTERING_MODE` in [workbook_config.py](workbook_config.py) (see [Refactor](#8-refactor)).
+| Question | Oracle | SUT |
+|---|---|---|
+| Did we extract the workbook faithfully? | Excel (`xlwings`) | `FormulaEvaluator` on the graph ([Verify graph](#3-verify-graph)) |
+| Did we code-generate that graph faithfully? | Graph (`FormulaEvaluator`) | keyword-only `compute_*` |
 
-**Gate:** Do not run the full pipeline for the first export until compare has been run, `VARIATION_MODE` is chosen, and shredded families have been remodeled (or explicitly accepted).
+The pipeline `validate` stage ([src/inverted_tree_validate.py](src/inverted_tree_validate.py))
+is a narrow default-path FormulaEvaluator canary (no Excel). It writes
+`dist/tests/results/reference/` only; it does not overwrite committed Excel
+goldens under `data/differential/graph/`. Library ≈ Excel then follows by
+transitivity on the **same** scenarios.
 
-### 5. Export
-
-The pipeline applies `OptimalCompression` over the canonical graph, generates a records-shaped API (`make_context`, `set_*`, `compute_*`), writes `dist/<package>/`, and copies the validation bundle into `dist/tests/`. Cluster diagnostics (step 7 in the [onboarding checklist](#clone-and-configure-onboarding-checklist)) should already have chosen `VARIATION_MODE` and addressed shredded families.
-
-### 6. Test
-
-Run exported-library differential parity after export. Graph-oracle parity (step 6 in the [onboarding checklist](#clone-and-configure-onboarding-checklist)) should already have passed before you exported.
+The authored library-vs-graph sweep is:
 
 ```bash
 uv run python -m tests.differential.differential_test_exported_library
 ```
 
-On Windows with Excel installed, re-run from the exported project:
-
-```pwsh
-uv run --project dist --group validation python -m tests.differential.differential_test_exported_library --layout exported
-```
+Reports land under `data/differential/exported_library/`. Microsoft Excel is
+not required for this harness.
 
 ### 7. Document
 
 Great Docs scaffolds the distributable website from the exported package. On a
 cache miss the document stage launches a local Cursor SDK agent (`cwd=dist/`)
-that reads the guidance note, experiments with the generated API, writes
-economist-facing `user_guide/` pages, and renders them with `great-docs build`.
-Cached `user_guide/` trees live under `.cache/user-guide/`. Uncached runs need
-`CURSOR_API_KEY`.
+that reads the guidance note, experiments with the generated keyword-only
+`compute_*` API, writes economist-facing `user_guide/` pages, and renders them
+with `great-docs build`. Cached `user_guide/` trees live under
+`.cache/user-guide/`. Uncached runs need `CURSOR_API_KEY`. Runnable `{python}`
+cells must not call `make_context()` or `set_*` (`RUNNABLE_CELL_RULES` in
+[workbook_config.py](workbook_config.py)). [templates/canonical-api-usage.md](templates/canonical-api-usage.md)
+is a human note for that interaction model; the document agent does not load it.
 
-### 8. Refactor
+### Leftover clustering and ctx refactor ([#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55))
 
-Cluster parallel formula families, collapse internals with LLM-authored semantic helpers behind a parity gate, and prune thin wrappers. Each refactor pass re-runs differential tests. Choose `VARIATION_MODE` from [Cluster diagnostics](#4-cluster-diagnostics) before the first export/refactor.
-
-#### Formula-cluster variation mode
-
-Set `VARIATION_MODE` in [workbook_config.py](workbook_config.py) to control how parallel formula cells are grouped before the LLM refactor step. This affects **export** and **refactor-bucket recording** only — not graph extraction (`--extract-graph` ignores it). Run `uv run python -m scripts.compare_cluster_variation_modes` before committing a mode on a new workbook.
-
-| Mode | Behavior |
-|---|---|
-| `independent` (default) | Keep one refactor cluster when formulas share the same AST shape and scalar literals, even if operand binding keys vary along multiple dimensions. |
-| `dominant_key_only` | After AST clustering, split clusters where operand keys vary along more than one dimension, keeping only the dimension with the widest value spread as a refactor parameter. Use when a row of parallel formulas mixes, for example, country and time-period variation but you want helpers parameterized only by time period. |
-
-#### Formula-cluster base mode
-
-Set `CLUSTERING_MODE` in [workbook_config.py](workbook_config.py) to control how refactor units are formed before `VARIATION_MODE` splitting. Default is `series_ast`.
-
-| Mode | Behavior |
-|---|---|
-| `series_ast` (default) | AST-cluster parallel formula families, partition each cluster by owning series id (internal first, else public output/input binding series), then apply `VARIATION_MODE` within each series partition. |
-| `series` | One refactor unit per partition series id (internal first, else public output/input; no cross-series merging; `VARIATION_MODE` does not apply). |
-| `ast` | Series-blind AST clustering only (legacy behavior). |
-
-Structural fingerprints include literal numbers, strings, and booleans. Formulas that differ only by cell addresses or binding-key concepts can still share a cluster under `ast` or within a single series under `series_ast`.
-
-Missing internal-series ownership is not the same as an intended singleton refactor unit. Output time-sweep cells that share a public `outputs.bindings.yaml` series id stay in one multi-member cluster so collapse can emit `_ADDRESS_DISPATCH` entries with per-cell binding keys (for example `TIME_PERIOD`).
-
-Override per run on either entry point:
-
-```bash
-uv run python -m src.extraction_pipeline --clustering-mode series_ast --variation-mode dominant_key_only
-uv run python -m src.record_refactor_buckets --clustering-mode series_ast --variation-mode dominant_key_only
-```
-
-Inspect planned refactor targets without calling the LLM:
-
-```bash
-uv run python -m src.record_refactor_buckets
-```
-
-#### Mechanical body synthesis and the naming-only contract
-
-Generated cell translations are unpacked mechanically (excel-grapher
-`unpack_return`): eager reads become statement-level `_tN` temporaries while
-lazy `IF`/`CHOOSE` branches stay inline, preserving Excel error semantics.
-
-For each cluster refactor unit, [src/mechanical_body.py](src/mechanical_body.py)
-then attempts to synthesize the parameterized helper body directly from the
-fingerprint reference relations: geometry lookup dictionaries, derived
-lag/offset arguments, dependency pass-through calls, self-recurrence, and
-cross-fingerprint routing (`series` clustering). Every synthesized read is
-verified per member against the recorded ref addresses/keys. When synthesis
-succeeds, the LLM receives the **naming-only contract**
-([tests/fixtures/cluster_naming_prompt.md](tests/fixtures/cluster_naming_prompt.md)):
-it writes the docstring and renames the mechanical locals, and the pipeline
-applies the renames mechanically — the model cannot alter semantics. Units the
-synthesizer cannot prove correct fall back to the legacy full-body contract,
-and the per-helper parity gate guards both paths. Set
-`MECHANICAL_REFACTOR_BODIES=0` to disable synthesis for a run.
-
-Iterate on the refactor stage in isolation after a warm export (scratch output root by default; thin wrapper over `--only-stage refactor`):
-
-```bash
-uv run python -m src.extraction_pipeline --stop-after-stage export
-uv run python -m scripts.run_refactor_stage --dump-prompts artifacts/refactor-lab-prompts
-uv run python -m scripts.run_refactor_stage --report-synthesis artifacts/refactor-lab-synthesis
-```
-
-`--dump-prompts`, `--report-synthesis`, `--dry-run`, and `--no-parity-gate` all force a real Pass 1 / Pass 2 run: answering them from the refactored-internals cache would return before any prompt was built, making them silent no-ops. Add `--force-rebuild` to also discard warm graph / projection / cluster payloads.
+Clustering CLIs, `VARIATION_MODE` / `CLUSTERING_MODE`, Pass-1 mechanical
+synthesis, Pass-2 semantic naming, and `scripts.run_refactor_stage` remain in
+the tree so older unit tests can import them. The live orchestrator does not
+call them. Do not treat compare/diagnose as a gate before first export. [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55)
+removes that module tree.
 
 ## Run the pipeline
 
-After graph-oracle parity and cluster diagnostics pass (see [Verify graph](#3-verify-graph) and [Cluster diagnostics](#4-cluster-diagnostics)), run the full export pipeline:
+After graph-oracle (Excel vs graph) parity passes (see [Verify graph](#3-verify-graph)), run the full pipeline:
 
 ```bash
 uv sync
@@ -343,33 +290,33 @@ uv run python -m src.extraction_pipeline
 
 ### Stage entry and exit
 
-The pipeline is ordered as `extract → export → refactor → validate → document`. Each completed stage writes `artifacts/stages/<stage>.json` (cache keys, upstream keys, and input fingerprints). Use the flags below to enter or exit at a named stage without re-paying upstream work:
+The pipeline is ordered as `extract → export → annotate → validate → document`. Each completed stage writes `artifacts/stages/<stage>.json` (cache keys, upstream keys, and input fingerprints). Use the flags below to enter or exit at a named stage without re-paying upstream work:
 
 | Flag | Behavior | Typical use |
 |---|---|---|
 | `--stop-after-stage extract` (or `--extract-graph`) | Run extract only (graph review artifacts) | Bindings / constraint iteration |
-| `--stop-after-stage export` | Run through export | Inspect generated API before LLM refactor |
-| `--start-from-stage refactor` | Resume at refactor from warm `export.json` | Re-run internals after export is stable |
-| `--only-stage validate` | Run validate only (rehydrates `dist/` from manifest keys) | Differential without export/refactor |
+| `--stop-after-stage export` | Run through export | Inspect generated `compute_*` before docstrings |
+| `--start-from-stage annotate` | Resume at annotate from warm `export.json` | Re-run LLM docstrings after export is stable |
+| `--only-stage validate` | Run validate only (rehydrates `dist/` from manifest keys) | FormulaEvaluator canary without export/annotate |
 | `--only-stage document` | Run document only | Guide rewrite against an existing package |
 | `--stop-after-stage document` (default) | Full pipeline from the start | Release / complete run |
 | `--force-rebuild` | Rebuild warm on-disk caches even when keys match | Invalidate stale cache payloads |
 
-`--start-from-stage` and `--only-stage` are mutually exclusive. `--only-stage` cannot be combined with `--stop-after-stage`. Loading a stage manifest recomputes workbook / bindings / constraints / mode fingerprints and **fails loudly** (naming the drifted input) when they disagree — it never silently falls back to a full run. Entering at `validate` or `document` rebuilds `dist/` via `materialize_package` from the manifest's codegen and internals keys.
+`--start-from-stage` and `--only-stage` are mutually exclusive. `--only-stage` cannot be combined with `--stop-after-stage`. Loading a stage manifest recomputes workbook / bindings / constraints / mode fingerprints and **fails loudly** (naming the drifted input) when they disagree — it never silently falls back to a full run. Entering at `validate` or `document` rebuilds `dist/` via `materialize_package` from the manifest's codegen key, then re-applies cached annotate docstrings.
 
-When the default full run reaches `document` after a non-zero exported-library differential exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (agent errors, package mutation, empty guides, or `great-docs build` failure) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
+When the default full run reaches `document` after a non-zero FormulaEvaluator canary exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (agent errors, package mutation, empty guides, or `great-docs build` failure) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
 
 Document-agent runs use `DOCUMENT_AGENT_DEADLINE` (default 1800s). Set `PIPELINE_STALL_SECONDS` for heartbeat stack dumps during the document stage.
 
 ```bash
 uv run python -m src.extraction_pipeline --stop-after-stage export
-uv run python -m src.extraction_pipeline --start-from-stage refactor --stop-after-stage validate
+uv run python -m src.extraction_pipeline --start-from-stage annotate --stop-after-stage validate
 uv run python -m src.extraction_pipeline --only-stage validate
 ```
 
 ### Prerequisites
 
-LLM steps (docstrings, internals refactor) and the document-stage Cursor agent cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `OptimalCompression` projection, `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, formula clusters / refactor schedule, and codegen module texts cache gzipped pickle payloads under `.cache/projection/`, `.cache/series-resolution/`, `.cache/series-derived/`, `.cache/bindings-validation/`, `.cache/clusters/`, and `.cache/codegen/`. Series-resolution, series-derived, bindings-validation, and cluster keys fold a `bindings_fingerprint` (plus clustering modes, codegen options, and `excel-grapher` version as applicable); projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version. A successful gated refactor also content-keys the final `internals.py` under `.cache/internals/<key>.py` (codegen key, clusters key, digest of `.cache/internals-refactors.json`, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, refactor model, and `excel-grapher` version) so a warm refactor is a file copy that skips Pass 1, the batched parity gate, and Pass 2. The Pass 1 mechanical checkpoint is stored under `.cache/internals/<package-namespace>/` (not under `dist/`). Authored user-guide trees cache under `.cache/user-guide/<key>/`. `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen (and optional internals) cache keys recorded in `dist/.pipeline-cache-keys.json`. That sidecar also records `internals_inputs` — the refactor model, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, and `excel-grapher` version the committed module was built under. Adopting a committed `dist/` happens before clustering, so the full content key cannot be recomputed there; the recorded provenance must match the current run or the refactor is rebuilt from pristine codegen instead. Stage entry/exit also records those keys (plus fingerprints) under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, cluster, codegen, refactored-internals, and user-guide caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
+LLM steps (annotate docstrings) and the document-stage Cursor agent cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, projection, and codegen module texts cache gzipped pickle payloads under `.cache/series-resolution/`, `.cache/bindings-validation/`, `.cache/series-derived/`, `.cache/projection/`, and `.cache/codegen/`. Series-resolution, series-derived, and bindings-validation keys fold a `bindings_fingerprint`; projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version; codegen keys also fold `paradigm="inverted_tree"`. Annotate caches LLM docstrings in `.cache/inverted-tree-docstrings.json`. Authored user-guide trees cache under `.cache/user-guide/<key>/`. `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen cache key recorded in `dist/.pipeline-cache-keys.json`, then annotate re-applies cached docstrings. Leftover `.cache/clusters/` and `.cache/internals/` directories exist until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55); the live orchestrator does not write them. Stage entry/exit records keys plus fingerprints under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, codegen, annotate, and user-guide caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
 
 ```bash
 # .env — logging verbosity for pipeline entry points (default: INFO)
@@ -386,7 +333,8 @@ CURSOR_API_KEY=cursor_...
 # Per-stage model selection (optional)
 # Name prefix selects the provider for OpenAI-compatible stages: gpt-*, glm-*, deepseek-*
 DOCSTRING_MODEL=gpt-5.5
-REFACTOR_MODEL=gpt-5.5
+# REFACTOR_MODEL is dormant until issue #55; the live orchestrator does not call Pass 1/2.
+# REFACTOR_MODEL=gpt-5.5
 DOCUMENT_AGENT_MODEL=gpt-5.6-luna
 LLM_GRAPH_AUDIT_MODEL=gpt-5.5
 ```
@@ -440,7 +388,7 @@ Open `http://localhost:8000/`.
 
 Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-checklist):
 
-- [ ] **Ingest:** `data/workbook.xlsx` and `data/guide.md` populated; bindings reset to empty placeholders (or removed); `dist/` and `.cache/` cleared
+- [ ] **Ingest:** `data/tiny-dsa.xlsx` and `data/tiny-dsa-guide.md` populated (replace those names when adapting); bindings reset to empty placeholders (or removed); `dist/` and `.cache/` cleared
 - [ ] **Audit:** Pre-extraction workbook audit reviewed (`uv run python -m src.workbook_audit`); blocking automation resolved
 - [ ] **Configure:** Outputs declared as extraction targets in `workbook_config.py`
 - [ ] **Configure:** Dynamic-ref constraint candidates constrained (`list_dynamic_ref_constraint_candidates`; graph builds without `DynamicRefError`)
@@ -454,11 +402,10 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 - [ ] **Review graph:** Manual completeness review done; optional LLM dependency audit passed (`pytest --run-skipped`)
 - [ ] **Verify graph:** Scenario matrix defined in `tests/differential/`; warm `.cache/dependency-graph/` from extract (or `scripts.regenerate_graph_cache`); graph-oracle parity passes (`uv run python -m tests.differential.differential_test_graph`)
 - [ ] **Configure:** Internal binding coverage passes (`uv run pytest tests/test_internal_binding_coverage.py`)
-- [ ] **Cluster diagnostics:** `uv run python -m scripts.compare_cluster_variation_modes` run; `VARIATION_MODE` chosen; shredded families remodeled via `diagnose_schedule_atomization` (row↔column series or consolidate to matrix) or explicitly accepted
-- [ ] **Export:** `dist/` package builds; semantic API scenario runs (bindings authored beyond empty placeholders)
-- [ ] **Export:** Validation bundle exported; exported-library differential parity passes (Windows Excel sweep when available)
-- [ ] **Document / refactor:** Public API uses domain language; docstrings present
-- [ ] **Document / refactor:** Internals refactored; parity re-confirmed after refactor passes
+- [ ] **Export:** `dist/` package builds; keyword-only `compute_*` scenario runs (bindings authored beyond empty placeholders)
+- [ ] **Annotate:** Public API and internals helpers have Google-style docstrings (`--only-stage annotate` or a full run)
+- [ ] **Validate:** FormulaEvaluator library-vs-graph canary and authored exported-library sweep pass (no Excel required for the library harness)
+- [ ] **Document:** Public API uses domain language; economist-facing `user_guide/` present
 
 ## Development
 
@@ -495,7 +442,7 @@ Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audit
 | `bindings/` | Series binding sidecars (user-authored) |
 | `data/` | Workbook, guide, differential reports |
 | `dist/` | Generated distributable package (gitignored) |
-| `templates/` | Binding prompt and canonical API usage reference |
+| `templates/` | Binding prompt; `canonical-api-usage.md` is a human note (not loaded by the document agent) |
 | `.github/workflows/` | Template CI (PR tests) and manual deploy workflow |
 | `technical_standard.md` | Acceptance bar and stage gates |
 | `lessons-learned.md` | Design rationale from the Tiny DSA rehearsal |

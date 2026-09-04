@@ -46,12 +46,12 @@ COM at pipeline `validate` time.
 
 ## Prerequisites
 
-1. **excel-grapher with inverted-tree codegen.** Tiny DSA currently pins
+1. **excel-grapher with inverted-tree codegen.** Tiny DSA originally pinned
    excel-grapher git rev `3c759a472f85c115359e9cb14c05eac86432e093`
    (`CodeGenerator.generate_modules(..., paradigm="inverted_tree")`,
-   excel-grapher #597). Raise the `excel-grapher>=…` floor in `pyproject.toml`
-   and `uv lock` once that lands on a released version. Then regenerate caches
-   with `--force` as usual after a grapher upgrade.
+   excel-grapher #597). That pin is historical: `pyproject.toml` now requires
+   `excel-grapher>=12.7.1`. Raise the floor and `uv lock` when upgrading, then
+   regenerate caches with `--force` as usual after a grapher upgrade.
 2. **Binding schema 1.13.0** on every shard (`inputs`, `outputs`, `internals`,
    `constants`). Stamp the schema without reshaping existing dimension ids.
 3. **Constant series** for every graph leaf classified `constant`. Inverted-tree
@@ -258,8 +258,7 @@ These do not come along automatically from a template merge:
 
 New or heavily remodeled:
 
-- `src/inverted_tree_export.py`, `src/inverted_tree_docstrings.py`,
-  `src/inverted_tree_validate.py`
+- `src/inverted_tree_docstrings.py`, `src/inverted_tree_validate.py`
 - `src/extraction_pipeline.py` stage list and export/annotate/validate
 - `src/codegen_cache.py` (`paradigm` in the key)
 - `src/package_materialize.py` (`apply_rewrites=False`)
