@@ -35,8 +35,6 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml`, `bindings/constants.bindings.yaml` | Keyword-only `compute_*` public API, internal formula-cell triangulation, and reader-only constant leaves |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
-| Variation mode | `workbook_config.py` → `VARIATION_MODE` | Leftover clustering knob; unused by the live orchestrator until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55) |
-| Clustering mode | `workbook_config.py` → `CLUSTERING_MODE` | Leftover clustering knob; unused by the live orchestrator until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55) |
 | Internal binding exemptions | `workbook_config.py` → `INTERNAL_BINDING_EXEMPT_CELLS` | Reviewed formula cells allowed to remain unbound |
 | Graph-cache target bundles | `workbook_config.py` → `GRAPH_CACHE_TARGET_BUNDLES` | Optional extra target sets for `scripts/regenerate_graph_cache.py` |
 | Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
@@ -174,19 +172,9 @@ Use `warn` while iterating locally; treat pytest failures as the CI gate once ex
 
 | Utility | Command | When to use |
 |---|---|---|
-| Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints/`BLANK_RANGES`, or excel-grapher. Add `--force` to rebuild even when entries exist; `--force` also clears and prunes `.cache/series-resolution/`, `.cache/series-derived/`, and `.cache/bindings-validation/`, and clears `.cache/clusters/` and `.cache/internals/`. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
+| Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints/`BLANK_RANGES`, or excel-grapher. Add `--force` to rebuild even when entries exist; `--force` also clears and prunes `.cache/series-resolution/`, `.cache/series-derived/`, and `.cache/bindings-validation/`. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
 | Internal-binding burndown | `uv run python -m scripts.internal_binding_burndown` | After `--extract-graph` to see which formula rows still need `internals.bindings.yaml` entries. Supports `--per-sheet` and `--max-rows`. Reuses the newest cached graph even when bindings changed. |
 | Programmatic binding emission | `uv run python -m scripts.author_bindings` | Large, regular binding surfaces defined in a declarative catalog (`templates/binding-catalog.example.yaml`). Complements [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt). |
-
-#### Clustering / schedule diagnostics
-
-These CLIs inspect warm caches or recompute clustering. They are leftover until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55) removes the ctx clustering / Pass-1 / Pass-2 tree. The live orchestrator does not cluster or refactor internals.
-
-| Utility | Command | When to use |
-|---|---|---|
-| Compare variation modes | `uv run python -m scripts.compare_cluster_variation_modes` | Inspect `independent` vs `dominant_key_only` series-fingerprint family counts. Quiet summary by default; `--include changes members fingerprints` for detail; `--clustering-mode` to override the configured mode. |
-| Schedule atomization | `uv run python -m scripts.diagnose_schedule_atomization` | When fingerprint families shred into many schedule units, reports fan-out stats, worst families, peel samples, shredded series, and remodel recommendations. |
-| Inspect one cluster | `uv run python -m scripts.inspect_cluster --cluster-id N` | Print member addresses/formulas for fingerprint-family `N`. Add `--schedule` for peels, `--sources` (optionally `--internals path`) for `cell_*` bodies. |
 
 Commit `.cache/dependency-graph/` only when your downstream pipeline vendors the cache for warm CI (override `.gitignore` for that directory). Run `uv run pytest tests/test_binding_utility_scripts.py` to exercise the synthetic fixture path end-to-end.
 
@@ -271,14 +259,6 @@ cells must not call `make_context()` or `set_*` (`RUNNABLE_CELL_RULES` in
 [workbook_config.py](workbook_config.py)). [templates/canonical-api-usage.md](templates/canonical-api-usage.md)
 is a human note for that interaction model; the document agent does not load it.
 
-### Leftover clustering and ctx refactor ([#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55))
-
-Clustering CLIs, `VARIATION_MODE` / `CLUSTERING_MODE`, Pass-1 mechanical
-synthesis, Pass-2 semantic naming, and `scripts.run_refactor_stage` remain in
-the tree so older unit tests can import them. The live orchestrator does not
-call them. Do not treat compare/diagnose as a gate before first export. [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55)
-removes that module tree.
-
 ## Run the pipeline
 
 After graph-oracle (Excel vs graph) parity passes (see [Verify graph](#3-verify-graph)), run the full pipeline:
@@ -316,7 +296,7 @@ uv run python -m src.extraction_pipeline --only-stage validate
 
 ### Prerequisites
 
-LLM steps (annotate docstrings) and the document-stage Cursor agent cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, projection, and codegen module texts cache gzipped pickle payloads under `.cache/series-resolution/`, `.cache/bindings-validation/`, `.cache/series-derived/`, `.cache/projection/`, and `.cache/codegen/`. Series-resolution, series-derived, and bindings-validation keys fold a `bindings_fingerprint`; projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version; codegen keys also fold `paradigm="inverted_tree"`. Annotate caches LLM docstrings in `.cache/inverted-tree-docstrings.json`. Authored user-guide trees cache under `.cache/user-guide/<key>/`. `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen cache key recorded in `dist/.pipeline-cache-keys.json`, then annotate re-applies cached docstrings. Leftover `.cache/clusters/` and `.cache/internals/` directories exist until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55); the live orchestrator does not write them. Stage entry/exit records keys plus fingerprints under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, codegen, annotate, and user-guide caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
+LLM steps (annotate docstrings) and the document-stage Cursor agent cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, projection, and codegen module texts cache gzipped pickle payloads under `.cache/series-resolution/`, `.cache/bindings-validation/`, `.cache/series-derived/`, `.cache/projection/`, and `.cache/codegen/`. Series-resolution, series-derived, and bindings-validation keys fold a `bindings_fingerprint`; projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version; codegen keys also fold `paradigm="inverted_tree"`. Annotate caches LLM docstrings in `.cache/inverted-tree-docstrings.json`. Authored user-guide trees cache under `.cache/user-guide/<key>/`. `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen cache key recorded in `dist/.pipeline-cache-keys.json`, then annotate re-applies cached docstrings. Stage entry/exit records keys plus fingerprints under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, codegen, annotate, and user-guide caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
 
 ```bash
 # .env — logging verbosity for pipeline entry points (default: INFO)
@@ -333,8 +313,6 @@ CURSOR_API_KEY=cursor_...
 # Per-stage model selection (optional)
 # Name prefix selects the provider for OpenAI-compatible stages: gpt-*, glm-*, deepseek-*
 DOCSTRING_MODEL=gpt-5.5
-# REFACTOR_MODEL is dormant until issue #55; the live orchestrator does not call Pass 1/2.
-# REFACTOR_MODEL=gpt-5.5
 DOCUMENT_AGENT_MODEL=gpt-5.6-luna
 LLM_GRAPH_AUDIT_MODEL=gpt-5.5
 ```

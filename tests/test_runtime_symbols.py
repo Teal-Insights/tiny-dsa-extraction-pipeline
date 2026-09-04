@@ -12,16 +12,53 @@ from src.runtime_symbols import (
     discover_allowed_runtime_symbols,
 )
 
-_FIXTURE_RUNTIME = Path(__file__).resolve().parent / "fixtures" / "sample_runtime.py"
+_SAMPLE_RUNTIME = """\
+from enum import StrEnum
 
 
-def test_discovers_public_functions_and_xlerror() -> None:
-    symbols = discover_allowed_runtime_symbols(_FIXTURE_RUNTIME)
+class XlError(StrEnum):
+    VALUE = "#VALUE!"
+
+
+def to_bool(value: object) -> bool | XlError:
+    return True
+
+
+def to_int(value: object) -> int | XlError:
+    return 0
+
+
+def to_number(value: object) -> float | XlError:
+    return 0.0
+
+
+def compare_scalars(op: str, left: object, right: object) -> bool | XlError:
+    return True
+
+
+def xl_add(left: float, right: float) -> float:
+    return left + right
+
+
+def xl_cell(ctx: object, address: str) -> object:
+    return address
+"""
+
+
+@pytest.fixture
+def sample_runtime(tmp_path: Path) -> Path:
+    path = tmp_path / "runtime.py"
+    path.write_text(_SAMPLE_RUNTIME, encoding="utf-8")
+    return path
+
+
+def test_discovers_public_functions_and_xlerror(sample_runtime: Path) -> None:
+    symbols = discover_allowed_runtime_symbols(sample_runtime)
     assert symbols == ("XlError", "xl_add", "xl_cell")
 
 
-def test_excludes_sentinel_returning_helpers() -> None:
-    symbols = discover_allowed_runtime_symbols(_FIXTURE_RUNTIME)
+def test_excludes_sentinel_returning_helpers(sample_runtime: Path) -> None:
+    symbols = discover_allowed_runtime_symbols(sample_runtime)
     assert "to_bool" not in symbols
     assert "to_int" not in symbols
     assert "to_number" not in symbols

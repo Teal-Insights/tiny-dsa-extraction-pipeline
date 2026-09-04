@@ -8,14 +8,12 @@ from typing import Annotated, Any, Literal
 
 import fastpyxl
 from excel_grapher.core.cell_types import RealBetween
-from excel_grapher.exporter import ProjectionResult
 from excel_grapher.grapher import DependencyGraph
 from excel_grapher.series_bindings import WorkbookSeriesBindings, load_series_bindings
 
 from src.extraction_pipeline import build_pipeline_graph
 from src.graph_dependency_audit import GraphAuditCase
 from src.pipeline_config import DistProjectMetadata, PipelineConfig
-from src.subgraph_projection import build_refactor_projection
 
 FIXTURES_ROOT = Path(__file__).resolve().parent / "synthetic"
 BINDINGS_PATH = FIXTURES_ROOT
@@ -86,19 +84,6 @@ def write_synthetic_workbook(path: Path) -> Path:
     return path
 
 
-def build_synthetic_projection(
-    graph: DependencyGraph,
-    *,
-    series_bindings: WorkbookSeriesBindings | None = None,
-    bindings_workbook: Path | None = None,
-) -> ProjectionResult:
-    return build_refactor_projection(
-        graph,
-        series_bindings=series_bindings,
-        bindings_workbook=bindings_workbook,
-    )
-
-
 def load_synthetic_series_bindings(
     bindings_path: Path = BINDINGS_PATH,
 ) -> WorkbookSeriesBindings:
@@ -131,7 +116,6 @@ def synthetic_pipeline_config(
             documentation_url="https://example.com/synthetic-model/",
             repository_url=None,
         ),
-        docstring_callback_name="series_docs",
         binding_authoring_prompt_path=templates_root / "binding-authoring-prompt.txt",
         user_guide_agent_prompt_path=templates_root / "user-guide-agent.txt",
         differential_workbook_rel=Path("data/workbook.xlsx"),

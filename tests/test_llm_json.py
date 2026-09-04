@@ -144,8 +144,8 @@ def test_retries_with_error_feedback_then_succeeds() -> None:
 
 
 def test_post_validate_xl_index_ref_hint_appears_in_reprompt() -> None:
-    """Static xl_index_ref(xl_range(...)) rejection must surface in the retry prompt."""
-    from src.internals_refactor import XL_INDEX_REF_OF_XL_RANGE_HINT
+    """A post-validate ValueError must surface its hint text in the retry prompt."""
+    hint = "do not pass xl_range into xl_index_ref; use a cell address"
 
     first = '{"title": "bad", "body": "B"}'
     second = '{"title": "ok", "body": "B"}'
@@ -153,7 +153,7 @@ def test_post_validate_xl_index_ref_hint_appears_in_reprompt() -> None:
 
     def reject_once(parsed: _Sample) -> _Sample:
         if parsed.title == "bad":
-            raise ValueError(XL_INDEX_REF_OF_XL_RANGE_HINT)
+            raise ValueError(hint)
         return parsed
 
     parsed, _ = generate_validated_json(
@@ -170,7 +170,7 @@ def test_post_validate_xl_index_ref_hint_appears_in_reprompt() -> None:
     retry_user = cast(list[dict[str, str]], fake.chat.completions.calls[1]["messages"])[
         -1
     ]["content"]
-    assert XL_INDEX_REF_OF_XL_RANGE_HINT in retry_user
+    assert hint in retry_user
     assert "do not pass xl_range" in retry_user
 
 

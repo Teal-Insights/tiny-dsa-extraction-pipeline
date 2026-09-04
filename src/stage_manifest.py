@@ -122,8 +122,6 @@ def compute_input_fingerprints(config: PipelineConfig) -> dict[str, str]:
         ).hexdigest(),
         "guide": guide_fingerprint(config.guide_path),
         "excel_grapher_version": version("excel-grapher"),
-        "variation_mode": str(config.variation_mode),
-        "clustering_mode": str(config.clustering_mode),
         "internal_binding_validation_mode": str(
             config.internal_binding_validation_mode
         ),

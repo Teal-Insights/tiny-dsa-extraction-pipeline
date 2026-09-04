@@ -93,15 +93,10 @@ def test_lessons_learned_does_not_center_library_vs_excel() -> None:
     assert "exported-library" not in lowered or "graph" in lowered
 
 
-def test_env_example_marks_refactor_model_dormant() -> None:
+def test_env_example_drops_refactor_model() -> None:
     text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "DOCSTRING_MODEL=" in text
-    assert "REFACTOR_MODEL" in text
-    refactor_block = text[
-        text.index("REFACTOR_MODEL") - 200 : text.index("REFACTOR_MODEL") + 80
-    ]
-    combined = refactor_block.lower()
-    assert "dormant" in combined or "#55" in refactor_block or "not used" in combined
+    assert "REFACTOR_MODEL" not in text
 
 
 def test_inverted_tree_migration_excel_grapher_pin_is_historical() -> None:
@@ -131,3 +126,63 @@ def test_agents_md_documents_annotate_and_live_caches() -> None:
     assert "inverted-tree-docstrings" in text
     assert "Pass 1 mechanical checkpoint" not in text
     assert "**before first export**" not in text
+    assert "compare_cluster_variation_modes" not in text
+    assert "run_semantic_naming" not in text
+    assert "run_refactor_stage" not in text
+    assert ".cache/clusters/" not in text
+    assert ".cache/internals/" not in text
+
+
+def test_workbook_config_drops_clustering_and_callback_knobs() -> None:
+    text = (REPO_ROOT / "workbook_config.py").read_text(encoding="utf-8")
+    assert "VARIATION_MODE" not in text
+    assert "CLUSTERING_MODE" not in text
+    assert "DOCSTRING_CALLBACK_NAME" not in text
+
+
+def test_package_cache_keys_have_no_internals_key() -> None:
+    from src.package_materialize import PackageCacheKeys
+
+    assert "internals_key" not in PackageCacheKeys.__dataclass_fields__
+    assert "codegen_key" in PackageCacheKeys.__dataclass_fields__
+
+
+def test_dormant_ctx_refactor_stack_is_removed() -> None:
+    src = REPO_ROOT / "src"
+    scripts = REPO_ROOT / "scripts"
+    for name in (
+        "internals_refactor.py",
+        "mechanical_body.py",
+        "mechanical_naming.py",
+        "semantic_naming.py",
+        "standalone_semantic_naming.py",
+        "formula_clustering.py",
+        "cluster_cache.py",
+        "refactor_order.py",
+        "refactor_fingerprints.py",
+        "refactor_contracts.py",
+        "refactor_bindings.py",
+        "refactor_parity_gate.py",
+        "refactor_return_types.py",
+        "refactor_types.py",
+        "key_dispatch_synthesis.py",
+        "peel_entrypoint_dispatch.py",
+        "empty_if_rewrite.py",
+        "record_refactor_buckets.py",
+        "series_remodel_diagnostics.py",
+        "subgraph_projection.py",
+        "helper_memoization.py",
+        "soft_error_compute_codegen.py",
+        "docstring_callback.py",
+        "internals_cache.py",
+        "workbook_addresses.py",
+    ):
+        assert not (src / name).is_file(), name
+    for name in (
+        "run_refactor_stage.py",
+        "run_semantic_naming.py",
+        "compare_cluster_variation_modes.py",
+        "diagnose_schedule_atomization.py",
+        "inspect_cluster.py",
+    ):
+        assert not (scripts / name).is_file(), name

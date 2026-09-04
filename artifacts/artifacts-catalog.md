@@ -91,7 +91,7 @@ Written by every `run_pipeline` invocation (`uv run python -m src.extraction_pip
 | `caches.<name>.elapsed_seconds` | number \| null | Seconds spent resolving the cache (the `get_or_build_*` call) |
 | `caches.<name>.cache_key` | string \| null | Content key the lookup resolved to |
 
-`caches` keys: `dependency-graph`, `bindings-validation`, `series-resolution`, `series-derived`, `projection`, `codegen`. Leftover `clusters` and `internals` keys may appear as `null` until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55) drops them from `CACHE_NAMES`.
+`caches` keys: `dependency-graph`, `bindings-validation`, `series-resolution`, `series-derived`, `projection`, `codegen`.
 
 Spans are non-overlapping leaf measurements: do not invent a total by summing them with a parent rollup. A full `run_pipeline` records `extract`, `export`, `annotate`, `validate`, and `document` in order. Graph-build spans (`create_dependency_graph`, …) land under `extract`; binding post-processing (`load_series_bindings`, `validate_series_bindings`, `derive_series`, `series_derived`) and projection/codegen spans land under `export`; `annotate_docstrings` lands under `annotate`. Extract alone appears when `stop_after_stage=extract` (or `--extract-graph`).
 

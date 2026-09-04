@@ -8,7 +8,6 @@ from pathlib import Path
 _PROBE_MODULE_NAMES = (
     "_runtime_symbols_probe",
     "_exported_runtime_for_parity",
-    "_exported_data_for_parity",
     "tests.differential.differential_test_exported_library",
 )
 
@@ -19,8 +18,6 @@ REPO_SERIES_RESOLUTION_CACHE_DIR = _REPO_ROOT / ".cache" / "series-resolution"
 REPO_SERIES_DERIVED_CACHE_DIR = _REPO_ROOT / ".cache" / "series-derived"
 REPO_BINDINGS_VALIDATION_CACHE_DIR = _REPO_ROOT / ".cache" / "bindings-validation"
 REPO_CODEGEN_CACHE_DIR = _REPO_ROOT / ".cache" / "codegen"
-REPO_CLUSTER_CACHE_DIR = _REPO_ROOT / ".cache" / "clusters"
-REPO_INTERNALS_CACHE_DIR = _REPO_ROOT / ".cache" / "internals"
 
 _ORIGINAL_GRAPH_CACHE_DIR: Path | None = None
 _ORIGINAL_PROJECTION_CACHE_DIR: Path | None = None
@@ -28,8 +25,6 @@ _ORIGINAL_SERIES_RESOLUTION_CACHE_DIR: Path | None = None
 _ORIGINAL_SERIES_DERIVED_CACHE_DIR: Path | None = None
 _ORIGINAL_BINDINGS_VALIDATION_CACHE_DIR: Path | None = None
 _ORIGINAL_CODEGEN_CACHE_DIR: Path | None = None
-_ORIGINAL_CLUSTER_CACHE_DIR: Path | None = None
-_ORIGINAL_INTERNALS_CACHE_DIR: Path | None = None
 
 
 def redirect_pipeline_disk_cache(root: Path) -> None:
@@ -40,15 +35,11 @@ def redirect_pipeline_disk_cache(root: Path) -> None:
     global _ORIGINAL_SERIES_DERIVED_CACHE_DIR
     global _ORIGINAL_BINDINGS_VALIDATION_CACHE_DIR
     global _ORIGINAL_CODEGEN_CACHE_DIR
-    global _ORIGINAL_CLUSTER_CACHE_DIR
-    global _ORIGINAL_INTERNALS_CACHE_DIR
 
     from src import (
         bindings_validation_cache,
-        cluster_cache,
         codegen_cache,
         graph_cache,
-        internals_refactor,
         projection_cache,
         series_derived_cache,
         series_resolution_cache,
@@ -67,8 +58,6 @@ def redirect_pipeline_disk_cache(root: Path) -> None:
             bindings_validation_cache.DEFAULT_BINDINGS_VALIDATION_CACHE_DIR
         )
         _ORIGINAL_CODEGEN_CACHE_DIR = codegen_cache.DEFAULT_CODEGEN_CACHE_DIR
-        _ORIGINAL_CLUSTER_CACHE_DIR = cluster_cache.DEFAULT_CLUSTER_CACHE_DIR
-        _ORIGINAL_INTERNALS_CACHE_DIR = internals_refactor.DEFAULT_INTERNALS_CACHE_DIR
 
     graph_cache.DEFAULT_GRAPH_CACHE_DIR = root / "dependency-graph"
     projection_cache.DEFAULT_PROJECTION_CACHE_DIR = root / "projection"
@@ -80,8 +69,6 @@ def redirect_pipeline_disk_cache(root: Path) -> None:
         root / "bindings-validation"
     )
     codegen_cache.DEFAULT_CODEGEN_CACHE_DIR = root / "codegen"
-    cluster_cache.DEFAULT_CLUSTER_CACHE_DIR = root / "clusters"
-    internals_refactor.DEFAULT_INTERNALS_CACHE_DIR = root / "internals"
 
 
 def restore_pipeline_disk_cache() -> None:
@@ -92,8 +79,6 @@ def restore_pipeline_disk_cache() -> None:
     global _ORIGINAL_SERIES_DERIVED_CACHE_DIR
     global _ORIGINAL_BINDINGS_VALIDATION_CACHE_DIR
     global _ORIGINAL_CODEGEN_CACHE_DIR
-    global _ORIGINAL_CLUSTER_CACHE_DIR
-    global _ORIGINAL_INTERNALS_CACHE_DIR
 
     original_graph = _ORIGINAL_GRAPH_CACHE_DIR
     original_projection = _ORIGINAL_PROJECTION_CACHE_DIR
@@ -101,8 +86,6 @@ def restore_pipeline_disk_cache() -> None:
     original_derived = _ORIGINAL_SERIES_DERIVED_CACHE_DIR
     original_validation = _ORIGINAL_BINDINGS_VALIDATION_CACHE_DIR
     original_codegen = _ORIGINAL_CODEGEN_CACHE_DIR
-    original_cluster = _ORIGINAL_CLUSTER_CACHE_DIR
-    original_internals = _ORIGINAL_INTERNALS_CACHE_DIR
     if (
         original_graph is None
         or original_projection is None
@@ -110,17 +93,13 @@ def restore_pipeline_disk_cache() -> None:
         or original_derived is None
         or original_validation is None
         or original_codegen is None
-        or original_cluster is None
-        or original_internals is None
     ):
         return
 
     from src import (
         bindings_validation_cache,
-        cluster_cache,
         codegen_cache,
         graph_cache,
-        internals_refactor,
         projection_cache,
         series_derived_cache,
         series_resolution_cache,
@@ -134,28 +113,18 @@ def restore_pipeline_disk_cache() -> None:
         original_validation
     )
     codegen_cache.DEFAULT_CODEGEN_CACHE_DIR = original_codegen
-    cluster_cache.DEFAULT_CLUSTER_CACHE_DIR = original_cluster
-    internals_refactor.DEFAULT_INTERNALS_CACHE_DIR = original_internals
     _ORIGINAL_GRAPH_CACHE_DIR = None
     _ORIGINAL_PROJECTION_CACHE_DIR = None
     _ORIGINAL_SERIES_RESOLUTION_CACHE_DIR = None
     _ORIGINAL_SERIES_DERIVED_CACHE_DIR = None
     _ORIGINAL_BINDINGS_VALIDATION_CACHE_DIR = None
     _ORIGINAL_CODEGEN_CACHE_DIR = None
-    _ORIGINAL_CLUSTER_CACHE_DIR = None
-    _ORIGINAL_INTERNALS_CACHE_DIR = None
 
 
 def clear_runtime_caches() -> None:
     from src.runtime_symbols import clear_runtime_symbol_caches
 
     clear_runtime_symbol_caches()
-    try:
-        from src.refactor_parity_gate import clear_parity_runtime_caches
-
-        clear_parity_runtime_caches()
-    except ImportError:
-        pass
 
 
 def reset_pipeline_test_state() -> None:
