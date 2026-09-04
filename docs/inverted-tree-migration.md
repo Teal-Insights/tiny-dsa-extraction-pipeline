@@ -258,8 +258,7 @@ These do not come along automatically from a template merge:
 
 New or heavily remodeled:
 
-- `src/inverted_tree_export.py`, `src/inverted_tree_docstrings.py`,
-  `src/inverted_tree_validate.py`
+- `src/inverted_tree_docstrings.py`, `src/inverted_tree_validate.py`
 - `src/extraction_pipeline.py` stage list and export/annotate/validate
 - `src/codegen_cache.py` (`paradigm` in the key)
 - `src/package_materialize.py` (`apply_rewrites=False`)
