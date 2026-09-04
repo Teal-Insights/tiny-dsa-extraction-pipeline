@@ -1,3 +1,6 @@
+# Human note (not loaded by the document agent; `test_documentation_pipeline`
+# asserts the agent prompt does not mention `canonical_api_usage`).
+
 User-guide runnable cells should follow this interaction model: import keyword-only `compute_*` functions from the generated package API module and pass leaf inputs as Python scalars or 1-D sequences. There is no evaluation context: do not call `make_context()` or `set_*`.
 
 Input shapes:

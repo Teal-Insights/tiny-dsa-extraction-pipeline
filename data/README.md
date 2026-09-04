@@ -1,7 +1,9 @@
 # Workbook inputs
 
-Place the source workbook at `workbook.xlsx` and the human guide at `guide.md`.
+This repo uses `tiny-dsa.xlsx` as the source workbook and `tiny-dsa-guide.md`
+as the human guide.
 
-After a passing Excel parity sweep, commit reference reports under
-`differential/graph/` (extraction fidelity) and `differential/exported_library/`
-(exported package).
+After a passing graph-vs-Excel sweep, commit reference reports under
+`differential/graph/` (extraction fidelity). After a passing
+FormulaEvaluator library-vs-graph sweep, commit reports under
+`differential/exported_library/` (exported package).

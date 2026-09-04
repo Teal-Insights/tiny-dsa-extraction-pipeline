@@ -1,0 +1,133 @@
+"""Lock-in tests that authored docs match inverted-tree pipeline stages (issue #53)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from src.extraction_pipeline import PIPELINE_STAGES
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_pipeline_stages_are_inverted_tree_order() -> None:
+    assert PIPELINE_STAGES == (
+        "extract",
+        "export",
+        "annotate",
+        "validate",
+        "document",
+    )
+
+
+def test_readme_describes_live_stages_not_ctx_refactor() -> None:
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "--start-from-stage annotate" in text
+    assert "--start-from-stage refactor" not in text
+    assert "annotate[Annotate]" in text
+    assert "refactor[Refactor]" not in text
+    assert "records-shaped API" not in text
+    assert "keyword-only" in text
+    assert "compute_*" in text
+    assert "FormulaEvaluator" in text
+    for stage in PIPELINE_STAGES:
+        assert stage in text
+
+
+def test_readme_does_not_require_cluster_diagnostics_before_export() -> None:
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert (
+        "Do not run the full pipeline for the first export until compare has been run"
+        not in text
+    )
+    assert "Cluster diagnostics" not in text.split("## Pipeline stages", 1)[0]
+
+
+def test_pyproject_description_is_not_placeholder() -> None:
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'description = "Add your description here"' not in text
+    assert "inverted-tree" in text.lower() or "extraction" in text.lower()
+
+
+def test_data_readme_names_tiny_dsa_inputs() -> None:
+    text = (REPO_ROOT / "data" / "README.md").read_text(encoding="utf-8")
+    assert "tiny-dsa.xlsx" in text
+    assert "tiny-dsa-guide.md" in text
+    assert "workbook.xlsx" not in text
+    assert "guide.md" not in text.replace("tiny-dsa-guide.md", "")
+
+
+def test_workbook_config_header_lists_live_stages() -> None:
+    header = "\n".join(
+        (REPO_ROOT / "workbook_config.py").read_text(encoding="utf-8").splitlines()[:6]
+    )
+    assert "annotate" in header
+    assert "extract → export → test → document → refactor" not in header
+
+
+def test_artifacts_docs_list_annotate_not_live_refactor() -> None:
+    readme = (REPO_ROOT / "artifacts" / "README.md").read_text(encoding="utf-8")
+    catalog = (REPO_ROOT / "artifacts" / "artifacts-catalog.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (readme, catalog):
+        assert "annotate.json" in text or "stages/annotate" in text
+        assert "stages/refactor.json" not in text
+        assert "stages/{export,refactor,validate,document}" not in text
+
+
+def test_technical_standard_export_gate_is_inverted_tree() -> None:
+    text = (REPO_ROOT / "technical_standard.md").read_text(encoding="utf-8")
+    assert "Records-shaped public API" not in text
+    assert "configure → extract → export → refactor" not in text
+    assert "keyword-only" in text
+    assert "FormulaEvaluator" in text
+    assert "annotate" in text
+
+
+def test_lessons_learned_does_not_center_library_vs_excel() -> None:
+    text = (REPO_ROOT / "lessons-learned.md").read_text(encoding="utf-8")
+    assert "FormulaEvaluator" in text
+    assert "annotate" in text
+    lowered = text.lower()
+    assert "library-vs-excel" not in lowered
+    assert "exported-library" not in lowered or "graph" in lowered
+
+
+def test_env_example_marks_refactor_model_dormant() -> None:
+    text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "DOCSTRING_MODEL=" in text
+    assert "REFACTOR_MODEL" in text
+    refactor_block = text[
+        text.index("REFACTOR_MODEL") - 200 : text.index("REFACTOR_MODEL") + 80
+    ]
+    combined = refactor_block.lower()
+    assert "dormant" in combined or "#55" in refactor_block or "not used" in combined
+
+
+def test_inverted_tree_migration_excel_grapher_pin_is_historical() -> None:
+    text = (REPO_ROOT / "docs" / "inverted-tree-migration.md").read_text(
+        encoding="utf-8"
+    )
+    assert "excel-grapher>=12.7.1" in text
+    pin_idx = text.find("3c759a4")
+    assert pin_idx != -1
+    window = text[max(0, pin_idx - 80) : pin_idx + 120].lower()
+    assert "historical" in window or "then pinned" in window or "originally" in window
+
+
+def test_canonical_api_usage_is_human_note() -> None:
+    text = (REPO_ROOT / "templates" / "canonical-api-usage.md").read_text(
+        encoding="utf-8"
+    )
+    lowered = text.lower()
+    assert "human" in lowered or "not loaded" in lowered
+    assert "make_context()" in text
+    assert "compute_*" in text
+
+
+def test_agents_md_documents_annotate_and_live_caches() -> None:
+    text = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "annotate" in text.lower()
+    assert "inverted-tree-docstrings" in text
+    assert "Pass 1 mechanical checkpoint" not in text
+    assert "**before first export**" not in text

@@ -1,7 +1,7 @@
 """Workbook-specific configuration for the Tiny DSA extraction project.
 
 Edit values here before running the pipeline. See README.md for the
-configure → extract → export → test → document → refactor workflow.
+extract → export → annotate → validate → document workflow.
 """
 
 from __future__ import annotations
@@ -106,12 +106,13 @@ INTERNAL_BINDING_VALIDATION_MODE: InternalBindingValidationMode = "warn"
 # Sheet-qualified formula addresses reviewed and intentionally allowed to remain unbound.
 INTERNAL_BINDING_EXEMPT_CELLS: frozenset[str] = frozenset()
 
-# Formula-cluster variation mode for internals refactor (independent or dominant_key_only).
+# Formula-cluster variation mode for leftover internals refactor (#55).
+# Unused by the live extract → export → annotate → validate → document orchestrator.
 # Override per run with ``--variation-mode`` on ``src.extraction_pipeline``.
 VARIATION_MODE = "independent"
 
-# Formula-cluster base mode for internals refactor (series, series_ast, or ast).
-# Override per run with ``--clustering-mode`` on ``src.extraction_pipeline``.
+# Formula-cluster base mode for leftover internals refactor (#55).
+# Unused by the live orchestrator. Override per run with ``--clustering-mode``.
 CLUSTERING_MODE = "series"
 
 RUNNABLE_CELL_RULES: tuple[RunnableCellRule, ...] = (

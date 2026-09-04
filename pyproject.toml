@@ -1,7 +1,7 @@
 [project]
 name = "tiny-dsa-extraction-pipeline"
 version = "0.1.0"
-description = "Add your description here"
+description = "Extract the Tiny DSA Excel workbook into a keyword-only inverted-tree Python library"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
