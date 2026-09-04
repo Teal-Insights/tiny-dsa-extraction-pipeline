@@ -70,6 +70,7 @@ def _seed_fingerprint_inputs(config: PipelineConfig) -> Path:
         "comparison_utils.py",
         "workbook_labels.py",
         "differential_scenario_inputs.py",
+        "binding_adapter.py",
     ):
         (harness_dir / name).write_text(f"# {name}\n", encoding="utf-8")
     return harness_dir
@@ -208,6 +209,7 @@ def test_differential_cache_key_changes_when_workbook_changes(tmp_path: Path) ->
         "comparison_utils.py",
         "workbook_labels.py",
         "differential_scenario_inputs.py",
+        "binding_adapter.py",
     ],
 )
 def test_differential_cache_key_changes_when_harness_changes(

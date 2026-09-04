@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -395,8 +395,7 @@ def test_run_cmd_forces_utf8_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("src.documentation_pipeline.subprocess.run", fake_run)
     run_cmd(["echo", "hi"])
-    env = captured["env"]
-    assert isinstance(env, dict)
+    env = cast(dict[str, str], captured["env"])
     assert env["PYTHONUTF8"] == "1"
     assert env["PYTHONIOENCODING"] == "utf-8"
 

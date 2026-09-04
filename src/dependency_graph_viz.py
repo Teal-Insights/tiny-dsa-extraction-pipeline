@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -671,6 +672,28 @@ def series_cell_keys(series_items: Iterable[Mapping[str, Any]]) -> set[NodeKey]:
             if isinstance(address, str):
                 keys.add(address)
     return keys
+
+
+_LEAF_COVERAGE_KINDS = frozenset({"constant", "input"})
+
+
+def unbound_classified_leaf_keys(
+    leaf_classification: Mapping[str, str],
+    bound_cells: AbstractSet[str],
+    *,
+    kind: str,
+) -> list[str]:
+    """Return sorted leaves of ``kind`` that are missing from ``bound_cells``.
+
+    An empty classification, or a classification with no leaves of ``kind``,
+    returns ``[]``. Callers must assert emptiness rather than skip.
+    """
+    if kind not in _LEAF_COVERAGE_KINDS:
+        raise ValueError(f"unsupported leaf kind {kind!r}")
+    classified = {
+        key for key, leaf_kind in leaf_classification.items() if leaf_kind == kind
+    }
+    return sorted(classified - bound_cells)
 
 
 def constant_keys_from_leaf_classification(

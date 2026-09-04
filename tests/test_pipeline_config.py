@@ -5,6 +5,7 @@ import pytest
 
 from src.pipeline_config import (
     DistProjectMetadata,
+    InvertedTreeValidateCase,
     RunnableCellRule,
     load_pipeline_config,
     validate_pipeline_config,
@@ -36,6 +37,7 @@ def test_load_pipeline_config_reads_inverted_tree_runnable_cell_rules() -> None:
     assert len(config.runnable_cell_rules) == 2
     assert any("make_context" in rule.pattern for rule in config.runnable_cell_rules)
     assert any("set_" in rule.pattern for rule in config.runnable_cell_rules)
+    assert config.inverted_tree_validate_cases == ()
 
 
 def test_load_pipeline_config_reads_blank_ranges(
@@ -119,6 +121,26 @@ def test_load_pipeline_config_rejects_invalid_runnable_cell_rules(
         raising=False,
     )
     with pytest.raises(ValueError, match="RUNNABLE_CELL_RULES"):
+        load_pipeline_config()
+
+
+def test_load_pipeline_config_rejects_empty_inverted_tree_validate_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    monkeypatch.setattr(
+        workbook_config,
+        "INVERTED_TREE_VALIDATE_CASES",
+        (
+            InvertedTreeValidateCase(
+                compute_name="compute_output_baseline",
+                addresses=(),
+            ),
+        ),
+        raising=False,
+    )
+    with pytest.raises(ValueError, match="addresses"):
         load_pipeline_config()
 
 

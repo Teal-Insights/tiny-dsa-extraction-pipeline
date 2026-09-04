@@ -1,4 +1,4 @@
-"""Lock-in tests for cheap inverted-tree hygiene (issue #52)."""
+"""Lock-in tests for cheap inverted-tree hygiene."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ REMOVED_PATHS = (
     Path("archive/extraction-pipeline.qmd"),
     Path("docs/extraction-pipeline.qmd"),
     Path("docs/extraction-pipeline.md"),
-    Path("tests/test_inverted_tree_export.py"),
     Path("tests/test_runtime_symbols.py"),
     Path("tests/test_runtime_symbols_config.py"),
     Path("dist/tests/differential_test_exported_library.py"),

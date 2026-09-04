@@ -1,10 +1,11 @@
-"""Lock-in tests that authored docs match inverted-tree pipeline stages (issue #53)."""
+"""Lock-in tests that authored docs match inverted-tree pipeline stages."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from src.extraction_pipeline import PIPELINE_STAGES
+from src.package_materialize import PackageCacheKeys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,6 +41,10 @@ def test_readme_does_not_require_cluster_diagnostics_before_export() -> None:
         not in text
     )
     assert "Cluster diagnostics" not in text.split("## Pipeline stages", 1)[0]
+    assert "Leftover clustering and refactor" not in text
+    assert "compare_cluster_variation_modes" not in text
+    assert "run_refactor_stage" not in text
+    assert "run_semantic_naming" not in text
 
 
 def test_pyproject_description_is_not_placeholder() -> None:
@@ -97,13 +102,21 @@ def test_env_example_drops_refactor_model() -> None:
     text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "DOCSTRING_MODEL=" in text
     assert "REFACTOR_MODEL" not in text
+    assert "CURSOR_API_KEY=" in text
+    assert "DOCUMENT_AGENT_MODEL=" in text
+    assert "SECTION_REWRITE_MODEL" not in text
 
 
-def test_inverted_tree_migration_excel_grapher_pin_is_historical() -> None:
+def test_inverted_tree_migration_names_live_path_and_grapher_floor() -> None:
     text = (REPO_ROOT / "docs" / "inverted-tree-migration.md").read_text(
         encoding="utf-8"
     )
+    assert "annotate" in text
+    assert "compute_*" in text
+    assert "FormulaEvaluator" in text
     assert "excel-grapher>=12.7.1" in text
+    assert "compare_cluster_variation_modes" not in text.split("Do not keep")[0]
+    assert "run_refactor_stage" not in text.split("Do not keep")[0]
     pin_idx = text.find("3c759a4")
     assert pin_idx != -1
     window = text[max(0, pin_idx - 80) : pin_idx + 120].lower()
@@ -144,8 +157,6 @@ def test_workbook_config_drops_clustering_and_callback_knobs() -> None:
 
 
 def test_package_cache_keys_have_no_internals_key() -> None:
-    from src.package_materialize import PackageCacheKeys
-
     assert "internals_key" not in PackageCacheKeys.__dataclass_fields__
     assert "codegen_key" in PackageCacheKeys.__dataclass_fields__
 

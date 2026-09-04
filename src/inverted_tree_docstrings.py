@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,14 +18,26 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.llm_json import generate_validated_json
-from src.llm_providers import build_client, model_from_env
+from src.async_gather import run_map_as_completed
+from src.llm_json import DEFAULT_MAX_ATTEMPTS, generate_validated_json_async
+from src.llm_providers import (
+    build_async_client,
+    get_llm_semaphore,
+    llm_max_concurrent,
+    model_from_env,
+)
 from src.pipeline_config import PipelineConfig
 
 DOCSTRING_MODEL_ENV = "DOCSTRING_MODEL"
 DOCSTRING_PROMPT_VERSION = 1
 _ANNOTATE_CACHE_SCHEMA = "1.0.0"
 _PACKAGE_DOCSTRING_MODULES = ("api.py", "internals.py")
+_DOCSTRING_SYSTEM_PROMPT = (
+    "You write concise, production-quality Python docstring prose. "
+    "Return only valid JSON matching the supplied schema."
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ArgDoc(BaseModel):
@@ -61,6 +74,7 @@ class FunctionDocRequest:
 
 
 GenerateDoc = Callable[[FunctionDocRequest], FunctionDocResponse]
+DocKey = tuple[str, str]
 
 
 def docstring_cache_path(repo_root: Path) -> Path:
@@ -246,6 +260,128 @@ Response schema:
 """.strip()
 
 
+def _request_key(request: FunctionDocRequest) -> DocKey:
+    return (request.module_name, request.function_name)
+
+
+def _collect_doc_requests(
+    source: str,
+    *,
+    module_name: str,
+    series_notes: Mapping[str, str],
+    guide_text: str,
+) -> tuple[FunctionDocRequest, ...]:
+    return tuple(
+        FunctionDocRequest(
+            module_name=module_name,
+            function_name=node.name,
+            parameter_names=parameter_names(node),
+            source=_function_source(source, node),
+            series_notes=_notes_for(node.name, series_notes),
+            guide_text=guide_text,
+        )
+        for node in _iter_functions(source)
+    )
+
+
+def _gather_docstrings(
+    misses: Sequence[FunctionDocRequest],
+    *,
+    model: str,
+    on_success: Callable[[DocKey, FunctionDocResponse], None] | None = None,
+) -> dict[DocKey, FunctionDocResponse]:
+    """Ask the docstring model for every miss concurrently under the LLM semaphore."""
+    client, provider = build_async_client(model)
+    semaphore = get_llm_semaphore()
+    schema = FunctionDocResponse.model_json_schema()
+
+    def _post_validate_for(
+        request: FunctionDocRequest,
+    ) -> Callable[[FunctionDocResponse], FunctionDocResponse]:
+        def _post_validate(parsed: FunctionDocResponse) -> FunctionDocResponse:
+            _assert_args_match(request, parsed)
+            return parsed
+
+        return _post_validate
+
+    async def _one(
+        request: FunctionDocRequest,
+    ) -> tuple[DocKey, FunctionDocResponse]:
+        parsed, _content = await generate_validated_json_async(
+            client=client,
+            model=model,
+            provider=provider,
+            system_prompt=_DOCSTRING_SYSTEM_PROMPT,
+            user_prompt=_prompt_for_docstring(request, schema),
+            response_model=FunctionDocResponse,
+            post_validate=_post_validate_for(request),
+            max_attempts=DEFAULT_MAX_ATTEMPTS,
+            semaphore=semaphore,
+        )
+        return _request_key(request), parsed
+
+    return run_map_as_completed(misses, _one, on_success=on_success)
+
+
+def llm_generate_docs(
+    requests: Sequence[FunctionDocRequest],
+    *,
+    repo_root: Path,
+    cache_path: Path | None = None,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
+) -> dict[DocKey, FunctionDocResponse]:
+    """Ask the docstring model for many functions, concurrently, with a JSON cache."""
+    load_dotenv(repo_root / ".env")
+    model = model_from_env(DOCSTRING_MODEL_ENV)
+    resolved_cache = (
+        cache_path if cache_path is not None else docstring_cache_path(repo_root)
+    )
+    cache = {} if no_cache else load_docstring_cache(resolved_cache)
+    cache_keys = {
+        _request_key(request): function_doc_cache_key(request, model=model)
+        for request in requests
+    }
+    results: dict[DocKey, FunctionDocResponse] = {}
+    misses: list[FunctionDocRequest] = []
+    for request in requests:
+        key = _request_key(request)
+        cache_key = cache_keys[key]
+        if not no_cache and not force_rebuild and cache_key in cache:
+            parsed = FunctionDocResponse.model_validate_json(cache[cache_key])
+            _assert_args_match(request, parsed)
+            results[key] = parsed
+            continue
+        misses.append(request)
+
+    logger.info(
+        "annotate docstrings: %d functions (%d cache hits, %d LLM misses, "
+        "max_concurrent=%d)",
+        len(requests),
+        len(results),
+        len(misses),
+        llm_max_concurrent(),
+    )
+    print(
+        f"annotate: {len(requests)} functions ({len(results)} cache hits, "
+        f"{len(misses)} LLM, max_concurrent={llm_max_concurrent()})",
+        flush=True,
+    )
+
+    if not misses:
+        return results
+
+    def _persist(key: DocKey, parsed: FunctionDocResponse) -> None:
+        if no_cache:
+            return
+        cache[cache_keys[key]] = parsed.model_dump_json()
+        save_docstring_cache(resolved_cache, cache)
+
+    gathered = _gather_docstrings(misses, model=model, on_success=_persist)
+    results.update(gathered)
+    return results
+
+
 def llm_generate_doc(
     request: FunctionDocRequest,
     *,
@@ -255,34 +391,14 @@ def llm_generate_doc(
     force_rebuild: bool = False,
 ) -> FunctionDocResponse:
     """Ask the docstring model for one function, with a JSON cache."""
-    load_dotenv(repo_root / ".env")
-    model = model_from_env(DOCSTRING_MODEL_ENV)
-    resolved_cache = (
-        cache_path if cache_path is not None else docstring_cache_path(repo_root)
+    results = llm_generate_docs(
+        (request,),
+        repo_root=repo_root,
+        cache_path=cache_path,
+        no_cache=no_cache,
+        force_rebuild=force_rebuild,
     )
-    cache = {} if no_cache else load_docstring_cache(resolved_cache)
-    cache_key = function_doc_cache_key(request, model=model)
-    if not no_cache and not force_rebuild and cache_key in cache:
-        return FunctionDocResponse.model_validate_json(cache[cache_key])
-    client, provider = build_client(model)
-    parsed, content = generate_validated_json(
-        client=client,
-        model=model,
-        provider=provider,
-        system_prompt=(
-            "You write concise, production-quality Python docstring prose. "
-            "Return only valid JSON matching the supplied schema."
-        ),
-        user_prompt=_prompt_for_docstring(
-            request, FunctionDocResponse.model_json_schema()
-        ),
-        response_model=FunctionDocResponse,
-    )
-    _assert_args_match(request, parsed)
-    if not no_cache:
-        cache[cache_key] = content
-        save_docstring_cache(resolved_cache, cache)
-    return parsed
+    return results[_request_key(request)]
 
 
 def apply_inverted_tree_docstrings(
@@ -292,42 +408,53 @@ def apply_inverted_tree_docstrings(
     guide_text: str,
     generate_doc: GenerateDoc | None = None,
     repo_root: Path | None = None,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
 ) -> None:
     """Replace mechanical docstrings on public ``api`` / ``internals`` functions."""
-    resolved_generate = generate_doc
-    if resolved_generate is None:
-        if repo_root is None:
-            raise ValueError("repo_root is required when generate_doc is omitted")
-
-        def resolved_generate(request: FunctionDocRequest) -> FunctionDocResponse:
-            return llm_generate_doc(request, repo_root=repo_root)
-
+    modules: list[tuple[Path, str, tuple[FunctionDocRequest, ...]]] = []
+    all_requests: list[FunctionDocRequest] = []
     for module_name in _PACKAGE_DOCSTRING_MODULES:
         path = package_root / module_name
         if not path.is_file():
             raise FileNotFoundError(f"missing generated module: {path}")
         source = path.read_text(encoding="utf-8")
-        function_names = tuple(node.name for node in _iter_functions(source))
-        for function_name in function_names:
-            node = next(
-                candidate
-                for candidate in _iter_functions(source)
-                if candidate.name == function_name
-            )
-            request = FunctionDocRequest(
-                module_name=module_name,
-                function_name=node.name,
-                parameter_names=parameter_names(node),
-                source=_function_source(source, node),
-                series_notes=_notes_for(node.name, series_notes),
-                guide_text=guide_text,
-            )
-            response = resolved_generate(request)
+        requests = _collect_doc_requests(
+            source,
+            module_name=module_name,
+            series_notes=series_notes,
+            guide_text=guide_text,
+        )
+        modules.append((path, source, requests))
+        all_requests.extend(requests)
+
+    if generate_doc is not None:
+        responses: dict[DocKey, FunctionDocResponse] = {}
+        for request in all_requests:
+            response = generate_doc(request)
             _assert_args_match(request, response)
-            source = replace_function_docstring(
-                source, node.name, render_google_docstring(response)
+            responses[_request_key(request)] = response
+    else:
+        if repo_root is None:
+            raise ValueError("repo_root is required when generate_doc is omitted")
+        responses = llm_generate_docs(
+            all_requests,
+            repo_root=repo_root,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
+        )
+        for request in all_requests:
+            _assert_args_match(request, responses[_request_key(request)])
+
+    for path, source, requests in modules:
+        updated = source
+        for request in requests:
+            updated = replace_function_docstring(
+                updated,
+                request.function_name,
+                render_google_docstring(responses[_request_key(request)]),
             )
-        path.write_text(source, encoding="utf-8", newline="\n")
+        path.write_text(updated, encoding="utf-8", newline="\n")
 
 
 def series_notes_from_bindings(series_bindings: Mapping[str, object]) -> dict[str, str]:
@@ -357,18 +484,11 @@ def annotate_exported_package(
 
     bindings = load_series_bindings(config.bindings_path)
 
-    def generate_doc(request: FunctionDocRequest) -> FunctionDocResponse:
-        return llm_generate_doc(
-            request,
-            repo_root=config.repo_root,
-            no_cache=no_cache,
-            force_rebuild=force_rebuild,
-        )
-
     apply_inverted_tree_docstrings(
         package_root=config.package_root,
         series_notes=series_notes_from_bindings(bindings),
         guide_text=config.guide_path.read_text(encoding="utf-8"),
-        generate_doc=generate_doc,
         repo_root=config.repo_root,
+        no_cache=no_cache,
+        force_rebuild=force_rebuild,
     )

@@ -19,6 +19,7 @@ from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.series_bindings.ranges import (
     apply_series_excludes,
     expand_data_range_for_graph,
+    series_data_ranges,
 )
 from excel_grapher.series_bindings.resolve import (
     BindingDirection,
@@ -117,21 +118,32 @@ def _unfilled_label_binds(series: dict[str, Any]) -> list[dict[str, Any]]:
     return binds
 
 
+def _expand_series_addresses_for_graph(
+    graph: DependencyGraph,
+    series: dict[str, Any],
+    *,
+    workbook_path: Path | str,
+) -> list[str] | None:
+    try:
+        addresses: list[str] = []
+        for data_range in series_data_ranges(series):
+            addresses.extend(
+                expand_data_range_for_graph(graph, data_range, workbook=workbook_path)
+            )
+        return apply_series_excludes(addresses, series)
+    except (ValueError, TypeError):
+        return None
+
+
 def _data_range_row_column_indices(
     graph: DependencyGraph,
     series: dict[str, Any],
     *,
     workbook_path: Path | str,
 ) -> tuple[str, frozenset[int], frozenset[int]] | None:
-    data_range = series.get("data_range")
-    if not isinstance(data_range, str):
-        return None
-    try:
-        addresses = expand_data_range_for_graph(
-            graph, data_range, workbook=workbook_path
-        )
-    except (ValueError, TypeError):
-        return None
+    addresses = _expand_series_addresses_for_graph(
+        graph, series, workbook_path=workbook_path
+    )
     if not addresses:
         return None
 
@@ -329,15 +341,10 @@ def find_duplicate_internal_formula_cell_bindings(
         series_id = str(series.get("id", ""))
         if not series_id:
             continue
-        data_range = series.get("data_range")
-        if not isinstance(data_range, str):
-            continue
-        try:
-            addresses = expand_data_range_for_graph(
-                graph, data_range, workbook=workbook_path
-            )
-            addresses = apply_series_excludes(addresses, series)
-        except (ValueError, TypeError):
+        addresses = _expand_series_addresses_for_graph(
+            graph, series, workbook_path=workbook_path
+        )
+        if not addresses:
             continue
         for address in addresses:
             node = graph.get_node(address)

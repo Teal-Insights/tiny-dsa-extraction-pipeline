@@ -10,11 +10,9 @@ from pathlib import Path
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import DependencyGraph
 
-from src.pipeline_config import PipelineConfig
+from src.pipeline_config import InvertedTreeValidateCase, PipelineConfig
 
 ATOL = 1e-9
-_BASELINE_ADDRS = tuple(f"Outputs!{col}12" for col in "BCDEF")
-_SHOCKED_ADDRS = tuple(f"Outputs!{col}13" for col in "BCDEF")
 
 
 def _load_package(config: PipelineConfig):
@@ -31,11 +29,13 @@ def _load_package(config: PipelineConfig):
     return package
 
 
-def _close(left: tuple[float, ...], right: tuple[object, ...]) -> bool:
+def _close(left: tuple[object, ...], right: tuple[object, ...]) -> bool:
     if len(left) != len(right):
         return False
     for observed, expected in zip(left, right, strict=True):
-        if not isinstance(expected, (int, float)):
+        if not isinstance(observed, (int, float)) or isinstance(observed, bool):
+            return False
+        if not isinstance(expected, (int, float)) or isinstance(expected, bool):
             return False
         if abs(float(observed) - float(expected)) > ATOL:
             return False
@@ -68,56 +68,92 @@ def _report_text(
     )
 
 
+def _require_cases(
+    cases: tuple[InvertedTreeValidateCase, ...],
+) -> tuple[InvertedTreeValidateCase, ...]:
+    if not cases:
+        raise RuntimeError(
+            "No inverted-tree validate cases configured. Author "
+            "INVERTED_TREE_VALIDATE_CASES in workbook_config.py with default "
+            "output addresses and compute_* kwargs before claiming "
+            "FormulaEvaluator parity."
+        )
+    for case in cases:
+        if not case.addresses:
+            raise RuntimeError(
+                f"{case.compute_name}: inverted-tree validate case has no output "
+                "addresses. Declare the default FormulaEvaluator cells in "
+                "workbook_config.INVERTED_TREE_VALIDATE_CASES."
+            )
+        if not case.compute_name:
+            raise RuntimeError(
+                "inverted-tree validate case is missing compute_name. Name the "
+                "keyword-only compute_* helper in workbook_config."
+            )
+    return cases
+
+
+def _compute_kwargs(
+    package: object, case: InvertedTreeValidateCase
+) -> dict[str, object]:
+    data = getattr(package, "data", None)
+    if data is None:
+        raise AttributeError(
+            f"{package!r} has no data module; inverted-tree validate reads "
+            "default kwargs from generated data.py attributes"
+        )
+    kwargs: dict[str, object] = {}
+    for arg_name, attr_name in case.data_kwargs:
+        if not hasattr(data, attr_name):
+            raise AttributeError(
+                f"{case.compute_name}: data.{attr_name} is missing; "
+                "INVERTED_TREE_VALIDATE_CASES data_kwargs must name generated "
+                "data.py defaults"
+            )
+        kwargs[arg_name] = getattr(data, attr_name)
+    return kwargs
+
+
 def write_formula_evaluator_parity_reports(
     config: PipelineConfig,
     *,
     report_dir: Path,
     graph: DependencyGraph | None = None,
 ) -> int:
-    """Compare default inverted-tree computes to the pipeline graph evaluator.
+    """Compare configured inverted-tree computes to the pipeline graph evaluator.
 
-    Returns 0 when every compared cell matches, otherwise 1.
+    Returns 0 when every compared cell matches, otherwise 1. Empty configured
+    addresses fail closed — the same pattern as empty graph differential hooks.
     """
-    graph_result = None
+    cases = _require_cases(config.inverted_tree_validate_cases)
     if graph is None:
         from src.extraction_pipeline import build_pipeline_graph
 
-        graph_result = build_pipeline_graph(config)
-        graph = graph_result.graph
+        graph = build_pipeline_graph(config).graph
     evaluator = FormulaEvaluator(graph)
-    outputs = evaluator.evaluate(list(_BASELINE_ADDRS + _SHOCKED_ADDRS))
-    expected_baseline = tuple(outputs[addr] for addr in _BASELINE_ADDRS)
-    expected_shocked = tuple(outputs[addr] for addr in _SHOCKED_ADDRS)
+    addresses = [address for case in cases for address in case.addresses]
+    outputs = evaluator.evaluate(addresses)
 
     package = _load_package(config)
-    data = package.data
-    baseline = package.compute_output_baseline(
-        country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
-        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
-    )
-    shocked = package.compute_output_shocked(
-        country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
-        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
-        shock_year=data.SHOCK_YEAR_DEFAULT,
-        shock_type=data.SHOCK_TYPE_DEFAULT,
-        shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
-    )
     passed = 0
     failed = 0
-    for observed, expected in (
-        (tuple(baseline), expected_baseline),
-        (tuple(shocked), expected_shocked),
-    ):
+    for case in cases:
+        compute = getattr(package, case.compute_name, None)
+        if compute is None:
+            api = importlib.import_module(f"{config.dist_metadata.package_name}.api")
+            compute = getattr(api, case.compute_name, None)
+        if compute is None or not callable(compute):
+            raise AttributeError(
+                f"exported package has no callable {case.compute_name}; "
+                "INVERTED_TREE_VALIDATE_CASES must name a generated compute_* "
+                "helper"
+            )
+        observed = tuple(compute(**_compute_kwargs(package, case)))
+        expected = tuple(outputs[address] for address in case.addresses)
         if _close(observed, expected):
             passed += len(observed)
         else:
-            failed += len(observed)
+            failed += len(case.addresses)
     total = passed + failed
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / "parity_report.txt").write_text(
@@ -125,7 +161,7 @@ def write_formula_evaluator_parity_reports(
         encoding="utf-8",
     )
     (report_dir / "parity_report.csv").write_text(
-        f"scenario,passed,failed\ndefault_borvelia,{passed},{failed}\n",
+        f"scenario,passed,failed\ndefault,{passed},{failed}\n",
         encoding="utf-8",
     )
     return 0 if failed == 0 else 1

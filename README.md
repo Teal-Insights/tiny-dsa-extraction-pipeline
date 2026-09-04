@@ -1,6 +1,6 @@
 # Extraction Pipeline Template
 
-Cookie-cutter template for turning an Excel financial model into a semantic, distributable Python library using [excel-grapher](https://github.com/Teal-Insights/excel-grapher). The pipeline combines target-driven graph extraction, explicit dynamic-reference constraints, series bindings, LLM-assisted naming and documentation, Excel-backed **graph-oracle** parity, and FormulaEvaluator **library** parity.
+Cookie-cutter template for turning an Excel financial model into a semantic, distributable Python library using [excel-grapher](https://github.com/Teal-Insights/excel-grapher). The pipeline combines target-driven graph extraction, explicit dynamic-reference constraints, series bindings, LLM-assisted documentation, Excel-backed **graph-oracle** parity, and FormulaEvaluator **library** parity.
 
 See [technical_standard.md](technical_standard.md) for the acceptance bar and [lessons-learned.md](lessons-learned.md) for design rationale.
 
@@ -81,6 +81,7 @@ Validation checks:
 - `validate_series_bindings(...)` reports `ok`
 - `derive_input_series` / `derive_output_series` / `derive_internal_series` / `derive_constant_series` resolve every binding
 - No unbound mutable input leaves
+- No unbound constant leaves
 - Run the pre-extraction workbook audit and review blocking automation before graph work:
 
 ```bash
@@ -130,8 +131,8 @@ Author `internals.bindings.yaml` after `--extract-graph`, when you can see which
 - **One series per logical group** — a single lookup/anchor cell or one formula row/range (e.g. `Engine!C10:G10`), not one entry per cell.
 - **Same YAML shape as public bindings** — use `internal: {}` instead of `input` / `output`. Scalar examples are in [tests/fixtures/synthetic/internals.bindings.yaml](tests/fixtures/synthetic/internals.bindings.yaml).
 - **Scalars vs row series** — lookup and anchor formulas usually use `layout: scalar` with `key: []`. Parallel time-series rows use `layout: row_series` with a key dimension (often concept `TIME_PERIOD`) bound from the **header row that labels that row**; different tables often use different header rows.
-- **Give every dimension an explicit `id`** — `id` names the dimension itself and is the effective key used in records, cell keys, and graph labels. `concept` is the SDMX-style meaning category. They match unless two dimensions in one series share a concept (e.g. projection axis and reference period both on `TIME_PERIOD`), in which case give each a distinct id such as `PROJECTION_PERIOD` / `REFERENCE_PERIOD`. Parameter names come from the effective id (`projection_period`). Concept-only keys remain valid only when the concept uniquely identifies one dimension.
-- **Reuse public concepts** — prefer concept IDs already in your bindings / `concept_scheme` (`TIME_PERIOD`, `INDICATOR`, `PARAMETER`, etc.) so generated helpers keep meaningful semantic hints even when dimension ids differ.
+- **Give every dimension an explicit `id`** — `id` names the dimension itself and is the effective key used in records, cell keys, graph labels, and helper parameters. `concept` is the SDMX-style meaning category. They match unless two dimensions in one series share a concept (e.g. projection axis and reference period both on `TIME_PERIOD`), in which case give each a distinct id such as `PROJECTION_PERIOD` / `REFERENCE_PERIOD`. Parameter names come from the effective id (`projection_period`). Concept-only keys remain valid only when the concept uniquely identifies one dimension.
+- **Reuse public concepts** — prefer concept IDs already in your bindings / `concept_scheme` (`TIME_PERIOD`, `INDICATOR`, `PARAMETER`, etc.) so helper names stay meaningful even when dimension ids differ.
 - **Validate** — `validate_series_bindings(...)`, then `derive_internal_series(...)`. Run `uv run pytest tests/test_internal_binding_coverage.py` once `INTERNAL_BINDING_VALIDATION_MODE` is enabled.
 - **Review** — re-run `--extract-graph` and confirm bound formula nodes show `keys:` / `record:` labels in the graph explorer.
 
@@ -201,8 +202,8 @@ Reports land under `data/differential/graph/`. Exit codes: **`0`** all compariso
 
 ### 4. Export
 
-Export calls `CodeGenerator.generate_modules(..., paradigm="inverted_tree")` with
-`series_docstring_callback="none"`. The package is keyword-only `compute_*`
+Export calls `CodeGenerator.generate_modules(..., paradigm="inverted_tree")`.
+The package is keyword-only `compute_*`
 functions: scalars stay scalars, series are 1-D sequences in canonical key
 order, and each helper returns `tuple[float, ...]`. There is no `make_context`,
 no `set_*`, and no records-shaped setters. Helpers are named from output
@@ -233,7 +234,10 @@ Two oracles, two questions:
 | Did we code-generate that graph faithfully? | Graph (`FormulaEvaluator`) | keyword-only `compute_*` |
 
 The pipeline `validate` stage ([src/inverted_tree_validate.py](src/inverted_tree_validate.py))
-is a narrow default-path FormulaEvaluator canary (no Excel). It writes
+is a narrow default-path FormulaEvaluator canary (no Excel). Configure cases in
+`workbook_config.INVERTED_TREE_VALIDATE_CASES` (compute names, output addresses,
+and `data.py` default kwargs). Empty cases or empty addresses fail closed — the
+same pattern as empty graph differential hooks. The canary writes
 `dist/tests/results/reference/` only; it does not overwrite committed Excel
 goldens under `data/differential/graph/`. Library ≈ Excel then follows by
 transitivity on the **same** scenarios.
@@ -286,7 +290,7 @@ The pipeline is ordered as `extract → export → annotate → validate → doc
 
 When the default full run reaches `document` after a non-zero FormulaEvaluator canary exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (agent errors, package mutation, empty guides, or `great-docs build` failure) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
 
-Document-agent runs use `DOCUMENT_AGENT_DEADLINE` (default 1800s). Set `PIPELINE_STALL_SECONDS` for heartbeat stack dumps during the document stage.
+The document stage launches a Cursor SDK agent against `dist/` (`CURSOR_API_KEY`, `DOCUMENT_AGENT_MODEL`, default deadline 1800s via `DOCUMENT_AGENT_DEADLINE`). Authored trees cache under `.cache/user-guide/`. Set `PIPELINE_STALL_SECONDS` for heartbeat stack dumps during the document stage.
 
 ```bash
 uv run python -m src.extraction_pipeline --stop-after-stage export
@@ -310,7 +314,7 @@ DEEPSEEK_API_KEY=...
 # Document stage uses the Cursor SDK (local agent against dist/)
 CURSOR_API_KEY=cursor_...
 
-# Per-stage model selection (optional)
+# Per-stage model selection (optional; default gpt-5.5 when unset)
 # Name prefix selects the provider for OpenAI-compatible stages: gpt-*, glm-*, deepseek-*
 DOCSTRING_MODEL=gpt-5.5
 DOCUMENT_AGENT_MODEL=gpt-5.6-luna
@@ -374,7 +378,7 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 - [ ] **Configure:** Empty leaves reviewed; structural blank rectangles declared in `BLANK_RANGES` rather than constraining each cell `Literal[None]`
 - [ ] **Configure:** Remaining graph leaves constrained and classified; mutable leaves bound
 - [ ] **Configure:** `bindings/inputs.bindings.yaml` + `outputs.bindings.yaml` authored and validated
-- [ ] **Configure:** Fixed leaves that need semantic `read_*` bound in `bindings/constants.bindings.yaml` (`constant: {}`)
+- [ ] **Configure:** Every `constant` leaf bound in `bindings/constants.bindings.yaml` (`constant: {}`); every mutable `input` leaf bound in `inputs.bindings.yaml`
 - [ ] **Configure:** Internal binding exemptions reviewed (`INTERNAL_BINDING_EXEMPT_CELLS`)
 - [ ] **Configure:** `bindings/internals.bindings.yaml` covers internal formula cells
 - [ ] **Review graph:** Manual completeness review done; optional LLM dependency audit passed (`pytest --run-skipped`)

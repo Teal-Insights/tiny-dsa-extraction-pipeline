@@ -95,7 +95,7 @@ Written by every `run_pipeline` invocation (`uv run python -m src.extraction_pip
 
 Spans are non-overlapping leaf measurements: do not invent a total by summing them with a parent rollup. A full `run_pipeline` records `extract`, `export`, `annotate`, `validate`, and `document` in order. Graph-build spans (`create_dependency_graph`, …) land under `extract`; binding post-processing (`load_series_bindings`, `validate_series_bindings`, `derive_series`, `series_derived`) and projection/codegen spans land under `export`; `annotate_docstrings` lands under `annotate`. Extract alone appears when `stop_after_stage=extract` (or `--extract-graph`).
 
-Notable spans: `create_dependency_graph` (extract); `load_series_bindings`, `validate_series_bindings`, `derive_series`, `series_derived`, `codegen`, `write_export_package` (export); `annotate_docstrings` (annotate); FormulaEvaluator canary write (validate).
+Notable spans: `create_dependency_graph` (extract); `load_series_bindings`, `validate_series_bindings`, `derive_series`, `series_derived`, `codegen`, `write_export_package` (export); `annotate_docstrings` (annotate); `formula_evaluator_parity` (validate).
 
 ### cProfile output
 

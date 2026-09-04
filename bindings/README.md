@@ -45,12 +45,14 @@ series:
 | Validate | `validate_series_bindings(...)`, then `derive_constant_series(...)`. Include `constant` when running `scripts.binding_resolution_audit`. |
 
 **Leaf classification vs constant bindings.** `CONSTRAINTS` with a single-value
-`Literal[...]` classifies a leaf as `constant` for codegen defaults vs required
-inputs. That is necessary but not sufficient for a named constant series:
-add a `constant: {}` series when those leaves should appear as `data.py`
-defaults / defaulted `compute_*` kwargs rather than unnamed cell reads.
-Mutable leaves still need an `input` binding in `inputs.bindings.yaml` so they
-become required keyword-only `compute_*` arguments.
+`Literal[...]` classifies a leaf as `constant` for codegen `CONSTANTS` vs
+required keyword-only `compute_*` arguments. Fail closed: every `constant`
+leaf must appear in `constants.bindings.yaml`, and every mutable `input` leaf
+in `inputs.bindings.yaml`. The configure tests assert an empty unbound list even
+when a workbook has no constant leaves (do not skip-if-empty). A `constant: {}`
+series names those leaves as `data.py` defaults / defaulted `compute_*` kwargs
+rather than unnamed cell reads. Mutable leaves still need an `input` binding
+so they become required keyword-only `compute_*` arguments.
 
 **Structural blanks are not constants.** Padding inside `INDEX`/`MATCH` arrays,
 far-right `NPV`/`SUM` overflow, unused ladder copies, and separator rows belong

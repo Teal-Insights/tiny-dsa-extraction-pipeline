@@ -3,17 +3,101 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import cast
 
 import pytest
+from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
 from src.extraction_pipeline import build_pipeline_graph
 from src.internal_binding_coverage import (
     InternalBindingCoverageError,
     enforce_internal_binding_coverage,
+    enforce_internal_binding_coverage_from_manifest,
     find_unbound_internal_formula_cells,
+    find_unbound_internal_formula_cells_from_manifest,
+    manifest_binding_addresses,
     required_internal_formula_cells,
 )
 from tests.conftest import SyntheticConfiguredPipeline
+
+
+def test_manifest_binding_addresses_expands_list_data_range(
+    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
+) -> None:
+    pipeline = synthetic_configured_pipeline
+    bindings = {
+        "schema_version": "1.13.0",
+        "series": [
+            {
+                "id": "engine_path",
+                "sheet": "Engine",
+                "data_range": ["Engine!B2", "Engine!C2"],
+                "internal": {},
+            }
+        ],
+    }
+    addresses = manifest_binding_addresses(
+        pipeline.graph,
+        cast(WorkbookSeriesBindings, bindings),
+        direction="internal",
+    )
+    assert "Engine!B2" in addresses
+    assert "Engine!C2" in addresses
+
+
+def test_find_unbound_from_manifest_does_not_require_workbook(
+    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
+) -> None:
+    pipeline = synthetic_configured_pipeline
+    unbound = find_unbound_internal_formula_cells_from_manifest(
+        graph=pipeline.graph,
+        bindings=pipeline.series_bindings,
+        exempt_cells=frozenset(),
+        workbook=None,
+    )
+    assert unbound == ()
+
+
+def test_enforce_internal_binding_coverage_from_manifest_errors_when_unbound(
+    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
+    tmp_path,
+) -> None:
+    from excel_grapher.series_bindings import load_series_bindings
+
+    bindings_path = tmp_path / "bindings"
+    bindings_path.mkdir()
+    for name in ("inputs.bindings.yaml", "outputs.bindings.yaml"):
+        source = synthetic_configured_pipeline.config.bindings_path / name
+        (bindings_path / name).write_text(source.read_text(encoding="utf-8"))
+
+    pipeline = synthetic_configured_pipeline
+    bindings = load_series_bindings(bindings_path)
+    with pytest.raises(InternalBindingCoverageError, match="Engine!B2"):
+        enforce_internal_binding_coverage_from_manifest(
+            graph=pipeline.graph,
+            bindings=bindings,
+            exempt_cells=frozenset(),
+            mode="warn",
+            context="pytest",
+        )
+
+
+def test_enforce_internal_binding_coverage_from_manifest_passes_when_bound(
+    synthetic_configured_pipeline: SyntheticConfiguredPipeline,
+) -> None:
+    from excel_grapher.series_bindings import load_series_bindings
+
+    pipeline = synthetic_configured_pipeline
+    bindings = load_series_bindings(pipeline.config.bindings_path)
+    report = enforce_internal_binding_coverage_from_manifest(
+        graph=pipeline.graph,
+        bindings=bindings,
+        exempt_cells=frozenset(),
+        mode="warn",
+        context="pytest",
+    )
+    assert report is not None
+    assert report.unbound_cells == ()
 
 
 def test_required_internal_formula_cells_excludes_public_io(

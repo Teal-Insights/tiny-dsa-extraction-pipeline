@@ -1,11 +1,42 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 from excel_grapher.core.cell_types import normalize_cell_type_env_key
 from excel_grapher.series_bindings import validate_series_bindings
 
-from src.dependency_graph_viz import series_cell_keys
-from src.extraction_pipeline import classify_leaves_from_constraints
+from src.dependency_graph_viz import series_cell_keys, unbound_classified_leaf_keys
+from src.extraction_pipeline import (
+    PipelineGraphResult,
+    build_pipeline_graph,
+    classify_leaves_from_constraints,
+)
+from src.pipeline_config import PipelineConfig
+
+
+def _empty_series_shard(text: str) -> str:
+    marker = "\nseries:"
+    index = text.find(marker)
+    if index < 0:
+        raise ValueError("bindings shard is missing a series key")
+    return f"{text[: index + len(marker)]} []\n"
+
+
+def _pipeline_with_emptied_binding_shard(
+    base_config: PipelineConfig,
+    tmp_path: Path,
+    shard_name: str,
+) -> PipelineGraphResult:
+    bindings_path = tmp_path / "bindings"
+    bindings_path.mkdir()
+    for source in base_config.bindings_path.glob("*.bindings.yaml"):
+        text = source.read_text(encoding="utf-8")
+        if source.name == shard_name:
+            text = _empty_series_shard(text)
+        (bindings_path / source.name).write_text(text, encoding="utf-8")
+    return build_pipeline_graph(replace(base_config, bindings_path=bindings_path))
 
 
 def test_every_graph_leaf_has_a_typed_constraint(
@@ -65,3 +96,77 @@ def test_missing_constraint_reports_graph_leaf_keys(synthetic_graph) -> None:
         match=r"missing constraints for leaf cells: \['Inputs!A1', 'Inputs!B1'\]",
     ):
         classify_leaves_from_constraints({}, synthetic_graph.leaf_keys())
+
+
+def test_every_constant_leaf_has_constant_series_binding(
+    synthetic_configured_pipeline,
+) -> None:
+    unbound = unbound_classified_leaf_keys(
+        synthetic_configured_pipeline.leaf_classification,
+        series_cell_keys(synthetic_configured_pipeline.constant_series),
+        kind="constant",
+    )
+    assert unbound == [], (
+        "Constant leaves missing from constants.bindings.yaml: " + ", ".join(unbound)
+    )
+
+
+def test_every_mutable_input_leaf_has_input_series_binding(
+    synthetic_configured_pipeline,
+) -> None:
+    unbound = unbound_classified_leaf_keys(
+        synthetic_configured_pipeline.leaf_classification,
+        series_cell_keys(synthetic_configured_pipeline.input_series),
+        kind="input",
+    )
+    assert unbound == [], (
+        "Mutable input leaves missing from inputs.bindings.yaml: " + ", ".join(unbound)
+    )
+
+
+def test_constant_leaf_coverage_is_vacuous_when_no_constant_leaves() -> None:
+    unbound = unbound_classified_leaf_keys(
+        {"Inputs!A1": "input"},
+        frozenset(),
+        kind="constant",
+    )
+    assert unbound == []
+
+
+def test_omitted_constant_binding_reports_unbound_leaf(
+    synthetic_pipeline_config_fixture: PipelineConfig,
+    tmp_path: Path,
+) -> None:
+    result = _pipeline_with_emptied_binding_shard(
+        synthetic_pipeline_config_fixture,
+        tmp_path,
+        "constants.bindings.yaml",
+    )
+    unbound = unbound_classified_leaf_keys(
+        result.leaf_classification,
+        series_cell_keys(result.constant_series),
+        kind="constant",
+    )
+    assert unbound == ["Inputs!B1"]
+
+
+def test_omitted_input_binding_reports_unbound_leaf(
+    synthetic_pipeline_config_fixture: PipelineConfig,
+    tmp_path: Path,
+) -> None:
+    result = _pipeline_with_emptied_binding_shard(
+        synthetic_pipeline_config_fixture,
+        tmp_path,
+        "inputs.bindings.yaml",
+    )
+    unbound = unbound_classified_leaf_keys(
+        result.leaf_classification,
+        series_cell_keys(result.input_series),
+        kind="input",
+    )
+    assert unbound == ["Inputs!A1"]
+
+
+def test_unbound_classified_leaf_keys_rejects_unknown_kind() -> None:
+    with pytest.raises(ValueError, match="unsupported leaf kind 'formula'"):
+        unbound_classified_leaf_keys({}, frozenset(), kind="formula")

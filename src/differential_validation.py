@@ -24,6 +24,7 @@ EXPORTED_LIBRARY_HARNESS_FILES = (
     "comparison_utils.py",
     "workbook_labels.py",
     "differential_scenario_inputs.py",
+    "binding_adapter.py",
 )
 
 

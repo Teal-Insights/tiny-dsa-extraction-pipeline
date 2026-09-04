@@ -28,6 +28,7 @@ from excel_grapher.series_bindings import load_series_bindings
 
 from src.graph_cache import load_pipeline_dependency_graph
 from src.internal_binding_coverage import (
+    collapse_unbound_cells_to_ranges,
     find_unbound_internal_formula_cells_from_manifest,
     format_row_column_spans,
     group_unbound_cells_by_sheet_row,
@@ -66,8 +67,12 @@ def main() -> None:
         workbook=config.workbook_path,
     )
     formula_count = len(list(graph.formula_keys()))
+    collapsed = collapse_unbound_cells_to_ranges(unbound)
     print(f"Formula nodes: {formula_count}")
     print(f"Unbound internal formula cells: {len(unbound)}")
+    print(f"Collapsed A1 ranges: {len(collapsed)}")
+    for data_range in collapsed:
+        print(f"  {data_range}")
 
     grouped = group_unbound_cells_by_sheet_row(unbound)
     print("\nUnbound cells by sheet:")

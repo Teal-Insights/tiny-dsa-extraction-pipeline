@@ -14,6 +14,7 @@ EXPORTED_DIFFERENTIAL_FILES = (
     "differential_excel.py",
     "comparison_utils.py",
     "differential_scenario_inputs.py",
+    "binding_adapter.py",
     "differential_test_exported_library.py",
 )
 REFERENCE_REPORT_FILES = ("parity_report.csv", "parity_report.txt")

@@ -65,6 +65,9 @@ def _write_differential_package(repo_root: Path) -> None:
     (differential_root / "differential_scenario_inputs.py").write_text(
         "# scenario inputs\n", encoding="utf-8"
     )
+    (differential_root / "binding_adapter.py").write_text(
+        "# binding adapter\n", encoding="utf-8"
+    )
     (differential_root / "differential_test_exported_library.py").write_text(
         "# harness\n",
         encoding="utf-8",
@@ -131,6 +134,9 @@ def test_seed_validation_harness_copies_harness_and_workbook_without_reports(
     assert (differential_root / "differential_scenario_inputs.py").read_text(
         encoding="utf-8"
     ) == "# scenario inputs\n"
+    assert (differential_root / "binding_adapter.py").read_text(
+        encoding="utf-8"
+    ) == "# binding adapter\n"
     assert (tests_root / "fixtures" / "workbook.xlsx").read_bytes() == b"workbook"
     assert (tests_root / "results" / "local").is_dir()
     assert (tests_root / "results" / "reference").is_dir()

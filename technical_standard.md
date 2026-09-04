@@ -32,7 +32,8 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 | **Series bindings authored** | `bindings/inputs.bindings.yaml` and `bindings/outputs.bindings.yaml` exist, use `schema_version: 1.13.0`, and declare one logical scalar/series/table per public I/O function. Every dimension should have an explicit `id`; record/key fields and `compute_*` keyword names use the effective dimension id, with concept as semantic metadata. Reader-only fixed leaves that formulas should call via `read_*` are declared with `constant: {}` (typically in `bindings/constants.bindings.yaml`). |
 | **Bindings validated against graph** | `validate_series_bindings(...)` reports `ok`; input bindings overlap graph leaves, output bindings overlap target nodes. |
 | **Dynamic refs resolved** | All `OFFSET` / `INDEX` / `MATCH` / `CHOOSE` dependencies are resolved via `DynamicRefConfig.from_constraints(...)` without `DynamicRefError`. |
-| **Every mutable leaf is bound** | Each leaf classified as `input` appears in `inputs.bindings.yaml`; unbound mutable leaves fail the pipeline. |
+| **Every mutable leaf is bound** | Each leaf classified as `input` appears in `inputs.bindings.yaml`; unbound mutable leaves fail the configure tests. |
+| **Every constant leaf is bound** | Each leaf classified as `constant` appears in `constants.bindings.yaml`; unbound constant leaves fail the configure tests. A workbook with no constant leaves still asserts an empty unbound list (do not skip-if-empty). |
 | **Constants distinguished from inputs** | Single-value `Literal[...]` constraints mark lookup/structural data; range constraints mark user-editable inputs. |
 | **Structural blanks omitted via `BLANK_RANGES`** | Cells that formulas name but users never fill (INDEX/MATCH padding, NPV/SUM overflow, unused ladder copies, separator rows) are declared as sheet-qualified A1 rectangles in `BLANK_RANGES` and passed to graph build, `FormulaEvaluator`, and codegen. Do not bind them as inputs/constants, do not constrain each cell `Literal[None]` to drop them, and do not put user-fillable slots here. |
 | **Constraints cover all remaining leaves** | Every graph leaf not omitted by `BLANK_RANGES` has a typed constraint (`Literal`, `Between`, `RealBetween`, etc.) for codegen, testing, and documentation. |
@@ -81,7 +82,7 @@ Configure checklist (workbook-neutral):
 
 | Criterion | Pass condition |
 |---|---|
-| **Docstrings on public API** | Every `compute_*` (and internals helper) has a Google-style docstring from the annotate stage (`src/inverted_tree_docstrings.py`), grounded in the human guide. Export uses `series_docstring_callback="none"`; docstrings are not a codegen callback. |
+| **Docstrings on public API** | Every `compute_*` (and internals helper) has a Google-style docstring from the annotate stage (`src/inverted_tree_docstrings.py`), grounded in the human guide. Docstrings are not a codegen callback. |
 | **Signature fidelity** | Annotate fails closed if the model returns argument names that do not match the function signature. |
 
 #### 5. Validate
@@ -89,7 +90,7 @@ Configure checklist (workbook-neutral):
 | Criterion | Pass condition |
 |---|---|
 | **Graph-vs-Excel** | Authored scenario matrix in `tests/differential/` passes `FormulaEvaluator` vs Microsoft Excel (`differential_test_graph.py`) before treating extraction as faithful. |
-| **Library-vs-graph** | Keyword-only `compute_*` matches `FormulaEvaluator` on the same scenarios (`differential_test_exported_library.py`). Pipeline `validate` is a default-path FormulaEvaluator canary; it does not drive Excel. |
+| **Library-vs-graph** | Keyword-only `compute_*` matches `FormulaEvaluator` on the same scenarios (`differential_test_exported_library.py`). Pipeline `validate` is a default-path FormulaEvaluator canary configured in `workbook_config.INVERTED_TREE_VALIDATE_CASES`; empty addresses fail closed. |
 | **No library-vs-Excel COM path** | Inverted-tree export has no `set_*` to drive Excel from the public API. Library ≈ Excel follows by transitivity on the same scenarios. |
 
 #### 6. Document
@@ -135,16 +136,17 @@ Ordered to match the onboarding checklist in [README.md](README.md#clone-and-con
 [ ] Ingest: workbook and guide populated; stale bindings, dist/, and .cache/ cleared
 [ ] Audit: pre-extraction workbook audit reviewed; blocking automation resolved
 [ ] Configure: outputs declared as extraction targets
-[ ] Configure: bindings/inputs.bindings.yaml + outputs.bindings.yaml validated; constant leaves that need read_* bound in constants.bindings.yaml when applicable
+[ ] Configure: bindings/inputs.bindings.yaml + outputs.bindings.yaml validated; every constant leaf bound in constants.bindings.yaml
 [ ] Configure: dynamic-ref constraint candidates constrained
 [ ] Configure: all leaves classified; mutable leaves bound
 [ ] Configure: public enum input labels resolved to workbook reference literals
 [ ] Extract: graph extracts with provenance (--extract-graph)
 [ ] Review graph: manual completeness review done; optional LLM dependency audit passed
 [ ] Verify graph: scenario matrix defined in tests/differential/; graph-oracle parity passes (uv run python -m tests.differential.differential_test_graph)
-[ ] Export: dist package builds; keyword-only compute_* scenario runs
+[ ] Export: dist package builds; keyword-only `compute_*` scenario runs
+[ ] Export: validation bundle exported; library-vs-graph FormulaEvaluator parity passes
 [ ] Annotate: Google-style docstrings present on compute_* / internals helpers
-[ ] Validate: FormulaEvaluator library-vs-graph canary and authored exported-library sweep pass
+[ ] Validate: default-path FormulaEvaluator canary configured and passing; authored exported-library sweep passes
 [ ] Document: user_guide uses domain language; runnable cells call compute_* not make_context / set_*
 
 Generated graph artifacts under `artifacts/dependency-graph/` are gitignored; workbook audit reports may be committed optionally. See [artifacts/README.md](artifacts/README.md).

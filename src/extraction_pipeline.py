@@ -34,9 +34,7 @@ from src.internal_bindings import (
     binding_node_labels,
 )
 from src.logging_config import configure_logging
-from src.package_materialize import (
-    materialize_package,
-)
+from src.package_materialize import materialize_package
 from src.pipeline_config import (
     PipelineConfig,
     load_pipeline_config,
@@ -48,9 +46,7 @@ from src.pipeline_monitor import (
     profile_if_enabled,
     resolve_stall_log_path,
 )
-from src.projection_cache import (
-    projection_cache_key,
-)
+from src.projection_cache import projection_cache_key
 from src.series_derived_cache import (
     get_or_build_series_derived,
     series_derived_cache_key,
@@ -161,6 +157,10 @@ class AnnotateStageState:
 
     config: PipelineConfig
     codegen_cache_key: str
+
+
+class StageCacheMissingError(StageManifestError):
+    """Raised when a manifest key has no corresponding cache payload."""
 
 
 def count_provenance_edges(graph: DependencyGraph) -> int:
@@ -617,7 +617,7 @@ def run_export_stage(
     graph_cache_key: str | None = None,
     graph_result: PipelineGraphResult | None = None,
 ) -> ExportStageState:
-    """Project, codegen, and materialize the package under dist/.
+    """Codegen and materialize the inverted-tree package under dist/.
 
     When ``graph`` / ``graph_cache_key`` are supplied (full pipeline after
     extract), the graph is not rebuilt; series bindings are resolved here.
@@ -1156,24 +1156,25 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--no-cache",
         action="store_true",
         help=(
-            "Bypass on-disk graph, projection, series-resolution, series-derived, "
-            "bindings-validation, codegen, and exported-library differential "
-            "caches for this run."
+            "Bypass on-disk graph, series-resolution, series-derived, "
+            "bindings-validation, codegen, and inverted-tree docstring caches "
+            "for this run."
         ),
     )
     parser.add_argument(
         "--force-rebuild",
         action="store_true",
         help=(
-            "Rebuild on-disk graph, projection, series-resolution, series-derived, "
-            "bindings-validation, and codegen caches even when a warm entry exists."
+            "Rebuild on-disk graph, series-resolution, series-derived, "
+            "bindings-validation, codegen, and inverted-tree docstring caches "
+            "even when a warm entry exists."
         ),
     )
     parser.add_argument(
         "--force-document",
         action="store_true",
         help=(
-            "Run the document stage even when exported-library differential "
+            "Run the document stage even when FormulaEvaluator parity "
             "finished with a non-zero exit code."
         ),
     )
