@@ -1,1 +1,0 @@
-Rewrite the source introduction as the landing page for the generated Python package documentation. Include an Installation subsection that recommends installing with exactly `{install}` {repo_hint}. Clarify that {library_name} is a Python reimplementation of the source Excel workbook, produced using programmatic extraction, machine translation, and AI. Keep provenance concise.

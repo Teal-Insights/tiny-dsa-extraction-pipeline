@@ -9,7 +9,7 @@ import polars as pl
 from tiny_dsa.api import compute_output_baseline, compute_output_shocked, compute_output_delta
 
 country_name = "Borvelia"
-initial_debt_profile = [60.0, 80.0, 55.0]  # only Borvelia's 60.0 is used
+initial_debt_profile = [60.0, 80.0, 40.0]
 growth_baseline = [3.5, 3.5, 3.5, 3.5, 3.5]
 interest_baseline = [4.0, 4.0, 4.0, 4.0, 4.0]
 primary_balance_baseline = [-1.0, -0.5, 0.0, 0.5, 1.0]
@@ -17,7 +17,7 @@ primary_balance_baseline = [-1.0, -0.5, 0.0, 0.5, 1.0]
 
 ### Baseline trajectory
 
-Under baseline assumptions, the snowball factor is `(1 + 0.04) / (1 + 0.035) = 1.00483`. Applying it recursively and subtracting the consolidating primary balance yields a modest rise during the deficit years before consolidation as the primary balance turns positive. Year-1 debt is `60.00 × 1.00483 - (-1.00) = 61.29`; year-5 debt is 61.49.
+Under baseline assumptions, the snowball factor is `(1 + 0.04) / (1 + 0.035) = 1.00483`. Applying it recursively and subtracting the consolidating primary balance yields a modest rise during the deficit years before consolidation as the primary balance turns positive. Year-1 debt is `60.00 x 1.00483 - (-1.00) = 61.29`; year-5 debt is 61.49.
 
 ```{python}
 baseline = compute_output_baseline(

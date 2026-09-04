@@ -110,9 +110,9 @@ catalog as the Excel map rather than inventing Pass-2 names.
   `Outputs!B12:F12` and `B13:F13` at `atol=1e-9` and writes **only**
   `dist/tests/results/reference/`. Do not overwrite committed Excel goldens
   under `data/differential/exported_library/`.
-- **document** — user-guide rewrite against keyword-only `compute_*`. Bump
-  `SECTION_REWRITE_PROMPT_VERSION` when the canonical API example changes
-  (Tiny DSA used 10).
+- **document** — Cursor SDK agent authors `user_guide/` against keyword-only
+  `compute_*`. Bump `USER_GUIDE_AGENT_PROMPT_VERSION` (and clear
+  `.cache/user-guide/`) when the agent prompt template changes.
 
 Clustering, Pass-1 mechanical refactor, and Pass-2 semantic naming are **not**
 called from the orchestrator. Tiny DSA left those modules on disk so older unit
@@ -131,8 +131,9 @@ Replace ctx-oriented tests and docs:
 - Tuple of floats in key order (Tiny DSA: index `0..4` ↔ `Outputs!B:F`).
 - `workbook_config.RUNNABLE_CELL_RULES` should reject `make_context(` and
   `set_*` in user-guide `{python}` cells.
-- `templates/canonical-api-usage.md` and the section-rewrite focus files must
-  describe keyword-only computes, not context + setters.
+- `templates/user-guide-agent.txt` should point the document agent at the
+  generated package API and `docs-source/guidance-note.md` without prescribing
+  a fixed page outline.
 
 Package shape after export (Tiny DSA, mechanical + LLM docstrings): `api.py`,
 `internals.py`, `runtime.py`, `data.py`, `__init__.py`. Ctx helpers
@@ -212,8 +213,8 @@ These do not come along automatically from a template merge:
 5. Rewrite any derived tests that import `make_context`, `set_*`,
    `_api_helpers`, or records-shaped `OBS_VALUE` outputs. Prefer explicit
    kwargs over `**dict[str, object]` so `ty` can check them.
-6. Refresh user-guide rewrite caches after the canonical API example changes
-   (`SECTION_REWRITE_PROMPT_VERSION`, `.cache/guide-rewrites.json`).
+6. Refresh user-guide caches after the agent prompt or exported API changes
+   (`USER_GUIDE_AGENT_PROMPT_VERSION`, `.cache/user-guide/`).
 
 ## Suggested sequence for the template
 
@@ -263,10 +264,10 @@ New or heavily remodeled:
 - `src/codegen_cache.py` (`paradigm` in the key)
 - `src/package_materialize.py` (`apply_rewrites=False`)
 - `src/stage_manifest.py` upstream chain
-- `templates/canonical-api-usage.md` and section-rewrite focus files
+- `templates/user-guide-agent.txt`
 - `workbook_config.RUNNABLE_CELL_RULES`
 - `tests/differential/differential_test_exported_library.py`
-- `src/documentation_pipeline.py` (validation page + rewrite prompts)
+- `src/documentation_pipeline.py` (validation page + Cursor agent runner)
 - `src/export_validation_assets.py` (dist tests README + harness file list)
 
 Workbook-local:

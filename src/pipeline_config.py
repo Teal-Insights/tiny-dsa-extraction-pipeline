@@ -86,11 +86,8 @@ class PipelineConfig:
     constraints: dict[str, object]
     dist_metadata: DistProjectMetadata
     docstring_callback_name: str
-    canonical_api_example_path: Path
     binding_authoring_prompt_path: Path
-    section_rewrite_introduction_focus_path: Path
-    section_rewrite_functional_overview_focus_path: Path
-    section_rewrite_illustrative_example_focus_path: Path
+    user_guide_agent_prompt_path: Path
     differential_workbook_rel: Path
     differential_report_dir_rel: Path
     differential_graph_report_dir_rel: Path
@@ -279,27 +276,12 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     docstring_callback_name = str(user_config.DOCSTRING_CALLBACK_NAME)
 
     templates_root = root / "templates"
-    canonical_api_example_path = templates_root / "canonical-api-usage.md"
     binding_authoring_prompt_path = templates_root / "binding-authoring-prompt.txt"
-    section_rewrite_introduction_focus_path = Path(
+    user_guide_agent_prompt_path = Path(
         getattr(
             user_config,
-            "SECTION_REWRITE_INTRODUCTION_FOCUS_PATH",
-            templates_root / "section-rewrite-introduction-focus.txt",
-        )
-    )
-    section_rewrite_functional_overview_focus_path = Path(
-        getattr(
-            user_config,
-            "SECTION_REWRITE_FUNCTIONAL_OVERVIEW_FOCUS_PATH",
-            templates_root / "section-rewrite-functional-overview-focus.txt",
-        )
-    )
-    section_rewrite_illustrative_example_focus_path = Path(
-        getattr(
-            user_config,
-            "SECTION_REWRITE_ILLUSTRATIVE_EXAMPLE_FOCUS_PATH",
-            templates_root / "section-rewrite-illustrative-example-focus.txt",
+            "USER_GUIDE_AGENT_PROMPT_PATH",
+            templates_root / "user-guide-agent.txt",
         )
     )
     differential_workbook_rel = Path(
@@ -353,15 +335,8 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         constraints=constraints,
         dist_metadata=dist_metadata,
         docstring_callback_name=docstring_callback_name,
-        canonical_api_example_path=canonical_api_example_path,
         binding_authoring_prompt_path=binding_authoring_prompt_path,
-        section_rewrite_introduction_focus_path=section_rewrite_introduction_focus_path,
-        section_rewrite_functional_overview_focus_path=(
-            section_rewrite_functional_overview_focus_path
-        ),
-        section_rewrite_illustrative_example_focus_path=(
-            section_rewrite_illustrative_example_focus_path
-        ),
+        user_guide_agent_prompt_path=user_guide_agent_prompt_path,
         differential_workbook_rel=differential_workbook_rel,
         differential_report_dir_rel=differential_report_dir_rel,
         differential_graph_report_dir_rel=differential_graph_report_dir_rel,

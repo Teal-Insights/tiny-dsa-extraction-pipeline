@@ -35,7 +35,6 @@ DIST_GITIGNORE_CONTENT = """
 *.pyc
 __pycache__/
 .venv/
-_validate_user_guide_cells.py
 tests/results/local/
 """
 _GENERATED_ROOT_MODULE_NAMES = frozenset(

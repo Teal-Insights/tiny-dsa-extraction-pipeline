@@ -1297,6 +1297,8 @@ def run_document_stage(
     timings: PipelineTimings | None = None,
     annotate_state: AnnotateStageState | RefactorStageState | None = None,
     refactor_state: AnnotateStageState | RefactorStageState | None = None,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
 ) -> None:
     """Rewrite the user guide against the exported package.
 
@@ -1311,7 +1313,11 @@ def run_document_stage(
         stage_span(timings, "document"),
     ):
         try:
-            run_documentation_pipeline(config)
+            run_documentation_pipeline(
+                config,
+                no_cache=no_cache,
+                force_rebuild=force_rebuild,
+            )
         except Exception as error:
             logger.exception(
                 "Document stage failed after export/differential artifacts were written"
@@ -1531,6 +1537,8 @@ def _run_pipeline_stages(
             config,
             timings=timings,
             annotate_state=annotate_state,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
         )
 
 

@@ -121,38 +121,52 @@ def test_output_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
     ]
 
 
+def _float_tuple(values: tuple[float | str, ...]) -> tuple[float, ...]:
+    narrowed: list[float] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"expected numeric series values, got {value!r}")
+        narrowed.append(float(value))
+    return tuple(narrowed)
+
+
 def test_generated_keyword_api_computes_and_overrides_values():
     from dist.tiny_dsa import data
     from dist.tiny_dsa.api import compute_output_baseline
 
+    country_initial_debt = _float_tuple(data.COUNTRY_INITIAL_DEBT_DEFAULT)
+    growth_baseline = _float_tuple(data.GROWTH_BASELINE_DEFAULT)
+    interest_baseline = _float_tuple(data.INTEREST_BASELINE_DEFAULT)
+    primary_balance_baseline = _float_tuple(data.PRIMARY_BALANCE_BASELINE_DEFAULT)
+
     baseline = compute_output_baseline(
         country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
-        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+        country_initial_debt=country_initial_debt,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
     )
 
     assert len(baseline) == 5
     assert baseline[0] == pytest.approx(61.28985507246378)
 
-    slower_growth = (2.5, *data.GROWTH_BASELINE_DEFAULT[1:])
+    slower_growth = (2.5, *growth_baseline[1:])
     updated = compute_output_baseline(
         country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
+        country_initial_debt=country_initial_debt,
         growth_baseline=slower_growth,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
     )
     assert updated[0] != baseline[0]
 
-    higher_borvelia_debt = (70.0, *data.COUNTRY_INITIAL_DEBT_DEFAULT[1:])
+    higher_borvelia_debt = (70.0, *country_initial_debt[1:])
     updated_initial_debt = compute_output_baseline(
         country_name=data.COUNTRY_NAME_DEFAULT,
         country_initial_debt=higher_borvelia_debt,
-        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
     )
     assert updated_initial_debt[0] != updated[0]
 

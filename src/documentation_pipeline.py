@@ -2,202 +2,68 @@
 
 from __future__ import annotations
 
-import ast
+import asyncio
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from cursor_sdk import (
+    AgentOptions,
+    AsyncAgent,
+    AsyncClient,
+    CursorAgentError,
+    LocalAgentOptions,
+    RunResult,
+)
 from dotenv import load_dotenv
-from openai import OpenAI
-from pydantic import BaseModel, ConfigDict, Field
 
 from src.env_utils import env_float
-from src.llm_json import generate_validated_json
-from src.llm_providers import (
-    model_from_env,
-    provider_for_model,
-)
 from src.logging_config import configure_logging
-from src.pipeline_config import (
-    PipelineConfig,
-    RunnableCellRule,
-    discover_public_api_symbols,
-)
+from src.pipeline_config import PipelineConfig, RunnableCellRule
 from src.pipeline_monitor import (
     StageTimer,
     monitor_pipeline_stage,
     resolve_stall_log_path,
 )
 from src.qmd_python_validation import (
-    PublicApiPolicy,
+    DOCUMENTATION_BASELINE_DEV_DEPS,
+    VALIDATION_BASELINE_DEV_DEPS,
     extract_python_cells,
-    validate_qmd_files,
+    merge_dev_dependencies,
+    parse_dev_dependencies_from_pyproject,
+    write_dist_pyproject,
 )
 
-SECTION_REWRITE_MODEL_ENV = "SECTION_REWRITE_MODEL"
-SECTION_REWRITE_PROMPT_VERSION = 10
-MAX_SECTION_REWRITE_ATTEMPTS = 4
+DOCUMENT_AGENT_MODEL_ENV = "DOCUMENT_AGENT_MODEL"
+DEFAULT_DOCUMENT_AGENT_MODEL = "gpt-5.6-luna"
+USER_GUIDE_AGENT_PROMPT_VERSION = 1
+DOCUMENT_AGENT_DEADLINE_ENV = "DOCUMENT_AGENT_DEADLINE"
+DEFAULT_DOCUMENT_AGENT_DEADLINE_SECONDS = 1800.0
+CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
+
+GUIDANCE_NOTE_RELATIVE = Path("docs-source") / "guidance-note.md"
 VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
 # Great Docs strips numeric prefixes when publishing user-guide pages, so the
 # landing-page link must use the published slug rather than the source filename.
 VALIDATION_PAGE_LINK = "user-guide/excel-parity-validation.qmd"
-# Keep section-rewrite prompts well inside common context windows even when the
-# source Functional Overview section is large. Measured prompts with
-# signature-only API context land far below this ceiling.
-MAX_SECTION_REWRITE_PROMPT_CHARS = 350_000
-REWRITE_API_EXCLUDE_PREFIXES: tuple[str, ...] = ("list_",)
-SECTION_REWRITE_REQUEST_TIMEOUT_ENV = "SECTION_REWRITE_REQUEST_TIMEOUT"
-DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT = 300.0
-SECTION_REWRITE_DEADLINE_ENV = "SECTION_REWRITE_DEADLINE"
-
-SETTER_INPUT_SHAPE_GUIDANCE = (
-    "Public compute_* helpers are keyword-only. Required leaf inputs are Python "
-    "scalars or 1-D sequences in the series' canonical key order — pass exactly "
-    "one measure per key. Optional arguments that already have defaults in the "
-    "generated data module may be omitted. Never wrap a scalar in a one-element "
-    "list. Each compute_* returns a tuple of floats, not records. Do not call "
-    "make_context() or set_* setters. Tabulate compute_* results with Polars, "
-    "selecting the measure column with a clear alias as shown in the "
-    "canonical_api_usage reference."
+PACKAGE_MODULE_NAMES = (
+    "__init__.py",
+    "api.py",
+    "data.py",
+    "runtime.py",
+    "internals.py",
 )
-
-
-def resolve_section_rewrite_request_timeout() -> float:
-    return (
-        env_float(SECTION_REWRITE_REQUEST_TIMEOUT_ENV)
-        or DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT
-    )
-
-
-def resolve_section_rewrite_deadline_seconds() -> float:
-    """Wall-clock budget for one section rewrite retry loop."""
-    override = env_float(SECTION_REWRITE_DEADLINE_ENV)
-    if override is not None:
-        return override
-    return resolve_section_rewrite_request_timeout() * MAX_SECTION_REWRITE_ATTEMPTS
-
-
-def _rewrite_cache_path(config: PipelineConfig) -> Path:
-    return config.repo_root / ".cache" / "guide-rewrites.json"
-
-
-def _user_guide_root(config: PipelineConfig) -> Path:
-    return config.dist_root / "user_guide"
-
-
-def _great_docs_yml(config: PipelineConfig) -> Path:
-    return config.dist_root / "great-docs.yml"
-
-
-def _docs_workflow_path(config: PipelineConfig) -> Path:
-    return config.dist_root / ".github" / "workflows" / "deploy-docs.yml"
-
-
-def _no_api_signatures() -> str:
-    return "No generated package API symbols are required for this section."
-
-
-def _format_section_focus_template(template_path: Path, **placeholders: str) -> str:
-    return template_path.read_text(encoding="utf-8").strip().format(**placeholders)
-
-
-def introduction_focus_instructions(config: PipelineConfig) -> str:
-    metadata = config.dist_metadata
-    install = metadata.resolved_install_command()
-    repo_hint = (
-        f"from {metadata.repository_url}"
-        if metadata.repository_url
-        else "from the configured package source"
-    )
-    return _format_section_focus_template(
-        config.section_rewrite_introduction_focus_path,
-        install=install,
-        repo_hint=repo_hint,
-        library_name=metadata.library_name,
-    )
-
-
-_INSTALL_FENCE_COMMAND = re.compile(
-    r"(```(?:bash|sh|shell|zsh)?\n)"
-    r"((?:uv add|python -m pip install|pip install)[^\n]+)"
-    r"(\n```)"
+GREAT_DOCS_BUILD_COMMAND = (
+    "uv run --project . --with great-docs great-docs build --project-path ."
 )
-
-
-def ensure_introduction_install_recommendation(
-    markdown: str, *, install_command: str
-) -> str:
-    """Guarantee the landing page recommends the configured install command."""
-    if install_command in markdown:
-        return markdown
-
-    if _INSTALL_FENCE_COMMAND.search(markdown):
-        return _INSTALL_FENCE_COMMAND.sub(
-            rf"\g<1>{install_command}\g<3>",
-            markdown,
-            count=1,
-        )
-
-    section = (
-        "### Installation\n\n"
-        "Install the package directly from the GitHub repository:\n\n"
-        f"```bash\n{install_command}\n```\n"
-    )
-    getting_started = re.search(r"^### Getting started\s*$", markdown, re.MULTILINE)
-    if getting_started is not None:
-        idx = getting_started.start()
-        return f"{markdown[:idx]}{section}\n{markdown[idx:]}"
-    return f"{markdown.rstrip()}\n\n{section}"
-
-
-def functional_overview_focus_instructions(config: PipelineConfig) -> str:
-    return _format_section_focus_template(
-        config.section_rewrite_functional_overview_focus_path,
-        api_import_path=config.api_import_path,
-        canonical_api_example_path=config.repo_relative_posix_path(
-            config.canonical_api_example_path
-        ),
-    )
-
-
-def illustrative_example_focus_instructions(config: PipelineConfig) -> str:
-    return _format_section_focus_template(
-        config.section_rewrite_illustrative_example_focus_path,
-        api_import_path=config.api_import_path,
-        canonical_api_example_path=config.repo_relative_posix_path(
-            config.canonical_api_example_path
-        ),
-    )
-
-
-class SectionRewriteResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    title: str = Field(
-        description=("Section title in sentence case, without roman numeral prefixes.")
-    )
-    purpose: str = Field(
-        description="One short sentence describing why this section matters."
-    )
-    rewritten_markdown: str = Field(
-        description=(
-            "Final Markdown body for the section without top-level heading. "
-            "Include Python code examples where useful, and use Quarto runnable "
-            "fences (` ```{python} `) for executable snippets."
-        )
-    )
-    api_symbols_used: list[str] = Field(
-        description="Symbols from the generated package API referenced in the rewritten section."
-    )
-    fidelity_notes: list[str] = Field(
-        description=(
-            "Short notes describing key Excel-to-Python rewrites while preserving intent."
-        )
-    )
+ACTIVE_AGENT_FILENAME = "active.json"
+EXTRA_DEPS_FILENAME = "extra-dev-deps.json"
 
 
 @dataclass(frozen=True)
@@ -212,6 +78,383 @@ class ParityReportSummary:
     pass_rate: str
     acceptance_bar: str
     result: str
+
+
+def document_agent_model() -> str:
+    return os.environ.get(DOCUMENT_AGENT_MODEL_ENV) or DEFAULT_DOCUMENT_AGENT_MODEL
+
+
+def resolve_document_agent_deadline_seconds() -> float:
+    override = env_float(DOCUMENT_AGENT_DEADLINE_ENV)
+    if override is not None:
+        return override
+    return DEFAULT_DOCUMENT_AGENT_DEADLINE_SECONDS
+
+
+def require_cursor_api_key() -> str:
+    api_key = os.environ.get(CURSOR_API_KEY_ENV, "").strip()
+    if not api_key:
+        raise RuntimeError(
+            f"{CURSOR_API_KEY_ENV} is required to generate uncached user-guide docs"
+        )
+    return api_key
+
+
+def _user_guide_root(config: PipelineConfig) -> Path:
+    return config.dist_root / "user_guide"
+
+
+def _great_docs_yml(config: PipelineConfig) -> Path:
+    return config.dist_root / "great-docs.yml"
+
+
+def _docs_workflow_path(config: PipelineConfig) -> Path:
+    return config.dist_root / ".github" / "workflows" / "deploy-docs.yml"
+
+
+def _user_guide_cache_root(config: PipelineConfig) -> Path:
+    return config.repo_root / ".cache" / "user-guide"
+
+
+def _active_agent_path(config: PipelineConfig) -> Path:
+    return _user_guide_cache_root(config) / ACTIVE_AGENT_FILENAME
+
+
+def stable_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def build_user_guide_agent_prompt(config: PipelineConfig) -> str:
+    template = config.user_guide_agent_prompt_path.read_text(encoding="utf-8")
+    return template.format(
+        library_name=config.dist_metadata.library_name,
+        api_import_path=config.api_import_path,
+        install_command=config.dist_metadata.resolved_install_command(),
+        package_name=config.dist_metadata.package_name,
+    ).strip()
+
+
+def user_guide_cache_key(config: PipelineConfig) -> str:
+    api_text = ""
+    if config.api_module_path.is_file():
+        api_text = config.api_module_path.read_text(encoding="utf-8")
+    guide_text = ""
+    if config.guide_path.is_file():
+        guide_text = config.guide_path.read_text(encoding="utf-8")
+    prompt_template = ""
+    if config.user_guide_agent_prompt_path.is_file():
+        prompt_template = config.user_guide_agent_prompt_path.read_text(
+            encoding="utf-8"
+        )
+    payload = {
+        "model": document_agent_model(),
+        "prompt_version": USER_GUIDE_AGENT_PROMPT_VERSION,
+        "prompt_template": prompt_template,
+        "guidance_note": guide_text,
+        "api_module": api_text,
+        "library_name": config.dist_metadata.library_name,
+        "package_name": config.dist_metadata.package_name,
+        "api_import_path": config.api_import_path,
+        "install_command": config.dist_metadata.resolved_install_command(),
+        "documentation_url": config.dist_metadata.documentation_url,
+        "repository_url": config.dist_metadata.repository_url,
+    }
+    return hashlib.sha256(stable_json(payload).encode()).hexdigest()
+
+
+def copy_guidance_note(config: PipelineConfig) -> Path:
+    destination = config.dist_root / GUIDANCE_NOTE_RELATIVE
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(config.guide_path, destination)
+    return destination
+
+
+def snapshot_package_modules(config: PipelineConfig) -> dict[str, bytes]:
+    snapshot: dict[str, bytes] = {}
+    for name in PACKAGE_MODULE_NAMES:
+        path = config.package_root / name
+        if path.is_file():
+            snapshot[name] = path.read_bytes()
+    return snapshot
+
+
+def assert_package_modules_unchanged(
+    config: PipelineConfig, snapshot: dict[str, bytes]
+) -> None:
+    for name, expected in snapshot.items():
+        path = config.package_root / name
+        if not path.is_file():
+            raise RuntimeError(
+                f"Document agent removed generated package module {name}"
+            )
+        actual = path.read_bytes()
+        if actual != expected:
+            raise RuntimeError(
+                f"Document agent modified generated package module {name}"
+            )
+    for name in PACKAGE_MODULE_NAMES:
+        path = config.package_root / name
+        if path.is_file() and name not in snapshot:
+            raise RuntimeError(
+                f"Document agent created unexpected package module {name}"
+            )
+
+
+def assert_user_guide_pages_exist(config: PipelineConfig) -> None:
+    qmd_paths = sorted(_user_guide_root(config).glob("*.qmd"))
+    authored = [path for path in qmd_paths if path.name != VALIDATION_PAGE_FILENAME]
+    if not authored:
+        raise RuntimeError(
+            "Document agent finished without writing any user_guide/*.qmd pages"
+        )
+
+
+def validate_runnable_cell_rules(
+    config: PipelineConfig,
+    *,
+    rules: tuple[RunnableCellRule, ...] | None = None,
+) -> None:
+    cell_rules = config.runnable_cell_rules if rules is None else rules
+    if not cell_rules:
+        return
+    for qmd_path in sorted(_user_guide_root(config).glob("*.qmd")):
+        if qmd_path.name == VALIDATION_PAGE_FILENAME:
+            continue
+        for cell in extract_python_cells(qmd_path.read_text(encoding="utf-8")):
+            for rule in cell_rules:
+                if re.search(rule.pattern, cell.source):
+                    raise ValueError(
+                        f"{qmd_path.name}: runnable cell matches forbidden pattern "
+                        f"{rule.pattern!r}: {rule.message}"
+                    )
+
+
+def merge_agent_pyproject_extras(config: PipelineConfig) -> list[str]:
+    """Rewrite dist pyproject, preserving agent-added documentation deps."""
+    pyproject_path = config.dist_root / "pyproject.toml"
+    discovered: list[str] = []
+    if pyproject_path.is_file():
+        discovered = parse_dev_dependencies_from_pyproject(
+            pyproject_path.read_text(encoding="utf-8")
+        )
+    extras = [dep for dep in discovered if dep not in DOCUMENTATION_BASELINE_DEV_DEPS]
+    write_dist_pyproject(
+        config.dist_root,
+        dev_dependencies=merge_dev_dependencies(
+            DOCUMENTATION_BASELINE_DEV_DEPS,
+            extras,
+        ),
+        validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+        metadata=config.dist_metadata,
+    )
+    return extras
+
+
+def save_user_guide_cache(
+    config: PipelineConfig,
+    *,
+    cache_key: str,
+    extra_deps: list[str],
+) -> None:
+    cache_dir = _user_guide_cache_root(config) / cache_key
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    user_guide = _user_guide_root(config)
+    if user_guide.is_dir():
+        shutil.copytree(
+            user_guide,
+            cache_dir / "user_guide",
+            ignore=shutil.ignore_patterns(VALIDATION_PAGE_FILENAME),
+        )
+    (cache_dir / EXTRA_DEPS_FILENAME).write_text(
+        json.dumps(extra_deps, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def restore_user_guide_cache(config: PipelineConfig, *, cache_key: str) -> bool:
+    cache_dir = _user_guide_cache_root(config) / cache_key
+    cached_guide = cache_dir / "user_guide"
+    if not cached_guide.is_dir():
+        return False
+    user_guide = _user_guide_root(config)
+    if user_guide.exists():
+        shutil.rmtree(user_guide)
+    shutil.copytree(cached_guide, user_guide)
+    extras_path = cache_dir / EXTRA_DEPS_FILENAME
+    extras: list[str] = []
+    if extras_path.is_file():
+        extras = list(json.loads(extras_path.read_text(encoding="utf-8")))
+    write_dist_pyproject(
+        config.dist_root,
+        dev_dependencies=merge_dev_dependencies(
+            DOCUMENTATION_BASELINE_DEV_DEPS,
+            extras,
+        ),
+        validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+        metadata=config.dist_metadata,
+    )
+    return True
+
+
+def clear_active_agent(config: PipelineConfig) -> None:
+    path = _active_agent_path(config)
+    if path.is_file():
+        path.unlink()
+
+
+def write_active_agent(
+    config: PipelineConfig, *, agent_id: str, cache_key: str
+) -> None:
+    path = _active_agent_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"agent_id": agent_id, "cache_key": cache_key}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_active_agent(config: PipelineConfig) -> dict[str, str] | None:
+    path = _active_agent_path(config)
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    agent_id = payload.get("agent_id")
+    cache_key = payload.get("cache_key")
+    if not isinstance(agent_id, str) or not isinstance(cache_key, str):
+        return None
+    return {"agent_id": agent_id, "cache_key": cache_key}
+
+
+def run_great_docs_build(config: PipelineConfig) -> None:
+    run_cmd(
+        [
+            "uv",
+            "run",
+            "--project",
+            str(config.dist_root),
+            "--with",
+            "great-docs",
+            "great-docs",
+            "build",
+            "--project-path",
+            str(config.dist_root),
+        ],
+        cwd=config.dist_root,
+    )
+
+
+async def _run_agent_with_deadline_async(
+    *,
+    agent: AsyncAgent,
+    prompt: str,
+    deadline_seconds: float,
+) -> RunResult:
+    """Send one prompt and wait for completion within ``deadline_seconds``.
+
+    Do not concurrently iterate ``run.messages()`` / ``run.stream()`` while
+    awaiting ``run.wait()``: AsyncRun shares one event generator, and dual
+    consumers raise ``RuntimeError: anext(): asynchronous generator is already
+    running``.
+    """
+    run = await agent.send(prompt)
+    print(f"document_agent: run_id={run.id}", flush=True)
+
+    started = time.monotonic()
+    try:
+        result = await asyncio.wait_for(run.wait(), timeout=deadline_seconds)
+    except TimeoutError:
+        if run.supports("cancel"):
+            await run.cancel()
+        raise TimeoutError(
+            f"Document agent exceeded deadline of {deadline_seconds:.0f}s "
+            f"(run_id={run.id})"
+        ) from None
+
+    elapsed = time.monotonic() - started
+    print(f"document_agent: finished in {elapsed:.1f}s", flush=True)
+    return result
+
+
+async def _run_user_guide_agent_async(
+    config: PipelineConfig,
+    *,
+    cache_key: str,
+    api_key: str,
+) -> None:
+    """Async body: use AsyncClient.launch_bridge (Windows-safe discovery).
+
+    Sync ``Agent.create`` / ``Bridge.launch`` reads bridge stderr via
+    ``selectors.select`` on a pipe handle, which raises WinError 10038 on
+    native Windows. The async launcher reads stderr through asyncio streams.
+    """
+    model = document_agent_model()
+    prompt = build_user_guide_agent_prompt(config)
+    deadline_seconds = resolve_document_agent_deadline_seconds()
+    workspace = str(config.dist_root.resolve())
+    local_options = LocalAgentOptions(cwd=workspace)
+
+    active = load_active_agent(config)
+    async with await AsyncClient.launch_bridge(workspace=workspace) as client:
+        if active is not None and active["cache_key"] == cache_key:
+            print(
+                f"document_agent: resuming agent_id={active['agent_id']}",
+                flush=True,
+            )
+            # Resume takes a single options object; nest LocalAgentOptions via
+            # AgentOptions so options_to_json can serialize them (a plain dict
+            # with a LocalAgentOptions value is not JSON-serializable).
+            agent = await client.agents.resume(
+                active["agent_id"],
+                AgentOptions(
+                    model=model,
+                    api_key=api_key,
+                    local=local_options,
+                ),
+            )
+        else:
+            agent = await client.agents.create(
+                model=model,
+                api_key=api_key,
+                local=local_options,
+            )
+
+        async with agent:
+            print(f"document_agent: agent_id={agent.agent_id}", flush=True)
+            if agent.agent_id:
+                write_active_agent(config, agent_id=agent.agent_id, cache_key=cache_key)
+            try:
+                result = await _run_agent_with_deadline_async(
+                    agent=agent,
+                    prompt=prompt,
+                    deadline_seconds=deadline_seconds,
+                )
+            except CursorAgentError as error:
+                raise RuntimeError(
+                    f"Document agent failed to start: {error.message} "
+                    f"(retryable={error.is_retryable})"
+                ) from error
+            if result.status != "finished":
+                raise RuntimeError(
+                    f"Document agent run failed with status={result.status!r} "
+                    f"(run_id={result.id})"
+                )
+
+    # active.json is cleared only after a finished run so failed/interrupted
+    # attempts can resume the same agent_id for this cache key.
+    clear_active_agent(config)
+
+
+def run_user_guide_agent(
+    config: PipelineConfig,
+    *,
+    cache_key: str,
+    api_key: str | None = None,
+) -> None:
+    """Launch or resume a local Cursor agent to author ``user_guide/`` pages."""
+    key = api_key if api_key is not None else require_cursor_api_key()
+    asyncio.run(_run_user_guide_agent_async(config, cache_key=cache_key, api_key=key))
 
 
 def parse_parity_report(report_text: str) -> ParityReportSummary:
@@ -434,441 +677,6 @@ def write_validation_page(*, config: PipelineConfig) -> None:
     )
 
 
-def stable_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def load_rewrite_cache(config: PipelineConfig) -> dict[str, str]:
-    cache_path = _rewrite_cache_path(config)
-    if not cache_path.exists():
-        return {}
-    return json.loads(cache_path.read_text(encoding="utf-8"))
-
-
-def save_rewrite_cache(config: PipelineConfig, cache: dict[str, str]) -> None:
-    cache_path = _rewrite_cache_path(config)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(cache, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-
-
-def extract_markdown_section(markdown_text: str, heading: str) -> str:
-    """Return the body under a ``##`` heading.
-
-    Optional Markdown footnote markers after the heading (for example
-    ``[^1]``) are accepted so guide extracts stay stable across PDF-derived
-    heading variants.
-    """
-    pattern = rf"^## {re.escape(heading)}(?:\[\^[^\]]+\])?\n(.*?)(?=^## |\Z)"
-    match = re.search(pattern, markdown_text, flags=re.DOTALL | re.MULTILINE)
-    if not match:
-        raise ValueError(f"Could not find markdown heading: {heading}")
-    return match.group(1).strip()
-
-
-def load_canonical_api_example(config: PipelineConfig) -> str:
-    return (
-        config.canonical_api_example_path.read_text(encoding="utf-8")
-        .strip()
-        .format(api_import_path=config.api_import_path)
-    )
-
-
-def canonical_api_context(config: PipelineConfig) -> dict[str, str]:
-    return {
-        "canonical_api_usage": load_canonical_api_example(config),
-    }
-
-
-def extract_api_signatures(
-    api_path: Path,
-    symbol_names: list[str],
-    *,
-    include_body: bool = True,
-    exclude_prefixes: tuple[str, ...] = (),
-) -> str:
-    """Extract public API snippets for prompt context.
-
-    When ``include_body`` is false, only the function signature and docstring are
-    kept so large generated modules (and introspection helpers that return giant
-    literals) cannot dominate section-rewrite prompts.
-    """
-    source = api_path.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    blocks: list[str] = []
-    lines = source.splitlines()
-    wanted = set(symbol_names)
-    seen: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef) or node.name not in wanted:
-            continue
-        if any(node.name.startswith(prefix) for prefix in exclude_prefixes):
-            continue
-        if node.name in seen:
-            continue
-        seen.add(node.name)
-        start = node.lineno - 1
-        if include_body:
-            end = node.end_lineno
-        elif (
-            node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        ):
-            end = node.body[0].end_lineno
-        else:
-            end = node.lineno
-        if end is None:
-            continue
-        blocks.append("\n".join(lines[start:end]))
-    if not blocks:
-        raise ValueError(f"No signatures found for symbols: {symbol_names}")
-    return "\n\n".join(blocks)
-
-
-def rewrite_api_signatures(api_path: Path, symbol_names: list[str]) -> str:
-    """API context for guide rewrites: signatures + docstrings, no bodies."""
-    return extract_api_signatures(
-        api_path,
-        symbol_names,
-        include_body=False,
-        exclude_prefixes=REWRITE_API_EXCLUDE_PREFIXES,
-    )
-
-
-def estimate_prompt_chars(prompt: str) -> int:
-    return len(prompt)
-
-
-def validate_section_rewrite_prompt_budget(prompt: str) -> None:
-    """Fail loudly when a section-rewrite prompt exceeds the configured budget."""
-    size = estimate_prompt_chars(prompt)
-    if size > MAX_SECTION_REWRITE_PROMPT_CHARS:
-        raise ValueError(
-            f"section rewrite prompt budget exceeded: {size:,} chars > "
-            f"{MAX_SECTION_REWRITE_PROMPT_CHARS:,} chars. Slim API context or "
-            "chunk the source section before calling the model."
-        )
-
-
-def build_section_prompt(
-    *,
-    library_name: str,
-    api_import_path: str,
-    section_name: str,
-    source_section_markdown: str,
-    python_focus_instructions: str,
-    pipeline_context_blocks: dict[str, str],
-    api_signatures: str,
-    response_schema: dict,
-) -> str:
-    reference_blocks = "\n\n".join(
-        [f"[{label}]\n{text}" for label, text in pipeline_context_blocks.items()]
-    )
-    return f"""
-Rewrite one section from the workbook guide into Python-first documentation for {library_name}.
-
-Goals:
-- Stay faithful to the source section's structure and intent.
-- Replace Excel workbook/user-interface instructions with Python API usage.
-- Keep tone clear, concise, and production-ready.
-- Match the import and call style in the reference example for every runnable cell.
-
-Reference example (follow this interaction model):
-{reference_blocks}
-
-Hard constraints:
-- Do not invent API symbols.
-- Do not mention internal pipeline implementation details unless explicitly present in provided context.
-- Do not include claims that conflict with provided API signatures.
-- For runnable code examples, use Quarto executable fences exactly as ` ```{{python}} ` and not ` ```python `.
-- Return valid JSON matching the response schema exactly.
-- Runnable code may only use Python standard library, polars, and matplotlib.
-- {SETTER_INPUT_SHAPE_GUIDANCE}
-- Use matplotlib when plots are needed.
-
-Section name: {section_name}
-
-Source section:
-{source_section_markdown}
-
-Python focus instructions:
-{python_focus_instructions}
-
-{api_import_path} signatures:
-{api_signatures}
-
-Response schema:
-{json.dumps(response_schema, indent=2)}
-""".strip()
-
-
-def section_rewrite_model() -> str:
-    return model_from_env(SECTION_REWRITE_MODEL_ENV)
-
-
-def rewrite_cache_key(
-    *,
-    section_id: str,
-    source_section_markdown: str,
-    python_focus_instructions: str,
-    pipeline_context_blocks: dict[str, str],
-    api_signatures: str,
-    response_schema: dict,
-) -> str:
-    payload = {
-        "model": section_rewrite_model(),
-        "prompt_version": SECTION_REWRITE_PROMPT_VERSION,
-        "section_id": section_id,
-        "source_section_markdown": source_section_markdown,
-        "python_focus_instructions": python_focus_instructions,
-        "pipeline_context_blocks": pipeline_context_blocks,
-        "api_signatures": api_signatures,
-        "response_schema": response_schema,
-    }
-    return hashlib.sha256(stable_json(payload).encode()).hexdigest()
-
-
-def qmd_body_without_frontmatter(qmd_text: str) -> str:
-    """Return the body of a QMD page that starts with YAML frontmatter."""
-    match = re.match(r"^---\n.*?\n---\n\n(?P<body>.*)\Z", qmd_text, re.DOTALL)
-    if match is None:
-        raise ValueError("Expected QMD text to start with YAML frontmatter")
-    return match.group("body").rstrip("\n")
-
-
-def sync_cached_rewrite_from_qmd(
-    *,
-    cache_path: Path,
-    cache_key: str,
-    qmd_path: Path,
-) -> bool:
-    """Persist a validated QMD body back into the matching rewrite-cache entry."""
-    if not cache_path.is_file() or not qmd_path.is_file():
-        return False
-
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    cached_json = cache.get(cache_key)
-    if cached_json is None:
-        return False
-
-    cached_response = SectionRewriteResponse.model_validate_json(cached_json)
-    validated_body = qmd_body_without_frontmatter(qmd_path.read_text(encoding="utf-8"))
-    if cached_response.rewritten_markdown == validated_body:
-        return False
-
-    updated_response = cached_response.model_copy(
-        update={"rewritten_markdown": validated_body}
-    )
-    cache[cache_key] = updated_response.model_dump_json(indent=2)
-    cache_path.write_text(
-        json.dumps(cache, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    return True
-
-
-def sync_validated_pages_to_rewrite_cache(
-    *,
-    config: PipelineConfig,
-    guide_text: str,
-) -> None:
-    """Update cached guide rewrites from validated generated QMD pages."""
-    response_schema = SectionRewriteResponse.model_json_schema()
-    api_symbols = list(discover_public_api_symbols(config.api_module_path))
-    api_context = canonical_api_context(config)
-    user_guide_root = _user_guide_root(config)
-    cache_path = _rewrite_cache_path(config)
-
-    rewrite_signatures = rewrite_api_signatures(config.api_module_path, api_symbols)
-    functional_key = rewrite_cache_key(
-        section_id="functional_overview",
-        source_section_markdown=extract_markdown_section(
-            guide_text, "II. Functional Overview"
-        ),
-        python_focus_instructions=functional_overview_focus_instructions(config),
-        pipeline_context_blocks=api_context,
-        api_signatures=rewrite_signatures,
-        response_schema=response_schema,
-    )
-    illustrative_key = rewrite_cache_key(
-        section_id="illustrative_example",
-        source_section_markdown=extract_markdown_section(
-            guide_text, "III. Illustrative Example"
-        ),
-        python_focus_instructions=illustrative_example_focus_instructions(config),
-        pipeline_context_blocks=api_context,
-        api_signatures=rewrite_signatures,
-        response_schema=response_schema,
-    )
-
-    sync_cached_rewrite_from_qmd(
-        cache_path=cache_path,
-        cache_key=functional_key,
-        qmd_path=user_guide_root / "01-functional-overview.qmd",
-    )
-    sync_cached_rewrite_from_qmd(
-        cache_path=cache_path,
-        cache_key=illustrative_key,
-        qmd_path=user_guide_root / "02-illustrative-example.qmd",
-    )
-
-
-_BARE_CELL_FENCE = re.compile(r"^\{[A-Za-z][\w-]*\}$")
-
-
-def validate_rewritten_markdown_fences(markdown: str) -> None:
-    """Reject markdown whose code cells are not wrapped in triple-backtick fences.
-
-    Models occasionally emit a bare ``{python}`` line instead of an opening
-    ```` ```{python} ```` fence, which Quarto renders as plain text and which
-    silently skips runnable-cell validation. This checks that every cell fence is
-    backtick-delimited and that fences are balanced.
-
-    Args:
-        markdown: The rewritten section body to validate.
-
-    Raises:
-        ValueError: If a bare cell fence is found outside a fenced block, or if
-            the triple-backtick fences are unbalanced.
-    """
-    fence_count = 0
-    in_fence = False
-    for line in markdown.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            fence_count += 1
-            in_fence = not in_fence
-            continue
-        if not in_fence and _BARE_CELL_FENCE.match(stripped):
-            raise ValueError(
-                f"Found a bare cell fence line {stripped!r} without enclosing "
-                "triple backticks; runnable cells must use Quarto fences such as "
-                "```{python} ... ```."
-            )
-    if fence_count % 2 != 0:
-        raise ValueError(
-            "Unbalanced code fences: found an odd number of ``` markers; every "
-            "opening ```{python} fence must have a matching closing ```."
-        )
-
-
-def validate_rewritten_runnable_api_usage(
-    markdown: str,
-    *,
-    rules: tuple[RunnableCellRule, ...] = (),
-) -> None:
-    """Reject runnable cells whose source matches a configured forbidden pattern.
-
-    Docs may still describe fragile APIs in prose or non-executable
-    `` ```python `` fences; only executable `` ```{python} `` cells are checked.
-    Rules come from ``workbook_config.RUNNABLE_CELL_RULES``, so each derived
-    repository can pin its own allowlist of runnable-safe APIs.
-    """
-    for cell in extract_python_cells(markdown):
-        for rule in rules:
-            if re.search(rule.pattern, cell.source):
-                raise ValueError(
-                    f"runnable cell matches forbidden pattern {rule.pattern!r}: "
-                    f"{rule.message}"
-                )
-
-
-def _validate_section_rewrite(
-    parsed: SectionRewriteResponse,
-    *,
-    runnable_cell_rules: tuple[RunnableCellRule, ...] = (),
-) -> SectionRewriteResponse:
-    validate_rewritten_markdown_fences(parsed.rewritten_markdown)
-    validate_rewritten_runnable_api_usage(
-        parsed.rewritten_markdown, rules=runnable_cell_rules
-    )
-    return parsed
-
-
-def rewrite_guide_section(
-    *,
-    config: PipelineConfig,
-    client: OpenAI | None,
-    section_id: str,
-    section_name: str,
-    source_section_markdown: str,
-    python_focus_instructions: str,
-    pipeline_context_blocks: dict[str, str],
-    api_signatures: str,
-) -> SectionRewriteResponse:
-    response_schema = SectionRewriteResponse.model_json_schema()
-    cache = load_rewrite_cache(config)
-    cache_key = rewrite_cache_key(
-        section_id=section_id,
-        source_section_markdown=source_section_markdown,
-        python_focus_instructions=python_focus_instructions,
-        pipeline_context_blocks=pipeline_context_blocks,
-        api_signatures=api_signatures,
-        response_schema=response_schema,
-    )
-    if cache_key in cache:
-        print(f"guide_rewrite: cache hit for {section_id}", flush=True)
-        return SectionRewriteResponse.model_validate_json(cache[cache_key])
-
-    if client is None:
-        provider = provider_for_model(section_rewrite_model())
-        raise RuntimeError(
-            f"{provider.api_key_env} is required to generate uncached guide rewrites"
-        )
-
-    api_import_path = config.api_import_path
-    prompt = build_section_prompt(
-        library_name=config.dist_metadata.library_name,
-        api_import_path=api_import_path,
-        section_name=section_name,
-        source_section_markdown=source_section_markdown,
-        python_focus_instructions=python_focus_instructions,
-        pipeline_context_blocks=pipeline_context_blocks,
-        api_signatures=api_signatures,
-        response_schema=response_schema,
-    )
-    validate_section_rewrite_prompt_budget(prompt)
-
-    def post_validate(parsed: SectionRewriteResponse) -> SectionRewriteResponse:
-        return _validate_section_rewrite(
-            parsed, runnable_cell_rules=config.runnable_cell_rules
-        )
-
-    model = section_rewrite_model()
-    deadline_seconds = resolve_section_rewrite_deadline_seconds()
-    print(
-        f"guide_rewrite: generating {section_id} "
-        f"(deadline={deadline_seconds:.0f}s, attempts<={MAX_SECTION_REWRITE_ATTEMPTS})",
-        flush=True,
-    )
-    parsed, content = generate_validated_json(
-        client=client,
-        model=model,
-        provider=provider_for_model(model),
-        system_prompt=(
-            f"You are a technical documentation writer for the "
-            f"{config.dist_metadata.library_name} library. "
-            f"Runnable examples use {api_import_path} with keyword-only "
-            "compute_* helpers, sequence or scalar leaf inputs, and tuple "
-            "returns. Do not call make_context() or set_* setters. Return "
-            "only valid JSON matching the provided schema."
-        ),
-        user_prompt=prompt,
-        response_model=SectionRewriteResponse,
-        post_validate=post_validate,
-        max_attempts=MAX_SECTION_REWRITE_ATTEMPTS,
-        deadline_seconds=deadline_seconds,
-    )
-    cache[cache_key] = content
-    save_rewrite_cache(config, cache)
-    print(f"guide_rewrite: finished {section_id}", flush=True)
-    return parsed
-
-
 def has_top_level_key(yaml_content: str, key: str) -> bool:
     for line in yaml_content.splitlines():
         stripped = line.lstrip()
@@ -934,119 +742,6 @@ def run_cmd(
     )
 
 
-def write_introduction_page(
-    config: PipelineConfig,
-    client: OpenAI | None,
-    guide_text: str,
-) -> None:
-    user_guide_root = _user_guide_root(config)
-    introduction_source = extract_markdown_section(guide_text, "I. Introduction")
-    focus_instructions = introduction_focus_instructions(config)
-    introduction_rewrite = rewrite_guide_section(
-        config=config,
-        client=client,
-        section_id="introduction",
-        section_name="Introduction",
-        source_section_markdown=introduction_source,
-        python_focus_instructions=focus_instructions,
-        pipeline_context_blocks={},
-        api_signatures=_no_api_signatures(),
-    )
-    install_command = config.dist_metadata.resolved_install_command()
-    rewritten_markdown = ensure_introduction_install_recommendation(
-        introduction_rewrite.rewritten_markdown,
-        install_command=install_command,
-    )
-    if rewritten_markdown != introduction_rewrite.rewritten_markdown:
-        introduction_rewrite = introduction_rewrite.model_copy(
-            update={"rewritten_markdown": rewritten_markdown}
-        )
-        cache = load_rewrite_cache(config)
-        cache_key = rewrite_cache_key(
-            section_id="introduction",
-            source_section_markdown=introduction_source,
-            python_focus_instructions=focus_instructions,
-            pipeline_context_blocks={},
-            api_signatures=_no_api_signatures(),
-            response_schema=SectionRewriteResponse.model_json_schema(),
-        )
-        cache[cache_key] = introduction_rewrite.model_dump_json(indent=2)
-        save_rewrite_cache(config, cache)
-    user_guide_root.mkdir(parents=True, exist_ok=True)
-    landing_page_output = user_guide_root / "index.qmd"
-    landing_page_qmd = f"""---
-title: "{introduction_rewrite.title}"
----
-
-{introduction_rewrite.rewritten_markdown}
-
-{render_introduction_validation_note()}
-"""
-    landing_page_output.write_text(landing_page_qmd, encoding="utf-8")
-
-
-def write_rewritten_guide_pages(config: PipelineConfig, client: OpenAI | None) -> None:
-    guide_text = config.guide_path.read_text(encoding="utf-8")
-    api_symbols = list(discover_public_api_symbols(config.api_module_path))
-    api_context = canonical_api_context(config)
-
-    rewrite_signatures = rewrite_api_signatures(config.api_module_path, api_symbols)
-
-    functional_overview_source = extract_markdown_section(
-        guide_text,
-        "II. Functional Overview",
-    )
-    functional_overview_rewrite = rewrite_guide_section(
-        config=config,
-        client=client,
-        section_id="functional_overview",
-        section_name="Functional Overview",
-        source_section_markdown=functional_overview_source,
-        python_focus_instructions=functional_overview_focus_instructions(config),
-        pipeline_context_blocks=api_context,
-        api_signatures=rewrite_signatures,
-    )
-
-    illustrative_example_source = extract_markdown_section(
-        guide_text,
-        "III. Illustrative Example",
-    )
-    illustrative_example_rewrite = rewrite_guide_section(
-        config=config,
-        client=client,
-        section_id="illustrative_example",
-        section_name="Illustrative Example",
-        source_section_markdown=illustrative_example_source,
-        python_focus_instructions=illustrative_example_focus_instructions(config),
-        pipeline_context_blocks=api_context,
-        api_signatures=rewrite_signatures,
-    )
-
-    user_guide_root = _user_guide_root(config)
-    user_guide_root.mkdir(parents=True, exist_ok=True)
-    functional_overview_output = user_guide_root / "01-functional-overview.qmd"
-    functional_overview_output.write_text(
-        f"""---
-title: "{functional_overview_rewrite.title}"
----
-
-{functional_overview_rewrite.rewritten_markdown}
-""",
-        encoding="utf-8",
-    )
-
-    illustrative_example_output = user_guide_root / "02-illustrative-example.qmd"
-    illustrative_example_output.write_text(
-        f"""---
-title: "{illustrative_example_rewrite.title}"
----
-
-{illustrative_example_rewrite.rewritten_markdown}
-""",
-        encoding="utf-8",
-    )
-
-
 def write_docs_deploy_workflow(config: PipelineConfig) -> None:
     docs_workflow_path = _docs_workflow_path(config)
     docs_workflow_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1103,24 +798,35 @@ jobs:
     docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
 
 
-def _section_rewrite_client(model: str) -> OpenAI | None:
-    """Build a docs-stage client with a longer timeout for large section rewrites."""
-    provider = provider_for_model(model)
-    api_key = os.environ.get(provider.api_key_env)
-    if not api_key:
-        return None
-    timeout = resolve_section_rewrite_request_timeout()
-    # Validation retries are owned by generate_validated_json; disable SDK
-    # retries so they cannot multiply the per-request timeout budget.
-    return OpenAI(
-        api_key=api_key,
-        base_url=provider.base_url,
-        timeout=timeout,
-        max_retries=0,
-    )
+def author_or_restore_user_guide(
+    config: PipelineConfig,
+    *,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
+) -> None:
+    """Restore cached user-guide pages or run the Cursor agent to author them."""
+    cache_key = user_guide_cache_key(config)
+    use_cache = not no_cache and not force_rebuild
+    if use_cache and restore_user_guide_cache(config, cache_key=cache_key):
+        print(f"document_agent: cache hit for {cache_key[:12]}", flush=True)
+        return
+
+    print(f"document_agent: cache miss for {cache_key[:12]}", flush=True)
+    copy_guidance_note(config)
+    snapshot = snapshot_package_modules(config)
+    run_user_guide_agent(config, cache_key=cache_key)
+    assert_package_modules_unchanged(config, snapshot)
+    assert_user_guide_pages_exist(config)
+    extras = merge_agent_pyproject_extras(config)
+    save_user_guide_cache(config, cache_key=cache_key, extra_deps=extras)
 
 
-def run_documentation_pipeline(config: PipelineConfig) -> None:
+def run_documentation_pipeline(
+    config: PipelineConfig,
+    *,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
+) -> None:
     configure_logging()
     load_dotenv(config.repo_root / ".env")
     timer = StageTimer()
@@ -1129,10 +835,19 @@ def run_documentation_pipeline(config: PipelineConfig) -> None:
         "document",
         stall_log_path=resolve_stall_log_path(config.dist_root),
     ):
-        _run_documentation_pipeline_body(config)
+        _run_documentation_pipeline_body(
+            config,
+            no_cache=no_cache,
+            force_rebuild=force_rebuild,
+        )
 
 
-def _run_documentation_pipeline_body(config: PipelineConfig) -> None:
+def _run_documentation_pipeline_body(
+    config: PipelineConfig,
+    *,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
+) -> None:
     great_docs_yml = _great_docs_yml(config)
     if not great_docs_yml.exists():
         # great-docs init may prompt to append great-docs/ to .gitignore; answer
@@ -1154,25 +869,12 @@ def _run_documentation_pipeline_body(config: PipelineConfig) -> None:
         )
 
     configure_great_docs_yml(config)
-
-    model = section_rewrite_model()
-    section_client = _section_rewrite_client(model)
-    guide_text = config.guide_path.read_text(encoding="utf-8")
-    write_introduction_page(config, section_client, guide_text)
-    write_rewritten_guide_pages(config, section_client)
-    write_validation_page(config=config)
-    api_symbols = list(discover_public_api_symbols(config.api_module_path))
-    validate_qmd_files(
-        dist_root=config.dist_root,
-        qmd_paths=sorted(_user_guide_root(config).glob("*.qmd")),
-        api_policy=PublicApiPolicy(
-            api_import_path=config.api_import_path,
-            allowed_symbols=frozenset(api_symbols),
-        ),
-        metadata=config.dist_metadata,
-        client=section_client,
-        model=model if section_client is not None else None,
-        api_signatures=rewrite_api_signatures(config.api_module_path, api_symbols),
+    author_or_restore_user_guide(
+        config,
+        no_cache=no_cache,
+        force_rebuild=force_rebuild,
     )
-    sync_validated_pages_to_rewrite_cache(config=config, guide_text=guide_text)
+    write_validation_page(config=config)
+    validate_runnable_cell_rules(config)
+    run_great_docs_build(config)
     write_docs_deploy_workflow(config)

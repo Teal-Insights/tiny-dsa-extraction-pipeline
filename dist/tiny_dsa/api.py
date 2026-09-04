@@ -21,21 +21,21 @@ def compute_output_baseline(
     interest_baseline: Sequence[float],
     primary_balance_baseline: Sequence[float],
     country_profile_names: Sequence[str] = COUNTRY_PROFILE_NAMES,
-) -> tuple[float, ...]:
-    """Compute the baseline debt-to-GDP path for the Outputs sheet from the leaf inputs.
+) -> tuple[float | str, ...]:
+    """Compute the baseline debt-to-GDP path for projection years 1 through 5.
 
-    Returns the five-year baseline debt-to-GDP trajectory stored in `output_baseline`.
+    Produce the stable baseline output series for projection years 1 through 5 from the resolved country and baseline inputs.
 
     Args:
-        country_name: Name of the selected country, matched against `country_profile_names` to resolve initial debt.
-        country_initial_debt: Sequence of initial debt-to-GDP ratios for each country profile, used with the selected country to determine the starting debt level.
-        growth_baseline: Five-year sequence of real GDP growth rates, percent per annum.
-        interest_baseline: Five-year sequence of effective real interest rates on outstanding debt, percent per annum.
-        primary_balance_baseline: Five-year sequence of primary balances as percent of GDP, positive for surplus.
-        country_profile_names: Sequence of country profile names corresponding to `country_initial_debt`; used to look up the selected country.
+        country_name: Name of the selected country profile. Must be one of the country profile names in `country_profile_names`.
+        country_initial_debt: Initial debt-to-GDP ratios in percent of GDP for each country profile, aligned positionally with `country_profile_names`. Must contain exactly 3 entries.
+        growth_baseline: Real GDP growth rates for projection years 1 through 5, in percent per annum. Must contain exactly 5 entries.
+        interest_baseline: Real interest rates paid on outstanding general-government debt for projection years 1 through 5, in percent per annum. Must contain exactly 5 entries.
+        primary_balance_baseline: Primary fiscal balances for projection years 1 through 5, in percent of GDP; positive values denote a surplus. Must contain exactly 5 entries.
+        country_profile_names: Country profile names accepted by `country_name`, aligned positionally with `country_initial_debt`. Must contain exactly 3 entries.
 
     Returns:
-        A tuple of five floats giving the baseline debt-to-GDP path for years 1 through 5.
+        Tuple of five end-of-period general-government debt-to-GDP ratios in percent of GDP, corresponding to projection years 1 through 5.
     """
     require_length(country_initial_debt, 3)
     require_length(growth_baseline, 5)
@@ -47,6 +47,42 @@ def compute_output_baseline(
     baseline_path_internal = internals.baseline_path_internal(engine_initial_debt_baseline, growth_baseline, interest_baseline, primary_balance_baseline)
     output_baseline = internals.output_baseline(baseline_path_internal)
     return tuple(output_baseline)
+
+def _run_0(
+    *,
+    country_name: str,
+    country_initial_debt: Sequence[float],
+    growth_baseline: Sequence[float],
+    interest_baseline: Sequence[float],
+    primary_balance_baseline: Sequence[float],
+    shock_year: int,
+    shock_type: int,
+    shock_magnitudes: Sequence[float],
+    country_profile_names: Sequence[str] = COUNTRY_PROFILE_NAMES,
+    engine_year_labels: Sequence[int] = ENGINE_YEAR_LABELS,
+) -> tuple[tuple[float | str, ...], tuple[float | str, ...]]:
+    """Evaluate the shared formula closure of `output_shocked`, `output_delta`."""
+    require_length(country_profile_names, 3)
+    require_length(engine_year_labels, 5)
+    require_length(country_initial_debt, 3)
+    require_length(growth_baseline, 5)
+    require_length(interest_baseline, 5)
+    require_length(primary_balance_baseline, 5)
+    require_length(shock_magnitudes, 3)
+    initial_debt_resolved = internals.initial_debt_resolved(country_profile_names, country_name, country_initial_debt)
+    shock_magnitude_resolved = internals.shock_magnitude_resolved(shock_type, shock_magnitudes)
+    shock_active = internals.shock_active(engine_year_labels, shock_year)
+    engine_initial_debt_shocked = internals.engine_initial_debt_shocked(initial_debt_resolved)
+    shocked_growth = internals.shocked_growth(growth_baseline, shock_type, shock_magnitude_resolved, shock_active)
+    shocked_interest = internals.shocked_interest(interest_baseline, shock_type, shock_magnitude_resolved, shock_active)
+    shocked_primary_balance = internals.shocked_primary_balance(primary_balance_baseline, shock_type, shock_magnitude_resolved, shock_active)
+    shocked_path_internal = internals.shocked_path_internal(engine_initial_debt_shocked, shocked_growth, shocked_interest, shocked_primary_balance)
+    output_shocked = internals.output_shocked(shocked_path_internal)
+    engine_initial_debt_baseline = internals.engine_initial_debt_baseline(initial_debt_resolved)
+    baseline_path_internal = internals.baseline_path_internal(engine_initial_debt_baseline, growth_baseline, interest_baseline, primary_balance_baseline)
+    output_baseline = internals.output_baseline(baseline_path_internal)
+    output_delta = internals.output_delta(output_baseline, output_shocked)
+    return output_shocked, output_delta
 
 def compute_output_shocked(
     *,
@@ -60,42 +96,27 @@ def compute_output_shocked(
     shock_magnitudes: Sequence[float],
     country_profile_names: Sequence[str] = COUNTRY_PROFILE_NAMES,
     engine_year_labels: Sequence[int] = ENGINE_YEAR_LABELS,
-) -> tuple[float, ...]:
+) -> tuple[float | str, ...]:
     """Compute the shocked debt-to-GDP path for projection years 1 through 5.
 
-    Return the shocked debt-to-GDP series after applying the configured shock to the baseline parameter path.
+    Return the shocked debt trajectory implied by the configured baseline and shock for comparison against the baseline path.
 
     Args:
-        country_name: Name of the selected country from the country profile table; used to resolve the initial debt-to-GDP ratio.
-        country_initial_debt: Sequence of length 3 containing initial debt-to-GDP ratios (percent of GDP) for the three country profiles, aligned with country_profile_names.
-        growth_baseline: Baseline real GDP growth rates (percent per annum) for years 1 through 5.
-        interest_baseline: Baseline real interest rates (percent per annum) for years 1 through 5.
-        primary_balance_baseline: Baseline primary balance (percent of GDP, positive surplus) for years 1 through 5.
-        shock_year: Year (1 to 5) in which the shock first takes effect, applying through the end of the horizon.
-        shock_type: Integer 1, 2, or 3 indicating which parameter the shock affects: 1 for real GDP growth, 2 for the real interest rate, 3 for the primary balance.
-        shock_magnitudes: Sequence of length 3 shock magnitudes in percentage points, one per shock type, of which only the selected type's magnitude is applied.
-        country_profile_names: Sequence of length 3 country profile names used to look up the selected country's initial debt; defaults to built-in profile names.
-        engine_year_labels: Sequence of length 5 year labels (1 through 5) used to determine shock activation; defaults to built-in engine year labels.
+        country_name: Name of the selected country; must match an entry in country_profile_names.
+        country_initial_debt: Initial debt-to-GDP ratio (end of year 0) for the selected country, expressed as a percentage of GDP and used to seed the debt-dynamics recursion.
+        growth_baseline: Baseline real GDP growth rates for projection years 1 through 5, in percent per annum.
+        interest_baseline: Baseline effective real interest rates on public debt for projection years 1 through 5, in percent per annum.
+        primary_balance_baseline: Baseline primary fiscal balance for projection years 1 through 5, expressed as a percentage of GDP; positive values denote a surplus.
+        shock_year: First projection year in which the shock is active; the shock persists through the end of the five-year horizon.
+        shock_type: Integer shock selector: 1 for the real GDP growth shock, 2 for the real interest rate shock, or 3 for the primary balance shock.
+        shock_magnitudes: Three shock magnitudes in percentage points, ordered for growth, interest rate, and primary balance; the magnitude corresponding to shock_type is applied.
+        country_profile_names: Recognized country profile names used to validate the selected country and resolve country-specific parameters.
+        engine_year_labels: Projection year labels (1 through 5) used in the recursive engine and retained in the output ordering.
 
     Returns:
-        Tuple of five floats containing the shocked debt-to-GDP ratios (percent of GDP) for years 1 through 5.
+        Shocked debt-to-GDP path for projection years 1 through 5, as a tuple of values in spreadsheet order.
     """
-    require_length(country_initial_debt, 3)
-    require_length(growth_baseline, 5)
-    require_length(interest_baseline, 5)
-    require_length(primary_balance_baseline, 5)
-    require_length(shock_magnitudes, 3)
-    require_length(country_profile_names, 3)
-    require_length(engine_year_labels, 5)
-    initial_debt_resolved = internals.initial_debt_resolved(country_profile_names, country_name, country_initial_debt)
-    shock_magnitude_resolved = internals.shock_magnitude_resolved(shock_type, shock_magnitudes)
-    shock_active = internals.shock_active(engine_year_labels, shock_year)
-    engine_initial_debt_shocked = internals.engine_initial_debt_shocked(initial_debt_resolved)
-    shocked_growth = internals.shocked_growth(growth_baseline, shock_type, shock_magnitude_resolved, shock_active)
-    shocked_interest = internals.shocked_interest(interest_baseline, shock_type, shock_magnitude_resolved, shock_active)
-    shocked_primary_balance = internals.shocked_primary_balance(primary_balance_baseline, shock_type, shock_magnitude_resolved, shock_active)
-    shocked_path_internal = internals.shocked_path_internal(engine_initial_debt_shocked, shocked_growth, shocked_interest, shocked_primary_balance)
-    output_shocked = internals.output_shocked(shocked_path_internal)
+    output_shocked, _ = _run_0(country_profile_names=country_profile_names, engine_year_labels=engine_year_labels, country_name=country_name, country_initial_debt=country_initial_debt, growth_baseline=growth_baseline, interest_baseline=interest_baseline, primary_balance_baseline=primary_balance_baseline, shock_year=shock_year, shock_type=shock_type, shock_magnitudes=shock_magnitudes)
     return tuple(output_shocked)
 
 def compute_output_delta(
@@ -110,46 +131,27 @@ def compute_output_delta(
     shock_magnitudes: Sequence[float],
     country_profile_names: Sequence[str] = COUNTRY_PROFILE_NAMES,
     engine_year_labels: Sequence[int] = ENGINE_YEAR_LABELS,
-) -> tuple[float, ...]:
-    """Compute the difference between shocked and baseline debt-to-GDP paths, in percentage points.
+) -> tuple[float | str, ...]:
+    """Compute the shocked-minus-baseline debt-to-GDP path in percentage points.
 
-    Return the output_delta series for the Outputs sheet, representing the impact of the configured shock on the debt-to-GDP path.
+    Return the output_delta row that the Outputs sheet exposes to downstream consumers.
 
     Args:
-        country_name: User-selected country, drawn from the country profile table. Determines the initial debt-to-GDP ratio via lookup.
-        country_initial_debt: Initial debt-to-GDP ratios for each country profile, in percent of GDP. The ratio for the selected country is resolved from these values.
+        country_name: User-selected country name, matched against the country profile table.
+        country_initial_debt: Initial general-government debt-to-GDP ratio, expressed as a percentage of GDP.
         growth_baseline: Real GDP growth rates for years 1 through 5, in percent per annum.
-        interest_baseline: Real interest rates paid on outstanding debt for years 1 through 5, in percent per annum.
-        primary_balance_baseline: Primary balance for years 1 through 5, expressed as a percent of GDP. Positive values denote a surplus.
-        shock_year: The year in which the shock begins, as an integer between 1 and 5. The shock applies from this year through the end of the horizon.
-        shock_type: The parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, 3 for the primary balance.
-        shock_magnitudes: Shock magnitudes for each shock type, in percentage points. The magnitude corresponding to the selected shock type is applied from the shock year onwards.
-        country_profile_names: Names of the country profiles in the lookup table (for example, Borvelia, Litellia, Aurelium). Used to resolve the initial debt-to-GDP ratio for the selected country.
-        engine_year_labels: Year labels for the five-year horizon (typically 1 through 5). Used to determine the shock-active indicator for each year.
+        interest_baseline: Real interest rates for years 1 through 5, in percent per annum.
+        primary_balance_baseline: Primary balance for years 1 through 5, expressed as a percentage of GDP; positive values denote a surplus.
+        shock_year: First year in which the shock takes effect, an integer from 1 to 5.
+        shock_type: Parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, or 3 for the primary balance.
+        shock_magnitudes: Shock magnitudes for the three shock types, in percentage points; only the magnitude corresponding to shock_type is applied.
+        country_profile_names: Names of the available country profiles in the lookup table.
+        engine_year_labels: Year labels for the projection columns, identifying the years 1 through 5.
 
     Returns:
-        A tuple of five floats representing the output delta series: the difference between the shocked and baseline debt-to-GDP paths, in percentage points, for years 1 through 5.
+        Tuple of output_delta values for the projection years, defined as shocked debt-to-GDP minus baseline debt-to-GDP in percentage points.
     """
-    require_length(country_initial_debt, 3)
-    require_length(growth_baseline, 5)
-    require_length(interest_baseline, 5)
-    require_length(primary_balance_baseline, 5)
-    require_length(shock_magnitudes, 3)
-    require_length(country_profile_names, 3)
-    require_length(engine_year_labels, 5)
-    initial_debt_resolved = internals.initial_debt_resolved(country_profile_names, country_name, country_initial_debt)
-    shock_magnitude_resolved = internals.shock_magnitude_resolved(shock_type, shock_magnitudes)
-    shock_active = internals.shock_active(engine_year_labels, shock_year)
-    engine_initial_debt_baseline = internals.engine_initial_debt_baseline(initial_debt_resolved)
-    engine_initial_debt_shocked = internals.engine_initial_debt_shocked(initial_debt_resolved)
-    shocked_growth = internals.shocked_growth(growth_baseline, shock_type, shock_magnitude_resolved, shock_active)
-    shocked_interest = internals.shocked_interest(interest_baseline, shock_type, shock_magnitude_resolved, shock_active)
-    shocked_primary_balance = internals.shocked_primary_balance(primary_balance_baseline, shock_type, shock_magnitude_resolved, shock_active)
-    baseline_path_internal = internals.baseline_path_internal(engine_initial_debt_baseline, growth_baseline, interest_baseline, primary_balance_baseline)
-    shocked_path_internal = internals.shocked_path_internal(engine_initial_debt_shocked, shocked_growth, shocked_interest, shocked_primary_balance)
-    output_baseline = internals.output_baseline(baseline_path_internal)
-    output_shocked = internals.output_shocked(shocked_path_internal)
-    output_delta = internals.output_delta(output_baseline, output_shocked)
+    _, output_delta = _run_0(country_profile_names=country_profile_names, engine_year_labels=engine_year_labels, country_name=country_name, country_initial_debt=country_initial_debt, growth_baseline=growth_baseline, interest_baseline=interest_baseline, primary_balance_baseline=primary_balance_baseline, shock_year=shock_year, shock_type=shock_type, shock_magnitudes=shock_magnitudes)
     return tuple(output_delta)
 
 __all__ = [

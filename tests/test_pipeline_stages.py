@@ -92,19 +92,10 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
             documentation_url="https://example.com/",
         ),
         docstring_callback_name="series_docs",
-        canonical_api_example_path=repo_root / "templates" / "canonical-api-usage.md",
         binding_authoring_prompt_path=repo_root
         / "templates"
         / "binding-authoring-prompt.txt",
-        section_rewrite_introduction_focus_path=(
-            repo_root / "templates" / "section-rewrite-introduction-focus.txt"
-        ),
-        section_rewrite_functional_overview_focus_path=(
-            repo_root / "templates" / "section-rewrite-functional-overview-focus.txt"
-        ),
-        section_rewrite_illustrative_example_focus_path=(
-            repo_root / "templates" / "section-rewrite-illustrative-example-focus.txt"
-        ),
+        user_guide_agent_prompt_path=repo_root / "templates" / "user-guide-agent.txt",
         differential_workbook_rel=Path("data/workbook.xlsx"),
         differential_report_dir_rel=Path("data/differential/exported_library"),
         differential_graph_report_dir_rel=Path("data/differential/graph"),
@@ -522,7 +513,11 @@ def test_run_pipeline_default_runs_through_document(
         run_pipeline(synthetic_pipeline_config_fixture)
 
     validate.assert_called_once_with(annotate_state, no_cache=False, timings=ANY)
-    document.assert_called_once_with(synthetic_pipeline_config_fixture)
+    document.assert_called_once_with(
+        synthetic_pipeline_config_fixture,
+        no_cache=False,
+        force_rebuild=False,
+    )
 
 
 def test_run_pipeline_passes_no_cache_to_validate_stage(
@@ -680,7 +675,11 @@ def test_run_pipeline_force_document_runs_docs_after_differential_failure(
             force_document=True,
         )
 
-    document.assert_called_once_with(synthetic_pipeline_config_fixture)
+    document.assert_called_once_with(
+        synthetic_pipeline_config_fixture,
+        no_cache=False,
+        force_rebuild=False,
+    )
 
 
 def test_run_pipeline_document_failure_raises_document_stage_error(

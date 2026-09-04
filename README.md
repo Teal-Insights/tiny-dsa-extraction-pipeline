@@ -255,7 +255,12 @@ uv run --project dist --group validation python -m tests.differential.differenti
 
 ### 7. Document
 
-Great Docs generates the distributable website from the exported package. LLM rewrites guide sections into Python-first user-guide pages when cache misses require an API key.
+Great Docs scaffolds the distributable website from the exported package. On a
+cache miss the document stage launches a local Cursor SDK agent (`cwd=dist/`)
+that reads the guidance note, experiments with the generated API, writes
+economist-facing `user_guide/` pages, and renders them with `great-docs build`.
+Cached `user_guide/` trees live under `.cache/user-guide/`. Uncached runs need
+`CURSOR_API_KEY`.
 
 ### 8. Refactor
 
@@ -352,9 +357,9 @@ The pipeline is ordered as `extract → export → refactor → validate → doc
 
 `--start-from-stage` and `--only-stage` are mutually exclusive. `--only-stage` cannot be combined with `--stop-after-stage`. Loading a stage manifest recomputes workbook / bindings / constraints / mode fingerprints and **fails loudly** (naming the drifted input) when they disagree — it never silently falls back to a full run. Entering at `validate` or `document` rebuilds `dist/` via `materialize_package` from the manifest's codegen and internals keys.
 
-When the default full run reaches `document` after a non-zero exported-library differential exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (timeouts, validation exhaustion, LLM errors) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
+When the default full run reaches `document` after a non-zero exported-library differential exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (agent errors, package mutation, empty guides, or `great-docs build` failure) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
 
-Guide-rewrite LLM calls use `SECTION_REWRITE_REQUEST_TIMEOUT` (default 300s per request) and `SECTION_REWRITE_DEADLINE` (default timeout × 4 attempts) so a stuck rewrite cannot block the pipeline indefinitely. Set `PIPELINE_STALL_SECONDS` for heartbeat stack dumps during the document stage.
+Document-agent runs use `DOCUMENT_AGENT_DEADLINE` (default 1800s). Set `PIPELINE_STALL_SECONDS` for heartbeat stack dumps during the document stage.
 
 ```bash
 uv run python -m src.extraction_pipeline --stop-after-stage export
@@ -364,7 +369,7 @@ uv run python -m src.extraction_pipeline --only-stage validate
 
 ### Prerequisites
 
-LLM steps (docstrings, internals refactor, guide rewrites) cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `OptimalCompression` projection, `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, formula clusters / refactor schedule, and codegen module texts cache gzipped pickle payloads under `.cache/projection/`, `.cache/series-resolution/`, `.cache/series-derived/`, `.cache/bindings-validation/`, `.cache/clusters/`, and `.cache/codegen/`. Series-resolution, series-derived, bindings-validation, and cluster keys fold a `bindings_fingerprint` (plus clustering modes, codegen options, and `excel-grapher` version as applicable); projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version. A successful gated refactor also content-keys the final `internals.py` under `.cache/internals/<key>.py` (codegen key, clusters key, digest of `.cache/internals-refactors.json`, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, refactor model, and `excel-grapher` version) so a warm refactor is a file copy that skips Pass 1, the batched parity gate, and Pass 2. The Pass 1 mechanical checkpoint is stored under `.cache/internals/<package-namespace>/` (not under `dist/`). `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen (and optional internals) cache keys recorded in `dist/.pipeline-cache-keys.json`. That sidecar also records `internals_inputs` — the refactor model, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, and `excel-grapher` version the committed module was built under. Adopting a committed `dist/` happens before clustering, so the full content key cannot be recomputed there; the recorded provenance must match the current run or the refactor is rebuilt from pristine codegen instead. Stage entry/exit also records those keys (plus fingerprints) under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, cluster, codegen, and refactored-internals caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
+LLM steps (docstrings, internals refactor) and the document-stage Cursor agent cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `OptimalCompression` projection, `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, formula clusters / refactor schedule, and codegen module texts cache gzipped pickle payloads under `.cache/projection/`, `.cache/series-resolution/`, `.cache/series-derived/`, `.cache/bindings-validation/`, `.cache/clusters/`, and `.cache/codegen/`. Series-resolution, series-derived, bindings-validation, and cluster keys fold a `bindings_fingerprint` (plus clustering modes, codegen options, and `excel-grapher` version as applicable); projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version. A successful gated refactor also content-keys the final `internals.py` under `.cache/internals/<key>.py` (codegen key, clusters key, digest of `.cache/internals-refactors.json`, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, refactor model, and `excel-grapher` version) so a warm refactor is a file copy that skips Pass 1, the batched parity gate, and Pass 2. The Pass 1 mechanical checkpoint is stored under `.cache/internals/<package-namespace>/` (not under `dist/`). Authored user-guide trees cache under `.cache/user-guide/<key>/`. `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen (and optional internals) cache keys recorded in `dist/.pipeline-cache-keys.json`. That sidecar also records `internals_inputs` — the refactor model, mechanical/parity schema versions, `MECHANICAL_REFACTOR_BODIES`, and `excel-grapher` version the committed module was built under. Adopting a committed `dist/` happens before clustering, so the full content key cannot be recomputed there; the recorded provenance must match the current run or the refactor is rebuilt from pristine codegen instead. Stage entry/exit also records those keys (plus fingerprints) under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, cluster, codegen, refactored-internals, and user-guide caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
 
 ```bash
 # .env — logging verbosity for pipeline entry points (default: INFO)
@@ -375,15 +380,18 @@ OPENAI_API_KEY=sk-...
 ZAI_API_KEY=...
 DEEPSEEK_API_KEY=...
 
-# Per-stage model selection (optional; default gpt-5.5 when unset)
-# Name prefix selects the provider: gpt-*, glm-*, deepseek-*
+# Document stage uses the Cursor SDK (local agent against dist/)
+CURSOR_API_KEY=cursor_...
+
+# Per-stage model selection (optional)
+# Name prefix selects the provider for OpenAI-compatible stages: gpt-*, glm-*, deepseek-*
 DOCSTRING_MODEL=gpt-5.5
 REFACTOR_MODEL=gpt-5.5
-SECTION_REWRITE_MODEL=gpt-5.5
+DOCUMENT_AGENT_MODEL=gpt-5.6-luna
 LLM_GRAPH_AUDIT_MODEL=gpt-5.5
 ```
 
-If an uncached LLM step is reached without the required API key, the pipeline fails fast with an `*_API_KEY is required ...` error.
+If an uncached LLM step is reached without the required API key, the pipeline fails fast with an `*_API_KEY is required ...` error. The document stage requires `CURSOR_API_KEY` on a user-guide cache miss.
 
 Opt-in graph dependency audits (`pytest --run-skipped`) use the same multi-provider routing: set `LLM_GRAPH_AUDIT_MODEL` to a `gpt-*`, `glm-*`, or `deepseek-*` model name and provide the matching API key (`OPENAI_API_KEY`, `ZAI_API_KEY`, or `DEEPSEEK_API_KEY`). One model drives every audit case in a run. Workbook audits auto-select difficulty-ranked formula parents from the warm committed `.cache/dependency-graph/` cache (they never cold-build under pytest's redirected cache — miss skips with a hint to run `--only-stage extract`). Optional `workbook_config.GRAPH_AUDIT_CASES` entries steer selection (`required` pins and labeled focuses); the synthetic smoke-test audit uses the fixture catalog.
 

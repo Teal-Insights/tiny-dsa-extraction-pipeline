@@ -132,17 +132,8 @@ def synthetic_pipeline_config(
             repository_url=None,
         ),
         docstring_callback_name="series_docs",
-        canonical_api_example_path=templates_root / "canonical-api-usage.md",
         binding_authoring_prompt_path=templates_root / "binding-authoring-prompt.txt",
-        section_rewrite_introduction_focus_path=(
-            templates_root / "section-rewrite-introduction-focus.txt"
-        ),
-        section_rewrite_functional_overview_focus_path=(
-            templates_root / "section-rewrite-functional-overview-focus.txt"
-        ),
-        section_rewrite_illustrative_example_focus_path=(
-            templates_root / "section-rewrite-illustrative-example-focus.txt"
-        ),
+        user_guide_agent_prompt_path=templates_root / "user-guide-agent.txt",
         differential_workbook_rel=Path("data/workbook.xlsx"),
         differential_report_dir_rel=Path("data/differential/exported_library"),
         differential_graph_report_dir_rel=Path("data/differential/graph"),

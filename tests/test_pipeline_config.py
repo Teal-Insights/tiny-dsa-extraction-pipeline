@@ -28,10 +28,10 @@ def test_load_pipeline_config_reads_workbook_config() -> None:
     assert config.variation_mode == "independent"
     assert config.clustering_mode == "series"
     assert config.blank_ranges == ()
-    assert config.canonical_api_example_path.name == "canonical-api-usage.md"
+    assert config.user_guide_agent_prompt_path.name == "user-guide-agent.txt"
     assert (
-        config.repo_relative_posix_path(config.canonical_api_example_path)
-        == "templates/canonical-api-usage.md"
+        config.repo_relative_posix_path(config.user_guide_agent_prompt_path)
+        == "templates/user-guide-agent.txt"
     )
 
 

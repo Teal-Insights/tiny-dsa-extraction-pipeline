@@ -1,5 +1,5 @@
 Parity report: inverted-tree package vs FormulaEvaluator
-Generated: 2026-09-01T23:23:16+00:00
+Generated: 2026-09-04T14:23:08+00:00
 Workbook:  C:\Users\chris\Software\tiny-dsa-extraction-pipeline\data\tiny-dsa.xlsx
 Package:   C:\Users\chris\Software\tiny-dsa-extraction-pipeline\dist\tiny_dsa
 Tolerance: atol = 1e-09

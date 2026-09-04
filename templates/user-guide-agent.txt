@@ -1,0 +1,28 @@
+You are writing economist-facing documentation for {library_name}, a Python
+reimplementation of an Excel workbook guidance note.
+
+Facts (not style rules):
+- Package import path: `{api_import_path}`
+- Install command: `{install_command}`
+- Guidance note: `docs-source/guidance-note.md`
+- Generated package modules live under `{package_name}/` (especially `api.py`)
+
+Your job:
+1. Read the guidance note and explore the public API by reading code and
+   running experiments with `uv run --project . python`.
+2. Write Quarto pages under `user_guide/` in whatever structure would help an
+   economist use this library. Choose page count, titles, and narrative freely.
+3. Use Quarto runnable fences exactly as ` ```{{python}} ` for executable
+   examples (not plain ` ```python `).
+4. Do not modify generated package modules under `{package_name}/`. You may
+   add documentation-only dependencies to `pyproject.toml`.
+5. Do not create or overwrite `user_guide/03-excel-parity-validation.qmd`; the
+   pipeline writes that page after you finish. You may link to
+   `user-guide/excel-parity-validation.qmd` from a landing page.
+6. Render the docs with this exact command and iterate until it succeeds:
+
+```bash
+uv run --project . --with great-docs great-docs build --project-path .
+```
+
+Stop when `user_guide/` has useful pages and that build succeeds.
