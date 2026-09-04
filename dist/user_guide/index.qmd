@@ -1,11 +1,55 @@
 ---
 title: "Tiny DSA"
+subtitle: "A practical guide for economists"
 ---
 
 Tiny DSA is a small Python reimplementation of an Excel workbook for exploring
 general-government debt-to-GDP dynamics over a five-year horizon. It is aimed
 at economists who want a transparent, hand-traceable baseline and one
 configurable stress scenario.
+
+The model is deliberately narrow. It is useful for tracing the debt-dynamics
+identity, comparing a stress scenario with a baseline, and reproducing the
+corresponding Excel calculations. It is not an operational debt-sustainability
+framework and does not provide a debt-distress classification.
+
+## Start here
+
+- [Install and run a first projection](user-guide/getting-started.qmd)
+- [Review the input and output contract](user-guide/functional-overview.qmd)
+- [Understand the model and shocks](user-guide/model.qmd)
+- [Use the API in an analysis workflow](user-guide/api-workflow.qmd)
+- [Compare Python results with the Excel workbook](user-guide/excel-parity-validation.qmd)
+
+## The model in one equation
+
+For each projection year, Tiny DSA applies
+
+$$
+D_t = D_{t-1}\frac{1+r_t}{1+g_t} - PB_t,
+$$
+
+where $D$ is debt-to-GDP, $r$ is the real interest rate, $g$ is real GDP
+growth, and $PB$ is the primary balance. Rates and balances are entered in
+percentage points. A positive primary balance is a surplus and reduces debt.
+
+The Python package exposes the three output series through
+`tiny_dsa.api`:
+
+- `compute_output_baseline`
+- `compute_output_shocked`
+- `compute_output_delta`
+
+`output_delta` is always shocked minus baseline, in percentage points of GDP.
+
+## Scope and interpretation
+
+The projection is in real terms, covers exactly five years, and applies one
+permanent step shock from a selected year through year 5. Inflation,
+exchange-rate effects, debt-currency composition, stock-flow adjustments,
+contingent liabilities, and endogenous fiscal responses are outside the model.
+Treat results as transparent accounting outputs for analysis and teaching, not
+as a policy assessment.
 
 ::: {.callout-warning}
 Tiny DSA is a methodological artifact, not an operational debt-sustainability

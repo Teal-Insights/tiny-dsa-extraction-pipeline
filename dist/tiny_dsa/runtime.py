@@ -13,15 +13,29 @@ the tuple.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import NoReturn, TypeGuard, TypeVar, cast
+from datetime import date, datetime
+from typing import Literal, NoReturn, Protocol, TypeGuard, TypeVar, cast, overload
 
 from excel_grapher.core import operators as _core_ops
 from excel_grapher.core.lookup_funcs import match_cells
-from excel_grapher.core.math_funcs import exp_number
+from excel_grapher.core.math_funcs import exp_number, sum_cells
+from excel_grapher.core.sumproduct import sumproduct_cells
 from excel_grapher.core.types import CellValue, FormulaValue
 from excel_grapher.core.types import XlError as CoreXlError
+from excel_grapher.series_bindings.input_coerce import (
+    apply_input_value_map as apply_input_value_map,
+)
+from excel_grapher.series_bindings.input_coerce import require_input_domain as require_input_domain
 
 T = TypeVar("T")
+
+
+class KeyedCompute(Protocol):
+    """A generated `compute_*` or internals helper with published key metadata."""
+
+    __key__: tuple[str, ...]
+    __domain__: tuple[object, ...]
+
 
 XL_ERROR_CODES = frozenset(
     {
@@ -49,12 +63,25 @@ def is_error(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and value in XL_ERROR_CODES
 
 
-def as_measure(value: object, dtype: str = "float") -> int | float | str | bool:
+@overload
+def as_measure(value: object, dtype: Literal["float"] = "float") -> float | str: ...
+@overload
+def as_measure(value: object, dtype: Literal["int"]) -> int | str: ...
+@overload
+def as_measure(value: object, dtype: Literal["str"]) -> str: ...
+@overload
+def as_measure(value: object, dtype: Literal["bool"]) -> bool | str: ...
+@overload
+def as_measure(value: object, dtype: Literal["datetime"]) -> datetime | str: ...
+def as_measure(value: object, dtype: str = "float") -> int | float | str | bool | datetime:
     """Coerce a helper result to a measure: number or cached text.
 
     Operators still raise `XlError`. Series-member boundaries catch that and
     store `err.code` here so a `#REF!` cell does not abort the rest of a series.
     Non-numeric cached strings (`n/a`, `..`) pass through as measures.
+
+    Overloads narrow the return by `dtype`: the default `float` path is
+    `float | str` so generated `list[float | str]` accumulators type-check.
     """
     if isinstance(value, str):
         return value
@@ -72,6 +99,12 @@ def as_measure(value: object, dtype: str = "float") -> int | float | str | bool:
         return str(value)
     if dtype == "bool":
         return bool(value)
+    if dtype == "datetime":
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime(value.year, value.month, value.day)
+        raise TypeError(f"cannot coerce {type(value).__name__} to datetime measure")
     if isinstance(value, bool):
         return float(value)
     if isinstance(value, int | float):
@@ -83,6 +116,15 @@ def _raise_stored_error(value: object) -> None:
     """Re-raise a cached Excel error-code measure."""
     if isinstance(value, str) and is_error(value):
         raise XlError(value)
+
+
+def _raise_stored_errors_in(value: object) -> None:
+    """Re-raise stored error-code measures in scalars and nested sequences."""
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        _raise_stored_error(value)
+        return
+    for item in value:
+        _raise_stored_errors_in(item)
 
 
 def _adapt_core(value: object) -> object:
@@ -216,6 +258,20 @@ def xl_exp(*args: object) -> object:
     return _adapt_core(exp_number(*cast(tuple[CellValue, ...], args)))
 
 
+def xl_sum(*args: object) -> object:
+    """Excel `SUM` via `core.math_funcs.sum_cells`."""
+    for arg in args:
+        _raise_stored_errors_in(arg)
+    return _adapt_core(sum_cells(*cast(tuple[CellValue, ...], args)))
+
+
+def xl_sumproduct(*args: object) -> object:
+    """Excel `SUMPRODUCT` via `core.sumproduct.sumproduct_cells`."""
+    for arg in args:
+        _raise_stored_errors_in(arg)
+    return _adapt_core(sumproduct_cells(*cast(tuple[CellValue, ...], args)))
+
+
 def xl_choose(index: object, *choices: float) -> float:
     """Excel `CHOOSE`: 1-based selection over already-evaluated arguments."""
     position = int(_as_number(index))
@@ -292,6 +348,37 @@ def take(values: Sequence[T], indices: Sequence[int] | slice) -> tuple[T, ...]:
             raise ValueError(f"take index {index} is outside series of length {length}")
         result.append(values[index])
     return tuple(result)
+
+
+def as_records(
+    compute: KeyedCompute,
+    result: Sequence[object],
+    *,
+    measure: str = "OBS_VALUE",
+) -> list[dict[str, object]]:
+    """Zip a compute result with `__key__` / `__domain__` into records.
+
+    Tuples stay the ABI; this helper is for docs, tests, and tidy views.
+    A one-key domain is a tuple of scalars (`TIME_PERIOD_DOMAIN.index(2050)`).
+    A multi-key domain is a tuple of key tuples aligned with `__key__`.
+    """
+    keys = compute.__key__
+    domain = compute.__domain__
+    if len(domain) != len(result):
+        raise ValueError(f"result length {len(result)} does not match domain length {len(domain)}")
+    records: list[dict[str, object]] = []
+    for point, value in zip(domain, result, strict=True):
+        if not keys:
+            record: dict[str, object] = {measure: value}
+        elif len(keys) == 1:
+            record = {keys[0]: point, measure: value}
+        else:
+            if not isinstance(point, tuple) or len(point) != len(keys):
+                raise ValueError(f"domain point {point!r} does not match key {keys!r}")
+            record = dict(zip(keys, point, strict=True))
+            record[measure] = value
+        records.append(record)
+    return records
 
 
 class InstanceCycleError(ValueError):

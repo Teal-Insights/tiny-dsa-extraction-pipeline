@@ -1,3 +1,6 @@
+homepage: index
+seo:
+  enabled: false
 # Great Docs Configuration
 # See https://posit-dev.github.io/great-docs/user-guide/configuration.html
 
@@ -105,3 +108,4 @@ jupyter: 'C:/Users/chris/Software/tiny-dsa-extraction-pipeline/.venv/Scripts/pyt
 #       - SimpleClass          # Methods documented inline (default)
 #
 # After editing, run 'great-docs build' to generate your documentation.
+homepage: index

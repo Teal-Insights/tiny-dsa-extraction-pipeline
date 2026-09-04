@@ -1,14 +1,6 @@
 version = 1
 revision = 3
 requires-python = ">=3.13"
-resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version < '3.14' and sys_platform == 'win32'",
-    "python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-]
 
 [[package]]
 name = "annotated-types"
@@ -119,16 +111,16 @@ wheels = [
 
 [[package]]
 name = "excel-grapher"
-version = "12.7.1"
+version = "13.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastpyxl" },
     { name = "jsonschema" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/14/5ca06976b81b3bf5fc05f0960a005ef635d70854a5998df03f8f157f6220/excel_grapher-12.7.1.tar.gz", hash = "sha256:50cf13553a7df9cc43a17d2bdf077135b1feb24a60e7d310c1d4c5f908717838", size = 6032452, upload-time = "2026-09-04T13:17:40.09Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/20/02c66fb8e7e7d6b1a160c2bdf1bb330c83c5133c03ac6056efb75022260f/excel_grapher-13.6.3.tar.gz", hash = "sha256:0217496bdea5e15e890327a07b9cbd9fe1f8d6e91739bee8fa47899532a328c4", size = 6072411, upload-time = "2026-09-04T21:01:44.815Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/27/094a3cdeafdba84085acff363172bc6cd089c1aea70d3a01d36315ef604d/excel_grapher-12.7.1-py3-none-any.whl", hash = "sha256:96a4b7127f54dbd09dc3ba4f289c9873266c085615757d362ec656b301ab914c", size = 502360, upload-time = "2026-09-04T13:17:37.945Z" },
+    { url = "https://files.pythonhosted.org/packages/af/e0/0b087e704dc82fb127a12c0fd0084372a233c74e69b9bbcf7182a7afa61f/excel_grapher-13.6.3-py3-none-any.whl", hash = "sha256:5d1191a9a17004747a719d6dc7e4e5c6ca05d574732b8464cfb2e28e7881e25c", size = 522032, upload-time = "2026-09-04T21:01:43.023Z" },
 ]
 
 [[package]]
