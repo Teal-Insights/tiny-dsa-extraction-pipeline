@@ -6,8 +6,12 @@ __pycache__/
 .cache/
 # Generated package. Derived repos that publish via the deploy workflow should
 # commit dist/ explicitly (git add -f dist); see README "Deploying the
-# generated package".
-dist/
+# generated package". Ignore contents so the inverted-tree prototype can be
+# tracked without force-adding the pipeline output.
+dist/*
+# Hand-rolled inverted-tree prototype (not pipeline output).
+!dist/tiny_dsa_inverted/
+!dist/tiny_dsa_inverted/**
 .env
 docs/dependency-graph/
 artifacts/dependency-graph/
