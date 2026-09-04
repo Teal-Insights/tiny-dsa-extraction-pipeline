@@ -4,13 +4,13 @@
 
 ## Good Extraction
 
-This standard defines when an Excel-to-Python extraction is *good enough to ship*. It covers configure → extract → export → refactor.
+This standard defines when an Excel-to-Python extraction is *good enough to ship*. It covers configure → extract → export → annotate → validate → document.
 
 ---
 
 ### Summary
 
-A good extraction produces a distributable Python library whose **public API is semantic and economist-facing**, whose **dependency graph is complete and constraint-resolved**, and whose **generated code is mechanically traceable** back to workbook cells. Internals must be **organized into functions that map to macrofinance computations**, not individual Excel workbook cells. The library must be **runnable without Excel** but must produce the **same outputs as the original workbook for the same inputs**. The library must be documented with **detailed docstrings, a polished website, and a GitHub README**.
+A good extraction produces a distributable Python library whose **public API is semantic and economist-facing**, whose **dependency graph is complete and constraint-resolved**, and whose **generated code is mechanically traceable** back to workbook cells. Internals helpers are **named from series bindings**. The library must be **runnable without Excel** but must produce the **same outputs as the original workbook for the same inputs** (graph-vs-Excel, then library-vs-graph via FormulaEvaluator). The library must be documented with **detailed docstrings, a polished website, and a GitHub README**.
 
 ---
 
@@ -20,16 +20,16 @@ Each gate has a default owner role. Adapt names to your team; the responsibiliti
 
 | Role | Signs off on |
 |---|---|
-| **Config author** | Ingest, configure, extract, document, and refactor stages — targets, blank ranges, bindings, constraints, and committed parity evidence |
+| **Config author** | Ingest, configure, extract, annotate, and document stages — targets, blank ranges, bindings, constraints, and committed parity evidence |
 | **Graph reviewer** | Extract completeness — manual graph review and optional LLM dependency audits |
-| **Parity owner** | Export and test — full pipeline run and differential parity (including Windows Excel when available) |
+| **Parity owner** | Export and validate — full pipeline run, graph-vs-Excel, and FormulaEvaluator library parity |
 
 #### 1. Configure
 
 | Criterion | Pass condition |
 |---|---|
 | **Targets declared** | Every published output is a named target (range name or sheet-qualified address) driving target-driven graph extraction. |
-| **Series bindings authored** | `bindings/inputs.bindings.yaml` and `bindings/outputs.bindings.yaml` exist, use `schema_version: 1.13.0`, and declare one logical scalar/series/table per public I/O function. Every dimension should have an explicit `id`; record/key fields and refactor parameters use the effective dimension id, with concept as semantic metadata. Reader-only fixed leaves that formulas should call via `read_*` are declared with `constant: {}` (typically in `bindings/constants.bindings.yaml`). |
+| **Series bindings authored** | `bindings/inputs.bindings.yaml` and `bindings/outputs.bindings.yaml` exist, use `schema_version: 1.13.0`, and declare one logical scalar/series/table per public I/O function. Every dimension should have an explicit `id`; record/key fields and `compute_*` keyword names use the effective dimension id, with concept as semantic metadata. Reader-only fixed leaves that formulas should call via `read_*` are declared with `constant: {}` (typically in `bindings/constants.bindings.yaml`). |
 | **Bindings validated against graph** | `validate_series_bindings(...)` reports `ok`; input bindings overlap graph leaves, output bindings overlap target nodes. |
 | **Dynamic refs resolved** | All `OFFSET` / `INDEX` / `MATCH` / `CHOOSE` dependencies are resolved via `DynamicRefConfig.from_constraints(...)` without `DynamicRefError`. |
 | **Every mutable leaf is bound** | Each leaf classified as `input` appears in `inputs.bindings.yaml`; unbound mutable leaves fail the pipeline. |
@@ -61,7 +61,7 @@ Configure checklist (workbook-neutral):
 |---|---|
 | **Graph builds cleanly** | `create_dependency_graph(..., load_values=True, dynamic_refs=..., capture_dependency_provenance=True, blank_ranges=...)` succeeds. |
 | **Graph is inspectable** | DAG from outputs to inputs; manual review confirms expected sheets, no spurious nodes, no missing shock/engine paths. |
-| **Provenance captured** | `capture_dependency_provenance=True` so later compression/refactor projections are safe and auditable. |
+| **Provenance captured** | `capture_dependency_provenance=True` so later compression/export projections are safe and auditable. |
 | **Series derive cleanly** | `derive_input_series` / `derive_output_series` resolve every binding to concrete cell addresses. |
 | **Dependency chains pass AI-powered spot-checking** | Optional: set `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`; name prefix selects OpenAI, Z.AI, or DeepSeek), ensure a warm committed `.cache/dependency-graph/` entry exists (from `--only-stage extract` / `scripts.regenerate_graph_cache`), and run `pytest tests/test_extraction_graph_accuracy.py --run-skipped` with the matching provider API key. Empty `GRAPH_AUDIT_CASES` auto-selects difficulty-ranked formula parents (fan-out filtered so evidence is not truncated); declared cases are optional steering (`required` pins and labeled focuses). The synthetic smoke-test audit runs without copying cases into `workbook_config.py`. Per-parent audits spot-check direct dependency sets; they do not exhaust every conditional path. `LLM_GRAPH_AUDIT_CASES` caps how many parents are selected per run. Audits skip the LLM and return `inconclusive` when dependency evidence is truncated; returned addresses are normalized and validated (`spurious_dependencies` must be direct graph children; unknown addresses are flagged separately). Only `verdict: "correct"` counts as a pass. |
 
@@ -70,15 +70,33 @@ Configure checklist (workbook-neutral):
 | Criterion | Pass condition |
 |---|---|
 | **Leaf classification attached** | Before codegen, every graph leaf is classified `input` or `constant` and attached to the graph. |
-| **Records-shaped public API** | Codegen emits `make_context()`, `set_*` input setters, and `compute_*` output functions from series bindings—not raw cell writers. |
-| **Inputs validated at runtime** | Setters validate record shape and key matching; domain/units prose belongs in docstrings, not implied runtime validation beyond what codegen emits. |
-| **Domain-language identifiers** | Public functions **and** internal functions use macrofinance vocabulary (`growth_baseline`, `output_delta`), not workbook coordinates (`U24`, `OFFSET_RANGE_3`). |
-| **Concise/readable code** | Internal formula cell groups are collapsed to functions, rewritten with macrofinance semantics, parameterized by binding dimension ids (with concept as semantic metadata), and reused to reduce code duplication. |
-| **Pandas/Polars compatible** | Public functions can accept (and ideally return) pandas or polars `DataFrame`s as inputs as well as scalars, sequences, and `Records` lists. |
-| **Docstrings on public API** | Every `set_*` and `compute_*` has a docstring: deterministic fields from the binding contract, LLM-authored prose from a registered docstring callback grounded in the human guide. |
-| **Distributable package** | Export writes `dist/<package>/` with `api.py`, runtime modules, `pyproject.toml`, and README; package imports without the extraction repo on `PYTHONPATH`. |
-| **Validation bundle shipped** | Differential harness, workbook fixture, and reference parity reports (with 100% passing scores) are exported under `dist/tests/`. |
-| **Documentation website published** | `dist/website/` contains a polished website with detailed macrofinance explanations and usage instructions and examples. |
+| **Inverted-tree public API** | Codegen emits keyword-only `compute_*` from series bindings (`paradigm="inverted_tree"`). Scalars stay scalars; series are 1-D sequences in canonical key order; returns are `tuple[float, ...]`. There is no `make_context()`, no `set_*`, and no records-shaped setters. |
+| **Inputs validated at runtime** | Keyword arguments match the binding contract; domain/units prose belongs in docstrings, not implied runtime validation beyond what codegen emits. |
+| **Domain-language identifiers** | Public `compute_*` names use macrofinance vocabulary (`compute_output_baseline`), not workbook coordinates (`U24`, `OFFSET_RANGE_3`). Internals helpers are named from `series_id`. |
+| **Pandas/Polars compatible** | Callers can tabulate `compute_*` tuples with pandas or polars. Native DataFrame in/out is a known gap. |
+| **Distributable package** | Export writes `dist/<package>/` with `api.py`, `internals.py`, `runtime.py`, `data.py`, `pyproject.toml`, and README; package imports without the extraction repo on `PYTHONPATH`. Placeholder docstrings are filled in annotate. |
+| **Validation bundle shipped** | Differential harness, workbook fixture, and reference parity reports are exported under `dist/tests/`. |
+
+#### 4. Annotate
+
+| Criterion | Pass condition |
+|---|---|
+| **Docstrings on public API** | Every `compute_*` (and internals helper) has a Google-style docstring from the annotate stage (`src/inverted_tree_docstrings.py`), grounded in the human guide. Export uses `series_docstring_callback="none"`; docstrings are not a codegen callback. |
+| **Signature fidelity** | Annotate fails closed if the model returns argument names that do not match the function signature. |
+
+#### 5. Validate
+
+| Criterion | Pass condition |
+|---|---|
+| **Graph-vs-Excel** | Authored scenario matrix in `tests/differential/` passes `FormulaEvaluator` vs Microsoft Excel (`differential_test_graph.py`) before treating extraction as faithful. |
+| **Library-vs-graph** | Keyword-only `compute_*` matches `FormulaEvaluator` on the same scenarios (`differential_test_exported_library.py`). Pipeline `validate` is a default-path FormulaEvaluator canary; it does not drive Excel. |
+| **No library-vs-Excel COM path** | Inverted-tree export has no `set_*` to drive Excel from the public API. Library ≈ Excel follows by transitivity on the same scenarios. |
+
+#### 6. Document
+
+| Criterion | Pass condition |
+|---|---|
+| **Documentation website published** | `dist/website/` contains a polished website with detailed macrofinance explanations and usage instructions and examples. Runnable cells call keyword-only `compute_*`, not `make_context()` / `set_*`. |
 
 ---
 
@@ -97,14 +115,14 @@ Golden-master parity (100% pass rate, precision policy, first-divergence reporti
 
 ### Known gaps/footguns
 
-- **Binding authoring needs a scaling strategy:** Larger workbooks need a structured discovery workflow (logical tables → series catalog → graph cross-check); the prompt pattern in the pipeline doc is the reference. When sharding outputs, share `compute_*` / `set_*` names only for intentional merges of complementary slices; uniquify names for distinct scenario/engine paths or export can leave most paths unreachable (see [bindings/README.md](bindings/README.md)).
+- **Binding authoring needs a scaling strategy:** Larger workbooks need a structured discovery workflow (logical tables → series catalog → graph cross-check); the prompt pattern in the pipeline doc is the reference. When sharding outputs, share `compute_*` names only for intentional merges of complementary slices; uniquify names for distinct scenario/engine paths or export can leave most paths unreachable (see [bindings/README.md](bindings/README.md)).
 - **User override of formula cells is not currently allowed**: Currently we're enforcing that all input cells must be leaf nodes. However, there's at least one user-editable cell in the LIC DSF that is not a leaf node, so we will need to relax this constraint for the LIC DSF extraction.
 - **Synchronous LLM API calls slow down the pipeline**: Currently we're calling LLMs synchronously at each stage of the pipeline. For large workbooks, we will need to parallelize LLM calls to speed up the pipeline. (In some cases, sequencing is important, so we'll have to do this intelligently.)
 - **LLM-authored configs and docstrings are not currently validated**: We may want to run some evals over the AI-generated series bindings and docstrings to make sure this is really the API shape we want.
-- **Context-passing is a bit unergonomic**: We're currently requiring the user to pass the context object to every function. This sits uncomfortably between functional and object-oriented programming paradigms, so we should commit to one or the other (e.g., attach public functions to the context object as methods).
+- **Internals collapse is deferred:** Keyword-only export names helpers from `series_id` but does not yet cluster formula families or run Pass-1 / Pass-2 semantic rewrite. That ctx-era refactor tree stays on disk until [#55](https://github.com/Teal-Insights/tiny-dsa-extraction-pipeline/issues/55).
 - **Error handling is insufficiently Pythonic**: Our Python runtime replicates Excel error-handling semantics. In Excel, errors in "internals" are made visible via error codes like `#N/A` and `#VALUE!` appearing in user-visible cells. In Python, internals are hidden from the user, so we should raise Python exceptions instead.
 - **Excel runtime still uses ugly helpers for simple mathematical operations**: Where possible, we should use Python's built-in mathematical operators. This should be doable for adding, subtracting, and multiplying, but may not be possible for division (because Excel division coerces datatypes differently). (Perhaps we could implement division by wrapping operands in coercion functions like `float` or `int`.)
-- **Public API takes pandas/polars inputs but does not return pandas/polars outputs**: We should provide a way to return outputs as pandas/polars DataFrames if that's what the user specifies.
+- **Public API takes sequences/scalars but does not return pandas/polars outputs**: Callers tabulate `compute_*` tuples themselves. We should provide a way to return outputs as pandas/polars DataFrames if that's what the user specifies.
 - **Dynamic ref resolution is not fully implemented for hard cases yet:** We don't yet fully support nested dynamic refs in `excel-grapher`, and constraint resolution can take a long time for wide domains due to combinatorial blowup.
 - **Similarity-aware graph packing should be explored as a better compression strategy:** Export uses `OptimalCompression` as the compression strategy; this seemed to work well on Tiny DSA, but similarity-aware compression might be better for larger workbooks (to maximize deduplication potential).
 
@@ -124,11 +142,10 @@ Ordered to match the onboarding checklist in [README.md](README.md#clone-and-con
 [ ] Extract: graph extracts with provenance (--extract-graph)
 [ ] Review graph: manual completeness review done; optional LLM dependency audit passed
 [ ] Verify graph: scenario matrix defined in tests/differential/; graph-oracle parity passes (uv run python -m tests.differential.differential_test_graph)
-[ ] Cluster diagnostics: compare_cluster_variation_modes run; VARIATION_MODE chosen; shredded families remodeled (row↔column series or consolidate to matrix) or explicitly accepted
-[ ] Export: dist package builds; semantic API scenario runs
-[ ] Export: validation bundle exported; exported-library differential parity passes
-[ ] Document / refactor: public API uses domain language; docstrings present
-[ ] Document / refactor: internals refactored; parity re-confirmed
+[ ] Export: dist package builds; keyword-only compute_* scenario runs
+[ ] Annotate: Google-style docstrings present on compute_* / internals helpers
+[ ] Validate: FormulaEvaluator library-vs-graph canary and authored exported-library sweep pass
+[ ] Document: user_guide uses domain language; runnable cells call compute_* not make_context / set_*
 
 Generated graph artifacts under `artifacts/dependency-graph/` are gitignored; workbook audit reports may be committed optionally. See [artifacts/README.md](artifacts/README.md).
 
