@@ -2,43 +2,34 @@
 title: "Excel parity validation"
 ---
 
-Tiny DSA includes an exported validation bundle that checks the generated
-`tiny_dsa` package against the source Excel workbook. The test drives
-the workbook with Microsoft Excel through `xlwings`, applies the same inputs
-through the package's public `set_*` functions, and compares calculated outputs
-cell by cell.
+Tiny DSA includes a FormulaEvaluator parity check for the generated `tiny_dsa` package. The test evaluates the extraction graph and compares those cells to keyword-only `compute_*` results from the exported library.
 
 ## Current reference result
 
-The current reference run is **PASS**: **1,770 / 1,770**
-cell-level comparisons passed at `atol = 1e-06, rtol = 1e-12`.
+The current reference run is **PASS**: **10 / 10**
+cell-level comparisons passed at `atol = 1e-09`.
 
 - Result: **PASS**
-- Generated: `2026-08-31T19:27:36+00:00`
-- Passed: **1,770**
+- Generated: `2026-09-01T23:23:16+00:00`
+- Passed: **10**
 - Failed: **0**
 - Pass rate: **100.00%**
 - Acceptance bar: **100.00%**
-- Evidence: **exported_library**
+- Evidence: **formula_evaluator**
 
-The sweep covers **1,770** cell-level comparisons against Excel.
+The current run covers **10** cell-level comparisons against the FormulaEvaluator.
 
 ## What Was Tested
 
-The validation checks the exported standalone library, not just the extraction graph. It imports `tiny_dsa.api`, creates a fresh context for each scenario, sets inputs through the records-shaped public setters, computes the exported output series, and compares those values against the workbook's calculated output cells.
+The validation compares `tiny_dsa` `compute_*` results against excel-grapher's FormulaEvaluator on the extraction graph, using the workbook's default scenario. It does not drive Microsoft Excel or public `set_*` setters.
 
 ## Inspect Or Re-run
 
 The validation bundle is shipped in the source repository under `tests/`.
-Because the golden-master oracle uses Microsoft Excel through COM automation,
-reruns require Windows with Microsoft Excel installed.
+Rerun the pipeline `validate` stage after export and annotate. Microsoft Excel is not required.
 
 - Reference parity report: `tests/results/reference/parity_report.txt`
 - Validation bundle README: `tests/README.md`
-- Differential test harness: `tests/differential/differential_test_exported_library.py`
+- Differential test harness: the pipeline `validate` stage (`FormulaEvaluator`)
 
-To re-run exported-library validation from the exported project:
-
-```pwsh
-uv run --project . --group validation python -m tests.differential.differential_test_exported_library --layout exported
-```
+To re-run FormulaEvaluator parity, run the extraction pipeline through the `validate` stage.

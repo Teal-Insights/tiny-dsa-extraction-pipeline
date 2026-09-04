@@ -1,37 +1,28 @@
-User-guide runnable cells should follow this interaction model: import from the generated package API module, create a context with `make_context()`, configure the scenario with `set_*` functions, then read results with `compute_*`.
+User-guide runnable cells should follow this interaction model: import keyword-only `compute_*` functions from the generated package API module and pass leaf inputs as Python scalars or 1-D sequences. There is no evaluation context: do not call `make_context()` or `set_*`.
 
-Setter shapes:
+Input shapes:
 
-- Single-cell setters accept a bare scalar (for example `set_example_scalar(ctx, 1)`), never a one-element list.
-- Series setters accept a 1-D sequence of measure values in full key order, a tidy Polars DataFrame, or keyed records. Positional lists must include exactly one value per key; prefer a keyed record or list of records for partial updates.
-- Do not call a multi-key profile-table series setter just to override the selected entity — use the scalar selector unless the example is rewriting the table.
+- Required arguments are keyword-only. Scalars stay bare values (for example `country_name="Borvelia"`), never a one-element list.
+- Series arguments are 1-D sequences of measure values in the series' canonical key order. Pass exactly one value per key; omit optional arguments that already have defaults in the generated `data` module.
+- Each `compute_*` returns a tuple of floats (one value per horizon year), not records.
 
-Each `compute_*` call returns a list of records with fields such as `TIME_PERIOD`, `OBS_VALUE`, and any binding-defined key or context fields. Tabulate results with Polars: sort by the time or key dimension and `select` the measure column with a clear alias.
+Tabulate results with Polars: wrap the tuple and `select` the measure column with a clear alias.
 
 ```{{python}}
 import polars as pl
 
-from {api_import_path} import (
-    make_context,
-    set_example_scalar,
-    set_example_series,
-    compute_example_output,
+from {api_import_path} import compute_example_output
+
+
+output = compute_example_output(
+    country_name="Borvelia",
+    country_initial_debt=[60.0, 80.0, 55.0],
+    growth_baseline=[0.02, 0.02, 0.02, 0.02, 0.02],
+    interest_baseline=[0.03, 0.03, 0.03, 0.03, 0.03],
+    primary_balance_baseline=[0.01, 0.01, 0.01, 0.01, 0.01],
 )
-
-
-def results_frame(records: list[dict[str, object]]) -> pl.DataFrame:
-    return (
-        pl.DataFrame(records)
-        .sort("TIME_PERIOD")
-        .select(
-            "TIME_PERIOD",
-            pl.col("OBS_VALUE").alias("Value"),
-        )
-    )
-
-
-ctx = make_context()
-set_example_scalar(ctx, 1)
-set_example_series(ctx, [1.0, 2.0, 3.0])
-output = results_frame(compute_example_output(ctx=ctx))
+frame = (
+    pl.DataFrame({{"year": list(range(1, len(output) + 1)), "value": list(output)}})
+    .select("year", pl.col("value").alias("Debt-to-GDP"))
+)
 ```

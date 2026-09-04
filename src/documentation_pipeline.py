@@ -39,7 +39,7 @@ from src.qmd_python_validation import (
 )
 
 SECTION_REWRITE_MODEL_ENV = "SECTION_REWRITE_MODEL"
-SECTION_REWRITE_PROMPT_VERSION = 9
+SECTION_REWRITE_PROMPT_VERSION = 10
 MAX_SECTION_REWRITE_ATTEMPTS = 4
 VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
 # Great Docs strips numeric prefixes when publishing user-guide pages, so the
@@ -55,20 +55,14 @@ DEFAULT_SECTION_REWRITE_REQUEST_TIMEOUT = 300.0
 SECTION_REWRITE_DEADLINE_ENV = "SECTION_REWRITE_DEADLINE"
 
 SETTER_INPUT_SHAPE_GUIDANCE = (
-    "Setter input shapes: single-cell setters accept a bare scalar (not a "
-    "one-element list). Series setters accept a 1-D sequence of measure values, "
-    "a tidy Polars DataFrame, a single record, or a list of records when the "
-    "series is keyed. Positional series input must supply exactly one measure "
-    "per key in that setter's canonical key order — match the full positional "
-    "length for the series, or prefer keyed records / a single record when "
-    "updating only some keys. Never wrap a single scenario scalar in a "
-    "one-element list for a multi-key series setter. Do not call a profile-table "
-    "series setter merely to set the selected entity's value; use the scalar "
-    "selector (for example set_example_selector) unless the example is "
-    "intentionally rewriting the table. Reuse ctx = make_context() across "
-    "runnable cells. Tabulate compute_* results with Polars, selecting the "
-    "measure column with a clear alias as shown in the canonical_api_usage "
-    "reference."
+    "Public compute_* helpers are keyword-only. Required leaf inputs are Python "
+    "scalars or 1-D sequences in the series' canonical key order — pass exactly "
+    "one measure per key. Optional arguments that already have defaults in the "
+    "generated data module may be omitted. Never wrap a scalar in a one-element "
+    "list. Each compute_* returns a tuple of floats, not records. Do not call "
+    "make_context() or set_* setters. Tabulate compute_* results with Polars, "
+    "selecting the measure column with a clear alias as shown in the "
+    "canonical_api_usage reference."
 )
 
 
@@ -266,7 +260,34 @@ def render_validation_page(
     passed = f"{summary.passed:,}"
     total = f"{summary.total_comparisons:,}"
     failed = f"{summary.failed:,}"
-    if evidence_kind == "dependency_graph":
+    if evidence_kind == "formula_evaluator":
+        what_tested = (
+            f"The validation compares `{package_name}` `compute_*` results against "
+            f"excel-grapher's FormulaEvaluator on the extraction graph, using the "
+            f"workbook's default scenario. It does not drive Microsoft Excel or "
+            f"public `set_*` setters."
+        )
+        report_path = "`tests/results/reference/parity_report.txt`"
+        harness = "the pipeline `validate` stage (`FormulaEvaluator`)"
+        intro = (
+            f"{library_name} includes a FormulaEvaluator parity check for the "
+            f"generated `{package_name}` package. The test evaluates the extraction "
+            f"graph and compares those cells to keyword-only `compute_*` results "
+            f"from the exported library."
+        )
+        sweep = (
+            f"The current run covers **{total}** cell-level comparisons against "
+            "the FormulaEvaluator."
+        )
+        rerun_note = (
+            "Rerun the pipeline `validate` stage after export and annotate. "
+            "Microsoft Excel is not required."
+        )
+        rerun_block = (
+            "To re-run FormulaEvaluator parity, run the extraction pipeline "
+            "through the `validate` stage."
+        )
+    elif evidence_kind == "dependency_graph":
         what_tested = (
             f"The current reference evidence is **dependency-graph parity**: the "
             f"extracted `{package_name}` evaluation graph was compared against "
@@ -277,25 +298,57 @@ def render_validation_page(
         )
         report_path = "`data/differential/graph/differential_report.txt`"
         harness = "`tests/differential/differential_test_graph.py`"
+        intro = (
+            f"{library_name} includes an exported validation bundle that checks the "
+            f"generated `{package_name}` package against the source Excel workbook. "
+            f"The test drives the workbook with Microsoft Excel through `xlwings`, "
+            f"applies the same inputs through the package's public `set_*` functions, "
+            f"and compares calculated outputs cell by cell."
+        )
+        sweep = f"The sweep covers **{total}** cell-level comparisons against Excel."
+        rerun_note = (
+            "Because the golden-master oracle uses Microsoft Excel through COM "
+            "automation, reruns require Windows with Microsoft Excel installed."
+        )
+        rerun_block = """To re-run exported-library validation from the exported project:
+
+```pwsh
+uv run --project . --group validation python -m tests.differential.differential_test_exported_library --layout exported
+```"""
     else:
         what_tested = (
             f"The validation checks the exported standalone library, not just the "
-            f"extraction graph. It imports `{package_name}.api`, creates a fresh "
-            f"context for each scenario, sets inputs through the records-shaped "
-            f"public setters, computes the exported output series, and compares "
-            f"those values against the workbook's calculated output cells."
+            f"extraction graph. It imports `{package_name}.api`, calls keyword-only "
+            f"`compute_*` for each scenario, and compares those values against "
+            f"excel-grapher's FormulaEvaluator on the same input cells."
         )
         report_path = "`tests/results/reference/parity_report.txt`"
         harness = "`tests/differential/differential_test_exported_library.py`"
+        intro = (
+            f"{library_name} includes an exported validation bundle that checks the "
+            f"generated `{package_name}` package against the extraction graph. "
+            f"The test evaluates the graph with FormulaEvaluator, applies the same "
+            f"inputs through keyword-only `compute_*` functions, and compares "
+            f"outputs cell by cell."
+        )
+        sweep = (
+            f"The sweep covers **{total}** cell-level comparisons against the "
+            f"FormulaEvaluator."
+        )
+        rerun_note = (
+            "The golden-master oracle is FormulaEvaluator; Microsoft Excel is not "
+            "required. Run the sweep from the extraction repository after export."
+        )
+        rerun_block = """To re-run exported-library validation from the extraction repo:
+
+```pwsh
+uv run python -m tests.differential.differential_test_exported_library
+```"""
     return f"""---
 title: "Excel parity validation"
 ---
 
-{library_name} includes an exported validation bundle that checks the generated
-`{package_name}` package against the source Excel workbook. The test drives
-the workbook with Microsoft Excel through `xlwings`, applies the same inputs
-through the package's public `set_*` functions, and compares calculated outputs
-cell by cell.
+{intro}
 
 ## Current reference result
 
@@ -310,7 +363,7 @@ cell-level comparisons passed at `{summary.tolerance}`.
 - Acceptance bar: **{summary.acceptance_bar}**
 - Evidence: **{evidence_kind}**
 
-The sweep covers **{total}** cell-level comparisons against Excel.
+{sweep}
 
 ## What Was Tested
 
@@ -319,18 +372,13 @@ The sweep covers **{total}** cell-level comparisons against Excel.
 ## Inspect Or Re-run
 
 The validation bundle is shipped in the source repository under `tests/`.
-Because the golden-master oracle uses Microsoft Excel through COM automation,
-reruns require Windows with Microsoft Excel installed.
+{rerun_note}
 
 - Reference parity report: {report_path}
 - Validation bundle README: `tests/README.md`
 - Differential test harness: {harness}
 
-To re-run exported-library validation from the exported project:
-
-```pwsh
-uv run --project . --group validation python -m tests.differential.differential_test_exported_library --layout exported
-```
+{rerun_block}
 """
 
 
@@ -369,6 +417,9 @@ def write_validation_page(*, config: PipelineConfig) -> None:
             )
         report_text = graph_report.read_text(encoding="utf-8")
         evidence_kind = "dependency_graph"
+
+    if "FormulaEvaluator" in report_text:
+        evidence_kind = "formula_evaluator"
 
     summary = parse_parity_report(report_text)
     user_guide_root.mkdir(parents=True, exist_ok=True)
@@ -801,9 +852,10 @@ def rewrite_guide_section(
         system_prompt=(
             f"You are a technical documentation writer for the "
             f"{config.dist_metadata.library_name} library. "
-            f"Runnable examples use {api_import_path} with make_context(), "
-            "setter input shapes from the reference example, and compute_* "
-            "functions. Return only valid JSON matching the provided schema."
+            f"Runnable examples use {api_import_path} with keyword-only "
+            "compute_* helpers, sequence or scalar leaf inputs, and tuple "
+            "returns. Do not call make_context() or set_* setters. Return "
+            "only valid JSON matching the provided schema."
         ),
         user_prompt=prompt,
         response_model=SectionRewriteResponse,

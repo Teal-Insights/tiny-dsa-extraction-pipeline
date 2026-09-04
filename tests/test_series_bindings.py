@@ -121,31 +121,40 @@ def test_output_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
     ]
 
 
-def test_generated_records_api_computes_and_sets_values():
-    from dist.tiny_dsa.api import (
-        compute_output_baseline,
-        make_context,
-        set_country_initial_debt,
-        set_growth_baseline,
+def test_generated_keyword_api_computes_and_overrides_values():
+    from dist.tiny_dsa import data
+    from dist.tiny_dsa.api import compute_output_baseline
+
+    baseline = compute_output_baseline(
+        country_name=data.COUNTRY_NAME_DEFAULT,
+        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
+        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
+        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
+        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
     )
 
-    ctx = make_context()
-    baseline = compute_output_baseline(ctx=ctx)
-
     assert len(baseline) == 5
-    assert baseline[0]["TIME_PERIOD"] == 1
-    assert baseline[0]["SCENARIO"] == "baseline"
-    assert baseline[0]["OBS_VALUE"] == pytest.approx(61.28985507246378)
+    assert baseline[0] == pytest.approx(61.28985507246378)
 
-    set_growth_baseline(ctx, [{"TIME_PERIOD": 1, "OBS_VALUE": 2.5}])
-    updated = compute_output_baseline(ctx=ctx)
+    slower_growth = (2.5, *data.GROWTH_BASELINE_DEFAULT[1:])
+    updated = compute_output_baseline(
+        country_name=data.COUNTRY_NAME_DEFAULT,
+        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
+        growth_baseline=slower_growth,
+        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
+        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+    )
+    assert updated[0] != baseline[0]
 
-    assert updated[0]["OBS_VALUE"] != baseline[0]["OBS_VALUE"]
-
-    set_country_initial_debt(ctx, [{"COUNTRY": "Borvelia", "OBS_VALUE": 70.0}])
-    updated_initial_debt = compute_output_baseline(ctx=ctx)
-
-    assert updated_initial_debt[0]["OBS_VALUE"] != updated[0]["OBS_VALUE"]
+    higher_borvelia_debt = (70.0, *data.COUNTRY_INITIAL_DEBT_DEFAULT[1:])
+    updated_initial_debt = compute_output_baseline(
+        country_name=data.COUNTRY_NAME_DEFAULT,
+        country_initial_debt=higher_borvelia_debt,
+        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
+        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
+        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+    )
+    assert updated_initial_debt[0] != updated[0]
 
 
 def test_constant_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):

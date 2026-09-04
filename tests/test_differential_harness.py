@@ -6,6 +6,8 @@ import csv
 import dataclasses
 import importlib
 import math
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +42,7 @@ def _txt_kwargs(tmp_path: Path) -> dict[str, object]:
         "environment": {
             "python": "3.13.0",
             "os": "test-os",
-            "xlwings": "0.0.0",
-            "excel": "not launched",
+            "excel_grapher": "0.0.0",
         },
         "workbook_sha256": "abc123",
     }
@@ -342,8 +343,7 @@ def test_write_txt_summary_passes_when_matched_errors_allowed(tmp_path: Path) ->
         environment={
             "python": "3.13.0",
             "os": "test-os",
-            "xlwings": "0.0.0",
-            "excel": "not launched",
+            "excel_grapher": "0.0.0",
         },
         workbook_sha256="abc123",
     )
@@ -367,14 +367,14 @@ def test_parse_args_rejects_removed_warn_flag() -> None:
         harness.parse_args(["--warn-on-error-values"])
 
 
-def test_crash_comparisons_attribute_mvp_crash_and_keep_excel_values() -> None:
+def test_crash_comparisons_attribute_mvp_crash_and_keep_graph_values() -> None:
     harness = _load_harness_module()
     scenario = Scenario(id="scenario:crash", inputs={})
     cell_labels = (
         ("result[year=1]", "Outputs!B1"),
         ("result[year=2]", "Outputs!B2"),
     )
-    excel_outputs = {"Outputs!B1": 1.0, "Outputs!B2": 2.0}
+    graph_outputs = {"Outputs!B1": 1.0, "Outputs!B2": 2.0}
     exc = RuntimeError("oracle crashed")
 
     comparisons = harness.crash_comparisons(
@@ -382,7 +382,7 @@ def test_crash_comparisons_attribute_mvp_crash_and_keep_excel_values() -> None:
         cell_labels,
         exc,
         crashed_oracle="mvp",
-        excel_outputs=excel_outputs,
+        graph_outputs=graph_outputs,
     )
 
     assert len(comparisons) == len(cell_labels)
@@ -393,7 +393,7 @@ def test_crash_comparisons_attribute_mvp_crash_and_keep_excel_values() -> None:
         assert comparison.scenario_id == scenario.id
         assert comparison.cell_address == cell_address
         assert comparison.cell_label == cell_label
-        assert comparison.excel_value == excel_outputs[cell_address]
+        assert comparison.graph_value == graph_outputs[cell_address]
         assert comparison.mvp_value == err_repr
         assert comparison.abs_diff is None
         assert comparison.rel_diff is None
@@ -401,25 +401,25 @@ def test_crash_comparisons_attribute_mvp_crash_and_keep_excel_values() -> None:
         assert comparison.note == "mvp oracle crashed"
 
 
-def test_crash_comparisons_attribute_excel_crash() -> None:
+def test_crash_comparisons_attribute_graph_crash() -> None:
     harness = _load_harness_module()
     scenario = Scenario(id="scenario:crash", inputs={})
     cell_labels = (("result[year=1]", "Outputs!B1"),)
-    exc = RuntimeError("excel down")
+    exc = RuntimeError("graph down")
 
     comparisons = harness.crash_comparisons(
-        scenario, cell_labels, exc, crashed_oracle="excel"
+        scenario, cell_labels, exc, crashed_oracle="graph"
     )
 
     assert len(comparisons) == 1
     comparison = comparisons[0]
     err_repr = f"<exception: {type(exc).__name__}: {exc}>"
-    assert comparison.excel_value == err_repr
+    assert comparison.graph_value == err_repr
     assert comparison.mvp_value is None
     assert comparison.abs_diff is None
     assert comparison.rel_diff is None
     assert comparison.passed is False
-    assert comparison.note == "excel oracle crashed"
+    assert comparison.note == "graph oracle crashed"
 
 
 def test_write_csv_report_round_trip(tmp_path: Path) -> None:
@@ -501,7 +501,7 @@ def test_harness_conforms_to_standard() -> None:
         "scenario_id",
         "cell_address",
         "cell_label",
-        "excel_value",
+        "graph_value",
         "mvp_value",
         "abs_diff",
         "rel_diff",
@@ -510,6 +510,8 @@ def test_harness_conforms_to_standard() -> None:
         "flagged_matched_error",
         "note",
     )
+    assert "apply_inputs_to_mvp" not in harness._REQUIRED_WORKBOOK_HOOKS
+    assert "XlwingsExcelOracle" not in dir(harness)
 
     both_blank = harness.compare_cell(
         "s", "A1", "label", None, None, atol=ATOL, rtol=RTOL
@@ -533,6 +535,75 @@ def test_harness_conforms_to_standard() -> None:
     assert nan_vs_number.passed is False
 
 
+def test_txt_summary_names_formula_evaluator_as_oracle(tmp_path: Path) -> None:
+    harness = _load_harness_module()
+    comparisons = [
+        harness.compare_cell(
+            "scenario:a",
+            "Outputs!B1",
+            "result[year=1]",
+            1.0,
+            1.0,
+            atol=ATOL,
+            rtol=RTOL,
+        )
+    ]
+    report_path = tmp_path / "parity_report.txt"
+    harness.write_txt_summary(comparisons, report_path, **_txt_kwargs(tmp_path))
+    text = report_path.read_text(encoding="utf-8")
+    assert "FormulaEvaluator" in text
+    assert "vs Excel" not in text
+
+
+def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inverted-tree public API has no make_context / set_*; scenarios call compute_*."""
+    harness = _load_harness_module()
+    calls: list[str] = []
+
+    def compute_output_baseline(**kwargs: object) -> tuple[float, ...]:
+        calls.append("baseline")
+        assert "ctx" not in kwargs
+        return (1.0, 2.0, 3.0, 4.0, 5.0)
+
+    def compute_output_shocked(**kwargs: object) -> tuple[float, ...]:
+        calls.append("shocked")
+        assert kwargs["shock_magnitudes"] == (-2.0, 0.0, 0.0)
+        return (1.5, 2.5, 3.5, 4.5, 5.5)
+
+    def compute_output_delta(**kwargs: object) -> tuple[float, ...]:
+        calls.append("delta")
+        return (0.5, 0.5, 0.5, 0.5, 0.5)
+
+    data_mod: Any = types.ModuleType("tiny_dsa_fake.data")
+    data_mod.COUNTRY_INITIAL_DEBT_DEFAULT = (60.0, 80.0, 40.0)
+    pkg: Any = types.ModuleType("tiny_dsa_fake")
+    pkg.data = data_mod
+    api: Any = types.ModuleType("tiny_dsa_fake.api")
+    api.__package__ = "tiny_dsa_fake"
+    api.compute_output_baseline = compute_output_baseline
+    api.compute_output_shocked = compute_output_shocked
+    api.compute_output_delta = compute_output_delta
+    monkeypatch.setitem(sys.modules, "tiny_dsa_fake", pkg)
+    monkeypatch.setitem(sys.modules, "tiny_dsa_fake.data", data_mod)
+
+    scenario = harness._scenario(
+        "canonical:Borvelia:growth_shock",
+        dataclasses.replace(
+            harness.CANONICAL_BASELINE,
+            shock_type=1,
+            shock_table=(-2.0, 0.0, 0.0),
+        ),
+    )
+    outputs = harness.mvp_outputs_for_scenario(api, scenario)
+    assert calls == ["baseline", "shocked", "delta"]
+    assert outputs["output_baseline[year=1]"] == 1.0
+    assert outputs["output_shocked[year=1]"] == 1.5
+    assert outputs["output_delta[year=5]"] == 0.5
+    assert not hasattr(api, "make_context")
+
+
 def test_run_differential_test_requires_scenarios(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -551,13 +622,12 @@ def _stub_cell_labels():
     return (("out[1]", "Outputs!B1"), ("out[2]", "Outputs!B2"))
 
 
-def _run_with_stub_oracles(tmp_path, excel_oracle, mvp_oracle, monkeypatch):
+def _run_with_stub_oracles(tmp_path, graph_oracle, mvp_oracle, monkeypatch):
     harness = _load_harness_module()
     scenario = Scenario(id="stub:one", inputs={})
     monkeypatch.setattr(harness, "build_scenarios", lambda: (scenario,))
     monkeypatch.setattr(harness, "output_cell_labels", _stub_cell_labels)
     monkeypatch.setattr(harness, "inputs_for_excel", lambda s: {})
-    monkeypatch.setattr(harness, "apply_inputs_to_mvp", lambda *a, **k: None)
     monkeypatch.setattr(harness, "mvp_outputs_for_scenario", lambda api, scenario: {})
     monkeypatch.setattr(harness, "expressible_input_cells", lambda: None)
     monkeypatch.setattr(harness, "_verify_paths", lambda config: None)
@@ -568,7 +638,7 @@ def _run_with_stub_oracles(tmp_path, excel_oracle, mvp_oracle, monkeypatch):
     )
     return harness.run_differential_test(
         config,
-        excel_oracle=excel_oracle,
+        graph_oracle=graph_oracle,
         mvp_oracle=mvp_oracle,
     )
 
@@ -578,7 +648,7 @@ def test_runner_passes_relative_branch_noise_via_config(tmp_path, monkeypatch) -
     reaches exit 0 only if run_differential_test hands config.rtol to the gate."""
     exit_code = _run_with_stub_oracles(
         tmp_path,
-        excel_oracle=lambda scenario, addrs: {
+        graph_oracle=lambda scenario, addrs: {
             "Outputs!B1": 1.0e16,
             "Outputs!B2": 2.0,
         },
@@ -595,7 +665,7 @@ def test_runner_fails_divergence_between_rtol_and_atol_scales(
     under which 1e-9 <= 1e-6 would silently pass."""
     exit_code = _run_with_stub_oracles(
         tmp_path,
-        excel_oracle=lambda scenario, addrs: {
+        graph_oracle=lambda scenario, addrs: {
             "Outputs!B1": 1.0e16,
             "Outputs!B2": 2.0,
         },
@@ -611,7 +681,7 @@ def test_runner_attributes_mvp_crash(tmp_path, monkeypatch) -> None:
 
     exit_code = _run_with_stub_oracles(
         tmp_path,
-        excel_oracle=lambda scenario, addrs: {
+        graph_oracle=lambda scenario, addrs: {
             "Outputs!B1": 1.0,
             "Outputs!B2": 2.0,
         },
@@ -628,7 +698,7 @@ def test_runner_attributes_mvp_crash(tmp_path, monkeypatch) -> None:
 def test_matching_stub_oracles_yield_exit_0(tmp_path, monkeypatch) -> None:
     exit_code = _run_with_stub_oracles(
         tmp_path,
-        excel_oracle=lambda scenario, addrs: {
+        graph_oracle=lambda scenario, addrs: {
             "Outputs!B1": 1.0,
             "Outputs!B2": 2.0,
         },
@@ -651,7 +721,7 @@ def test_comparison_stage_crash_is_contained_per_scenario(
     monkeypatch.setattr(harness, "compare_scenario", _boom)
     exit_code = _run_with_stub_oracles(
         tmp_path,
-        excel_oracle=lambda scenario, addrs: {
+        graph_oracle=lambda scenario, addrs: {
             "Outputs!B1": 1.0,
             "Outputs!B2": 2.0,
         },
@@ -677,7 +747,6 @@ def test_preflight_rejects_non_expressible_writes(
     monkeypatch.setattr(
         harness, "inputs_for_excel", lambda s: {"Inputs!A1": 1.0, "Hidden!Z9": 0}
     )
-    monkeypatch.setattr(harness, "apply_inputs_to_mvp", lambda *a, **k: None)
     monkeypatch.setattr(harness, "mvp_outputs_for_scenario", lambda *a, **k: {})
     monkeypatch.setattr(
         harness, "expressible_input_cells", lambda: frozenset({"Inputs!A1"})
@@ -695,7 +764,7 @@ def test_preflight_skips_when_expressible_set_is_none(
 ) -> None:
     exit_code = _run_with_stub_oracles(
         tmp_path,
-        excel_oracle=lambda scenario, addrs: {
+        graph_oracle=lambda scenario, addrs: {
             "Outputs!B1": 1.0,
             "Outputs!B2": 2.0,
         },
@@ -746,44 +815,3 @@ def test_staleness_passes_on_identical_fixture(tmp_path: Path) -> None:
         library_name="Example",
     )
     harness._check_staleness(config)
-
-
-def test_read_cells_batched_groups_row_spans() -> None:
-    harness = _load_harness_module()
-    calls: list[str] = []
-
-    class FakeRange:
-        def __init__(self, span: str) -> None:
-            self.span = span
-
-        def options(self, **_kwargs: object) -> FakeRange:
-            return self
-
-        @property
-        def value(self) -> Any:
-            calls.append(self.span)
-            if ":" in self.span:
-                return [10.0, 20.0, 30.0]
-            return 99.0
-
-    class FakeSheet:
-        def range(self, span: str) -> FakeRange:
-            return FakeRange(span)
-
-    sheets = {"Sheet": FakeSheet()}
-    values = harness.read_cells_batched(
-        sheets,
-        ("Sheet!B2", "Sheet!D2", "Sheet!A3"),
-    )
-    assert values == {"Sheet!B2": 10.0, "Sheet!D2": 30.0, "Sheet!A3": 99.0}
-    assert calls == ["B2:D2", "A3"]
-
-
-def test_read_cells_batched_rejects_unparseable_cell() -> None:
-    harness = _load_harness_module()
-
-    class FakeSheets:
-        pass
-
-    with pytest.raises(ValueError, match="Cannot parse cell reference"):
-        harness.read_cells_batched(FakeSheets(), ("Sheet!2B",))

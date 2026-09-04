@@ -12,7 +12,6 @@ from typing import Any, Literal, cast, get_args, get_origin
 
 from excel_grapher.core.cell_types import normalize_cell_type_env_key
 from excel_grapher.exporter import CodeGenerator, ProjectionResult
-from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import (
     DependencyGraph,
     DynamicRefConfig,
@@ -30,9 +29,6 @@ from src.dependency_graph_viz import (
     series_cell_keys,
     write_dependency_graph_site,
 )
-from src.differential_validation import run_post_refactor_differential
-from src.docstring_callback import configure_docstring_callback
-from src.export_validation_assets import export_reference_reports
 from src.graph_cache import get_or_build_dependency_graph, load_dependency_graph
 from src.internal_binding_coverage import InternalBindingCoverageReport
 from src.internal_bindings import (
@@ -86,7 +82,6 @@ from src.stage_timings import (
     stage_span,
     stage_timings_path,
 )
-from src.subgraph_projection import build_refactor_projection
 
 SeriesResolutionList = Sequence[Mapping[str, Any]]
 
@@ -97,14 +92,14 @@ logger = logging.getLogger(__name__)
 PipelineStageName = Literal[
     "extract",
     "export",
-    "refactor",
+    "annotate",
     "validate",
     "document",
 ]
 PIPELINE_STAGES: tuple[PipelineStageName, ...] = (
     "extract",
     "export",
-    "refactor",
+    "annotate",
     "validate",
     "document",
 )
@@ -171,6 +166,14 @@ class ExportStageState:
     series_derived_cache_key: str
     codegen_cache_key: str
     package_root: Path
+
+
+@dataclass(frozen=True)
+class AnnotateStageState:
+    """Cache-key references produced by annotate for validation / document."""
+
+    config: PipelineConfig
+    codegen_cache_key: str
 
 
 @dataclass(frozen=True)
@@ -809,27 +812,11 @@ def run_export_stage(
         graph = graph_result.graph
         series_bindings = graph_result.series_bindings
         graph_cache_key = graph_result.graph_cache_key
-        projection_started = time.perf_counter()
-        refactor_projection = build_refactor_projection(
-            graph,
-            series_bindings=series_bindings,
-            bindings_workbook=config.workbook_path,
-            graph_cache_key=graph_cache_key,
-            no_cache=no_cache,
-            force_rebuild=force_rebuild,
-            timings=timings,
-        )
-        timer.record(
-            "build_refactor_projection", time.perf_counter() - projection_started
-        )
-        classification = graph_result.leaf_classification
-        if isinstance(classification, Mapping):
-            stamp_projection_leaf_classification(refactor_projection, classification)
         state = _generate_export_package(
             config,
+            graph=graph,
             series_bindings=series_bindings,
             graph_cache_key=graph_cache_key,
-            refactor_projection=refactor_projection,
             no_cache=no_cache,
             force_rebuild=force_rebuild,
             timings=timings,
@@ -842,35 +829,28 @@ def run_export_stage(
 def _generate_export_package(
     config: PipelineConfig,
     *,
+    graph: DependencyGraph,
     series_bindings: WorkbookSeriesBindings,
     graph_cache_key: str,
-    refactor_projection: Any,
     no_cache: bool,
     force_rebuild: bool,
     timings: PipelineTimings | None,
     timer: StageTimer,
 ) -> ExportStageState:
-    """Generate the package modules under dist/ and seed the validation harness."""
+    """Generate the inverted-tree package under dist/ and seed the harness."""
     proj_cache_key = projection_cache_key(
         graph_cache_key=graph_cache_key,
         series_bindings_preserve=True,
     )
     targets = list(config.targets)
-    unpack_return = True
-    docstring_renderer = "google"
-    callback_name = config.docstring_callback_name
 
     def _build_modules() -> dict[str, str]:
-        configure_docstring_callback(config)
-        with CodeGenerator(
-            cast(GraphLike, refactor_projection), unpack_return=unpack_return
-        ) as generator:
+        with CodeGenerator(graph) as generator:
             return generator.generate_modules(
                 targets,
                 series_bindings=series_bindings,
                 bindings_workbook=config.workbook_path,
-                series_docstring_callback=callback_name,
-                docstring_renderer=docstring_renderer,
+                paradigm="inverted_tree",
                 blank_ranges=config.blank_ranges,
             )
 
@@ -878,10 +858,11 @@ def _generate_export_package(
     codegen_result = get_or_build_codegen_modules(
         projection_cache_key=proj_cache_key,
         targets=targets,
-        unpack_return=unpack_return,
-        docstring_renderer=docstring_renderer,
-        series_docstring_callback=callback_name,
+        unpack_return=True,
+        docstring_renderer="google",
+        series_docstring_callback="none",
         guide_sha256=guide_fingerprint(config.guide_path),
+        paradigm="inverted_tree",
         build_modules=_build_modules,
         no_cache=no_cache,
         force_rebuild=force_rebuild,
@@ -891,7 +872,9 @@ def _generate_export_package(
 
     package_started = time.perf_counter()
     package_root = config.package_root
-    materialize_package(config, codegen_key=codegen_result.cache_key)
+    materialize_package(
+        config, codegen_key=codegen_result.cache_key, apply_rewrites=False
+    )
     timer.record("write_export_package", time.perf_counter() - package_started)
     print(
         f"codegen: {len(codegen_result.modules)} modules "
@@ -1209,19 +1192,61 @@ def run_refactor_stage(
         return result
 
 
+def run_annotate_stage(
+    state: ExportStageState,
+    *,
+    no_cache: bool = False,
+    force_rebuild: bool = False,
+    timings: PipelineTimings | None = None,
+) -> AnnotateStageState:
+    """Write LLM docstrings onto the inverted-tree package."""
+    from src.inverted_tree_docstrings import annotate_exported_package
+
+    config = state.config
+    with (
+        profile_if_enabled(config.graph_output_dir, basename="annotate"),
+        stage_span(timings, "annotate") as timer,
+    ):
+        started = time.perf_counter()
+        annotate_exported_package(
+            config, no_cache=no_cache, force_rebuild=force_rebuild
+        )
+        timer.record("annotate_docstrings", time.perf_counter() - started)
+        print("annotate: inverted-tree docstrings written", flush=True)
+    result = AnnotateStageState(
+        config=config,
+        codegen_cache_key=state.codegen_cache_key,
+    )
+    write_stage_manifest(
+        config,
+        stage="annotate",
+        cache_keys={"codegen_cache_key": result.codegen_cache_key},
+        upstream_keys={"codegen_cache_key": state.codegen_cache_key},
+        fingerprints=compute_input_fingerprints(config),
+    )
+    return result
+
+
+def annotate_stage_state_from_manifest(
+    config: PipelineConfig,
+    manifest: StageManifest,
+) -> AnnotateStageState:
+    """Build ``AnnotateStageState`` from an annotate-stage (or compatible) manifest."""
+    codegen_key = manifest.cache_keys.get("codegen_cache_key")
+    if not codegen_key:
+        raise StageManifestError(
+            f"manifest for {manifest.stage!r} missing codegen_cache_key"
+        )
+    return AnnotateStageState(config=config, codegen_cache_key=codegen_key)
+
+
 def _write_downstream_manifest(
     config: PipelineConfig,
     *,
     stage: PipelineStageName,
-    refactor_state: RefactorStageState,
+    codegen_cache_key: str,
 ) -> None:
-    cache_keys: dict[str, str] = {
-        "codegen_cache_key": refactor_state.codegen_cache_key,
-    }
-    if refactor_state.internals_cache_key is not None:
-        cache_keys["internals_cache_key"] = refactor_state.internals_cache_key
-    if refactor_state.clusters_cache_key is not None:
-        cache_keys["clusters_cache_key"] = refactor_state.clusters_cache_key
+    cache_keys = {"codegen_cache_key": codegen_cache_key}
     write_stage_manifest(
         config,
         stage=stage,
@@ -1232,34 +1257,37 @@ def _write_downstream_manifest(
 
 
 def run_validate_stage(
-    state: RefactorStageState,
+    state: AnnotateStageState | RefactorStageState,
     *,
     no_cache: bool = False,
     timings: PipelineTimings | None = None,
 ) -> int | None:
-    """Run post-refactor differential and ship reference reports into dist/.
+    """Run FormulaEvaluator parity on the inverted-tree package.
 
-    Returns the differential harness exit code when it ran, ``0`` on a cache
-    hit, or ``None`` when differential was skipped (for example under CI).
+    Returns 0 when every compared cell matches, otherwise 1. Non-zero does not
+    abort the pipeline; document may still run with ``--force-document``.
     """
+    from src.inverted_tree_validate import write_formula_evaluator_parity_reports
+
+    del no_cache
     config = state.config
     with (
         profile_if_enabled(config.graph_output_dir, basename="validate"),
         stage_span(timings, "validate") as timer,
     ):
-        differential_started = time.perf_counter()
-        exit_code = run_post_refactor_differential(
-            config=config,
-            no_cache=no_cache,
+        started = time.perf_counter()
+        report_dir = config.dist_root / "tests" / "results" / "reference"
+        exit_code = write_formula_evaluator_parity_reports(
+            config, report_dir=report_dir
         )
-        timer.record(
-            "post_refactor_differential",
-            time.perf_counter() - differential_started,
+        timer.record("formula_evaluator_parity", time.perf_counter() - started)
+        print(
+            f"validate: FormulaEvaluator parity exit={exit_code}",
+            flush=True,
         )
-        reports_started = time.perf_counter()
-        export_reference_reports(config=config)
-        timer.record("export_reference_reports", time.perf_counter() - reports_started)
-    _write_downstream_manifest(config, stage="validate", refactor_state=state)
+    _write_downstream_manifest(
+        config, stage="validate", codegen_cache_key=state.codegen_cache_key
+    )
     return exit_code
 
 
@@ -1267,7 +1295,8 @@ def run_document_stage(
     config: PipelineConfig,
     *,
     timings: PipelineTimings | None = None,
-    refactor_state: RefactorStageState | None = None,
+    annotate_state: AnnotateStageState | RefactorStageState | None = None,
+    refactor_state: AnnotateStageState | RefactorStageState | None = None,
 ) -> None:
     """Rewrite the user guide against the exported package.
 
@@ -1276,6 +1305,7 @@ def run_document_stage(
     """
     from src.documentation_pipeline import run_documentation_pipeline
 
+    downstream = annotate_state if annotate_state is not None else refactor_state
     with (
         profile_if_enabled(config.graph_output_dir, basename="document"),
         stage_span(timings, "document"),
@@ -1293,9 +1323,9 @@ def run_document_stage(
                 flush=True,
             )
             raise DocumentStageError(f"document stage failed: {error}") from error
-    if refactor_state is not None:
+    if downstream is not None:
         _write_downstream_manifest(
-            config, stage="document", refactor_state=refactor_state
+            config, stage="document", codegen_cache_key=downstream.codegen_cache_key
         )
 
 
@@ -1313,7 +1343,7 @@ def run_pipeline(
     """Run pipeline stages from ``start_from_stage`` through ``stop_after_stage``.
 
     A full run records ``extract`` then ``export`` (handing the live graph from
-    extract into export so the graph is not built twice), then ``refactor``,
+    extract into export so the graph is not built twice), then ``annotate``,
     ``validate``, and ``document``. When ``only_stage`` is set it overrides both
     bounds to that single stage. Entering mid-pipeline requires a warm upstream
     stage manifest whose fingerprints still match the current inputs.
@@ -1384,44 +1414,31 @@ def _run_pipeline_stages(
     force_document: bool,
     lab_options: RefactorLabOptions | None = None,
 ) -> None:
+    del lab_options
     export_state: ExportStageState | None = None
-    refactor_state: RefactorStageState | None = None
+    annotate_state: AnnotateStageState | None = None
     extracted_graph: DependencyGraph | None = None
     extracted_graph_cache_key: str | None = None
 
-    lab = lab_options or RefactorLabOptions()
     if start_from_stage != "extract":
         upstream = require_upstream_manifest(config, start_from_stage=start_from_stage)
-        if start_from_stage == "refactor":
-            from src.package_materialize import current_internals_inputs
-
+        if start_from_stage == "annotate":
             export_state = export_stage_state_from_manifest(config, upstream)
-            # Prefer committed-dist / content-keyed adopt before rematerializing
-            # pristine codegen — rematerialize clears internals_key and defeats
-            # the fresh-clone path (#238 / #239).
-            #
-            # A run that will rebuild the refactor must start from the pristine
-            # module: seeding dist/ with the cached refactored internals.py would
-            # make Pass 1 rewrite an already-rewritten module.
-            adopt = (
-                not no_cache
-                and not force_rebuild
-                and not lab.requires_refactor_run()
-                and try_materialize_refactored_package_from_cache(
-                    config,
-                    codegen_key=export_state.codegen_cache_key,
-                    expected_internals_inputs=current_internals_inputs(),
-                )
-            )
-            if not adopt:
-                materialize_package(config, codegen_key=export_state.codegen_cache_key)
-        elif start_from_stage in ("validate", "document"):
-            refactor_state = refactor_stage_state_from_manifest(config, upstream)
-            _materialize_from_refactor_keys(
+            materialize_package(
                 config,
-                codegen_key=refactor_state.codegen_cache_key,
-                internals_key=refactor_state.internals_cache_key,
+                codegen_key=export_state.codegen_cache_key,
+                apply_rewrites=False,
             )
+        elif start_from_stage in ("validate", "document"):
+            annotate_state = annotate_stage_state_from_manifest(config, upstream)
+            materialize_package(
+                config,
+                codegen_key=annotate_state.codegen_cache_key,
+                apply_rewrites=False,
+            )
+            from src.inverted_tree_docstrings import annotate_exported_package
+
+            annotate_exported_package(config)
 
     if _stage_in_range(
         "extract",
@@ -1456,22 +1473,21 @@ def _run_pipeline_stages(
             return
 
     if _stage_in_range(
-        "refactor",
+        "annotate",
         start_from_stage=start_from_stage,
         stop_after_stage=stop_after_stage,
     ):
         if export_state is None:
             raise StageManifestError(
-                "refactor stage requires export stage state or a warm export manifest"
+                "annotate stage requires export stage state or a warm export manifest"
             )
-        refactor_state = run_refactor_stage(
+        annotate_state = run_annotate_stage(
             export_state,
             no_cache=no_cache,
             force_rebuild=force_rebuild,
             timings=timings,
-            lab_options=lab_options,
         )
-        if stop_after_stage == "refactor":
+        if stop_after_stage == "annotate":
             return
 
     differential_exit_code: int | None = None
@@ -1480,13 +1496,13 @@ def _run_pipeline_stages(
         start_from_stage=start_from_stage,
         stop_after_stage=stop_after_stage,
     ):
-        if refactor_state is None:
+        if annotate_state is None:
             raise StageManifestError(
-                "validate stage requires refactor stage state or a warm refactor "
+                "validate stage requires annotate stage state or a warm annotate "
                 "manifest"
             )
         differential_exit_code = run_validate_stage(
-            refactor_state,
+            annotate_state,
             no_cache=no_cache,
             timings=timings,
         )
@@ -1504,9 +1520,9 @@ def _run_pipeline_stages(
             and not force_document
         ):
             print(
-                "Skipping document stage because exported-library differential "
-                f"exited with code {differential_exit_code}. Export and differential "
-                "artifacts are ready for diagnosis; pass --force-document to rewrite "
+                "Skipping document stage because FormulaEvaluator parity "
+                f"exited with code {differential_exit_code}. Export artifacts "
+                "are ready for diagnosis; pass --force-document to rewrite "
                 "guides anyway.",
                 flush=True,
             )
@@ -1514,7 +1530,7 @@ def _run_pipeline_stages(
         run_document_stage(
             config,
             timings=timings,
-            refactor_state=refactor_state,
+            annotate_state=annotate_state,
         )
 
 

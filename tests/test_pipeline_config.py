@@ -75,9 +75,11 @@ def test_load_pipeline_config_rejects_invalid_clustering_mode(
         load_pipeline_config()
 
 
-def test_load_pipeline_config_defaults_to_no_runnable_cell_rules() -> None:
+def test_load_pipeline_config_reads_inverted_tree_runnable_cell_rules() -> None:
     config = load_pipeline_config()
-    assert config.runnable_cell_rules == ()
+    assert len(config.runnable_cell_rules) == 2
+    assert any("make_context" in rule.pattern for rule in config.runnable_cell_rules)
+    assert any("set_" in rule.pattern for rule in config.runnable_cell_rules)
 
 
 def test_load_pipeline_config_reads_blank_ranges(
