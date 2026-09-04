@@ -852,7 +852,7 @@ def test_run_validate_stage_records_spans_and_profiles(tmp_path: Path) -> None:
         patch(
             "src.inverted_tree_validate.write_formula_evaluator_parity_reports",
             return_value=0,
-        ),
+        ) as write_reports,
         patch("src.extraction_pipeline.profile_if_enabled") as profile,
     ):
         exit_code = run_validate_stage(state, timings=timings)
@@ -862,6 +862,13 @@ def test_run_validate_stage_records_spans_and_profiles(tmp_path: Path) -> None:
     record = timings.stages[0]
     assert record.name == "validate"
     assert set(record.spans) == {"formula_evaluator_parity"}
+    canary_dir = tmp_path / "dist" / "tests" / "results" / "reference"
+    write_reports.assert_called_once()
+    assert write_reports.call_args.kwargs["report_dir"] == canary_dir
+    assert write_reports.call_args.args[0].differential_report_dir_rel == Path(
+        "data/differential/exported_library"
+    )
+    assert canary_dir != tmp_path / "data" / "differential" / "exported_library"
 
 
 def test_run_pipeline_writes_stage_timings_artifact(

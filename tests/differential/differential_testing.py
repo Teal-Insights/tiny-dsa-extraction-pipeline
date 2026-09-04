@@ -14,7 +14,7 @@ output cells:
 
 The 15 output cells (output_baseline / output_shocked / output_delta, 5 years
 each) are compared at every input point. A text + CSV report is written to
-`data/differential/differential_report.{txt,csv}` at the project root.
+`data/differential/graph/differential_report.{txt,csv}` at the project root.
 
 Run from the project root:
     uv run python tests/differential/differential_testing.py
@@ -69,7 +69,7 @@ WORKBOOK_PATH = (
     else (PROJECT_ROOT / PIPELINE_WORKBOOK_PATH)
 ).resolve()
 
-REPORT_DIR = PROJECT_ROOT / "data" / "differential"
+REPORT_DIR = PROJECT_ROOT / "data" / "differential" / "graph"
 REPORT_TXT = REPORT_DIR / "differential_report.txt"
 REPORT_CSV = REPORT_DIR / "differential_report.csv"
 

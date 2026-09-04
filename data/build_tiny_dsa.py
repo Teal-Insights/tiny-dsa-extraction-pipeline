@@ -17,9 +17,8 @@ Version 0.2.0 incorporates Council-pass-1 modifications:
   constraint-resolution path).
 - Excel-level data validation on shock_year (1-5), shock_type (1-3),
   and country_name (drawn from the profile table).
-- Three golden-master scenarios in the manifest, one per CHOOSE branch.
-- Schemas field in the manifest with type and unit information per
-  named range.
+- Three golden-master scenarios printed at build time, one per CHOOSE
+  branch.
 - Byte-deterministic build (stable workbook properties + normalized ZIP
   entry timestamps).
 
@@ -39,7 +38,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,10 +50,8 @@ from fastpyxl.worksheet.datavalidation import DataValidation
 
 HERE = Path(__file__).parent
 OUT_XLSX = HERE / "tiny-dsa.xlsx"
-OUT_MANIFEST = HERE / "tiny-dsa-manifest.json"
 
 VERSION = "0.2.0"
-RELEASE_DATE_UTC = "2026-05-04T00:00:00Z"  # fixed; bumps only on version increment
 EPOCH_FOR_ZIP = (2026, 5, 4, 0, 0, 0)
 EPOCH_DATETIME = datetime(2026, 5, 4, 0, 0, 0, tzinfo=UTC)
 
@@ -823,58 +819,8 @@ def main() -> None:
     make_xlsx_byte_deterministic(OUT_XLSX)
 
     scenarios = compute_all_scenarios()
-
-    manifest = {
-        "tool": "tiny-dsa",
-        "version": VERSION,
-        "release_date_utc": RELEASE_DATE_UTC,
-        "build_script": "build_tiny_dsa.py",
-        "purpose": (
-            "Smaller-than-Q-CRAFT toy that exercises time recursion, stress-test "
-            "branching, INDEX/MATCH country lookup, OFFSET against a dynamic column, "
-            "CHOOSE for categorical dispatch, and cross-sheet references. Bridge "
-            "between excel-grapher's micro-workbook (mechanics) and Q-CRAFT v2 "
-            "(the first real integration). Cookie-cutter v0.1 input bundle prototype."
-        ),
-        "model": {
-            "equation": (
-                "debt(t) = debt(t-1) * (1 + r(t)) / (1 + g(t)) - primary_balance(t)"
-            ),
-            "recursion": "additive percentage-point shock applied from shock_year onwards to one selected parameter",
-            "horizon_years": 5,
-        },
-        "patterns_exercised": [
-            "time recursion (debt(t) depends on debt(t-1))",
-            "stress-test branching (parallel baseline vs shocked paths)",
-            "cross-sheet references (Engine reads from Inputs; Outputs reads from Engine)",
-            "INDEX/MATCH against country_profile_table to look up initial_debt_to_gdp",
-            "CHOOSE on shock_type (which variable receives the shock)",
-            "OFFSET on shock_type (dynamic-column lookup of shock magnitude)",
-            "Excel-logic vs economic-logic translation (snowball factor)",
-        ],
-        "out_of_scope": [
-            "merged cells, hard-pasted-over formulas, orphan cells",
-            "iterative or quasi-iterative calculation",
-            "non-linear functional forms (e.g. logistic productivity convergence)",
-            "time-window aggregations across historical periods",
-            "many-to-one selection from large preloaded datasets (Q-CRAFT-scale)",
-            "long-horizon compounding (5 years vs Q-CRAFT's 75)",
-            "indicator-and-threshold output and risk classification",
-        ],
-        "files": {
-            "tiny-dsa.xlsx": {
-                "sha256": sha256_of(OUT_XLSX),
-                "size_bytes": OUT_XLSX.stat().st_size,
-            },
-        },
-        "schemas": schemas(),
-        "golden_master_scenarios": scenarios,
-    }
-
-    OUT_MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Wrote {OUT_XLSX}")
-    print(f"Wrote {OUT_MANIFEST}")
-    print(f"SHA-256: {manifest['files']['tiny-dsa.xlsx']['sha256']}")
+    print(f"SHA-256: {sha256_of(OUT_XLSX)}")
     print(f"Scenarios: {len(scenarios)}")
     for s in scenarios:
         outs = s["outputs"]
