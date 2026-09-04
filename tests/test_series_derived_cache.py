@@ -14,8 +14,11 @@ from src.dependency_graph_viz import series_cell_keys
 from src.extraction_pipeline import classify_leaves_from_constraints
 from src.graph_cache import get_or_build_dependency_graph
 from src.internal_binding_coverage import enforce_internal_binding_coverage
-from src.internal_bindings import build_internal_binding_index
-from src.refactor_bindings import build_address_to_series_id, build_bound_address_keys
+from src.internal_bindings import (
+    build_address_to_series_id,
+    build_bound_address_keys,
+    build_internal_binding_index,
+)
 from src.series_derived_cache import (
     DEFAULT_SERIES_DERIVED_CACHE_DIR,
     clear_series_derived_cache,
@@ -554,11 +557,11 @@ def test_call_sites_read_derived_fields_instead_of_rebuilding(
 
     with (
         patch(
-            "src.refactor_bindings.build_bound_address_keys",
+            "src.internal_bindings.build_bound_address_keys",
             side_effect=AssertionError("rebuild"),
         ),
         patch(
-            "src.refactor_bindings.build_address_to_series_id",
+            "src.internal_bindings.build_address_to_series_id",
             side_effect=AssertionError("rebuild"),
         ),
         patch(

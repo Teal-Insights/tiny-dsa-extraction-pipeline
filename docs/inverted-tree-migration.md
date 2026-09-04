@@ -99,8 +99,8 @@ catalog as the Excel map rather than inventing Pass-2 names.
   keys still do not fold bindings.
 - **export** — `CodeGenerator(graph).generate_modules(..., paradigm="inverted_tree")`.
   Fold `paradigm` into the codegen cache key so ctx and inverted-tree payloads
-  cannot collide. Call `materialize_package(..., apply_rewrites=False)` so ctx
-  `XlErrorException` rewrites are not applied to inverted-tree modules.
+  cannot collide. Ctx `XlErrorException` rewrites are gone; `materialize_package`
+  writes codegen payloads as-is.
 - **annotate** — LLM Google-style docstrings spliced onto `api.py` and
   `internals.py` (`src/inverted_tree_docstrings.py`, cache
   `.cache/inverted-tree-docstrings.json`). Fail closed if the model returns
@@ -115,9 +115,10 @@ catalog as the Excel map rather than inventing Pass-2 names.
   `.cache/user-guide/`) when the agent prompt template changes.
 
 Clustering, Pass-1 mechanical refactor, and Pass-2 semantic naming are **not**
-called from the orchestrator. Tiny DSA left those modules on disk so older unit
-tests can still import them; those tests are skipped with an inverted-tree
-reason. Do not delete them in the first template pass.
+called from the orchestrator. The first template pass left those modules on
+disk so older unit tests could still import them. Issue #55 later removed that
+stack (clustering CLIs, Pass-1/Pass-2, `run_refactor_stage`, and the ctx
+rewrite helpers).
 
 `--only-stage`, `--start-from-stage`, and `--stop-after-stage` must use the new
 stage names. Stage manifests chain `export → annotate → validate → document`.
@@ -221,9 +222,9 @@ These do not come along automatically from a template merge:
 1. Land constant-binding coverage and schema 1.13.0 while still on ctx export
    (equivalent of `d9542f4`). Ctx and inverted tree both need those series.
 2. Pin / release excel-grapher with `paradigm="inverted_tree"`.
-3. Remodel stages and templates (equivalent of `823424c`). Skip leftover
-   clustering tests; leave the modules in the tree for one release if derived
-   repos still import them.
+3. Remodel stages and templates (equivalent of `823424c`). The first pass
+   skipped leftover clustering tests and left those modules in the tree;
+   issue #55 later deleted them.
 4. Require derived repos to author graph-vs-Excel hooks (equivalent of
    `68cbb21`) and run that sweep on Windows before trusting extraction.
 5. Remodel the exported-library harness to FormulaEvaluator (equivalent of
@@ -240,8 +241,8 @@ These do not come along automatically from a template merge:
 - **Fail closed.** Missing scenarios, missing output cells, LLM arg-name
   drift, unbound constant leaves, and graph writes with no `compute_*`
   counterpart should raise. Do not add skip-if-absent paths.
-- **`apply_rewrites=False`.** Ctx `XlErrorException` rewrites target the old
-  package shape.
+- **Ctx rewrites are gone.** Issue #55 removed `apply_rewrites` and the
+  `XlErrorException` helpers that targeted the old package shape.
 - **Codegen cache `paradigm`.** Omitting it serves ctx modules as inverted
   tree (or the reverse) on a cache hit.
 - **Narrow validate ≠ full sweep.** Default-path FormulaEvaluator is a
@@ -261,7 +262,7 @@ New or heavily remodeled:
 - `src/inverted_tree_docstrings.py`, `src/inverted_tree_validate.py`
 - `src/extraction_pipeline.py` stage list and export/annotate/validate
 - `src/codegen_cache.py` (`paradigm` in the key)
-- `src/package_materialize.py` (`apply_rewrites=False`)
+- `src/package_materialize.py`
 - `src/stage_manifest.py` upstream chain
 - `templates/user-guide-agent.txt`
 - `workbook_config.RUNNABLE_CELL_RULES`
@@ -274,8 +275,3 @@ Workbook-local:
 - `bindings/constants.bindings.yaml` and schema stamps
 - Graph/library differential hooks
 - `inverted_tree_validate.py` output addresses
-
-Left in place on purpose (first pass):
-
-- Clustering, Pass-1/Pass-2 refactor, `run_refactor_stage`, ctx differential
-  helpers used only by skipped tests

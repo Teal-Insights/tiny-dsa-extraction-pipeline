@@ -13,8 +13,10 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
-from src.docstring_callback import DOCSTRING_MODEL_ENV, DOCSTRING_PROMPT_VERSION
 from src.llm_providers import model_from_env
+
+DOCSTRING_MODEL_ENV = "DOCSTRING_MODEL"
+DOCSTRING_PROMPT_VERSION = 3
 
 CODEGEN_CACHE_SCHEMA_VERSION = "1.0.0"
 DEFAULT_CODEGEN_CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache" / "codegen"

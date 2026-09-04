@@ -231,11 +231,8 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
     config.package_root.mkdir(parents=True)
     config.targets = ("Sheet!A1",)
     config.constraints = {}
-    config.variation_mode = "independent"
-    config.clustering_mode = "series_ast"
     config.internal_binding_validation_mode = "warn"
     config.internal_binding_exempt_cells = frozenset()
-    config.docstring_callback_name = "openai_series_docstring"
     config.guide_path = tmp_path / "guide.md"
     config.guide_path.write_text("guide", encoding="utf-8")
     config.workbook_path = tmp_path / "workbook.xlsx"

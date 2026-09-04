@@ -26,11 +26,12 @@ from src.internal_binding_coverage import (
     apply_internal_binding_coverage_report,
     enforce_internal_binding_coverage,
 )
-from src.internal_bindings import InternalBindingIndex, build_internal_binding_index
-from src.refactor_bindings import (
+from src.internal_bindings import (
     BindingKeyValue,
+    InternalBindingIndex,
     build_address_to_series_id,
     build_bound_address_keys,
+    build_internal_binding_index,
 )
 
 SERIES_DERIVED_SCHEMA_VERSION = "1.1.0"

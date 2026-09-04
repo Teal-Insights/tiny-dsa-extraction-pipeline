@@ -8,8 +8,116 @@ from typing import Any
 
 from excel_grapher.grapher.graph import DependencyGraph
 from excel_grapher.grapher.node import NodeKey
+from excel_grapher.series_bindings.types import Scalar
 
-from src.refactor_bindings import BindingKeyValue, _coerce_binding_keys
+BindingKeyValue = str | int | float | bool
+
+
+def _coerce_binding_keys(keys: Mapping[str, Scalar]) -> dict[str, BindingKeyValue]:
+    coerced: dict[str, BindingKeyValue] = {}
+    for key, value in keys.items():
+        if isinstance(value, (bool, str, int, float)):
+            coerced[key] = value
+    return coerced
+
+
+def build_bound_address_keys(
+    input_series: Sequence[Mapping[str, Any]],
+    output_series: Sequence[Mapping[str, Any]],
+    internal_series: Sequence[Mapping[str, Any]] = (),
+    *,
+    constant_series: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, dict[str, BindingKeyValue]]:
+    """Index every bound cell address to its coerced cell-scope binding keys.
+
+    Constant series are folded in first (lowest priority) so a keyed reader-only
+    leaf still contributes its per-cell keys. Input/output/internal series
+    overwrite the constant baseline for any shared address so formula-bearing
+    ownership keeps precedence.
+    """
+    index: dict[str, dict[str, BindingKeyValue]] = {}
+    for series_list in (constant_series, input_series, output_series, internal_series):
+        for series in series_list:
+            for cell in series["cells"]:
+                index[str(cell["address"])] = _coerce_binding_keys(cell["key"])
+    return index
+
+
+def series_cell_owners(
+    series_list: Sequence[Mapping[str, Any]],
+) -> dict[str, tuple[str, ...]]:
+    """Map each series cell address to the series ids that claim it."""
+    owners: dict[str, list[str]] = {}
+    for series in series_list:
+        series_id = series.get("id")
+        if not isinstance(series_id, str) or not series_id:
+            continue
+        for cell in series.get("cells", []):
+            address = cell.get("address")
+            if isinstance(address, str):
+                owners.setdefault(address, []).append(series_id)
+    return {address: tuple(series_ids) for address, series_ids in owners.items()}
+
+
+def _unique_series_id_by_address(
+    series_list: Sequence[Mapping[str, Any]],
+    *,
+    ownership_kind: str,
+) -> dict[str, str]:
+    owners_by_address = series_cell_owners(series_list)
+    duplicates = {
+        address: series_ids
+        for address, series_ids in owners_by_address.items()
+        if len(series_ids) > 1
+    }
+    if duplicates:
+        sample_address, sample_series_ids = min(duplicates.items())
+        raise ValueError(
+            f"{ownership_kind} series cell address must map to exactly one series_id; "
+            f"got {sample_address!r} in {list(sample_series_ids)}"
+            + (
+                f" and {len(duplicates) - 1} more duplicate address(es)"
+                if len(duplicates) > 1
+                else ""
+            )
+        )
+    return {
+        address: series_ids[0]
+        for address, series_ids in owners_by_address.items()
+        if len(series_ids) == 1
+    }
+
+
+def build_address_to_series_id(
+    internal_series: Sequence[Mapping[str, Any]],
+    *,
+    output_series: Sequence[Mapping[str, Any]] = (),
+    input_series: Sequence[Mapping[str, Any]] = (),
+    constant_series: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, str]:
+    """Map cell addresses to owning series ids.
+
+    Internal ownership wins. Addresses without an internal owner fall back to
+    constant (reader-only leaf), then public output, then input binding series
+    ids.
+    """
+    address_to_series_id = _unique_series_id_by_address(
+        internal_series,
+        ownership_kind="internal",
+    )
+    for ownership_kind, series_list in (
+        ("constant", constant_series),
+        ("output", output_series),
+        ("input", input_series),
+    ):
+        public_ids = _unique_series_id_by_address(
+            series_list,
+            ownership_kind=ownership_kind,
+        )
+        for address, series_id in public_ids.items():
+            address_to_series_id.setdefault(address, series_id)
+    return address_to_series_id
+
 
 InternalBindingCell = Mapping[str, Any]
 InternalBindingIndex = dict[str, InternalBindingCell]

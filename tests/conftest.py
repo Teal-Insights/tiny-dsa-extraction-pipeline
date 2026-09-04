@@ -19,7 +19,6 @@ from src.extraction_pipeline import (
 )
 from src.pipeline_config import PipelineConfig, load_pipeline_config
 from tests.fixtures.synthetic_pipeline import (
-    build_synthetic_projection,
     load_synthetic_series_bindings,
     synthetic_pipeline_config,
     write_synthetic_workbook,
@@ -154,17 +153,6 @@ def synthetic_configured_pipeline(
 @pytest.fixture(scope="session")
 def synthetic_graph(synthetic_configured_pipeline: SyntheticConfiguredPipeline):
     return synthetic_configured_pipeline.graph
-
-
-@pytest.fixture(scope="session")
-def synthetic_projection(
-    synthetic_graph, synthetic_series_bindings, synthetic_workbook_path
-):
-    return build_synthetic_projection(
-        synthetic_graph,
-        series_bindings=synthetic_series_bindings,
-        bindings_workbook=synthetic_workbook_path,
-    )
 
 
 @pytest.fixture(scope="session")

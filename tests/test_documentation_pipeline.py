@@ -144,7 +144,6 @@ def _minimal_config(tmp_path: Path) -> PipelineConfig:
             documentation_url="https://example.com/",
             repository_url="https://github.com/example/my-model",
         ),
-        docstring_callback_name="series_docs",
         binding_authoring_prompt_path=templates / "binding-authoring-prompt.txt",
         user_guide_agent_prompt_path=prompt,
         differential_workbook_rel=Path("data/workbook.xlsx"),

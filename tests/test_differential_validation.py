@@ -37,7 +37,6 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
             description="Example library.",
             documentation_url="https://example.com/",
         ),
-        docstring_callback_name="series_docs",
         binding_authoring_prompt_path=repo_root
         / "templates"
         / "binding-authoring-prompt.txt",

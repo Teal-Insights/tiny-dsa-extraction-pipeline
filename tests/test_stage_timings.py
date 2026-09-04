@@ -30,14 +30,14 @@ def test_stage_timings_path_is_repo_artifacts_json(tmp_path: Path) -> None:
 def test_stage_context_records_wall_clock_and_spans() -> None:
     timings = PipelineTimings()
 
-    with timings.stage("refactor") as timer:
-        timer.record("cluster_graph_formulas", 1.5)
-        timer.record("pass1_apply", 2.5)
+    with timings.stage("export") as timer:
+        timer.record("codegen", 1.5)
+        timer.record("write_export_package", 2.5)
 
-    assert [record.name for record in timings.stages] == ["refactor"]
+    assert [record.name for record in timings.stages] == ["export"]
     record = timings.stages[0]
     assert record.elapsed_seconds >= 0.0
-    assert record.spans == {"cluster_graph_formulas": 1.5, "pass1_apply": 2.5}
+    assert record.spans == {"codegen": 1.5, "write_export_package": 2.5}
 
 
 def test_record_stage_accepts_externally_measured_timer() -> None:

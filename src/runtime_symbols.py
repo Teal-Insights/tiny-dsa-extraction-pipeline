@@ -74,7 +74,7 @@ def discover_allowed_formula_symbols(
     runtime_path: Path,
     readers_path: Path | None = None,
 ) -> tuple[str, ...]:
-    """Union runtime helpers with input-layer readers for refactor allowlists."""
+    """Union runtime helpers with input-layer readers for generated formula code."""
     symbols = set(discover_allowed_runtime_symbols(runtime_path))
     if readers_path is not None:
         symbols.update(discover_allowed_reader_symbols(readers_path))

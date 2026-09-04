@@ -9,14 +9,12 @@ from src.pipeline_config import (
     load_pipeline_config,
     validate_pipeline_config,
 )
-from src.workbook_addresses import parse_workbook_address
 
 
 def test_load_pipeline_config_reads_workbook_config() -> None:
     config = load_pipeline_config()
     assert config.dist_metadata.project_name == "tiny-dsa"
     assert config.dist_metadata.package_name == "tiny_dsa"
-    assert config.docstring_callback_name == "series_docs"
     assert config.workbook_path.name == "tiny-dsa.xlsx"
     assert config.guide_path.name == "tiny-dsa-guide.md"
     assert config.targets == (
@@ -25,54 +23,12 @@ def test_load_pipeline_config_reads_workbook_config() -> None:
         "output_delta",
     )
     assert config.graph_audit_cases == ()
-    assert config.variation_mode == "independent"
-    assert config.clustering_mode == "series"
     assert config.blank_ranges == ()
     assert config.user_guide_agent_prompt_path.name == "user-guide-agent.txt"
     assert (
         config.repo_relative_posix_path(config.user_guide_agent_prompt_path)
         == "templates/user-guide-agent.txt"
     )
-
-
-def test_load_pipeline_config_reads_variation_mode_from_workbook_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import workbook_config
-
-    monkeypatch.setattr(workbook_config, "VARIATION_MODE", "dominant_key_only")
-    config = load_pipeline_config()
-    assert config.variation_mode == "dominant_key_only"
-
-
-def test_load_pipeline_config_reads_clustering_mode_from_workbook_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import workbook_config
-
-    monkeypatch.setattr(workbook_config, "CLUSTERING_MODE", "ast")
-    config = load_pipeline_config()
-    assert config.clustering_mode == "ast"
-
-
-def test_load_pipeline_config_rejects_invalid_variation_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import workbook_config
-
-    monkeypatch.setattr(workbook_config, "VARIATION_MODE", "all_keys")
-    with pytest.raises(ValueError, match="VARIATION_MODE"):
-        load_pipeline_config()
-
-
-def test_load_pipeline_config_rejects_invalid_clustering_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import workbook_config
-
-    monkeypatch.setattr(workbook_config, "CLUSTERING_MODE", "all_series")
-    with pytest.raises(ValueError, match="CLUSTERING_MODE"):
-        load_pipeline_config()
 
 
 def test_load_pipeline_config_reads_inverted_tree_runnable_cell_rules() -> None:
@@ -189,10 +145,6 @@ def test_validate_pipeline_config_allows_empty_bindings_directory(
     bindings.mkdir()
     config = replace(synthetic_pipeline_config_fixture, bindings_path=bindings)
     validate_pipeline_config(config)
-
-
-def test_parse_workbook_address() -> None:
-    assert parse_workbook_address("Inputs!C16") == ("Inputs", "C", 16)
 
 
 def test_dist_project_metadata_install_command_without_repo() -> None:

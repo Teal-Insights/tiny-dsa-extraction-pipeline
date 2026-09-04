@@ -8,10 +8,8 @@ from pathlib import Path
 import pytest
 
 from src.bindings_validation_cache import load_bindings_validation_report
-from src.cluster_cache import load_cluster_payload
 from src.codegen_cache import load_codegen_payload
 from src.graph_cache import load_dependency_graph
-from src.internals_cache import load_refactored_internals_payload
 from src.projection_cache import load_projection_payload
 from src.series_derived_cache import load_series_derived_payload
 from src.series_resolution_cache import load_series_resolution_payload
@@ -20,10 +18,8 @@ _CACHE_KEY = "0" * 64
 
 _LOADERS: tuple[tuple[str, Callable[..., object | None]], ...] = (
     ("bindings_validation", load_bindings_validation_report),
-    ("cluster", load_cluster_payload),
     ("codegen", load_codegen_payload),
     ("dependency_graph", load_dependency_graph),
-    ("internals", load_refactored_internals_payload),
     ("projection", load_projection_payload),
     ("series_derived", load_series_derived_payload),
     ("series_resolution", load_series_resolution_payload),

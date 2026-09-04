@@ -17,7 +17,6 @@ from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import DependencyGraph, DynamicRefConfig
 
 from src.bindings_validation_cache import DEFAULT_BINDINGS_VALIDATION_CACHE_DIR
-from src.cluster_cache import DEFAULT_CLUSTER_CACHE_DIR
 from src.codegen_cache import DEFAULT_CODEGEN_CACHE_DIR
 from src.graph_cache import (
     COMMITTED_GRAPH_CACHE_DIR,
@@ -32,7 +31,6 @@ from src.graph_cache import (
     save_dependency_graph,
     try_load_cached_dependency_graph,
 )
-from src.internals_refactor import DEFAULT_INTERNALS_CACHE_DIR
 from src.projection_cache import (
     DEFAULT_PROJECTION_CACHE_DIR,
     clear_projection_cache,
@@ -41,7 +39,6 @@ from src.projection_cache import (
     rehydrate_projection_result,
 )
 from src.series_resolution_cache import DEFAULT_SERIES_RESOLUTION_CACHE_DIR
-from src.subgraph_projection import build_refactor_projection
 from tests.fixtures.synthetic_pipeline import (
     CONSTRAINTS,
     synthetic_pipeline_config,
@@ -49,10 +46,8 @@ from tests.fixtures.synthetic_pipeline import (
 )
 from tests.fixtures.test_state import (
     REPO_BINDINGS_VALIDATION_CACHE_DIR,
-    REPO_CLUSTER_CACHE_DIR,
     REPO_CODEGEN_CACHE_DIR,
     REPO_GRAPH_CACHE_DIR,
-    REPO_INTERNALS_CACHE_DIR,
     REPO_PROJECTION_CACHE_DIR,
     REPO_SERIES_RESOLUTION_CACHE_DIR,
 )
@@ -83,8 +78,6 @@ def test_pytest_uses_isolated_pipeline_disk_cache() -> None:
     assert DEFAULT_SERIES_RESOLUTION_CACHE_DIR != REPO_SERIES_RESOLUTION_CACHE_DIR
     assert DEFAULT_BINDINGS_VALIDATION_CACHE_DIR != REPO_BINDINGS_VALIDATION_CACHE_DIR
     assert DEFAULT_CODEGEN_CACHE_DIR != REPO_CODEGEN_CACHE_DIR
-    assert DEFAULT_CLUSTER_CACHE_DIR != REPO_CLUSTER_CACHE_DIR
-    assert DEFAULT_INTERNALS_CACHE_DIR != REPO_INTERNALS_CACHE_DIR
 
 
 def test_committed_graph_cache_dir_stays_on_repo_path_under_pytest_redirect() -> None:
@@ -729,12 +722,13 @@ def test_rehydrated_projection_supports_codegen(
     graph_cache_dir: Path,
 ) -> None:
     graph_result = _build_graph(synthetic_config, cache_dir=graph_cache_dir)
-    projection = build_refactor_projection(
+    projection = get_or_build_refactor_projection(
         graph_result.graph,
+        graph_cache_key=graph_result.cache_key,
         series_bindings=synthetic_series_bindings,
         bindings_workbook=synthetic_config.workbook_path,
-        graph_cache_key=graph_result.cache_key,
-    )
+        no_cache=True,
+    ).projection
     modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
         list(graph_result.graph.target_keys()),
         series_bindings=synthetic_series_bindings,
@@ -781,11 +775,13 @@ def test_rehydrate_projection_result_uses_original_graph(
     synthetic_series_bindings,
     synthetic_workbook_path,
 ) -> None:
-    live = build_refactor_projection(
+    live = get_or_build_refactor_projection(
         synthetic_graph,
+        graph_cache_key="synthetic-graph-key",
         series_bindings=synthetic_series_bindings,
         bindings_workbook=synthetic_workbook_path,
-    )
+        no_cache=True,
+    ).projection
     cached = get_or_build_refactor_projection(
         synthetic_graph,
         graph_cache_key="synthetic-graph-key",

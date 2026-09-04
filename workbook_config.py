@@ -81,8 +81,6 @@ DIST_METADATA = DistProjectMetadata(
     ),
 )
 
-DOCSTRING_CALLBACK_NAME = "series_docs"
-
 DIFFERENTIAL_WORKBOOK_REL = Path("data/tiny-dsa.xlsx")
 DIFFERENTIAL_REPORT_DIR_REL = Path("data/differential/exported_library")
 DIFFERENTIAL_GRAPH_REPORT_DIR_REL = Path("data/differential/graph")
@@ -105,15 +103,6 @@ GRAPH_CACHE_TARGET_BUNDLES: tuple[tuple[str, tuple[str, ...]], ...] = ()
 INTERNAL_BINDING_VALIDATION_MODE: InternalBindingValidationMode = "warn"
 # Sheet-qualified formula addresses reviewed and intentionally allowed to remain unbound.
 INTERNAL_BINDING_EXEMPT_CELLS: frozenset[str] = frozenset()
-
-# Formula-cluster variation mode for leftover internals refactor (#55).
-# Unused by the live extract → export → annotate → validate → document orchestrator.
-# Override per run with ``--variation-mode`` on ``src.extraction_pipeline``.
-VARIATION_MODE = "independent"
-
-# Formula-cluster base mode for leftover internals refactor (#55).
-# Unused by the live orchestrator. Override per run with ``--clustering-mode``.
-CLUSTERING_MODE = "series"
 
 RUNNABLE_CELL_RULES: tuple[RunnableCellRule, ...] = (
     RunnableCellRule(
