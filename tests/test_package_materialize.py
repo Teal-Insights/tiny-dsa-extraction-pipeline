@@ -79,6 +79,7 @@ def _prepare_repo(tmp_path: Path) -> PipelineConfig:
         "differential_types.py",
         "differential_excel.py",
         "comparison_utils.py",
+        "differential_scenario_inputs.py",
         "differential_test_exported_library.py",
     ):
         (tmp_path / "tests" / "differential" / name).write_text(
