@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "excel-grapher",
+    "excel-grapher>=12.7.1",
     "openai>=2.38.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
@@ -51,6 +51,3 @@ line-ending = "lf"
 # Golden Markdown fixtures embed exact Python dumps; Ruff 0.16 formats fenced
 # code blocks by default and would churn those expected strings.
 exclude = ["tests/fixtures/**/*.md"]
-
-[tool.uv.sources]
-excel-grapher = { git = "https://github.com/Teal-Insights/excel-grapher.git", rev = "3c759a472f85c115359e9cb14c05eac86432e093" }

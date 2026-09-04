@@ -16,10 +16,12 @@ from typing import Any, Literal
 import fastpyxl
 from excel_grapher.core.address_keys import parse_address
 from excel_grapher.grapher.graph import DependencyGraph
-from excel_grapher.series_bindings.ranges import expand_data_range_for_graph
+from excel_grapher.series_bindings.ranges import (
+    apply_series_excludes,
+    expand_data_range_for_graph,
+)
 from excel_grapher.series_bindings.resolve import (
     BindingDirection,
-    _apply_exclude_rows,
     resolve_series_bindings,
 )
 from excel_grapher.series_bindings.types import (
@@ -334,7 +336,7 @@ def find_duplicate_internal_formula_cell_bindings(
             addresses = expand_data_range_for_graph(
                 graph, data_range, workbook=workbook_path
             )
-            addresses = _apply_exclude_rows(addresses, series)
+            addresses = apply_series_excludes(addresses, series)
         except (ValueError, TypeError):
             continue
         for address in addresses:
