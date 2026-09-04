@@ -88,6 +88,9 @@ def seed_validation_harness(*, config: PipelineConfig) -> None:
     reference_root.mkdir(parents=True, exist_ok=True)
     local_root.mkdir(parents=True, exist_ok=True)
 
+    stale_root_harness = tests_root / "differential_test_exported_library.py"
+    stale_root_harness.unlink(missing_ok=True)
+
     _copy_differential_package(repo_root=repo_root, tests_root=tests_root)
     shutil.copy2(workbook_src, fixtures_root / workbook_fixture_name)
 

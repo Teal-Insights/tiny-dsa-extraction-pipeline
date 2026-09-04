@@ -141,6 +141,27 @@ def test_seed_validation_harness_copies_harness_and_workbook_without_reports(
     assert "compute_*" in readme
     assert "set_*" not in readme
     assert "vs Excel" not in readme
+    assert not (tests_root / "differential_test_exported_library.py").exists()
+
+
+def test_seed_validation_harness_deletes_stale_root_harness_copy(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    dist_root = repo_root / "dist"
+    _seed_repo_with_workbook(repo_root)
+    dist_root.mkdir()
+    tests_root = dist_root / "tests"
+    tests_root.mkdir()
+    stale = tests_root / "differential_test_exported_library.py"
+    stale.write_text("stale ctx harness\n", encoding="utf-8")
+
+    seed_validation_harness(config=_sample_config(repo_root))
+
+    assert not stale.exists()
+    assert (
+        tests_root / "differential" / "differential_test_exported_library.py"
+    ).is_file()
 
 
 def test_dist_tests_readme_names_formula_evaluator_vs_compute() -> None:

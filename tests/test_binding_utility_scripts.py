@@ -739,6 +739,19 @@ def test_binding_guidance_documents_constant_direction() -> None:
         lowered = text.lower()
         assert "constant: {}" in text
         assert "constants.bindings.yaml" in lowered
+
+    assert "keyword-only" in bindings_readme
+    assert "data.py" in bindings_readme.lower()
+    assert "compute_*" in bindings_readme
+    assert "non_leaf_constant_overlap" in bindings_readme
+    assert "bind.kind: constant" in bindings_readme
+    assert (
+        "derive_constant_series" in pipeline_readme
+        or "derive_constant_series" in prompt
+    )
+
+    for text in (pipeline_readme, prompt):
+        lowered = text.lower()
         assert "read_" in lowered
         assert "set_" in lowered
         assert (
@@ -747,13 +760,6 @@ def test_binding_guidance_documents_constant_direction() -> None:
             or "phase 2" in lowered
             or "body rewrite" in lowered
         )
-
-    assert "non_leaf_constant_overlap" in bindings_readme
-    assert "bind.kind: constant" in bindings_readme
-    assert (
-        "derive_constant_series" in pipeline_readme
-        or "derive_constant_series" in prompt
-    )
 
 
 def test_binding_resolution_audit_directions_include_constant() -> None:

@@ -5,11 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_PROBE_MODULE_NAMES = (
-    "_runtime_symbols_probe",
-    "_exported_runtime_for_parity",
-    "tests.differential.differential_test_exported_library",
-)
+_PROBE_MODULE_NAMES = ("tests.differential.differential_test_exported_library",)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 REPO_GRAPH_CACHE_DIR = _REPO_ROOT / ".cache" / "dependency-graph"
@@ -121,13 +117,6 @@ def restore_pipeline_disk_cache() -> None:
     _ORIGINAL_CODEGEN_CACHE_DIR = None
 
 
-def clear_runtime_caches() -> None:
-    from src.runtime_symbols import clear_runtime_symbol_caches
-
-    clear_runtime_symbol_caches()
-
-
 def reset_pipeline_test_state() -> None:
-    clear_runtime_caches()
     for module_name in _PROBE_MODULE_NAMES:
         sys.modules.pop(module_name, None)

@@ -20,10 +20,7 @@ from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
 from src.bindings_validation_cache import get_or_build_bindings_validation
-from src.codegen_cache import (
-    get_or_build_codegen_modules,
-    guide_fingerprint,
-)
+from src.codegen_cache import get_or_build_codegen_modules
 from src.dependency_graph_viz import (
     constant_keys_from_leaf_classification,
     series_cell_keys,
@@ -710,10 +707,6 @@ def _generate_export_package(
     codegen_result = get_or_build_codegen_modules(
         projection_cache_key=proj_cache_key,
         targets=targets,
-        unpack_return=True,
-        docstring_renderer="google",
-        series_docstring_callback="none",
-        guide_sha256=guide_fingerprint(config.guide_path),
         paradigm="inverted_tree",
         build_modules=_build_modules,
         no_cache=no_cache,

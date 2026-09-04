@@ -13,12 +13,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
-from src.llm_providers import model_from_env
-
-DOCSTRING_MODEL_ENV = "DOCSTRING_MODEL"
-DOCSTRING_PROMPT_VERSION = 3
-
-CODEGEN_CACHE_SCHEMA_VERSION = "1.0.0"
+CODEGEN_CACHE_SCHEMA_VERSION = "1.1.0"
 DEFAULT_CODEGEN_CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache" / "codegen"
 
 OPTIONAL_GENERATED_MODULES = frozenset(
@@ -46,24 +41,12 @@ def codegen_cache_key(
     *,
     projection_cache_key: str,
     targets: Sequence[str],
-    unpack_return: bool,
-    docstring_renderer: str,
-    series_docstring_callback: str,
-    guide_sha256: str,
-    docstring_prompt_version: int = DOCSTRING_PROMPT_VERSION,
-    docstring_model: str,
-    paradigm: str = "ctx",
+    paradigm: str,
 ) -> str:
     payload = {
         "cache_schema_version": CODEGEN_CACHE_SCHEMA_VERSION,
         "projection_cache_key": projection_cache_key,
         "targets": sorted(targets),
-        "unpack_return": unpack_return,
-        "docstring_renderer": docstring_renderer,
-        "series_docstring_callback": series_docstring_callback,
-        "guide_sha256": guide_sha256,
-        "docstring_prompt_version": docstring_prompt_version,
-        "docstring_model": docstring_model,
         "paradigm": paradigm,
         "excel_grapher_version": version("excel-grapher"),
     }
@@ -176,33 +159,16 @@ def get_or_build_codegen_modules(
     *,
     projection_cache_key: str,
     targets: Sequence[str],
-    unpack_return: bool,
-    docstring_renderer: str,
-    series_docstring_callback: str,
-    guide_sha256: str,
-    docstring_prompt_version: int = DOCSTRING_PROMPT_VERSION,
-    docstring_model: str | None = None,
-    paradigm: str = "ctx",
+    paradigm: str,
     build_modules: Callable[[], Mapping[str, str]],
     cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
 ) -> CodegenCacheResult:
     resolved_cache_dir = _codegen_cache_dir(cache_dir)
-    resolved_model = (
-        docstring_model
-        if docstring_model is not None
-        else model_from_env(DOCSTRING_MODEL_ENV)
-    )
     cache_key = codegen_cache_key(
         projection_cache_key=projection_cache_key,
         targets=targets,
-        unpack_return=unpack_return,
-        docstring_renderer=docstring_renderer,
-        series_docstring_callback=series_docstring_callback,
-        guide_sha256=guide_sha256,
-        docstring_prompt_version=docstring_prompt_version,
-        docstring_model=resolved_model,
         paradigm=paradigm,
     )
     started = time.perf_counter()

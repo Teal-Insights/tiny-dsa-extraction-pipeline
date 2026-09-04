@@ -42,6 +42,6 @@ addopts = "-v -p no:faulthandler -p no:cacheprovider"
 # Keep formatted Python on LF so Windows checkouts cannot reintroduce the CRLF
 # bytes that `git diff --check` flags as trailing whitespace.
 line-ending = "lf"
-# Golden Markdown fixtures embed exact Python dumps; Ruff 0.16 formats fenced
-# code blocks by default and would churn those expected strings.
-exclude = ["tests/fixtures/**/*.md"]
+# The synthetic guide is Markdown; Ruff 0.16 formats fenced code blocks by
+# default. Keep it excluded if it grows fenced Python.
+exclude = ["tests/fixtures/synthetic/guide.md"]

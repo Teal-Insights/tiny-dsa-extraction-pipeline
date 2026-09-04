@@ -131,6 +131,9 @@ def test_agents_md_documents_annotate_and_live_caches() -> None:
     assert "run_refactor_stage" not in text
     assert ".cache/clusters/" not in text
     assert ".cache/internals/" not in text
+    assert "unpack/docstring" not in text
+    assert "codegen" in text
+    assert "paradigm" in text
 
 
 def test_workbook_config_drops_clustering_and_callback_knobs() -> None:
@@ -145,6 +148,23 @@ def test_package_cache_keys_have_no_internals_key() -> None:
 
     assert "internals_key" not in PackageCacheKeys.__dataclass_fields__
     assert "codegen_key" in PackageCacheKeys.__dataclass_fields__
+
+
+def test_bindings_readme_does_not_teach_ctx_setters() -> None:
+    text = (REPO_ROOT / "bindings" / "README.md").read_text(encoding="utf-8")
+    assert "ctx.inputs" not in text
+    assert "Records inputs (`set_*`)" not in text
+    assert "input / `set_*`" not in text
+    assert "`compute_*` / `set_*`" not in text
+    assert "keyword-only" in text
+    assert "compute_*" in text
+    assert "helper parameter" in text.lower()
+
+
+def test_ruff_format_exclude_is_the_synthetic_guide() -> None:
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'exclude = ["tests/fixtures/synthetic/guide.md"]' in text
+    assert 'exclude = ["tests/fixtures/**/*.md"]' not in text
 
 
 def test_dormant_ctx_refactor_stack_is_removed() -> None:
@@ -176,6 +196,7 @@ def test_dormant_ctx_refactor_stack_is_removed() -> None:
         "docstring_callback.py",
         "internals_cache.py",
         "workbook_addresses.py",
+        "runtime_symbols.py",
     ):
         assert not (src / name).is_file(), name
     for name in (

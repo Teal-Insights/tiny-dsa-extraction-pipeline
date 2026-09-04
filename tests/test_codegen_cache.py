@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TypedDict
@@ -19,22 +20,25 @@ from tests.fixtures.test_state import REPO_CODEGEN_CACHE_DIR
 
 _SAMPLE_MODULES = {
     "__init__.py": "# init\n",
-    "api.py": ("from .runtime import EvalContext\n\ndef api():\n    return 1\n"),
+    "api.py": "def compute_example():\n    return (1.0,)\n",
     "data.py": "DATA = {}\n",
     "runtime.py": "def run():\n    pass\n",
-    "internals.py": "def internal():\n    pass\n",
+    "internals.py": "def helper():\n    return 1.0\n",
 }
+
+_DOCSTRING_KEY_KWARGS = (
+    "unpack_return",
+    "docstring_renderer",
+    "series_docstring_callback",
+    "guide_sha256",
+    "docstring_prompt_version",
+    "docstring_model",
+)
 
 
 class _CodegenKeyKwargs(TypedDict):
     projection_cache_key: str
     targets: Sequence[str]
-    unpack_return: bool
-    docstring_renderer: str
-    series_docstring_callback: str
-    guide_sha256: str
-    docstring_prompt_version: int
-    docstring_model: str
     paradigm: str
 
 
@@ -47,29 +51,27 @@ def _key_kwargs(
     *,
     projection_cache_key: str = "proj-key-abc",
     targets: Sequence[str] = ("Sheet!A1",),
-    unpack_return: bool = True,
-    docstring_renderer: str = "google",
-    series_docstring_callback: str = "openai_series_docstring",
-    guide_sha256: str = "guide-digest",
-    docstring_prompt_version: int = 3,
-    docstring_model: str = "gpt-5.5",
-    paradigm: str = "ctx",
+    paradigm: str = "inverted_tree",
 ) -> _CodegenKeyKwargs:
     return {
         "projection_cache_key": projection_cache_key,
         "targets": list(targets),
-        "unpack_return": unpack_return,
-        "docstring_renderer": docstring_renderer,
-        "series_docstring_callback": series_docstring_callback,
-        "guide_sha256": guide_sha256,
-        "docstring_prompt_version": docstring_prompt_version,
-        "docstring_model": docstring_model,
         "paradigm": paradigm,
     }
 
 
 def test_pytest_uses_isolated_codegen_disk_cache() -> None:
     assert DEFAULT_CODEGEN_CACHE_DIR != REPO_CODEGEN_CACHE_DIR
+
+
+def test_codegen_cache_key_requires_paradigm_and_omits_docstring_inputs() -> None:
+    key_params = inspect.signature(codegen_cache_key).parameters
+    build_params = inspect.signature(get_or_build_codegen_modules).parameters
+    assert key_params["paradigm"].default is inspect.Parameter.empty
+    assert build_params["paradigm"].default is inspect.Parameter.empty
+    for name in _DOCSTRING_KEY_KWARGS:
+        assert name not in key_params
+        assert name not in build_params
 
 
 def test_codegen_cache_roundtrip(codegen_cache_dir: Path) -> None:
@@ -132,18 +134,10 @@ def test_codegen_cache_key_follows_projection_cache_key() -> None:
     assert first != second
 
 
-def test_codegen_cache_key_changes_with_docstring_inputs() -> None:
+def test_codegen_cache_key_changes_with_targets_and_paradigm() -> None:
     base = codegen_cache_key(**_key_kwargs())
-    assert base != codegen_cache_key(**_key_kwargs(guide_sha256="other-guide"))
-    assert base != codegen_cache_key(**_key_kwargs(docstring_model="gpt-other"))
-    assert base != codegen_cache_key(**_key_kwargs(docstring_prompt_version=99))
-    assert base != codegen_cache_key(
-        **_key_kwargs(series_docstring_callback="other_callback")
-    )
-    assert base != codegen_cache_key(**_key_kwargs(docstring_renderer="numpy"))
-    assert base != codegen_cache_key(**_key_kwargs(unpack_return=False))
     assert base != codegen_cache_key(**_key_kwargs(targets=["Other!B2"]))
-    assert base != codegen_cache_key(**_key_kwargs(paradigm="inverted_tree"))
+    assert base != codegen_cache_key(**_key_kwargs(paradigm="ctx"))
 
 
 def test_codegen_cache_miss_when_projection_key_changes(

@@ -18,11 +18,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REMOVED_PATHS = (
     Path("src/projection_columns.py"),
     Path("src/inverted_tree_export.py"),
+    Path("src/runtime_symbols.py"),
     Path("scripts/export_inverted_tree.py"),
     Path("archive/extraction-pipeline.qmd"),
     Path("docs/extraction-pipeline.qmd"),
     Path("docs/extraction-pipeline.md"),
     Path("tests/test_inverted_tree_export.py"),
+    Path("tests/test_runtime_symbols.py"),
+    Path("tests/test_runtime_symbols_config.py"),
+    Path("dist/tests/differential_test_exported_library.py"),
 )
 
 UNTRACKED_PATHS = (
@@ -70,7 +74,11 @@ def test_user_guide_agent_template_remains() -> None:
 
 
 def test_removed_modules_are_not_importable() -> None:
-    for module in ("src.projection_columns", "src.inverted_tree_export"):
+    for module in (
+        "src.projection_columns",
+        "src.inverted_tree_export",
+        "src.runtime_symbols",
+    ):
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(module)
 
@@ -98,6 +106,20 @@ def test_dist_baseline_still_lists_documentation_packages() -> None:
 def test_ctx_era_cache_and_generated_graphs_are_untracked() -> None:
     listed = subprocess.check_output(
         ["git", "ls-files", "--", *[path.as_posix() for path in UNTRACKED_PATHS]],
+        cwd=REPO_ROOT,
+        text=True,
+    )
+    assert listed.strip() == ""
+
+
+def test_stale_dist_root_harness_is_not_tracked() -> None:
+    listed = subprocess.check_output(
+        [
+            "git",
+            "ls-files",
+            "--",
+            "dist/tests/differential_test_exported_library.py",
+        ],
         cwd=REPO_ROOT,
         text=True,
     )

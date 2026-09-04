@@ -10,10 +10,10 @@ Use schema version `1.13.0` and the prompt in [templates/binding-authoring-promp
 ## Constant bindings (reader-only leaves)
 
 Use `constant: {}` for graph **leaves** that formulas read as fixed parameters,
-scenario knobs, or lookup seeds, but that should **not** appear as user-editable
-Records inputs (`set_*`) or published outputs (`compute_*`). Without a constant
-binding, those leaves stay as bare `xl_cell(ctx, 'Sheet!A1')` in generated
-formula bodies even when the domain model already names them.
+scenario knobs, or lookup seeds, but that should **not** appear as required
+keyword-only `compute_*` arguments or published outputs. Without a constant
+binding, those leaves stay as unnamed cell reads in generated formula bodies even
+when the domain model already names them.
 
 Put constant series in `constants.bindings.yaml` (or any mergeable
 `*.bindings.yaml` shard). Same YAML shape as public bindings; declare
@@ -40,15 +40,17 @@ series:
 |---|---|
 | Leaf-only | `data_range` must intersect graph **leaves** (inverse of `internal`, which requires formula nodes). Non-leaf overlap → `non_leaf_constant_overlap`; no leaf overlap → `no_leaf_constant_targets`. |
 | Exclusive | Mutually exclusive with `input`, `output`, and `internal` on the same series. |
-| Codegen | Emits `read_*` (optional `constant.reader.name`, else `read_<series_id>`), leaf index, `list_readers`, and Phase 2 body rewrite. **No** `set_*` / `compute_*`. |
-| Mutability | Values still live in export `CONSTANTS` / `ctx.inputs` like other constant leaves; there is no public Records write surface. |
+| Codegen | Names the leaf for inverted-tree export: values land in `data.py` and as defaulted `compute_*` kwargs. Optional `constant.reader.name` still exists in the schema; inverted-tree does not emit public readers or extra `compute_*` for constants. |
+| Mutability | Values still live in `data.py` and as defaulted `compute_*` kwargs; there is no public write surface. |
 | Validate | `validate_series_bindings(...)`, then `derive_constant_series(...)`. Include `constant` when running `scripts.binding_resolution_audit`. |
 
 **Leaf classification vs constant bindings.** `CONSTRAINTS` with a single-value
-`Literal[...]` classifies a leaf as `constant` for codegen `CONSTANTS` vs
-`DEFAULT_INPUTS`. That is necessary but not sufficient for a semantic reader:
-add a `constant: {}` series when formulas should call `read_*` instead of
-`xl_cell`. Mutable leaves still need `input` / `set_*` in `inputs.bindings.yaml`.
+`Literal[...]` classifies a leaf as `constant` for codegen defaults vs required
+inputs. That is necessary but not sufficient for a named constant series:
+add a `constant: {}` series when those leaves should appear as `data.py`
+defaults / defaulted `compute_*` kwargs rather than unnamed cell reads.
+Mutable leaves still need an `input` binding in `inputs.bindings.yaml` so they
+become required keyword-only `compute_*` arguments.
 
 **Structural blanks are not constants.** Padding inside `INDEX`/`MATCH` arrays,
 far-right `NPV`/`SUM` overflow, unused ladder copies, and separator rows belong
@@ -128,7 +130,12 @@ but fail at output/input codegen:
    | Choice | When | Effect |
    |---|---|---|
    | **Share** the same name across shards | Shards are complementary slices of one logical public series (e.g. Gap columns for 2050 / 2075 that should become one `compute_gap_milestones`) | Export merges shards into one public function |
-   | **Uniquify** per shard | Each shard is a distinct scenario / engine path (e.g. Paris vs Moderate expenditure rows on separate sheets) | Each path keeps its own `compute_*` / `set_*` |
+   | **Uniquify** per shard | Each shard is a distinct scenario / engine path (e.g. Paris vs Moderate expenditure rows on separate sheets) | Each path keeps its own `output.compute.name` / input series id |
+
+   YAML still uses `input.setter.name` as the schema field that uniquifies an
+   input series. The generated inverted-tree API has no setters; those names
+   identify the series for codegen, and callers pass keyword-only `compute_*`
+   arguments.
 
    Sharing a name across distinct engine paths is the failure mode: export
    merges the colliding definitions, so most scenario paths become
@@ -152,7 +159,7 @@ for per-scenario engine shards.
 | Field | Role |
 |---|---|
 | `concept` | SDMX-style meaning category (e.g. `TIME_PERIOD`) |
-| `id` | Dimension identity used in records, cell keys, and refactor parameters |
+| `id` | Dimension identity used in records, cell keys, and generated helper parameter names |
 
 Give every dimension an explicit `id`. When `id` is omitted, the effective id falls back to `concept`. If two dimensions share a concept, they must have distinct ids:
 
