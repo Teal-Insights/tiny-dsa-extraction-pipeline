@@ -159,7 +159,7 @@ def test_run_post_refactor_differential_warns_on_failure_without_raising(
     assert "exit code 1" in caplog.text
 
 
-def test_run_post_refactor_differential_warns_on_exception_without_raising(
+def test_run_post_refactor_differential_raises_on_harness_exception(
     tmp_path: Path, monkeypatch, caplog
 ) -> None:
     monkeypatch.delenv("CI", raising=False)
@@ -171,13 +171,13 @@ def test_run_post_refactor_differential_warns_on_exception_without_raising(
         patch(f"{_HARNESS}.resolve_config", return_value=MagicMock()),
         patch(
             f"{_HARNESS}.run_differential_test",
-            side_effect=RuntimeError("excel unavailable"),
+            side_effect=RuntimeError("no differential scenarios configured"),
         ),
+        pytest.raises(RuntimeError, match="no differential scenarios configured"),
     ):
-        exit_code = run_post_refactor_differential(config=config)
+        run_post_refactor_differential(config=config)
 
-    assert exit_code is None
-    assert "excel unavailable" in caplog.text
+    assert "no differential scenarios configured" in caplog.text
 
 
 def test_differential_cache_key_changes_when_package_changes(tmp_path: Path) -> None:
@@ -406,10 +406,10 @@ def test_run_post_refactor_differential_invalidates_cache_on_exception(
             f"{_HARNESS}.run_differential_test",
             side_effect=RuntimeError("excel unavailable"),
         ),
+        pytest.raises(RuntimeError, match="excel unavailable"),
     ):
-        exit_code = run_post_refactor_differential(config=config, no_cache=True)
+        run_post_refactor_differential(config=config, no_cache=True)
 
-    assert exit_code is None
     assert not can_reuse_cached_differential_reports(
         report_dir=report_dir, cache_key=cache_key
     )

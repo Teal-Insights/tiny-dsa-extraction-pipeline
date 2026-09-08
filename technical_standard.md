@@ -71,7 +71,7 @@ Configure checklist (workbook-neutral):
 | Criterion | Pass condition |
 |---|---|
 | **Leaf classification attached** | Before codegen, every graph leaf is classified `input` or `constant` and attached to the graph. |
-| **Inverted-tree public API** | Codegen emits keyword-only `compute_*` from series bindings (`paradigm="inverted_tree"`). Scalars stay scalars; series are 1-D sequences in canonical key order; returns are `tuple[float, ...]`. There is no `make_context()`, no `set_*`, and no records-shaped setters. |
+| **Inverted-tree public API** | Codegen emits keyword-only `compute_*` from series bindings. Scalars stay scalars; series are 1-D sequences in canonical key order; returns are `tuple[float, ...]`. There is no `make_context()`, no `set_*`, and no records-shaped setters. |
 | **Inputs validated at runtime** | Keyword arguments match the binding contract; domain/units prose belongs in docstrings, not implied runtime validation beyond what codegen emits. |
 | **Domain-language identifiers** | Public `compute_*` names use macrofinance vocabulary (`compute_output_baseline`), not workbook coordinates (`U24`, `OFFSET_RANGE_3`). Internals helpers are named from `series_id`. |
 | **Pandas/Polars compatible** | Callers can tabulate `compute_*` tuples with pandas or polars. Native DataFrame in/out is a known gap. |
@@ -90,7 +90,7 @@ Configure checklist (workbook-neutral):
 | Criterion | Pass condition |
 |---|---|
 | **Graph-vs-Excel** | Authored scenario matrix in `tests/differential/` passes `FormulaEvaluator` vs Microsoft Excel (`differential_test_graph.py`) before treating extraction as faithful. |
-| **Library-vs-graph** | Keyword-only `compute_*` matches `FormulaEvaluator` on the same scenarios (`differential_test_exported_library.py`). Pipeline `validate` is a default-path FormulaEvaluator canary configured in `workbook_config.INVERTED_TREE_VALIDATE_CASES`; empty addresses fail closed. |
+| **Library-vs-graph** | Keyword-only `compute_*` matches `FormulaEvaluator` on the authored scenario matrix (`differential_test_exported_library.py`). Pipeline `validate` runs that sweep; empty `build_scenarios()` / `output_cell_labels()` fail closed. |
 | **No library-vs-Excel COM path** | Inverted-tree export has no `set_*` to drive Excel from the public API. Library ≈ Excel follows by transitivity on the same scenarios. |
 
 #### 6. Document
@@ -146,7 +146,7 @@ Ordered to match the onboarding checklist in [README.md](README.md#clone-and-con
 [ ] Export: dist package builds; keyword-only `compute_*` scenario runs
 [ ] Export: validation bundle exported; library-vs-graph FormulaEvaluator parity passes
 [ ] Annotate: Google-style docstrings present on compute_* / internals helpers
-[ ] Validate: default-path FormulaEvaluator canary configured and passing; authored exported-library sweep passes
+[ ] Validate: authored exported-library FormulaEvaluator sweep passes
 [ ] Document: user_guide uses domain language; runnable cells call compute_* not make_context / set_*
 
 Generated graph artifacts under `artifacts/dependency-graph/` are gitignored; workbook audit reports may be committed optionally. See [artifacts/README.md](artifacts/README.md).

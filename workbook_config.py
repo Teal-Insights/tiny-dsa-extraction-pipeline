@@ -15,7 +15,6 @@ from src.graph_dependency_audit import GraphAuditCase
 from src.internal_binding_coverage import InternalBindingValidationMode
 from src.pipeline_config import (
     DistProjectMetadata,
-    InvertedTreeValidateCase,
     RunnableCellRule,
 )
 
@@ -121,11 +120,6 @@ RUNNABLE_CELL_RULES: tuple[RunnableCellRule, ...] = (
         message="inverted-tree runnable cells must not call set_* setters",
     ),
 )
-
-# Default-path FormulaEvaluator canary for pipeline validate. Empty fails closed
-# (same pattern as empty graph differential hooks). Fill compute_* names, output
-# addresses, and data.py default kwargs before claiming FormulaEvaluator parity.
-INVERTED_TREE_VALIDATE_CASES: tuple[InvertedTreeValidateCase, ...] = ()
 
 # Optional hooks for ``uv run python -m src.workbook_audit`` (pre-extraction audit).
 AUDIT_TITLE = "Tiny DSA Workbook Audit"

@@ -15,11 +15,11 @@ framework and does not provide a debt-distress classification.
 
 ## Start here
 
-- [Install and run a first projection](user-guide/getting-started.qmd)
-- [Review the input and output contract](user-guide/functional-overview.qmd)
-- [Understand the model and shocks](user-guide/model.qmd)
-- [Use the API in an analysis workflow](user-guide/api-workflow.qmd)
-- [Compare Python results with the Excel workbook](user-guide/excel-parity-validation.qmd)
+- [Install and run a first projection](getting-started.qmd)
+- [Review the input and output contract](functional-overview.qmd)
+- [Understand the model and shocks](model.qmd)
+- [Use the API in an analysis workflow](api-workflow.qmd)
+- [Compare Python results with the Excel workbook](excel-parity-validation.qmd)
 
 ## The model in one equation
 
@@ -58,24 +58,7 @@ IMF, the World Bank, or any other institution. Do not use its results for
 policy decisions without a substantially richer model and independent review.
 :::
 
-## Start here
-
-1. [Install the package and learn the API](user-guide/functional-overview.qmd).
-2. [Run a complete Borvelia example](user-guide/illustrative-example.qmd).
-3. [Review the debt identity and modeling limits](user-guide/methodology.qmd).
-4. [Read the Excel parity evidence](user-guide/excel-parity-validation.qmd).
-
 The public import path is `tiny_dsa.api`. The three public functions return
 the baseline path, the shocked path, or their difference in percentage points:
 `compute_output_baseline`, `compute_output_shocked`, and
 `compute_output_delta`.
-
-## Install
-
-Run this command in a shell:
-
-`uv add "tiny-dsa @ git+https://github.com/Teal-Insights/py-tiny-dsa"`
-
-The tool uses real GDP growth, real interest rates, and primary balances
-expressed as percentages. It omits inflation, exchange-rate effects,
-stock-flow adjustments, endogenous fiscal responses, and debt thresholds.

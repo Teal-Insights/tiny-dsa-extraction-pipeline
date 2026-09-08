@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+import inspect
+
 from excel_grapher.exporter import CodeGenerator
+
+
+def test_generate_modules_is_keyword_only_inverted_tree() -> None:
+    params = inspect.signature(CodeGenerator.generate_modules).parameters
+    assert "paradigm" not in params
+    assert "targets" not in params
+    assert list(params) == [
+        "self",
+        "series_bindings",
+        "bindings_workbook",
+        "blank_ranges",
+    ]
+    assert params["series_bindings"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_synthetic_inverted_tree_export_omits_ctx_helpers(
@@ -10,10 +25,8 @@ def test_synthetic_inverted_tree_export_omits_ctx_helpers(
 ) -> None:
     pipeline = synthetic_configured_pipeline
     modules = CodeGenerator(pipeline.graph).generate_modules(
-        list(pipeline.config.targets),
         series_bindings=pipeline.series_bindings,
         bindings_workbook=pipeline.config.workbook_path,
-        paradigm="inverted_tree",
     )
     assert "api.py" in modules
     assert "internals.py" in modules

@@ -730,7 +730,6 @@ def test_rehydrated_projection_supports_codegen(
         no_cache=True,
     ).projection
     modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
-        list(graph_result.graph.target_keys()),
         series_bindings=synthetic_series_bindings,
         bindings_workbook=synthetic_config.workbook_path,
     )

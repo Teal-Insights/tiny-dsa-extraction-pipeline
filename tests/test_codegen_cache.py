@@ -286,7 +286,9 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
         run_export_stage(config)
 
     assert generator.generate_modules.call_count == 1
-    assert generator.generate_modules.call_args.kwargs["paradigm"] == "inverted_tree"
+    call = generator.generate_modules.call_args
+    assert call.args == ()
+    assert "paradigm" not in call.kwargs
     assert (config.package_root / "api.py").read_text(encoding="utf-8") == sample[
         "api.py"
     ]

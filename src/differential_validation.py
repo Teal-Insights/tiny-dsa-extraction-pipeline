@@ -139,14 +139,14 @@ def run_post_refactor_differential(
     config: PipelineConfig,
     no_cache: bool = False,
 ) -> int | None:
-    """Run the exported-library differential against the post-refactor package.
+    """Run the authored library-vs-graph FormulaEvaluator sweep.
 
     Writes reports under ``config.differential_report_dir_rel`` in the extraction
     repo. Skips under CI so committed caches can be reused. Locally, skips the
     live harness when the package/workbook/harness fingerprint matches a prior
-    successful run (unless ``no_cache``). Non-zero exits and harness exceptions
-    are logged as warnings; they do not abort the pipeline. Harness exceptions
-    invalidate cache meta so the next run retries instead of reusing a stale hit.
+    successful run (unless ``no_cache``). Non-zero comparison exits return 1
+    without raising. Empty scenario hooks and other harness exceptions
+    invalidate cache meta and then propagate (fail closed).
     """
     if running_in_ci():
         logger.warning(
@@ -202,10 +202,9 @@ def run_post_refactor_differential(
     except Exception:
         invalidate_differential_cache_meta(report_dir=report_dir)
         logger.exception(
-            "Exported-library differential failed with an unhandled exception; "
-            "continuing so any existing reports can still be exported"
+            "Exported-library differential failed with an unhandled exception"
         )
-        return None
+        raise
 
     if cache_key is not None and has_parity_reports(report_dir):
         save_differential_cache_meta(

@@ -12,9 +12,14 @@ from collections.abc import Sequence
 
 from . import data
 from . import internals
-from .runtime import require_length
+from .runtime import publish, require_length
 
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+    constants=('country_profile_names',),
+)
 def compute_output_baseline(
     *,
     country_name: str,
@@ -46,9 +51,6 @@ def compute_output_baseline(
     baseline_path_internal = internals.baseline_path_internal(engine_initial_debt_baseline, growth_baseline, interest_baseline, primary_balance_baseline)
     output_baseline = internals.output_baseline(baseline_path_internal)
     return tuple(output_baseline)
-setattr(compute_output_baseline, '__constants__', ('country_profile_names',))
-setattr(compute_output_baseline, '__key__', ('TIME_PERIOD',))
-setattr(compute_output_baseline, '__domain__', data.TIME_PERIOD_DOMAIN)
 
 def _run_0(
     *,
@@ -82,6 +84,11 @@ def _run_0(
     output_delta = internals.output_delta(output_baseline, output_shocked)
     return output_shocked, output_delta
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+    constants=('country_profile_names', 'engine_year_labels'),
+)
 def compute_output_shocked(
     *,
     country_name: str,
@@ -112,10 +119,12 @@ def compute_output_shocked(
     """
     output_shocked, _ = _run_0(country_name=country_name, country_initial_debt=country_initial_debt, growth_baseline=growth_baseline, interest_baseline=interest_baseline, primary_balance_baseline=primary_balance_baseline, shock_year=shock_year, shock_type=shock_type, shock_magnitudes=shock_magnitudes)
     return tuple(output_shocked)
-setattr(compute_output_shocked, '__constants__', ('country_profile_names', 'engine_year_labels'))
-setattr(compute_output_shocked, '__key__', ('TIME_PERIOD',))
-setattr(compute_output_shocked, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+    constants=('country_profile_names', 'engine_year_labels'),
+)
 def compute_output_delta(
     *,
     country_name: str,
@@ -146,9 +155,6 @@ def compute_output_delta(
     """
     _, output_delta = _run_0(country_name=country_name, country_initial_debt=country_initial_debt, growth_baseline=growth_baseline, interest_baseline=interest_baseline, primary_balance_baseline=primary_balance_baseline, shock_year=shock_year, shock_type=shock_type, shock_magnitudes=shock_magnitudes)
     return tuple(output_delta)
-setattr(compute_output_delta, '__constants__', ('country_profile_names', 'engine_year_labels'))
-setattr(compute_output_delta, '__key__', ('TIME_PERIOD',))
-setattr(compute_output_delta, '__domain__', data.TIME_PERIOD_DOMAIN)
 
 __all__ = [
     'compute_output_baseline',

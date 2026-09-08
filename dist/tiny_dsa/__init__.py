@@ -9,6 +9,7 @@ from .api import compute_output_baseline, compute_output_shocked, compute_output
 
 __all__ = [
     'as_records',
+    'data',
     'compute_output_baseline',
     'compute_output_shocked',
     'compute_output_delta',

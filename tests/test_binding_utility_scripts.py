@@ -786,16 +786,16 @@ def test_binding_guidance_documents_constant_direction() -> None:
         )
 
 
-def test_excel_grapher_floor_is_12_7_1() -> None:
-    """Lockfile and pyproject must agree on excel-grapher>=12.7.1."""
+def test_excel_grapher_floor_is_14_4_5() -> None:
+    """Lockfile and pyproject must agree on excel-grapher>=14.4.5."""
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     lockfile = (root / "uv.lock").read_text(encoding="utf-8")
     installed = tuple(int(part) for part in version("excel-grapher").split(".")[:3])
 
-    assert "excel-grapher>=12.7.1" in pyproject
-    assert '{ name = "excel-grapher", specifier = ">=12.7.1" }' in lockfile
-    assert installed >= (12, 7, 1)
+    assert "excel-grapher>=14.4.5" in pyproject
+    assert '{ name = "excel-grapher", specifier = ">=14.4.5" }' in lockfile
+    assert installed >= (14, 4, 5)
 
 
 def test_binding_resolution_audit_uses_public_apply_series_excludes() -> None:

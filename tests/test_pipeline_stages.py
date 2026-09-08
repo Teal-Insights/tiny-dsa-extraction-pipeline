@@ -140,8 +140,12 @@ def test_run_export_stage_forwards_blank_ranges_to_generate_modules(
         run_export_stage(config, no_cache=True)
 
     generator.generate_modules.assert_called()
-    assert generator.generate_modules.call_args.kwargs["blank_ranges"] == blank_ranges
-    assert generator.generate_modules.call_args.kwargs["paradigm"] == "inverted_tree"
+    call = generator.generate_modules.call_args
+    assert call.args == ()
+    assert "paradigm" not in call.kwargs
+    assert call.kwargs["blank_ranges"] == blank_ranges
+    assert call.kwargs["bindings_workbook"] == config.workbook_path
+    assert call.kwargs["series_bindings"] is not None
 
 
 def test_run_export_stage_builds_code_generator_from_graph(
@@ -175,7 +179,14 @@ def test_run_export_stage_builds_code_generator_from_graph(
         run_export_stage(config, no_cache=True)
 
     generator_cls.assert_called_once_with(graph)
-    assert generator.generate_modules.call_args.kwargs["paradigm"] == "inverted_tree"
+    call = generator.generate_modules.call_args
+    assert call.args == ()
+    assert "paradigm" not in call.kwargs
+    assert set(call.kwargs) == {
+        "series_bindings",
+        "bindings_workbook",
+        "blank_ranges",
+    }
 
 
 def test_pipeline_stages_order() -> None:
@@ -614,25 +625,49 @@ def test_run_validate_stage_records_spans_and_profiles(tmp_path: Path) -> None:
 
     with (
         patch(
-            "src.inverted_tree_validate.write_formula_evaluator_parity_reports",
+            "src.differential_validation.run_post_refactor_differential",
             return_value=0,
-        ) as write_reports,
+        ) as run_differential,
+        patch(
+            "src.export_validation_assets.export_reference_reports"
+        ) as export_reports,
+        patch(
+            "src.differential_validation.has_parity_reports",
+            return_value=True,
+        ),
         patch("src.extraction_pipeline.profile_if_enabled") as profile,
     ):
-        exit_code = run_validate_stage(state, timings=timings)
+        exit_code = run_validate_stage(state, timings=timings, no_cache=True)
 
     assert exit_code == 0
     assert profile.call_args.kwargs["basename"] == "validate"
     record = timings.stages[0]
     assert record.name == "validate"
-    assert set(record.spans) == {"formula_evaluator_parity"}
-    canary_dir = tmp_path / "dist" / "tests" / "results" / "reference"
-    write_reports.assert_called_once()
-    assert write_reports.call_args.kwargs["report_dir"] == canary_dir
-    assert write_reports.call_args.args[0].differential_report_dir_rel == Path(
-        "data/differential/exported_library"
-    )
-    assert canary_dir != tmp_path / "data" / "differential" / "exported_library"
+    assert set(record.spans) == {"exported_library_differential"}
+    run_differential.assert_called_once_with(config=state.config, no_cache=True)
+    export_reports.assert_called_once_with(config=state.config)
+
+
+def test_run_validate_stage_does_not_require_canary_cases(tmp_path: Path) -> None:
+    config = _sample_config(tmp_path)
+    assert not hasattr(config, "inverted_tree_validate_cases")
+    state = AnnotateStageState(config=config, codegen_cache_key="c" * 64)
+
+    with (
+        patch(
+            "src.differential_validation.run_post_refactor_differential",
+            return_value=0,
+        ) as run_differential,
+        patch("src.export_validation_assets.export_reference_reports"),
+        patch(
+            "src.differential_validation.has_parity_reports",
+            return_value=True,
+        ),
+    ):
+        exit_code = run_validate_stage(state)
+
+    assert exit_code == 0
+    run_differential.assert_called_once()
 
 
 def test_run_pipeline_writes_stage_timings_artifact(

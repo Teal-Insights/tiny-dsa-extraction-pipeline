@@ -65,21 +65,6 @@ class RunnableCellRule:
 
 
 @dataclass(frozen=True)
-class InvertedTreeValidateCase:
-    """One default-path FormulaEvaluator comparison for pipeline ``validate``.
-
-    ``compute_name`` is the exported keyword-only helper (package or ``api``).
-    ``addresses`` are sheet-qualified cells the helper's return tuple must
-    match, in order. ``data_kwargs`` maps each compute argument to a generated
-    ``data.py`` attribute (for example ``COUNTRY_NAME_DEFAULT``).
-    """
-
-    compute_name: str
-    addresses: tuple[str, ...]
-    data_kwargs: tuple[tuple[str, str], ...] = ()
-
-
-@dataclass(frozen=True)
 class PipelineConfig:
     repo_root: Path
     workbook_path: Path
@@ -101,7 +86,6 @@ class PipelineConfig:
     internal_binding_validation_mode: InternalBindingValidationMode = "warn"
     internal_binding_exempt_cells: frozenset[str] = frozenset()
     runnable_cell_rules: tuple[RunnableCellRule, ...] = ()
-    inverted_tree_validate_cases: tuple[InvertedTreeValidateCase, ...] = ()
 
     @property
     def package_root(self) -> Path:
@@ -175,49 +159,6 @@ def _load_internal_binding_exempt_cells(value: object) -> frozenset[str]:
         "INTERNAL_BINDING_EXEMPT_CELLS must be a frozenset, set, list, or tuple "
         f"of sheet-qualified addresses; got {type(value).__name__}"
     )
-
-
-def _load_inverted_tree_validate_cases(
-    value: object,
-) -> tuple[InvertedTreeValidateCase, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, (tuple, list)):
-        raise TypeError(
-            "INVERTED_TREE_VALIDATE_CASES must be a tuple or list of "
-            "InvertedTreeValidateCase instances"
-        )
-    cases: list[InvertedTreeValidateCase] = []
-    for index, entry in enumerate(value):
-        if not isinstance(entry, InvertedTreeValidateCase):
-            raise TypeError(
-                "INVERTED_TREE_VALIDATE_CASES entries must be "
-                "InvertedTreeValidateCase instances; "
-                f"got {entry!r} at index {index}"
-            )
-        if not entry.compute_name:
-            raise ValueError(
-                f"INVERTED_TREE_VALIDATE_CASES[{index}].compute_name must be "
-                "a non-empty string"
-            )
-        if not entry.addresses or any(not address for address in entry.addresses):
-            raise ValueError(
-                f"INVERTED_TREE_VALIDATE_CASES[{index}].addresses must not "
-                "be empty or contain empty strings"
-            )
-        for kw_index, pair in enumerate(entry.data_kwargs):
-            if (
-                not isinstance(pair, tuple)
-                or len(pair) != 2
-                or not pair[0]
-                or not pair[1]
-            ):
-                raise ValueError(
-                    f"INVERTED_TREE_VALIDATE_CASES[{index}].data_kwargs[{kw_index}] "
-                    "must be a (compute_arg, data_attr) pair of non-empty strings"
-                )
-        cases.append(entry)
-    return tuple(cases)
 
 
 def _load_runnable_cell_rules(value: object) -> tuple[RunnableCellRule, ...]:
@@ -325,9 +266,6 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     runnable_cell_rules = _load_runnable_cell_rules(
         getattr(user_config, "RUNNABLE_CELL_RULES", ())
     )
-    inverted_tree_validate_cases = _load_inverted_tree_validate_cases(
-        getattr(user_config, "INVERTED_TREE_VALIDATE_CASES", ())
-    )
 
     if not isinstance(dist_metadata, DistProjectMetadata):
         raise TypeError("workbook_config.DIST_METADATA must be a DistProjectMetadata")
@@ -353,7 +291,6 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         internal_binding_validation_mode=internal_binding_validation_mode,
         internal_binding_exempt_cells=internal_binding_exempt_cells,
         runnable_cell_rules=runnable_cell_rules,
-        inverted_tree_validate_cases=inverted_tree_validate_cases,
     )
 
 

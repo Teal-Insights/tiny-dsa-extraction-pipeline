@@ -6,22 +6,22 @@ Tiny DSA includes a FormulaEvaluator parity check for the generated `tiny_dsa` p
 
 ## Current reference result
 
-The current reference run is **PASS**: **10 / 10**
-cell-level comparisons passed at `atol = 1e-09`.
+The current reference run is **PASS**: **1,770 / 1,770**
+cell-level comparisons passed at `atol = 1e-06, rtol = 1e-12`.
 
 - Result: **PASS**
-- Generated: `2026-09-04T21:09:38+00:00`
-- Passed: **10**
+- Generated: `2026-09-08T03:06:00+00:00`
+- Passed: **1,770**
 - Failed: **0**
 - Pass rate: **100.00%**
 - Acceptance bar: **100.00%**
 - Evidence: **formula_evaluator**
 
-The current run covers **10** cell-level comparisons against the FormulaEvaluator.
+The current run covers **1,770** cell-level comparisons against the FormulaEvaluator.
 
 ## What Was Tested
 
-The validation compares `tiny_dsa` `compute_*` results against excel-grapher's FormulaEvaluator on the extraction graph, using the workbook's default scenario. It does not drive Microsoft Excel or public `set_*` setters.
+The validation compares `tiny_dsa` `compute_*` results against excel-grapher's FormulaEvaluator on the extraction graph across the authored scenario sweep. It does not drive Microsoft Excel or public `set_*` setters.
 
 ## Inspect Or Re-run
 

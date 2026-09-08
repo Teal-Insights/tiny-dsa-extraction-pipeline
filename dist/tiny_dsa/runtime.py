@@ -14,20 +14,23 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
-from typing import Literal, NoReturn, Protocol, TypeGuard, TypeVar, cast, overload
+from typing import Any, Literal, NoReturn, Protocol, TypeGuard, TypeVar, cast, overload
 
 from excel_grapher.core import operators as _core_ops
-from excel_grapher.core.lookup_funcs import match_cells
-from excel_grapher.core.math_funcs import exp_number, sum_cells
+from excel_grapher.core.logic_funcs import logical_and, logical_if, logical_not, logical_or
+from excel_grapher.core.lookup_funcs import index_cells, match_cells, vlookup_cells
+from excel_grapher.core.math_funcs import average_cells, exp_number, max_cells, sum_cells
 from excel_grapher.core.sumproduct import sumproduct_cells
 from excel_grapher.core.types import CellValue, FormulaValue
 from excel_grapher.core.types import XlError as CoreXlError
+from excel_grapher.runtime.info import xl_isnumber as _info_isnumber
 from excel_grapher.series_bindings.input_coerce import (
     apply_input_value_map as apply_input_value_map,
 )
 from excel_grapher.series_bindings.input_coerce import require_input_domain as require_input_domain
 
 T = TypeVar("T")
+F = TypeVar("F", bound=Callable[..., object])
 
 
 class KeyedCompute(Protocol):
@@ -35,6 +38,32 @@ class KeyedCompute(Protocol):
 
     __key__: tuple[str, ...]
     __domain__: tuple[object, ...]
+    __holes__: tuple[int, ...]
+
+
+def publish(
+    *,
+    key: tuple[str, ...],
+    domain: tuple[object, ...],
+    holes: tuple[int, ...] = (),
+    constants: tuple[str, ...] | None = None,
+) -> Callable[[F], F]:
+    """Attach series metadata to a generated helper and return it unchanged.
+
+    Sets `__key__`, `__domain__`, and `__holes__` on `fn`. When `constants` is
+    given, also sets `__constants__`. Does not wrap `fn`.
+    """
+
+    def decorator(fn: F) -> F:
+        target = cast(Any, fn)
+        target.__key__ = key
+        target.__domain__ = domain
+        target.__holes__ = holes
+        if constants is not None:
+            target.__constants__ = constants
+        return fn
+
+    return decorator
 
 
 XL_ERROR_CODES = frozenset(
@@ -73,16 +102,19 @@ def as_measure(value: object, dtype: Literal["str"]) -> str: ...
 def as_measure(value: object, dtype: Literal["bool"]) -> bool | str: ...
 @overload
 def as_measure(value: object, dtype: Literal["datetime"]) -> datetime | str: ...
-def as_measure(value: object, dtype: str = "float") -> int | float | str | bool | datetime:
+def as_measure(value: object, dtype: str = "float") -> int | float | str | bool | datetime | None:
     """Coerce a helper result to a measure: number or cached text.
 
     Operators still raise `XlError`. Series-member boundaries catch that and
     store `err.code` here so a `#REF!` cell does not abort the rest of a series.
     Non-numeric cached strings (`n/a`, `..`) pass through as measures.
+    Blank cells (`None`) stay `None`.
 
     Overloads narrow the return by `dtype`: the default `float` path is
     `float | str` so generated `list[float | str]` accumulators type-check.
     """
+    if value is None:
+        return None
     if isinstance(value, str):
         return value
     if isinstance(value, XlError):
@@ -125,6 +157,16 @@ def _raise_stored_errors_in(value: object) -> None:
         return
     for item in value:
         _raise_stored_errors_in(item)
+
+
+def _as_core_cells(value: object) -> CellValue:
+    """Convert stored error-code measures to core sentinels for shared helpers."""
+    if isinstance(value, str):
+        converted = CoreXlError.from_text(value)
+        return converted if converted is not None else value
+    if isinstance(value, Sequence):
+        return cast(CellValue, [_as_core_cells(item) for item in value])
+    return cast(CellValue, value)
 
 
 def _adapt_core(value: object) -> object:
@@ -265,6 +307,40 @@ def xl_sum(*args: object) -> object:
     return _adapt_core(sum_cells(*cast(tuple[CellValue, ...], args)))
 
 
+def xl_average(*args: object) -> object:
+    """Excel `AVERAGE` via `core.math_funcs.average_cells`."""
+    for arg in args:
+        _raise_stored_errors_in(arg)
+    return _adapt_core(average_cells(*cast(tuple[CellValue, ...], args)))
+
+
+def xl_max(*args: object) -> object:
+    """Excel `MAX` via `core.math_funcs.max_cells`."""
+    for arg in args:
+        _raise_stored_errors_in(arg)
+    return _adapt_core(max_cells(*cast(tuple[CellValue, ...], args)))
+
+
+def xl_if(cond: object, then_value: object, else_value: object = False) -> object:
+    """Excel `IF` via `core.logic_funcs.logical_if` (scalar or element-wise)."""
+    return _adapt_core(logical_if(cond, then_value, else_value))
+
+
+def xl_and(*args: object) -> object:
+    """Excel `AND` via `core.logic_funcs.logical_and`."""
+    return _adapt_core(logical_and(*(_as_core_cells(arg) for arg in args)))
+
+
+def xl_or(*args: object) -> object:
+    """Excel `OR` via `core.logic_funcs.logical_or`."""
+    return _adapt_core(logical_or(*(_as_core_cells(arg) for arg in args)))
+
+
+def xl_not(arg: object) -> object:
+    """Excel `NOT` via `core.logic_funcs.logical_not`."""
+    return _adapt_core(logical_not(_as_core_cells(arg)))
+
+
 def xl_sumproduct(*args: object) -> object:
     """Excel `SUMPRODUCT` via `core.sumproduct.sumproduct_cells`."""
     for arg in args:
@@ -280,6 +356,11 @@ def xl_choose(index: object, *choices: float) -> float:
     return choices[position - 1]
 
 
+def xl_index(array: object, row_num: object = None, col_num: object = None) -> object:
+    """Excel `INDEX` via `core.lookup_funcs.index_cells`."""
+    return _adapt_core(index_cells(array, row_num, col_num))
+
+
 def xl_match(lookup: object, lookup_array: Sequence[object], match_type: int = 0) -> int:
     """Excel `MATCH` via `core.lookup_funcs.match_cells`."""
     _raise_stored_error(lookup)
@@ -288,6 +369,26 @@ def xl_match(lookup: object, lookup_array: Sequence[object], match_type: int = 0
     if not isinstance(adapted, int | float):
         raise TypeError(f"MATCH returned {type(adapted).__name__}")
     return int(adapted)
+
+
+def xl_vlookup(
+    lookup: object,
+    table_array: object,
+    col_index_num: object,
+    range_lookup: object = True,
+) -> object:
+    """Excel `VLOOKUP` via `core.lookup_funcs.vlookup_cells`."""
+    _raise_stored_error(lookup)
+    _raise_stored_error(col_index_num)
+    _raise_stored_error(range_lookup)
+    return _adapt_core(vlookup_cells(lookup, table_array, col_index_num, range_lookup))
+
+
+def xl_isnumber(value: object) -> bool:
+    """Excel `ISNUMBER`: True only for non-bool numbers; False for blanks and errors."""
+    if isinstance(value, str) and is_error(value):
+        return False
+    return _info_isnumber(cast(CellValue, value))
 
 
 def xl_at(values: Sequence[T], index: object) -> T:

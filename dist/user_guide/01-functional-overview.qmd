@@ -10,7 +10,9 @@ The public API is exposed through `tiny_dsa.api`. All compute functions are keyw
 
 - Scalar arguments such as `country_name`, `shock_year`, and `shock_type` are passed as bare values (for example `country_name='Borvelia'`), never as one-element lists.
 - Series arguments are 1-D sequences of measure values in the series' canonical key order. Pass exactly one value per key.
-- Optional arguments that already have defaults in the generated `data` module may be omitted.
+- Constants such as the country profile names and year labels are held in the
+  generated `data` module; the public compute functions still require their
+  scenario inputs explicitly.
 - Each `compute_*` function returns a tuple of floats, one value per horizon year, not records.
 
 The stable output functions are:

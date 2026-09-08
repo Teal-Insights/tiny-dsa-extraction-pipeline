@@ -6,95 +6,107 @@ from collections.abc import Sequence
 
 from . import data
 
-from .runtime import XlError, as_measure, live_measure, require_aligned, xl_add, xl_at, xl_choose, xl_div, xl_ge, xl_match, xl_mul, xl_sub
+from .runtime import XlError, as_measure, live_measure, publish, require_aligned, require_length, xl_add, xl_at, xl_choose, xl_div, xl_ge, xl_match, xl_mul, xl_sub
 
 
+@publish(
+    key=(),
+    domain=((),),
+)
 def initial_debt_resolved(country_profile_names: Sequence[str], country_name: str, country_initial_debt: Sequence[float | str]) -> float | str:
-    """Resolve the initial debt-to-GDP ratio from the country profile via an INDEX/MATCH lookup.
+    """Resolve the initial debt-to-GDP ratio for a selected country from the country profile table.
 
-    Provides the initial debt-to-GDP ratio for a selected country by matching its name against the country profile lookup table.
+    Look up the initial debt-to-GDP ratio to use as the first-year baseline input.
 
     Args:
-        country_profile_names: Sequence of country names in the country profile lookup table, used as the lookup vector for the match.
-        country_name: Name of the selected country, to be matched exactly against country_profile_names.
-        country_initial_debt: Sequence of initial debt-to-GDP values aligned positionally with country_profile_names; may include numeric values or error codes.
+        country_profile_names: Sequence of country names in the profile lookup table, used as the INDEX/MATCH search vector.
+        country_name: Name of the country to resolve, matched against the profile names.
+        country_initial_debt: Sequence of initial debt-to-GDP ratios aligned with each profile country, from which the matched value is returned.
 
     Returns:
-        The resolved initial debt-to-GDP ratio as a number, or an Excel error code as a string if the lookup fails.
+        The matched initial debt-to-GDP ratio as a numeric measure. If the country is not found or the lookup fails, an Excel error code string is returned.
     """
     try:
         return as_measure(xl_at(country_initial_debt, (xl_match(country_name, country_profile_names, 0)) - 1))
     except XlError as err:
         return err.code
-setattr(initial_debt_resolved, '__key__', ())
-setattr(initial_debt_resolved, '__domain__', ((),))
 
+@publish(
+    key=(),
+    domain=((),),
+)
 def engine_initial_debt_baseline(initial_debt_resolved: float | str) -> float | str:
-    """Return the year-0 debt stock anchor for the Engine-sheet baseline recursion as a measure, preserving Excel error codes.
+    """Return the Year-0 debt stock anchor for the baseline recursion on the Engine sheet.
 
-    Supply the initial debt-to-GDP ratio from which the baseline debt path is recursed on the Engine sheet.
+    Normalizes the resolved initial debt-to-GDP ratio so the Engine baseline path starts from a valid Year-0 anchor, while preserving spreadsheet errors for downstream propagation.
 
     Args:
-        initial_debt_resolved: Resolved year-0 initial debt-to-GDP value, as a numeric measure or an Excel error code.
+        initial_debt_resolved: Resolved general-government debt-to-GDP ratio at the end of Year 0, expressed as a percent of GDP and sourced through the Inputs-sheet country lookup. Serves as the Year-0 debt stock anchor for the baseline recursion on the Engine sheet; it may also carry a spreadsheet error-code string when resolution fails.
 
     Returns:
-        The initial debt stock for year 0 as a measure, or the original Excel error code when the input cannot be converted.
+        The normalized Year-0 debt-to-GDP ratio as a float when resolution succeeds; otherwise, the originating Excel error code as a string.
     """
     try:
         return as_measure(initial_debt_resolved)
     except XlError as err:
         return err.code
-setattr(engine_initial_debt_baseline, '__key__', ())
-setattr(engine_initial_debt_baseline, '__domain__', ((),))
 
+@publish(
+    key=(),
+    domain=((),),
+)
 def engine_initial_debt_shocked(initial_debt_resolved: float | str) -> float | str:
-    """Return the year-0 debt stock anchor for the shocked recursion on the Engine sheet.
+    """Resolve the Year-0 debt stock anchor that seeds the shocked Engine recursion.
 
-    Provide the initial debt level that seeds the shocked debt-path calculation.
+    Return the initial debt-to-GDP ratio at end of year 0 as a measure for use in the shocked recursion on the Engine sheet.
 
     Args:
-        initial_debt_resolved: The resolved year-0 debt stock for the selected country, expressed as a numeric value or an Excel error string.
+        initial_debt_resolved: Resolved Year-0 debt stock anchor for the shocked recursion on the Engine sheet, expressed as a percentage of GDP.
 
     Returns:
-        The initial debt stock as a float measure used as the starting point for the shocked recursion, or an Excel error code string if the resolved input cannot be interpreted as a measure.
+        The Year-0 debt stock anchor as a numeric percentage-of-GDP measure when resolution succeeds, or the corresponding error code string when resolution fails.
     """
     try:
         return as_measure(initial_debt_resolved)
     except XlError as err:
         return err.code
-setattr(engine_initial_debt_shocked, '__key__', ())
-setattr(engine_initial_debt_shocked, '__domain__', ((),))
 
+@publish(
+    key=(),
+    domain=((),),
+)
 def shock_magnitude_resolved(shock_type: int | str, shock_magnitudes: Sequence[float | str]) -> float | str:
-    """Resolve the shock magnitude for the selected shock type from the shock table.
+    """Resolve the configured shock magnitude from the shock table.
 
-    Return the configured magnitude for the active shock type, equivalent to an OFFSET lookup on the shock table.
+    Select the magnitude corresponding to the selected shock type, mirroring the OFFSET lookup on the shock table.
 
     Args:
-        shock_type: Integer or Excel-compatible identifier of the shock type (1 for growth, 2 for interest rate, 3 for primary balance); selects the magnitude by its 1-based position in the shock table.
-        shock_magnitudes: Sequence of three shock magnitudes in the standard shock table order (growth, interest rate, primary balance).
+        shock_type: Selected shock type as a one-based index: 1 for real GDP growth, 2 for the real interest rate, 3 for the primary balance. An Excel reference or string representing one of these values is also accepted.
+        shock_magnitudes: The three shock magnitudes from the shock table in type order: growth, interest, and primary balance. The magnitude at position shock_type - 1 is resolved.
 
     Returns:
-        The resolved shock magnitude for the selected shock type; if the lookup is invalid, an Excel error code is returned.
+        The resolved shock magnitude for the selected shock type, in percentage points. If the shock type is out of range or an Excel error occurs, returns the corresponding error code.
     """
     try:
         return as_measure(xl_at(shock_magnitudes, (xl_sub(shock_type, 1))))
     except XlError as err:
         return err.code
-setattr(shock_magnitude_resolved, '__key__', ())
-setattr(shock_magnitude_resolved, '__domain__', ((),))
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def shock_active(engine_year_labels: Sequence[int | str], shock_year: int | str) -> tuple[int | str, ...]:
-    """Return a tuple of shock-activation flags (1 or 0) for the supplied projection year labels versus the shock start year.
+    """Return shock activation flags (1 when a projection year is at or after shock_year, else 0) for each engine year.
 
-    Indicate, for each projection year, whether the shock is active (year >= shock_year).
+    Provide the year-by-year shock-active indicator used to apply the configured shock from the shock year onward.
 
     Args:
-        engine_year_labels: Projection-year labels covering the forecast horizon (typically years 1 through 5). Each label is compared with shock_year to decide whether the shock applies in that year.
-        shock_year: First projection year in which the shock begins. The returned flag is 1 for every projection year greater than or equal to shock_year, and 0 for earlier years.
+        engine_year_labels: Projection year labels for the Engine sheet, one per year in the five-year horizon. Each label may be an integer or a string and must be dense over the producer's domain.
+        shock_year: User-selected first projection year in which the shock takes effect, corresponding to Inputs!B21.
 
     Returns:
-        A tuple with one element per projection year label, in the same order. Each element is 1 when the corresponding year is on or after shock_year, and 0 otherwise. If a year label is not comparable to shock_year as an Excel-compatible value, the element is an error-code string.
+        Tuple of activation flags aligned with engine_year_labels: 1 when the year label is greater than or equal to shock_year, otherwise 0. If a comparison raises an Excel error, the corresponding element is an error-code string instead.
     """
     n = require_aligned(engine_year_labels)
     out: list[int | str] = []
@@ -104,22 +116,24 @@ def shock_active(engine_year_labels: Sequence[int | str], shock_year: int | str)
         except XlError as err:
             out.append(err.code)
     return tuple(out)
-setattr(shock_active, '__key__', ('TIME_PERIOD',))
-setattr(shock_active, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def shocked_growth(growth_baseline: Sequence[float | str], shock_type: int | str, shock_magnitude_resolved: float | str, shock_active: Sequence[int | str]) -> tuple[float | str, ...]:
-    """Build the shocked real GDP growth path by adding the resolved growth-shock magnitude to baseline growth in active shock years when the selected shock type is growth.
+    """Shocked real GDP growth path after applying the selected shock magnitude.
 
-    Produces the shock-adjusted real GDP growth series used to compute the shocked debt trajectory.
+    Computes the real GDP growth rates used in the shocked debt path when a growth shock is active.
 
     Args:
-        growth_baseline: Baseline real GDP growth rates in percent per annum for each year of the five-year horizon.
-        shock_type: Numeric code identifying the shocked parameter: 1 for real GDP growth, 2 for the real interest rate, and 3 for the primary balance.
-        shock_magnitude_resolved: Shock magnitude in percentage points associated with the selected shock type; this value is applied only when shock_type is 1.
-        shock_active: Sequence of per-year indicators, 1 when the shock applies in that year and 0 otherwise, typically 1 from the configured shock year through the end of the horizon.
+        growth_baseline: Baseline real GDP growth rates, percent per annum, for each year of the horizon.
+        shock_type: Shock-type selector: 1 for real GDP growth, 2 for the real interest rate, or 3 for the primary balance; only a value of 1 applies the resolved shock to growth.
+        shock_magnitude_resolved: Shock magnitude in percentage points for the selected shock type, from the resolved shock-magnitude cell.
+        shock_active: Annual activation indicators (1 if the shock applies that year, 0 otherwise), marking the years from the shock year onward.
 
     Returns:
-        Tuple of shocked real GDP growth rates in percent per annum. When the shock type selects growth, each baseline growth rate in an active year is adjusted by shock_magnitude_resolved; otherwise the baseline growth rates are returned unchanged.
+        Tuple of shocked real GDP growth rates, percent per annum, for the same years as the inputs; each element equals baseline growth plus the resolved growth shock when active, or an XLS error code string when the underlying evaluation fails.
     """
     n = require_aligned(growth_baseline, shock_active)
     out: list[float | str] = []
@@ -129,22 +143,24 @@ def shocked_growth(growth_baseline: Sequence[float | str], shock_type: int | str
         except XlError as err:
             out.append(err.code)
     return tuple(out)
-setattr(shocked_growth, '__key__', ('TIME_PERIOD',))
-setattr(shocked_growth, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def shocked_interest(interest_baseline: Sequence[float | str], shock_type: int | str, shock_magnitude_resolved: float | str, shock_active: Sequence[int | str]) -> tuple[float | str, ...]:
-    """Compute the shocked real interest rate path after applying the selected shock magnitude.
+    """Compute the shocked real interest rate path by overlaying the resolved interest-rate shock magnitude on the baseline interest path when the shock is active.
 
-    Produces the real interest rate series used for the shocked debt-to-GDP recursion when the configured shock targets the interest rate.
+    Produce the shocked real interest rate row used in the debt-dynamics trajectory.
 
     Args:
-        interest_baseline: Baseline effective real interest rate on outstanding general-government debt for each year of the five-year horizon, in percent per annum.
-        shock_type: Integer selecting the parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, or 3 for the primary balance. Only shock_type 2 applies the interest-rate shock; other values leave the interest rate at its baseline path.
-        shock_magnitude_resolved: Shock magnitude in percentage points for the selected shock type, resolved from the shock table. It is applied to the interest rate only when shock_type is 2.
-        shock_active: Year-by-year indicator equal to 1 from the configured shock year through the end of the horizon and 0 before the shock year, determining when the shock is active.
+        interest_baseline: Baseline real interest rates, in percent per annum, for the years of the scenario.
+        shock_type: Selected shock type (1=growth, 2=real interest rate, 3=primary balance); only type 2 alters the interest path.
+        shock_magnitude_resolved: Resolved shock magnitude, in percentage points, applied when the interest-rate shock is selected.
+        shock_active: Per-year indicators (1 if the shock is active in that year, 0 otherwise).
 
     Returns:
-        Tuple of shocked real interest rates in percent per annum for each year, aligned with the baseline interest path. Values from the shock year onward include the shock adjustment; earlier years match the baseline. When the selected shock is not an interest-rate shock, the baseline interest rates are returned unchanged.
+        Tuple of shocked real interest rates, in percent per annum, aligned with the input series; Excel-style error codes are preserved when conversion fails.
     """
     n = require_aligned(interest_baseline, shock_active)
     out: list[float | str] = []
@@ -154,22 +170,24 @@ def shocked_interest(interest_baseline: Sequence[float | str], shock_type: int |
         except XlError as err:
             out.append(err.code)
     return tuple(out)
-setattr(shocked_interest, '__key__', ('TIME_PERIOD',))
-setattr(shocked_interest, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def shocked_primary_balance(primary_balance_baseline: Sequence[float | str], shock_type: int | str, shock_magnitude_resolved: float | str, shock_active: Sequence[int | str]) -> tuple[float | str, ...]:
-    """Shocked primary balance path after applying the selected shock magnitude.
+    """Compute the shocked primary-balance path by applying the configured primary-balance shock to the baseline primary balance.
 
-    Determine the year-by-year primary balance values used in the shocked debt trajectory.
+    Return the annual primary-balance series under the active shock, preserving baseline values when the shock type is not primary-balance or the shock is not yet active.
 
     Args:
-        primary_balance_baseline: Baseline primary balance path, in percent of GDP; positive values denote a surplus. Length must align with shock_active.
-        shock_type: Selected shock-type code: 1 for growth, 2 for interest, 3 for primary balance. The resolved magnitude is applied to the primary balance only when shock_type equals 3.
-        shock_magnitude_resolved: Shock magnitude in percentage points, looked up from the shock table for the active shock type. It is used as the additive increment to the baseline primary balance in the primary-balance shock case.
-        shock_active: Per-year indicator sequence (0 or 1) marking the years during which the shock is active, i.e. from the shock year through the horizon; controls when the magnitude is applied.
+        primary_balance_baseline: Annual baseline primary balance, expressed as a percent of GDP with positive values denoting a surplus.
+        shock_type: Shock-type selector (1 = real GDP growth, 2 = real interest rate, 3 = primary balance). This function applies the magnitude only when shock_type is 3.
+        shock_magnitude_resolved: Resolved magnitude for the selected shock type, in percentage points; for a primary-balance shock, negative values reduce the primary balance. Ignored unless shock_type is 3.
+        shock_active: Per-year 0/1 indicator marking years from the shock year onward in which the shock is active.
 
     Returns:
-        Shocked primary balance path as a tuple of numeric values or Excel error-code strings, one entry per year, matching the length of the baseline sequence.
+        A tuple of primary-balance values for each year in the aligned domain, as percent of GDP (positive = surplus). Each value equals baseline plus the resolved magnitude when shock_active is 1 and shock_type is 3; otherwise it equals baseline. Underlying spreadsheet formula error codes are represented as string entries.
     """
     n = require_aligned(primary_balance_baseline, shock_active)
     out: list[float | str] = []
@@ -179,22 +197,24 @@ def shocked_primary_balance(primary_balance_baseline: Sequence[float | str], sho
         except XlError as err:
             out.append(err.code)
     return tuple(out)
-setattr(shocked_primary_balance, '__key__', ('TIME_PERIOD',))
-setattr(shocked_primary_balance, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def baseline_path_internal(engine_initial_debt_baseline: float | str, growth_baseline: Sequence[float | str], interest_baseline: Sequence[float | str], primary_balance_baseline: Sequence[float | str]) -> tuple[float | str, ...]:
-    """Compute the annual baseline debt-to-GDP path projected on the Engine sheet.
+    """Compute the internal baseline debt-to-GDP path over the projection horizon.
 
-    First-level helper that implements the real-terms debt-dynamics recursion for the internal baseline_path range.
+    Generate the recursive baseline path used for the Engine sheet's baseline_path range from the initial debt ratio and the baseline growth, interest, and primary-balance vectors.
 
     Args:
-        engine_initial_debt_baseline: Initial general-government debt-to-GDP ratio at end of year 0, expressed as a percentage of GDP.
-        growth_baseline: Real GDP growth rates for years 1 through 5, in percent per annum.
-        interest_baseline: Real interest rates on outstanding general-government debt for years 1 through 5, in percent per annum.
-        primary_balance_baseline: Primary balances for years 1 through 5, expressed as a percentage of GDP; positive values denote surpluses.
+        engine_initial_debt_baseline: Debt-to-GDP ratio at the end of the year preceding the projection horizon, in percent of GDP. It seeds the recursion as the debt stock carried into the first projected year.
+        growth_baseline: Sequence of annual real GDP growth rates, in percent per annum, spanning the projection horizon. The first element is applied in the first projected year; the sequence must be dense over the producer's domain.
+        interest_baseline: Sequence of annual real interest rates, in percent per annum, spanning the projection horizon. The first element is applied in the first projected year; the sequence must be dense over the producer's domain.
+        primary_balance_baseline: Sequence of annual primary balances as a percent of GDP, with positive values denoting a surplus, spanning the projection horizon. The first element is applied in the first projected year; the sequence must be dense over the producer's domain.
 
     Returns:
-        A tuple of debt-to-GDP ratios for years 1 through 5. If a year's formula evaluates to an Excel error, that element is the corresponding error code string.
+        Tuple with one entry per projected year. Each entry is the baseline debt-to-GDP ratio in percent of GDP after applying the standard real-term snowball recursion: next debt equals previous debt multiplied by (1 + interest/100) / (1 + growth/100) minus the primary balance for that year.
     """
     baseline_path_internal: list[float | str] = []
     n = require_aligned(growth_baseline, interest_baseline, primary_balance_baseline)
@@ -212,22 +232,24 @@ def baseline_path_internal(engine_initial_debt_baseline: float | str, growth_bas
                 baseline_path_internal_t = err.code
             baseline_path_internal.append(baseline_path_internal_t)
     return tuple(baseline_path_internal)
-setattr(baseline_path_internal, '__key__', ('TIME_PERIOD',))
-setattr(baseline_path_internal, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def shocked_path_internal(engine_initial_debt_shocked: float | str, shocked_growth: Sequence[float | str], shocked_interest: Sequence[float | str], shocked_primary_balance: Sequence[float | str]) -> tuple[float | str, ...]:
-    """Compute the shocked debt-to-GDP path for the Engine sheet.
+    """Compute the internal shocked debt-to-GDP path.
 
-    Project the internal shocked debt-to-GDP series used as the Engine-sheet `shocked_path` named range.
+    First-level helper that recurses the debt-dynamics identity using the shocked growth, interest, and primary-balance series to produce the Engine sheet's shocked_path values.
 
     Args:
-        engine_initial_debt_shocked: Initial debt-to-GDP ratio in percent of GDP at the end of the year preceding the first projection year (year 0), used to seed the shocked path.
-        shocked_growth: Annual real GDP growth rates in percent per annum over the projection horizon, reflecting any permanent growth shock from the configured shock year onward.
-        shocked_interest: Annual real interest rates in percent per annum over the projection horizon, reflecting any permanent interest-rate shock from the configured shock year onward.
-        shocked_primary_balance: Annual primary balances in percent of GDP over the projection horizon, with positive values denoting surpluses, reflecting any permanent primary-balance shock from the configured shock year onward.
+        engine_initial_debt_shocked: Initial debt-to-GDP ratio for the shocked run, expressed as a percentage of GDP. This is the starting debt stock from which the shocked path recursion is calculated.
+        shocked_growth: Real GDP growth rates after applying the configured shock, in percent per annum. The series must be dense over the producer's domain and represents the growth input for each year of the shocked path.
+        shocked_interest: Real interest rates after applying the configured shock, in percent per annum. The series must be dense over the producer's domain and represents the effective rate on outstanding government debt for each year of the shocked path.
+        shocked_primary_balance: Primary balances after applying the configured shock, expressed as a percentage of GDP with positive values denoting a surplus. The series must be dense over the producer's domain and provides the fiscal-stance input for each year of the shocked path.
 
     Returns:
-        Tuple of projected shocked debt-to-GDP ratios for each year of the horizon, in percent of GDP. Entries are numeric where the recursion succeeds, and may be Excel error codes if input values are not numeric.
+        A tuple with one entry per year in the aligned series, giving the shocked debt-to-GDP ratio for that year as a percentage of GDP. This mirrors the Engine sheet's shocked_path named range. If an evaluation error occurs for a year, the corresponding entry is the spreadsheet error-code string.
     """
     shocked_path_internal: list[float | str] = []
     n = require_aligned(shocked_growth, shocked_interest, shocked_primary_balance)
@@ -245,19 +267,21 @@ def shocked_path_internal(engine_initial_debt_shocked: float | str, shocked_grow
                 shocked_path_internal_t = err.code
             shocked_path_internal.append(shocked_path_internal_t)
     return tuple(shocked_path_internal)
-setattr(shocked_path_internal, '__key__', ('TIME_PERIOD',))
-setattr(shocked_path_internal, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def output_baseline(baseline_path_internal: Sequence[float | str]) -> tuple[float | str, ...]:
-    """Converts the internal Engine baseline path to the five-year Outputs baseline series.
+    """First-level helper for bound series `output_baseline`.
 
-    Provides the baseline debt-to-GDP trajectory for projection years 1 through 5 as a bound output series.
+    Resolve the internal engine-sheet baseline debt path into the public Outputs-sheet `output_baseline` series.
 
     Args:
-        baseline_path_internal: Sequence of yearly baseline debt-to-GDP values (Engine!C6:G6) for projection years 1 through 5, where each entry is either a numeric ratio or an Excel error code.
+        baseline_path_internal: The internal baseline debt-to-GDP path for projection years 1 through 5. Must be dense over the producer's domain; holed series shorter than the public domain are not accepted.
 
     Returns:
-        A tuple of length 5 containing the baseline debt-to-GDP values for each projection year. Each numeric value is returned as a formatted measure; if a source cell contains an Excel error, the corresponding Excel error code is returned in its place.
+        A tuple of resolved debt-to-GDP values for projection years 1 through 5, with error codes preserved for any year whose value cannot be evaluated.
     """
     n = require_aligned(baseline_path_internal)
     out: list[float | str] = []
@@ -267,19 +291,21 @@ def output_baseline(baseline_path_internal: Sequence[float | str]) -> tuple[floa
         except XlError as err:
             out.append(err.code)
     return tuple(out)
-setattr(output_baseline, '__key__', ('TIME_PERIOD',))
-setattr(output_baseline, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def output_shocked(shocked_path_internal: Sequence[float | str]) -> tuple[float | str, ...]:
-    """Return the shocked debt-to-GDP path from the Engine sheet as an aligned output tuple.
+    """Format the Engine-sheet shocked debt-to-GDP path for the `output_shocked` bound series.
 
-    First-level helper for the `output_shocked` bound series on the Outputs sheet.
+    Converts the internal shocked-path calculation into the stable Outputs-sheet series for projection years 1 through 5.
 
     Args:
-        shocked_path_internal: Sequence of shocked debt-to-GDP values from the Engine sheet's `shocked_path` range, for projection years 1 through 5; entries may be numeric or Excel error sentinels.
+        shocked_path_internal: Sequence of shocked debt-to-GDP values (percent of GDP) for projection years 1 through 5 from the Engine-sheet `shocked_path` range. Must be dense over the producer's `__domain__`; holed series are shorter than the public domain.
 
     Returns:
-        A tuple of the same length as the input, where each value has been normalized to a measure for downstream use, with Excel error codes preserved when conversion fails.
+        Tuple of shocked debt-to-GDP values (percent of GDP) aligned to the public `output_shocked` domain, one entry per projection year; cells that cannot be evaluated are represented by their Excel error-code strings.
     """
     n = require_aligned(shocked_path_internal)
     out: list[float | str] = []
@@ -289,20 +315,22 @@ def output_shocked(shocked_path_internal: Sequence[float | str]) -> tuple[float 
         except XlError as err:
             out.append(err.code)
     return tuple(out)
-setattr(output_shocked, '__key__', ('TIME_PERIOD',))
-setattr(output_shocked, '__domain__', data.TIME_PERIOD_DOMAIN)
 
+@publish(
+    key=('TIME_PERIOD',),
+    domain=data.TIME_PERIOD_DOMAIN,
+)
 def output_delta(output_baseline: Sequence[float | str], output_shocked: Sequence[float | str]) -> tuple[float | str, ...]:
-    """Compute the percentage-point difference between the shocked and baseline debt-to-GDP trajectories.
+    """Compute the shocked-minus-baseline debt-to-GDP difference in percentage points.
 
-    Provide the output_delta series for the shocked-minus-baseline comparison.
+    Return the output_delta bound series: the difference between the shocked and baseline paths, expressed in percentage points and aligned by output year.
 
     Args:
-        output_baseline: Baseline debt-to-GDP path as a percent of GDP for years 1 through 5.
-        output_shocked: Shocked debt-to-GDP path as a percent of GDP for years 1 through 5.
+        output_baseline: Baseline debt-to-GDP path over the output horizon, in percent of GDP, as a dense sequence of floats or spreadsheet error-code strings.
+        output_shocked: Shocked debt-to-GDP path over the output horizon, in percent of GDP, as a dense sequence of floats or spreadsheet error-code strings.
 
     Returns:
-        Tuple of year-by-year differences, shocked minus baseline, expressed in percentage points; Excel errors propagate as error-code strings.
+        A tuple of the same length as the input sequences, with each element equal to the shocked value minus the baseline value for that year in percentage points. Elements are floats when both inputs are numeric; otherwise an error-code string is propagated for that year.
     """
     n = require_aligned(output_baseline, output_shocked)
     out: list[float | str] = []
@@ -312,5 +340,3 @@ def output_delta(output_baseline: Sequence[float | str], output_shocked: Sequenc
         except XlError as err:
             out.append(err.code)
     return tuple(out)
-setattr(output_delta, '__key__', ('TIME_PERIOD',))
-setattr(output_delta, '__domain__', data.TIME_PERIOD_DOMAIN)
