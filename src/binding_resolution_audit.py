@@ -16,6 +16,10 @@ from typing import Any, Literal
 import fastpyxl
 from excel_grapher.core.address_keys import parse_address
 from excel_grapher.grapher.graph import DependencyGraph
+from excel_grapher.series_bindings import (
+    has_input_direction,
+    has_output_direction,
+)
 from excel_grapher.series_bindings.ranges import (
     apply_series_excludes,
     expand_data_range_for_graph,
@@ -81,15 +85,9 @@ def _series_by_id(bindings: WorkbookSeriesBindings) -> dict[str, dict[str, Any]]
 
 def _is_public_api_series(series: dict[str, Any], direction: BindingDirection) -> bool:
     if direction == "input":
-        input_block = series.get("input")
-        return isinstance(input_block, dict) and isinstance(
-            input_block.get("setter"), dict
-        )
+        return has_input_direction(series)
     if direction == "output":
-        output_block = series.get("output")
-        return isinstance(output_block, dict) and isinstance(
-            output_block.get("compute"), dict
-        )
+        return has_output_direction(series)
     return False
 
 

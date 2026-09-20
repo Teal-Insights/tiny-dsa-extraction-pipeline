@@ -1,4 +1,4 @@
-schema_version: 1.13.0
+schema_version: 1.17.0
 workbook: workbook.xlsx
 concept_scheme:
   id: synthetic_model
@@ -14,11 +14,7 @@ series:
     sheet: Inputs
     data_range: Inputs!A1
     layout: scalar
-    input:
-      setter:
-        name: set_input_rate
-        record_contract: records
-        strict: true
+    input: {}
     structure:
       measure:
         concept: OBS_VALUE

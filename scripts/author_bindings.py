@@ -77,7 +77,7 @@ def main() -> None:
             f"warnings={len(warnings)}"
         )
         print(
-            f"Setters: {len(validation['setters'])} "
+            f"Inputs: {len(validation['inputs'])} "
             f"Computes: {len(validation['computes'])} "
             f"Input series: {len(validation['input_series'])}"
         )

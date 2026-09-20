@@ -5,7 +5,7 @@ and (when needed) `constants.bindings.yaml` here.
 
 Bootstrap extract (`--extract-graph` / `--stop-after-stage extract`) is graph-first: empty `series: []` placeholder shards are fine so you can review `artifacts/dependency-graph/` before bindings exist. excel-grapher 5.1.4+ also loads and merges those placeholders (including divergent `concept_scheme` blocks). Author real series before export so the public API and leaf coverage are complete.
 
-Use schema version `1.13.0` and the prompt in [templates/binding-authoring-prompt.txt](../templates/binding-authoring-prompt.txt). Prefer authoring from an extracted graph rather than guessing sheet geometry up front.
+Use schema version `1.17.0` and the prompt in [templates/binding-authoring-prompt.txt](../templates/binding-authoring-prompt.txt). Prefer authoring from an extracted graph rather than guessing sheet geometry up front.
 
 ## Constant bindings (reader-only leaves)
 
@@ -20,7 +20,7 @@ Put constant series in `constants.bindings.yaml` (or any mergeable
 `constant: {}` instead of `input` / `output` / `internal`:
 
 ```yaml
-schema_version: 1.13.0
+schema_version: 1.17.0
 series:
   - id: shock_year_anchor
     sheet: Engine
@@ -40,7 +40,7 @@ series:
 |---|---|
 | Leaf-only | `data_range` must intersect graph **leaves** (inverse of `internal`, which requires formula nodes). Non-leaf overlap → `non_leaf_constant_overlap`; no leaf overlap → `no_leaf_constant_targets`. |
 | Exclusive | Mutually exclusive with `input`, `output`, and `internal` on the same series. |
-| Codegen | Names the leaf for inverted-tree export: values land in `data.py` and as defaulted `compute_*` kwargs. Optional `constant.reader.name` still exists in the schema; inverted-tree does not emit public readers or extra `compute_*` for constants. |
+| Codegen | Names the leaf for inverted-tree export: values land in `data.py` and as defaulted `compute_*` kwargs. Inverted-tree does not emit public readers or extra `compute_*` for constants. |
 | Mutability | Values still live in `data.py` and as defaulted `compute_*` kwargs; there is no public write surface. |
 | Validate | `validate_series_bindings(...)`, then `derive_constant_series(...)`. Include `constant` when running `scripts.binding_resolution_audit`. |
 
@@ -71,7 +71,7 @@ Synthetic example: [tests/fixtures/synthetic/constants.bindings.yaml](../tests/f
 
 When an internals helper covers a published output series' leaves, declare
 `output.compute.helper` so generated `compute_*` calls the helper from record
-dims instead of `xl_cell(address)` (excel-grapher schema 1.13.0):
+dims instead of `xl_cell(address)` (excel-grapher schema 1.10.0+):
 
 ```yaml
 output:
@@ -126,18 +126,20 @@ but fail at output/input codegen:
    - a **richer key** that includes the measure dimension (common for
      internals that triangulate the whole triplet table).
 
-   When you shard, choose `output.compute.name` / `input.setter.name`
+   When you shard, choose `output.compute.name` / input series `id`
    deliberately:
 
    | Choice | When | Effect |
    |---|---|---|
-   | **Share** the same name across shards | Shards are complementary slices of one logical public series (e.g. Gap columns for 2050 / 2075 that should become one `compute_gap_milestones`) | Export merges shards into one public function |
+   | **Share** the same compute name or input id across shards | Shards are complementary slices of one logical public series (e.g. Gap columns for 2050 / 2075 that should become one `compute_gap_milestones`) | Export merges shards into one public function |
    | **Uniquify** per shard | Each shard is a distinct scenario / engine path (e.g. Paris vs Moderate expenditure rows on separate sheets) | Each path keeps its own `output.compute.name` / input series id |
 
-   YAML still uses `input.setter.name` as the schema field that uniquifies an
-   input series. The generated inverted-tree API has no setters; those names
-   identify the series for codegen, and callers pass keyword-only `compute_*`
-   arguments.
+   Output shards uniquify by `output.compute.name`. Input shards uniquify by
+   series `id` (`input: {}` marks the direction; schema 1.16.0 dropped
+   `input.setter`). Complementary input slices that should merge must share
+   one series id and may declare different `sheet` / `data_range` (schema
+   1.14.0). Callers pass keyword-only `compute_*` arguments named from those
+   ids.
 
    Sharing a name across distinct engine paths is the failure mode: export
    merges the colliding definitions, so most scenario paths become

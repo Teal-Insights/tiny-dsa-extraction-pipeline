@@ -955,6 +955,37 @@ def inputs_for_excel(scenario: Scenario) -> dict[str, Any]:
     return _inputs_for_excel(_as_inputs(scenario))
 
 
+def _require_data_attr(data: ModuleType, attr: str) -> object:
+    if not hasattr(data, attr):
+        module_name = getattr(data, "__name__", type(data).__name__)
+        raise TypeError(f"{module_name} is missing {attr}")
+    return getattr(data, attr)
+
+
+def _bind_named_series(
+    template: object, values: tuple[object, ...], *, name: str
+) -> object:
+    with_values = getattr(template, "with_values", None)
+    if not callable(with_values):
+        raise TypeError(
+            f"{name} default {type(template).__name__} has no with_values(); "
+            "named-axis series inputs must be bound as tensors"
+        )
+    return with_values(values)
+
+
+def _year_values(result: object, *, name: str) -> tuple[object, ...]:
+    domain = getattr(result, "domain", None)
+    axes = getattr(domain, "axes", None)
+    getitem = getattr(result, "__getitem__", None)
+    if not axes or not callable(getitem):
+        raise TypeError(
+            f"compute_{name} must return a named-axis series with domain.axes; "
+            f"got {type(result).__name__}"
+        )
+    return tuple(getitem(key) for key in axes[0].keys)
+
+
 def mvp_outputs_for_scenario(api: ModuleType, scenario: Scenario) -> dict[str, Any]:
     inputs = _as_inputs(scenario)
     if api.__package__ is None:
@@ -962,7 +993,27 @@ def mvp_outputs_for_scenario(api: ModuleType, scenario: Scenario) -> dict[str, A
             f"Exported API module {api.__name__!r} has no package; cannot load data.py."
         )
     data = importlib.import_module(f"{api.__package__}.data")
-    initial_debt = data.COUNTRY_INITIAL_DEBT_DEFAULT
+    initial_debt = _require_data_attr(data, "COUNTRY_INITIAL_DEBT_DEFAULT")
+    growth_baseline = _bind_named_series(
+        _require_data_attr(data, "GROWTH_BASELINE_DEFAULT"),
+        inputs.growth_baseline,
+        name="growth_baseline",
+    )
+    interest_baseline = _bind_named_series(
+        _require_data_attr(data, "INTEREST_BASELINE_DEFAULT"),
+        inputs.interest_baseline,
+        name="interest_baseline",
+    )
+    primary_balance_baseline = _bind_named_series(
+        _require_data_attr(data, "PRIMARY_BALANCE_BASELINE_DEFAULT"),
+        inputs.primary_balance_baseline,
+        name="primary_balance_baseline",
+    )
+    shock_magnitudes = _bind_named_series(
+        _require_data_attr(data, "SHOCK_MAGNITUDES_DEFAULT"),
+        inputs.shock_table,
+        name="shock_magnitudes",
+    )
     compute_baseline = api.compute_output_baseline
     compute_shocked = api.compute_output_shocked
     compute_delta = api.compute_output_delta
@@ -970,34 +1021,34 @@ def mvp_outputs_for_scenario(api: ModuleType, scenario: Scenario) -> dict[str, A
         "output_baseline": compute_baseline(
             country_name=inputs.country_name,
             country_initial_debt=initial_debt,
-            growth_baseline=inputs.growth_baseline,
-            interest_baseline=inputs.interest_baseline,
-            primary_balance_baseline=inputs.primary_balance_baseline,
+            growth_baseline=growth_baseline,
+            interest_baseline=interest_baseline,
+            primary_balance_baseline=primary_balance_baseline,
         ),
         "output_shocked": compute_shocked(
             country_name=inputs.country_name,
             country_initial_debt=initial_debt,
-            growth_baseline=inputs.growth_baseline,
-            interest_baseline=inputs.interest_baseline,
-            primary_balance_baseline=inputs.primary_balance_baseline,
+            growth_baseline=growth_baseline,
+            interest_baseline=interest_baseline,
+            primary_balance_baseline=primary_balance_baseline,
             shock_year=inputs.shock_year,
             shock_type=inputs.shock_type,
-            shock_magnitudes=inputs.shock_table,
+            shock_magnitudes=shock_magnitudes,
         ),
         "output_delta": compute_delta(
             country_name=inputs.country_name,
             country_initial_debt=initial_debt,
-            growth_baseline=inputs.growth_baseline,
-            interest_baseline=inputs.interest_baseline,
-            primary_balance_baseline=inputs.primary_balance_baseline,
+            growth_baseline=growth_baseline,
+            interest_baseline=interest_baseline,
+            primary_balance_baseline=primary_balance_baseline,
             shock_year=inputs.shock_year,
             shock_type=inputs.shock_type,
-            shock_magnitudes=inputs.shock_table,
+            shock_magnitudes=shock_magnitudes,
         ),
     }
     outputs: dict[str, Any] = {}
     for name, cells in OUTPUT_RANGES:
-        values = tuple(computed[name])
+        values = _year_values(computed[name], name=name)
         if len(values) != len(cells):
             raise ValueError(
                 f"expected {len(cells)} values from compute_{name}, got {len(values)}"

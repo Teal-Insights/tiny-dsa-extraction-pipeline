@@ -555,6 +555,28 @@ def test_txt_summary_names_formula_evaluator_as_oracle(tmp_path: Path) -> None:
     assert "vs Excel" not in text
 
 
+class _BoundSeries:
+    """Stand-in for ``data.*_DEFAULT`` named-axis series."""
+
+    def __init__(self, values: tuple[object, ...]) -> None:
+        self.values = values
+
+    def with_values(self, values: tuple[object, ...]) -> _BoundSeries:
+        return _BoundSeries(tuple(values))
+
+
+class _YearTensor:
+    """Stand-in for a ``compute_*`` named-axis result keyed by TIME_PERIOD."""
+
+    def __init__(self, values: tuple[float, ...]) -> None:
+        keys = tuple(range(1, len(values) + 1))
+        self.domain = types.SimpleNamespace(axes=(types.SimpleNamespace(keys=keys),))
+        self._by_key = dict(zip(keys, values, strict=True))
+
+    def __getitem__(self, key: int) -> float:
+        return self._by_key[key]
+
+
 def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -562,22 +584,31 @@ def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
     harness = _load_harness_module()
     calls: list[str] = []
 
-    def compute_output_baseline(**kwargs: object) -> tuple[float, ...]:
+    def compute_output_baseline(**kwargs: object) -> _YearTensor:
         calls.append("baseline")
         assert "ctx" not in kwargs
-        return (1.0, 2.0, 3.0, 4.0, 5.0)
+        growth = kwargs["growth_baseline"]
+        assert isinstance(growth, _BoundSeries)
+        assert growth.values == (3.5, 3.5, 3.5, 3.5, 3.5)
+        return _YearTensor((1.0, 2.0, 3.0, 4.0, 5.0))
 
-    def compute_output_shocked(**kwargs: object) -> tuple[float, ...]:
+    def compute_output_shocked(**kwargs: object) -> _YearTensor:
         calls.append("shocked")
-        assert kwargs["shock_magnitudes"] == (-2.0, 0.0, 0.0)
-        return (1.5, 2.5, 3.5, 4.5, 5.5)
+        magnitudes = kwargs["shock_magnitudes"]
+        assert isinstance(magnitudes, _BoundSeries)
+        assert magnitudes.values == (-2.0, 0.0, 0.0)
+        return _YearTensor((1.5, 2.5, 3.5, 4.5, 5.5))
 
-    def compute_output_delta(**kwargs: object) -> tuple[float, ...]:
+    def compute_output_delta(**kwargs: object) -> _YearTensor:
         calls.append("delta")
-        return (0.5, 0.5, 0.5, 0.5, 0.5)
+        return _YearTensor((0.5, 0.5, 0.5, 0.5, 0.5))
 
     data_mod: Any = types.ModuleType("tiny_dsa_fake.data")
-    data_mod.COUNTRY_INITIAL_DEBT_DEFAULT = (60.0, 80.0, 40.0)
+    data_mod.COUNTRY_INITIAL_DEBT_DEFAULT = _BoundSeries((60.0, 80.0, 40.0))
+    data_mod.GROWTH_BASELINE_DEFAULT = _BoundSeries((3.5, 3.5, 3.5, 3.5, 3.5))
+    data_mod.INTEREST_BASELINE_DEFAULT = _BoundSeries((4.0, 4.0, 4.0, 4.0, 4.0))
+    data_mod.PRIMARY_BALANCE_BASELINE_DEFAULT = _BoundSeries((-1.0, -0.5, 0.0, 0.5, 1.0))
+    data_mod.SHOCK_MAGNITUDES_DEFAULT = _BoundSeries((0.0, 0.0, 0.0))
     pkg: Any = types.ModuleType("tiny_dsa_fake")
     pkg.data = data_mod
     api: Any = types.ModuleType("tiny_dsa_fake.api")

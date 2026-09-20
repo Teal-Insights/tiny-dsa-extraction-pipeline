@@ -7,13 +7,12 @@ import pickle
 from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from excel_grapher.core.cell_types import RealBetween
 from excel_grapher.exporter import CodeGenerator
-from excel_grapher.exporter.codegen import GraphLike
 from excel_grapher.grapher import DependencyGraph, DynamicRefConfig
 
 from src.bindings_validation_cache import DEFAULT_BINDINGS_VALIDATION_CACHE_DIR
@@ -729,7 +728,7 @@ def test_rehydrated_projection_supports_codegen(
         bindings_workbook=synthetic_config.workbook_path,
         no_cache=True,
     ).projection
-    modules = CodeGenerator(cast(GraphLike, projection)).generate_modules(
+    modules = CodeGenerator(projection).generate_modules(
         series_bindings=synthetic_series_bindings,
         bindings_workbook=synthetic_config.workbook_path,
     )

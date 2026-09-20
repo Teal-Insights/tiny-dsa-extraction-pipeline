@@ -1,4 +1,4 @@
-"""Output compute helpers (series-bindings schema 1.13.0).
+"""Output compute helpers (series-bindings schema 1.10.0+).
 
 When an internals helper covers a published output series' leaves, the series
 declares ``output.compute.helper`` so generated ``compute_*`` calls the helper
@@ -21,14 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CATALOG = REPO_ROOT / "templates" / "binding-catalog.example.yaml"
 
 
-def test_example_catalog_uses_schema_1_10_0() -> None:
+def test_example_catalog_uses_schema_1_17_0() -> None:
     catalog = yaml.safe_load(EXAMPLE_CATALOG.read_text(encoding="utf-8"))
-    assert catalog["schema_version"] == "1.13.0"
+    assert catalog["schema_version"] == "1.17.0"
 
 
 def test_catalog_passes_output_compute_helper_through() -> None:
     catalog = {
-        "schema_version": "1.13.0",
+        "schema_version": "1.17.0",
         "workbook": "workbook.xlsx",
         "outputs": {
             "series": [
@@ -53,7 +53,7 @@ def test_catalog_passes_output_compute_helper_through() -> None:
     }
     documents = build_binding_documents(catalog)
     outputs = documents["outputs.bindings.yaml"]
-    assert outputs["schema_version"] == "1.13.0"
+    assert outputs["schema_version"] == "1.17.0"
     (series,) = outputs["series"]
     assert series["output"]["compute"] == {
         "name": "compute_scenario_primary_expenditure_pct_gdp",

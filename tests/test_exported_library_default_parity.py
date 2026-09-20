@@ -16,6 +16,7 @@ from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import DynamicRefConfig, create_dependency_graph
 
 from dist.tiny_dsa import api, data
+from dist.tiny_dsa.tensor import Tensor
 
 ATOL = 1e-6
 
@@ -38,9 +39,11 @@ def workbook_oracle(tiny_dsa_configured_pipeline) -> FormulaEvaluator:
     return FormulaEvaluator(graph)
 
 
-def _float_tuple(values: tuple[float | str, ...]) -> tuple[float, ...]:
+def _series_floats(series: Tensor[object]) -> tuple[float, ...]:
+    keys = series.domain.axes[0].keys
     narrowed: list[float] = []
-    for value in values:
+    for key in keys:
+        value = series[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TypeError(f"expected numeric series values, got {value!r}")
         narrowed.append(float(value))
@@ -55,7 +58,7 @@ def _as_int(value: int | str) -> int:
 
 def _compare(
     *,
-    observed: Sequence[float | str],
+    observed: Sequence[float],
     addresses: tuple[str, ...],
     workbook_oracle: FormulaEvaluator,
     mismatches: list[str],
@@ -83,50 +86,49 @@ def test_default_inputs_callers_match_workbook(
     workbook_oracle: FormulaEvaluator,
 ) -> None:
     mismatches: list[str] = []
-    country_initial_debt = _float_tuple(data.COUNTRY_INITIAL_DEBT_DEFAULT)
-    growth_baseline = _float_tuple(data.GROWTH_BASELINE_DEFAULT)
-    interest_baseline = _float_tuple(data.INTEREST_BASELINE_DEFAULT)
-    primary_balance_baseline = _float_tuple(data.PRIMARY_BALANCE_BASELINE_DEFAULT)
-    shock_year = _as_int(data.SHOCK_YEAR_DEFAULT)
-    shock_type = _as_int(data.SHOCK_TYPE_DEFAULT)
-    shock_magnitudes = _float_tuple(data.SHOCK_MAGNITUDES_DEFAULT)
     _compare(
-        observed=api.compute_output_baseline(
-            country_name=data.COUNTRY_NAME_DEFAULT,
-            country_initial_debt=country_initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
+        observed=_series_floats(
+            api.compute_output_baseline(
+                country_name=data.COUNTRY_NAME_DEFAULT,
+                country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
+                growth_baseline=data.GROWTH_BASELINE_DEFAULT,
+                interest_baseline=data.INTEREST_BASELINE_DEFAULT,
+                primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+            )
         ),
         addresses=_BASELINE_ADDRS,
         workbook_oracle=workbook_oracle,
         mismatches=mismatches,
     )
     _compare(
-        observed=api.compute_output_shocked(
-            country_name=data.COUNTRY_NAME_DEFAULT,
-            country_initial_debt=country_initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-            shock_year=shock_year,
-            shock_type=shock_type,
-            shock_magnitudes=shock_magnitudes,
+        observed=_series_floats(
+            api.compute_output_shocked(
+                country_name=data.COUNTRY_NAME_DEFAULT,
+                country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
+                growth_baseline=data.GROWTH_BASELINE_DEFAULT,
+                interest_baseline=data.INTEREST_BASELINE_DEFAULT,
+                primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+                shock_year=_as_int(data.SHOCK_YEAR_DEFAULT),
+                shock_type=_as_int(data.SHOCK_TYPE_DEFAULT),
+                shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
+            )
         ),
         addresses=_SHOCKED_ADDRS,
         workbook_oracle=workbook_oracle,
         mismatches=mismatches,
     )
     _compare(
-        observed=api.compute_output_delta(
-            country_name=data.COUNTRY_NAME_DEFAULT,
-            country_initial_debt=country_initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-            shock_year=shock_year,
-            shock_type=shock_type,
-            shock_magnitudes=shock_magnitudes,
+        observed=_series_floats(
+            api.compute_output_delta(
+                country_name=data.COUNTRY_NAME_DEFAULT,
+                country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
+                growth_baseline=data.GROWTH_BASELINE_DEFAULT,
+                interest_baseline=data.INTEREST_BASELINE_DEFAULT,
+                primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+                shock_year=_as_int(data.SHOCK_YEAR_DEFAULT),
+                shock_type=_as_int(data.SHOCK_TYPE_DEFAULT),
+                shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
+            )
         ),
         addresses=_DELTA_ADDRS,
         workbook_oracle=workbook_oracle,

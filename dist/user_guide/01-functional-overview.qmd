@@ -2,18 +2,18 @@
 title: "Functional Overview"
 ---
 
-Tiny DSA is organized around three logical surfaces: **inputs**, **engine**, and **outputs**. In the Python API, the inputs are keyword-only arguments to `compute_*` functions, the engine is the internal calculation inside those functions, and the outputs are the tuples of annual values they return. This section covers the input-and-output contract, country selection, baseline parameters, shock configuration, and output retrieval.
+Tiny DSA is organized around three logical surfaces: **inputs**, **engine**, and **outputs**. In the Python API, the inputs are keyword-only arguments to `compute_*` functions, the engine is the internal calculation inside those functions, and the outputs are labelled annual series. This section covers the input-and-output contract, country selection, baseline parameters, shock configuration, and output retrieval.
 
 ### A. Python API conventions
 
 The public API is exposed through `tiny_dsa.api`. All compute functions are keyword-only and accept leaf inputs as Python scalars or 1-D sequences. There is no evaluation context: do not call `make_context()` or `set_*` setters.
 
 - Scalar arguments such as `country_name`, `shock_year`, and `shock_type` are passed as bare values (for example `country_name='Borvelia'`), never as one-element lists.
-- Series arguments are 1-D sequences of measure values in the series' canonical key order. Pass exactly one value per key.
+- Series arguments are validated `tiny_dsa.tensor.Series` objects with the expected semantic axis. The defaults in `tiny_dsa.data` are the simplest valid inputs.
 - Constants such as the country profile names and year labels are held in the
   generated `data` module; the public compute functions still require their
   scenario inputs explicitly.
-- Each `compute_*` function returns a tuple of floats, one value per horizon year, not records.
+- Each `compute_*` function returns a labelled `Series`, not a bare tuple.
 
 The stable output functions are:
 
@@ -32,12 +32,12 @@ These are the Python equivalents of the legacy Outputs-sheet ranges and should b
 - `country_initial_debt`: initial debt-to-GDP ratios for the three country profiles, in percent of GDP.
 - `country_profile_names`: profile names used to resolve the selected country. This argument has a built-in default matching the standard profiles **Borvelia**, **Litellia**, and **Aurelium**.
 
-When relying on the default profile names, pass `country_initial_debt` in the order `[Borvelia, Litellia, Aurelium]`. The source workbook loads Borvelia at 60.0, Litellia at 80.0, and Aurelium at 40.0 percent of GDP. Other names are not valid unless the profile sequences are extended accordingly.
+When relying on the default profile names, use `data.COUNTRY_INITIAL_DEBT_DEFAULT`. Its values are ordered as Borvelia, Litellia, and Aurelium: 60.0, 80.0, and 40.0 percent of GDP.
 
 The initial debt-to-GDP ratio is not a separate input. It is resolved internally by matching `country_name` against `country_profile_names` and selecting the corresponding entry from `country_initial_debt`.
 
 ```{python}
-import polars as pl
+from tiny_dsa import data
 
 from tiny_dsa.api import (
     compute_output_baseline,
@@ -46,7 +46,7 @@ from tiny_dsa.api import (
 )
 
 country_name = 'Borvelia'
-country_initial_debt = [60.0, 80.0, 40.0]
+country_initial_debt = data.COUNTRY_INITIAL_DEBT_DEFAULT
 ```
 
 ### C. Setting the baseline parameters
@@ -60,9 +60,9 @@ country_initial_debt = [60.0, 80.0, 40.0]
 These three sequences are passed directly to the compute functions. The example below uses the workbook defaults.
 
 ```{python}
-growth_baseline = [3.5, 3.5, 3.5, 3.5, 3.5]
-interest_baseline = [4.0, 4.0, 4.0, 4.0, 4.0]
-primary_balance_baseline = [-1.0, -0.5, 0.0, 0.5, 1.0]
+growth_baseline = data.GROWTH_BASELINE_DEFAULT
+interest_baseline = data.INTEREST_BASELINE_DEFAULT
+primary_balance_baseline = data.PRIMARY_BALANCE_BASELINE_DEFAULT
 ```
 
 Once these are provided, `compute_output_baseline` returns the year-by-year baseline debt-to-GDP trajectory.
@@ -76,9 +76,7 @@ baseline = compute_output_baseline(
     primary_balance_baseline=primary_balance_baseline,
 )
 
-pl.DataFrame({'year': range(1, 6), 'value': list(baseline)}).select(
-    'year', pl.col('value').alias('Baseline debt-to-GDP')
-)
+baseline
 ```
 
 ### D. Configuring the shock
@@ -94,7 +92,7 @@ The example below uses the workbook defaults and computes the shocked path.
 ```{python}
 shock_year = 2
 shock_type = 1
-shock_magnitudes = [-2.0, 2.0, -1.0]
+shock_magnitudes = data.SHOCK_MAGNITUDES_DEFAULT
 
 shocked = compute_output_shocked(
     country_name=country_name,
@@ -107,16 +105,14 @@ shocked = compute_output_shocked(
     shock_magnitudes=shock_magnitudes,
 )
 
-pl.DataFrame({'year': range(1, 6), 'value': list(shocked)}).select(
-    'year', pl.col('value').alias('Shocked debt-to-GDP')
-)
+shocked
 ```
 
 ### E. Reading the outputs
 
-The API returns three annual series for years 1 through 5: the baseline path, the shocked path, and the difference (`shocked` minus `baseline`) in percentage points of GDP. Each series is a tuple of five floats. Unlike the workbook, there is no separate Engine-visible path; the compute functions return the stable output values directly.
+The API returns three annual series for years 1 through 5: the baseline path, the shocked path, and the difference (`shocked` minus `baseline`) in percentage points of GDP. Each is a labelled `Series` whose `TIME_PERIOD` axis contains 1 through 5. Unlike the workbook, there is no separate Engine-visible path; the compute functions return the stable output values directly.
 
-A summary of the active configuration can be assembled from the same scalar inputs used to make the calls: `country_name`, the resolved initial debt, `shock_year`, and `shock_type`. The following example computes all three outputs and tabulates them in one Polars frame.
+A summary of the active configuration can be assembled from the same scalar inputs used to make the calls: `country_name`, the resolved initial debt, `shock_year`, and `shock_type`. The following example computes all three outputs and turns the delta into tidy records.
 
 ```{python}
 output_delta = compute_output_delta(
@@ -130,16 +126,7 @@ output_delta = compute_output_delta(
     shock_magnitudes=shock_magnitudes,
 )
 
-frame = pl.DataFrame({
-    'year': list(range(1, 6)),
-    'baseline': list(baseline),
-    'shocked': list(shocked),
-    'delta': list(output_delta),
-}).select(
-    'year',
-    pl.col('baseline').alias('Baseline debt-to-GDP'),
-    pl.col('shocked').alias('Shocked debt-to-GDP'),
-    pl.col('delta').alias('Impact (p.p.)'),
-)
-frame
+from tiny_dsa.runtime import as_records
+
+as_records(compute_output_delta, output_delta)
 ```

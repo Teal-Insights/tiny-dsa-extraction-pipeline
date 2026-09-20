@@ -14,3 +14,6 @@ __all__ = [
     'compute_output_shocked',
     'compute_output_delta',
 ]
+
+from .tensor import Axis, Domain, Series, Tensor, TensorSchema
+__all__ += ['Axis', 'Domain', 'Series', 'Tensor', 'TensorSchema']

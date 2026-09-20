@@ -21,7 +21,7 @@ def test_synthetic_bindings_have_unique_inverted_tree_cell_ownership(
     catalog = build_catalog(
         load_series_bindings(config.bindings_path), workbook=config.workbook_path
     )
-    assert catalog.bound_addresses()
+    assert catalog.address_to_id
 
 
 def test_overlapping_bindings_fail_unique_inverted_tree_ownership(

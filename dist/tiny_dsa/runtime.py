@@ -1,410 +1,262 @@
-"""Excel operators and series-alignment primitives for inverted-tree codegen.
+"""Named-axis primitives for inverted-tree codegen.
 
-Mechanical extraction emits calls to these helpers instead of reading cells
-from an evaluation context. `take` gathers catalog-order series by index;
-internals never see holes and never fetch extra items to pad a result.
-
-A **measure** is a numeric observation or an Excel error code string
-(`#REF!`, `#DIV/0!`, …) — the same `err.code` ctx stores on Records. Operators
-raise `XlError`; series-member loops catch it so one error cell does not abort
-the tuple.
+Lazy views, recurrence readers, and the `publish` metadata decorator. Excel
+operators live in `excel.py`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from datetime import date, datetime
-from typing import Any, Literal, NoReturn, Protocol, TypeGuard, TypeVar, cast, overload
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from itertools import product
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
 
-from excel_grapher.core import operators as _core_ops
-from excel_grapher.core.logic_funcs import logical_and, logical_if, logical_not, logical_or
-from excel_grapher.core.lookup_funcs import index_cells, match_cells, vlookup_cells
-from excel_grapher.core.math_funcs import average_cells, exp_number, max_cells, sum_cells
-from excel_grapher.core.sumproduct import sumproduct_cells
-from excel_grapher.core.types import CellValue, FormulaValue
-from excel_grapher.core.types import XlError as CoreXlError
-from excel_grapher.runtime.info import xl_isnumber as _info_isnumber
-from excel_grapher.series_bindings.input_coerce import (
-    apply_input_value_map as apply_input_value_map,
-)
-from excel_grapher.series_bindings.input_coerce import require_input_domain as require_input_domain
+from .excel import Range
+from .excel import FormulaValue
+from .tensor import Axis, Domain, DomainTemplate, SchemaTemplate, Tensor, TensorSchema
+from .excel import XlError, _as_number
+
+if TYPE_CHECKING:
+    from .provenance import ProvenanceTemplate
 
 T = TypeVar("T")
 F = TypeVar("F", bound=Callable[..., object])
+K = TypeVar("K", bound=tuple[object, ...])
+
+TablePart = Callable[[], object] | Range
+
+
+def lazy_table(rows: tuple[tuple[TablePart, ...], ...]) -> Range:
+    """Expose a formula table without evaluating cells a lookup does not select.
+
+    Each tuple is a horizontal strip of cell callbacks and views. Parts in a
+    strip share height; a view contributes its shape in place, so a
+    rectangular run of one series is one part instead of one callback per
+    cell. Strips stack vertically and share the table width.
+    """
+    strips: list[tuple[int, int, list[tuple[int, TablePart]]]] = []
+    width: int | None = None
+    top = 1
+    for strip in rows:
+        parts: list[tuple[int, TablePart]] = []
+        column = 0
+        height: int | None = None
+        for part in strip:
+            if isinstance(part, Range):
+                part_height, part_width = part.shape
+                if height is None:
+                    height = part_height
+                elif height != part_height:
+                    raise ValueError(
+                        f"table strip parts differ in height: {height} and {part_height}"
+                    )
+                parts.append((column, part))
+                column += part_width
+            else:
+                if height is None:
+                    height = 1
+                elif height != 1:
+                    raise ValueError(f"table strip parts differ in height: {height} and 1")
+                parts.append((column, part))
+                column += 1
+        height = height or 1
+        if width is None:
+            width = column
+        elif width != column:
+            raise ValueError(f"table rows differ in width: {width} and {column}")
+        strips.append((top, height, parts))
+        top += height
+
+    def resolve(row: int, column: int) -> FormulaValue:
+        for start_row, height, parts in strips:
+            if start_row <= row < start_row + height:
+                local_row = row - start_row + 1
+                for start, part in reversed(parts):
+                    if column - 1 >= start:
+                        if isinstance(part, Range):
+                            return part.cell(local_row, column - start)
+                        return cast(FormulaValue, part())
+                raise IndexError(column)
+        raise IndexError(row)
+
+    return Range("", 1, 1, top - 1 or 1, width or 1, lambda address: None, _coord_resolver=resolve)
 
 
 class KeyedCompute(Protocol):
     """A generated `compute_*` or internals helper with published key metadata."""
 
     __key__: tuple[str, ...]
-    __domain__: tuple[object, ...]
+    __domain__: tuple[object, ...] | Domain | DomainTemplate | None
     __holes__: tuple[int, ...]
 
 
 def publish(
+    schema: TensorSchema | SchemaTemplate | None = None,
     *,
-    key: tuple[str, ...],
-    domain: tuple[object, ...],
+    key: tuple[str, ...] | None = None,
+    domain: object = None,
     holes: tuple[int, ...] = (),
-    constants: tuple[str, ...] | None = None,
+    constants: Iterable[str] | None = None,
+    cells: Mapping[K, str] | ProvenanceTemplate | None = None,
 ) -> Callable[[F], F]:
     """Attach series metadata to a generated helper and return it unchanged.
 
-    Sets `__key__`, `__domain__`, and `__holes__` on `fn`. When `constants` is
-    given, also sets `__constants__`. Does not wrap `fn`.
+    Sets `__key__`, `__domain__`, and `__holes__` on `fn`; a `schema` supplies
+    the key fields and required domain of a tensor series. When `constants`
+    is given, also sets `__constants__` to their names in sorted order.
+    `cells` publishes immutable coordinate provenance as `__cells__`. Does
+    not wrap `fn`.
     """
+    if schema is not None:
+        key = tuple(axis.name for axis in schema.domain.axes)
+        domain = schema.domain
+    if key is None:
+        raise TypeError("publish needs a schema or explicit key fields")
+    published_key = key
 
     def decorator(fn: F) -> F:
         target = cast(Any, fn)
-        target.__key__ = key
+        target.__key__ = published_key
         target.__domain__ = domain
         target.__holes__ = holes
+        if cells is not None:
+            target.__cells__ = MappingProxyType(dict(cells)) if isinstance(cells, dict) else cells
         if constants is not None:
-            target.__constants__ = constants
+            target.__constants__ = tuple(sorted(constants))
         return fn
 
     return decorator
 
 
-XL_ERROR_CODES = frozenset(
-    {
-        "#VALUE!",
-        "#REF!",
-        "#DIV/0!",
-        "#N/A",
-        "#NAME?",
-        "#NUM!",
-        "#NULL!",
-    }
-)
+def span(axis: Axis, first: object, last: object) -> tuple[str | int, ...]:
+    """Return the keys of `axis` from `first` through `last`, inclusive.
 
-
-class XlError(Exception):
-    """Excel error value raised as a Python exception."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
-def is_error(value: object) -> TypeGuard[str]:
-    """True when `value` is an Excel error code string."""
-    return isinstance(value, str) and value in XL_ERROR_CODES
-
-
-@overload
-def as_measure(value: object, dtype: Literal["float"] = "float") -> float | str: ...
-@overload
-def as_measure(value: object, dtype: Literal["int"]) -> int | str: ...
-@overload
-def as_measure(value: object, dtype: Literal["str"]) -> str: ...
-@overload
-def as_measure(value: object, dtype: Literal["bool"]) -> bool | str: ...
-@overload
-def as_measure(value: object, dtype: Literal["datetime"]) -> datetime | str: ...
-def as_measure(value: object, dtype: str = "float") -> int | float | str | bool | datetime | None:
-    """Coerce a helper result to a measure: number or cached text.
-
-    Operators still raise `XlError`. Series-member boundaries catch that and
-    store `err.code` here so a `#REF!` cell does not abort the rest of a series.
-    Non-numeric cached strings (`n/a`, `..`) pass through as measures.
-    Blank cells (`None`) stay `None`.
-
-    Overloads narrow the return by `dtype`: the default `float` path is
-    `float | str` so generated `list[float | str]` accumulators type-check.
+    Lowers a worksheet range along one semantic axis. A key outside the axis
+    raises `#REF!`.
     """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, XlError):
-        return value.code
-    if dtype == "int":
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        raise TypeError(f"cannot coerce {type(value).__name__} to int measure")
-    if dtype == "str":
-        return str(value)
-    if dtype == "bool":
-        return bool(value)
-    if dtype == "datetime":
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, date):
-            return datetime(value.year, value.month, value.day)
-        raise TypeError(f"cannot coerce {type(value).__name__} to datetime measure")
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, int | float):
-        return float(value)
-    raise TypeError(f"cannot coerce {type(value).__name__} to float measure")
+    try:
+        start = axis.keys.index(cast(Any, first))
+        stop = axis.keys.index(cast(Any, last))
+    except ValueError as exc:
+        raise XlError("#REF!") from exc
+    if start > stop:
+        raise XlError("#REF!")
+    return axis.keys[start : stop + 1]
 
 
-def _raise_stored_error(value: object) -> None:
-    """Re-raise a cached Excel error-code measure."""
-    if isinstance(value, str) and is_error(value):
-        raise XlError(value)
+def view(
+    values: Any,
+    rows: Sequence[object] | Mapping[str, Sequence[object]] | None = None,
+    cols: Sequence[object] | Mapping[str, Sequence[object]] | None = None,
+    *,
+    cols_first: bool = False,
+) -> Range:
+    """Expose a worksheet rectangle of one series without copying it.
+
+    Each cell resolves `values[coordinate]` on access, so lookups evaluate
+    only the cells they select and recurrence readers stay demand-driven.
+    The coordinate is the row key followed by the column key; `cols_first`
+    reverses that order, and an absent axis contributes no key.
+
+    A block whose rows or columns nest several key fields selects keys per
+    field name: `rows={"COUNTRY": keys, "SCENARIO": keys}` enumerates the
+    product of those selections in worksheet order, and the coordinate is
+    assembled in the order of the series' axes.
+    """
+    if isinstance(rows, Mapping) or isinstance(cols, Mapping):
+        if not isinstance(rows or {}, Mapping) or not isinstance(cols or {}, Mapping):
+            raise TypeError("view selects rows and columns by field name together")
+        return _product_view(
+            values,
+            cast(Mapping[str, Sequence[object]], rows or {}),
+            cast(Mapping[str, Sequence[object]], cols or {}),
+        )
+    row_keys: Sequence[object] = (None,) if rows is None else rows
+    col_keys: Sequence[object] = (None,) if cols is None else cols
+
+    def resolve(row: int, column: int) -> FormulaValue:
+        parts = [row_keys[row - 1], col_keys[column - 1]]
+        if cols_first:
+            parts.reverse()
+        coordinate = tuple(
+            part
+            for part, present in zip(
+                parts, (rows, cols) if not cols_first else (cols, rows), strict=True
+            )
+            if present is not None
+        )
+        return cast(FormulaValue, values[coordinate])
+
+    return Range(
+        "",
+        1,
+        1,
+        len(row_keys),
+        len(col_keys),
+        lambda address: None,
+        _coord_resolver=resolve,
+    )
 
 
-def _raise_stored_errors_in(value: object) -> None:
-    """Re-raise stored error-code measures in scalars and nested sequences."""
-    if isinstance(value, str) or not isinstance(value, Sequence):
-        _raise_stored_error(value)
-        return
-    for item in value:
-        _raise_stored_errors_in(item)
+def _product_view(
+    values: Any,
+    rows: Mapping[str, Sequence[object]],
+    cols: Mapping[str, Sequence[object]],
+) -> Range:
+    """Lazy block over the product of per-field key selections."""
+    names = tuple(axis.name for axis in values.domain.axes)
+    if set(rows) | set(cols) != set(names) or set(rows) & set(cols):
+        raise ValueError(f"view selections must cover the axes {names!r} once each")
+    fields = (*rows, *cols)
+    row_products: list[tuple[object, ...]] = list(product(*[tuple(keys) for keys in rows.values()]))
+    col_products: list[tuple[object, ...]] = list(product(*[tuple(keys) for keys in cols.values()]))
+
+    def resolve(row: int, column: int) -> FormulaValue:
+        selected = (*row_products[row - 1], *col_products[column - 1])
+        keys = dict(zip(fields, selected, strict=True))
+        return cast(FormulaValue, values[tuple(keys[name] for name in names)])
+
+    return Range(
+        "",
+        1,
+        1,
+        len(row_products),
+        len(col_products),
+        lambda address: None,
+        _coord_resolver=resolve,
+    )
 
 
-def _as_core_cells(value: object) -> CellValue:
-    """Convert stored error-code measures to core sentinels for shared helpers."""
-    if isinstance(value, str):
-        converted = CoreXlError.from_text(value)
-        return converted if converted is not None else value
-    if isinstance(value, Sequence):
-        return cast(CellValue, [_as_core_cells(item) for item in value])
-    return cast(CellValue, value)
+def at_anchor(value: T, rows: object, cols: object) -> T:
+    """Return a scalar `OFFSET` anchor when both displacements are zero.
 
-
-def _adapt_core(value: object) -> object:
-    """Raise `XlError` when `core` returned a sentinel."""
-    if isinstance(value, CoreXlError):
-        raise XlError(value.value)
+    A scalar series has no other bound cells to move to, so a non-zero
+    displacement raises `#VALUE!` like a positional read past the series.
+    """
+    if int(_as_number(rows)) != 0 or int(_as_number(cols)) != 0:
+        raise XlError("#VALUE!")
     return value
 
 
-def _as_formula(value: object) -> FormulaValue:
-    """Narrow a generated-code operand to a `core` formula value."""
-    return cast(FormulaValue, value)
+def _axis_keys(axis: Axis | Sequence[object]) -> tuple[object, ...]:
+    return axis.keys if isinstance(axis, Axis) else tuple(axis)
 
 
-def _arith_operand(value: object) -> FormulaValue:
-    """Prepare an arithmetic operand for `core` (blank text is `0`)."""
-    _raise_stored_error(value)
-    if isinstance(value, str) and value.replace("\u00a0", "").strip() == "":
-        return 0.0
-    return _as_formula(value)
+def axis_step(axis: Axis | Sequence[object], key: object, steps: object) -> str | int:
+    """Return the key `steps` positions after `key` along `axis`.
 
-
-def _as_number(value: object) -> float:
-    """Coerce `value` via core `to_number`, re-raising stored error codes."""
-    from excel_grapher.core.coercions import to_number
-
-    number = to_number(_arith_operand(value))
-    if isinstance(number, CoreXlError):
-        raise XlError(number.value)
-    return float(number)
-
-
-def xl_add(left: object, right: object) -> object:
-    """Excel `+` via `core.operators.xl_add`."""
-    return _adapt_core(_core_ops.xl_add(_arith_operand(left), _arith_operand(right)))
-
-
-def xl_sub(left: object, right: object) -> object:
-    """Excel `-` via `core.operators.xl_sub`."""
-    return _adapt_core(_core_ops.xl_sub(_arith_operand(left), _arith_operand(right)))
-
-
-def xl_mul(left: object, right: object) -> object:
-    """Excel `*` via `core.operators.xl_mul`."""
-    return _adapt_core(_core_ops.xl_mul(_arith_operand(left), _arith_operand(right)))
-
-
-def xl_div(numerator: object, denominator: object) -> object:
-    """Excel `/` via `core.operators.xl_div`."""
-    return _adapt_core(_core_ops.xl_div(_arith_operand(numerator), _arith_operand(denominator)))
-
-
-def xl_pow(left: object, right: object) -> object:
-    """Excel `^` via `core.operators.xl_pow`."""
-    return _adapt_core(_core_ops.xl_pow(_arith_operand(left), _arith_operand(right)))
-
-
-def xl_neg(value: object) -> object:
-    """Excel unary `-` via `core.operators.xl_neg`."""
-    return _adapt_core(_core_ops.xl_neg(_arith_operand(value)))
-
-
-def xl_pos(value: object) -> object:
-    """Excel unary `+` via `core.operators.xl_pos`."""
-    return _adapt_core(_core_ops.xl_pos(_arith_operand(value)))
-
-
-def xl_eq(left: object, right: object) -> object:
-    """Excel `=` via `core.operators.xl_eq`."""
-    _raise_stored_error(left)
-    _raise_stored_error(right)
-    return _adapt_core(_core_ops.xl_eq(_as_formula(left), _as_formula(right)))
-
-
-def xl_ne(left: object, right: object) -> object:
-    """Excel `<>` via `core.operators.xl_ne`."""
-    _raise_stored_error(left)
-    _raise_stored_error(right)
-    return _adapt_core(_core_ops.xl_ne(_as_formula(left), _as_formula(right)))
-
-
-def xl_lt(left: object, right: object) -> object:
-    """Excel `<` via `core.operators.xl_lt`."""
-    _raise_stored_error(left)
-    _raise_stored_error(right)
-    return _adapt_core(_core_ops.xl_lt(_as_formula(left), _as_formula(right)))
-
-
-def xl_gt(left: object, right: object) -> object:
-    """Excel `>` via `core.operators.xl_gt`."""
-    _raise_stored_error(left)
-    _raise_stored_error(right)
-    return _adapt_core(_core_ops.xl_gt(_as_formula(left), _as_formula(right)))
-
-
-def xl_le(left: object, right: object) -> object:
-    """Excel `<=` via `core.operators.xl_le`."""
-    _raise_stored_error(left)
-    _raise_stored_error(right)
-    return _adapt_core(_core_ops.xl_le(_as_formula(left), _as_formula(right)))
-
-
-def xl_ge(left: object, right: object) -> object:
-    """Excel `>=` via `core.operators.xl_ge`."""
-    _raise_stored_error(left)
-    _raise_stored_error(right)
-    return _adapt_core(_core_ops.xl_ge(_as_formula(left), _as_formula(right)))
-
-
-OPERATOR_TABLE = {
-    "+": xl_add,
-    "-": xl_sub,
-    "*": xl_mul,
-    "/": xl_div,
-    "^": xl_pow,
-    "=": xl_eq,
-    "<>": xl_ne,
-    "<": xl_lt,
-    ">": xl_gt,
-    "<=": xl_le,
-    ">=": xl_ge,
-    "-u": xl_neg,
-    "+u": xl_pos,
-}
-
-
-def xl_exp(*args: object) -> object:
-    """Excel `EXP` via `core.math_funcs.exp_number`."""
-    for arg in args:
-        _raise_stored_error(arg)
-    return _adapt_core(exp_number(*cast(tuple[CellValue, ...], args)))
-
-
-def xl_sum(*args: object) -> object:
-    """Excel `SUM` via `core.math_funcs.sum_cells`."""
-    for arg in args:
-        _raise_stored_errors_in(arg)
-    return _adapt_core(sum_cells(*cast(tuple[CellValue, ...], args)))
-
-
-def xl_average(*args: object) -> object:
-    """Excel `AVERAGE` via `core.math_funcs.average_cells`."""
-    for arg in args:
-        _raise_stored_errors_in(arg)
-    return _adapt_core(average_cells(*cast(tuple[CellValue, ...], args)))
-
-
-def xl_max(*args: object) -> object:
-    """Excel `MAX` via `core.math_funcs.max_cells`."""
-    for arg in args:
-        _raise_stored_errors_in(arg)
-    return _adapt_core(max_cells(*cast(tuple[CellValue, ...], args)))
-
-
-def xl_if(cond: object, then_value: object, else_value: object = False) -> object:
-    """Excel `IF` via `core.logic_funcs.logical_if` (scalar or element-wise)."""
-    return _adapt_core(logical_if(cond, then_value, else_value))
-
-
-def xl_and(*args: object) -> object:
-    """Excel `AND` via `core.logic_funcs.logical_and`."""
-    return _adapt_core(logical_and(*(_as_core_cells(arg) for arg in args)))
-
-
-def xl_or(*args: object) -> object:
-    """Excel `OR` via `core.logic_funcs.logical_or`."""
-    return _adapt_core(logical_or(*(_as_core_cells(arg) for arg in args)))
-
-
-def xl_not(arg: object) -> object:
-    """Excel `NOT` via `core.logic_funcs.logical_not`."""
-    return _adapt_core(logical_not(_as_core_cells(arg)))
-
-
-def xl_sumproduct(*args: object) -> object:
-    """Excel `SUMPRODUCT` via `core.sumproduct.sumproduct_cells`."""
-    for arg in args:
-        _raise_stored_errors_in(arg)
-    return _adapt_core(sumproduct_cells(*cast(tuple[CellValue, ...], args)))
-
-
-def xl_choose(index: object, *choices: float) -> float:
-    """Excel `CHOOSE`: 1-based selection over already-evaluated arguments."""
-    position = int(_as_number(index))
-    if position < 1 or position > len(choices):
-        raise XlError("#VALUE!")
-    return choices[position - 1]
-
-
-def xl_index(array: object, row_num: object = None, col_num: object = None) -> object:
-    """Excel `INDEX` via `core.lookup_funcs.index_cells`."""
-    return _adapt_core(index_cells(array, row_num, col_num))
-
-
-def xl_match(lookup: object, lookup_array: Sequence[object], match_type: int = 0) -> int:
-    """Excel `MATCH` via `core.lookup_funcs.match_cells`."""
-    _raise_stored_error(lookup)
-    result = match_cells(lookup, list(lookup_array), match_type)
-    adapted = _adapt_core(result)
-    if not isinstance(adapted, int | float):
-        raise TypeError(f"MATCH returned {type(adapted).__name__}")
-    return int(adapted)
-
-
-def xl_vlookup(
-    lookup: object,
-    table_array: object,
-    col_index_num: object,
-    range_lookup: object = True,
-) -> object:
-    """Excel `VLOOKUP` via `core.lookup_funcs.vlookup_cells`."""
-    _raise_stored_error(lookup)
-    _raise_stored_error(col_index_num)
-    _raise_stored_error(range_lookup)
-    return _adapt_core(vlookup_cells(lookup, table_array, col_index_num, range_lookup))
-
-
-def xl_isnumber(value: object) -> bool:
-    """Excel `ISNUMBER`: True only for non-bool numbers; False for blanks and errors."""
-    if isinstance(value, str) and is_error(value):
-        return False
-    return _info_isnumber(cast(CellValue, value))
-
-
-def xl_at(values: Sequence[T], index: object) -> T:
-    """Return `values[index]` (0-based), raising `#VALUE!` when out of range.
-
-    `index` is coerced with core `to_number` and truncated toward zero.
+    Lowers `OFFSET` moves along one worksheet axis. A position outside the
+    bound series raises `#VALUE!`, matching positional `xl_at` selection.
+    `axis` is an `Axis` or the key sequence of one series on that axis.
     """
-    position = int(_as_number(index))
-    if position < 0 or position >= len(values):
+    keys = _axis_keys(axis)
+    try:
+        position = keys.index(cast(Any, key)) + int(_as_number(steps))
+    except ValueError as exc:
+        raise XlError("#VALUE!") from exc
+    if position < 0 or position >= len(keys):
         raise XlError("#VALUE!")
-    return values[position]
-
-
-def xl_raise(code: str) -> NoReturn:
-    """Raise `XlError(code)` from generated expression position."""
-    raise XlError(code)
+    return cast(str | int, keys[position])
 
 
 def require_aligned(*series: Sequence[object]) -> int:
@@ -415,13 +267,6 @@ def require_aligned(*series: Sequence[object]) -> int:
     if len(set(lengths)) != 1:
         raise ValueError(f"misaligned series lengths: {lengths}")
     return lengths[0]
-
-
-def require_length(values: Sequence[object], length: int) -> None:
-    """Fail if `values` is not a catalog-order array of `length`."""
-    actual = len(values)
-    if actual != length:
-        raise ValueError(f"expected length {length}, got {actual}")
 
 
 def take(values: Sequence[T], indices: Sequence[int] | slice) -> tuple[T, ...]:
@@ -453,18 +298,35 @@ def take(values: Sequence[T], indices: Sequence[int] | slice) -> tuple[T, ...]:
 
 def as_records(
     compute: KeyedCompute,
-    result: Sequence[object],
+    result: object,
     *,
     measure: str = "OBS_VALUE",
 ) -> list[dict[str, object]]:
     """Zip a compute result with `__key__` / `__domain__` into records.
 
-    Tuples stay the ABI; this helper is for docs, tests, and tidy views.
-    A one-key domain is a tuple of scalars (`TIME_PERIOD_DOMAIN.index(2050)`).
-    A multi-key domain is a tuple of key tuples aligned with `__key__`.
+    Named results iterate by coordinate identity. Legacy metadata requires an
+    explicitly ordered sequence and remains supported by this record adapter.
     """
     keys = compute.__key__
     domain = compute.__domain__
+    if isinstance(domain, DomainTemplate):
+        if not isinstance(result, Tensor):
+            raise ValueError("result must be a Tensor over the declared result domain")
+        return [
+            dict(zip(keys, coord, strict=True)) | {measure: value}
+            for coord, value in result.items()
+        ]
+    if isinstance(domain, Domain):
+        if not isinstance(result, Tensor) or result.domain != domain:
+            raise ValueError("result must be a Tensor over the declared result domain")
+        return [
+            dict(zip(keys, coord, strict=True)) | {measure: value}
+            for coord, value in result.items()
+        ]
+    if domain is None:
+        return [{measure: result}]
+    if not isinstance(result, Sequence):
+        raise ValueError("legacy result metadata requires an explicitly ordered sequence")
     if len(domain) != len(result):
         raise ValueError(f"result length {len(result)} does not match domain length {len(domain)}")
     records: list[dict[str, object]] = []
@@ -484,6 +346,63 @@ def as_records(
 
 class InstanceCycleError(ValueError):
     """Demand-driven evaluation hit a same-index circular reference."""
+
+
+class CoordinateReader(Generic[T]):
+    """Private demand-driven series; only completed tensors are published.
+
+    A read of a valid coordinate that is absent from a sparse required
+    domain is a blank (`None`), matching a structural hole Excel evaluates
+    as empty rather than as an out-of-domain error.
+    """
+
+    def __init__(
+        self,
+        series_id: str,
+        domain: Domain,
+        compute: Callable[..., T],
+    ) -> None:
+        self._series_id = series_id
+        self._domain = domain
+        self._compute = compute
+        self._memo: dict[tuple[str, tuple[str | int, ...]], T] = {}
+        self._active: set[tuple[str, tuple[str | int, ...]]] = set()
+
+    @property
+    def domain(self) -> Domain:
+        """Coordinates this reader can compute."""
+        return self._domain
+
+    def __getitem__(self, key: str | int | tuple[str | int, ...]) -> T:
+        coordinate = key if isinstance(key, tuple) else (key,)
+        if self._domain.sparse_get(coordinate) is None:
+            return cast(T, None)
+        identity = (self._series_id, coordinate)
+        if identity in self._memo:
+            return self._memo[identity]
+        if identity in self._active:
+            raise InstanceCycleError(f"circular reference at {self._series_id}{coordinate!r}")
+        self._active.add(identity)
+        try:
+            try:
+                value = self._compute(*coordinate)
+            except XlError as error:
+                value = cast(T, error.code)
+            self._memo[identity] = value
+            return value
+        finally:
+            self._active.remove(identity)
+
+
+def evaluate(
+    formula: Callable[..., T], domain: Iterable[tuple[str | int, ...]]
+) -> Iterator[tuple[tuple[str | int, ...], T | str]]:
+    """Apply `formula` to every coordinate of `domain`, storing Excel errors as codes."""
+    for coordinate in domain:
+        try:
+            yield coordinate, formula(*coordinate)
+        except XlError as error:
+            yield coordinate, error.code
 
 
 def eval_instance(
@@ -511,25 +430,4 @@ def eval_instance(
     finally:
         stack.remove(key)
     memo[key] = value
-    return value
-
-
-def live_measure(value: T) -> T:
-    """Return `value`, or raise `XlError` when it is a stored error code."""
-    if isinstance(value, str) and is_error(value):
-        raise XlError(value)
-    return value
-
-
-def demand_instance(
-    statement: str,
-    index: int,
-    compute: Callable[[int], T],
-    memo: dict[tuple[str, int], T],
-    stack: set[tuple[str, int]],
-) -> T:
-    """Like `eval_instance`, but re-raise a stored Excel error as `XlError`."""
-    value = eval_instance(statement, index, compute, memo, stack)
-    if isinstance(value, str) and is_error(value):
-        raise XlError(value)
     return value

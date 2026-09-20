@@ -12,14 +12,15 @@
 # without fill — only the labeled start columns resolve; mixed measures share
 # the same (SCENARIO, TIME_PERIOD) key.
 #
-# Shared vs unique compute_/set_ names across shards:
-# - Share the same name when shards are complementary slices of one logical
-#   public series (this file: Gap columns for 2050/2075 → one compute_gap_milestones).
+# Shared vs unique compute names / input series ids across shards:
+# - Share the same output.compute.name or input series id when shards are
+#   complementary slices of one logical public series (this file: Gap columns
+#   for 2050/2075 → one compute_gap_milestones).
 # - Uniquify per shard when each shard is a distinct scenario/engine path
 #   (e.g. compute_scenario_primary_expenditure_pct_gdp_paris vs _moderate).
-#   Sharing a name across those paths merges definitions at export and can
+#   Sharing a name/id across those paths merges definitions at export and can
 #   leave most scenario paths unreachable in the exported library.
-schema_version: 1.13.0
+schema_version: 1.17.0
 workbook: workbook.xlsx
 
 concept_scheme:

@@ -776,26 +776,21 @@ def test_binding_guidance_documents_constant_direction() -> None:
 
     for text in (pipeline_readme, prompt):
         lowered = text.lower()
-        assert "read_" in lowered
-        assert "set_" in lowered
-        assert (
-            "xl_cell" in lowered
-            or "formula-body" in lowered
-            or "phase 2" in lowered
-            or "body rewrite" in lowered
-        )
+        assert "input: {}" in text
+        assert "xl_cell" in lowered
+        assert "constant.reader" not in lowered
 
 
-def test_excel_grapher_floor_is_14_4_5() -> None:
-    """Lockfile and pyproject must agree on excel-grapher>=14.4.5."""
+def test_excel_grapher_floor_is_21_1_0() -> None:
+    """Lockfile and pyproject must agree on excel-grapher>=21.1.0."""
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     lockfile = (root / "uv.lock").read_text(encoding="utf-8")
     installed = tuple(int(part) for part in version("excel-grapher").split(".")[:3])
 
-    assert "excel-grapher>=14.4.5" in pyproject
-    assert '{ name = "excel-grapher", specifier = ">=14.4.5" }' in lockfile
-    assert installed >= (14, 4, 5)
+    assert "excel-grapher>=21.1.0" in pyproject
+    assert '{ name = "excel-grapher", specifier = ">=21.1.0" }' in lockfile
+    assert installed >= (21, 1, 0)
 
 
 def test_binding_resolution_audit_uses_public_apply_series_excludes() -> None:
@@ -915,6 +910,33 @@ def test_findings_from_resolution_flags_partial_bind_and_empty_public() -> None:
     assert any(
         finding.code == "empty_public_series" and finding.severity == "warning"
         for finding in empty
+    )
+
+    empty_input = findings_from_resolution(
+        {
+            "series_id": "missing_input",
+            "ok": True,
+            "requires_address": False,
+            "leaves": [],
+            "issues": [
+                {
+                    "level": "warning",
+                    "code": "no_resolved_cells",
+                    "message": "No resolved input cells",
+                    "series_id": "missing_input",
+                    "address": None,
+                }
+            ],
+        },
+        direction="input",
+        series={
+            "id": "missing_input",
+            "input": {},
+        },
+    )
+    assert any(
+        finding.code == "empty_public_series" and finding.severity == "warning"
+        for finding in empty_input
     )
 
 

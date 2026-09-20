@@ -6,13 +6,17 @@ This section walks through three illustrative scenarios for Borvelia, a stylized
 
 ```{python}
 import polars as pl
+from tiny_dsa import data
 from tiny_dsa.api import compute_output_baseline, compute_output_shocked, compute_output_delta
 
 country_name = "Borvelia"
-initial_debt_profile = [60.0, 80.0, 40.0]
-growth_baseline = [3.5, 3.5, 3.5, 3.5, 3.5]
-interest_baseline = [4.0, 4.0, 4.0, 4.0, 4.0]
-primary_balance_baseline = [-1.0, -0.5, 0.0, 0.5, 1.0]
+initial_debt_profile = data.COUNTRY_INITIAL_DEBT_DEFAULT
+growth_baseline = data.GROWTH_BASELINE_DEFAULT
+interest_baseline = data.INTEREST_BASELINE_DEFAULT
+primary_balance_baseline = data.PRIMARY_BALANCE_BASELINE_DEFAULT
+
+def values(series):
+    return [value for _, value in series.items()]
 ```
 
 ### Baseline trajectory
@@ -30,7 +34,7 @@ baseline = compute_output_baseline(
 
 baseline_table = pl.DataFrame({
     "Year": [0, 1, 2, 3, 4, 5],
-    "Baseline": [60.0] + list(baseline),
+    "Baseline": [60.0] + values(baseline),
 }).select(
     "Year",
     pl.col("Baseline").round(2),
@@ -51,7 +55,7 @@ growth_shock = compute_output_shocked(
     primary_balance_baseline=primary_balance_baseline,
     shock_year=2,
     shock_type=1,
-    shock_magnitudes=[-2.0, 0.0, 0.0],
+    shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
 )
 
 interest_shock = compute_output_shocked(
@@ -62,7 +66,7 @@ interest_shock = compute_output_shocked(
     primary_balance_baseline=primary_balance_baseline,
     shock_year=2,
     shock_type=2,
-    shock_magnitudes=[0.0, 2.0, 0.0],
+    shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
 )
 
 primary_balance_shock = compute_output_shocked(
@@ -73,7 +77,7 @@ primary_balance_shock = compute_output_shocked(
     primary_balance_baseline=primary_balance_baseline,
     shock_year=2,
     shock_type=3,
-    shock_magnitudes=[0.0, 0.0, -1.0],
+    shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
 )
 ```
 
@@ -82,10 +86,10 @@ Combine the baseline and shocked paths into a single Polars table, prepending th
 ```{python}
 trajectory_table = pl.DataFrame({
     "Year": [0, 1, 2, 3, 4, 5],
-    "Baseline": [60.0] + list(baseline),
-    "Growth shock": [60.0] + list(growth_shock),
-    "Interest shock": [60.0] + list(interest_shock),
-    "Primary balance shock": [60.0] + list(primary_balance_shock),
+    "Baseline": [60.0] + values(baseline),
+    "Growth shock": [60.0] + values(growth_shock),
+    "Interest shock": [60.0] + values(interest_shock),
+    "Primary balance shock": [60.0] + values(primary_balance_shock),
 }).select(
     "Year",
     pl.col("Baseline").round(2),
@@ -109,7 +113,7 @@ delta_growth = compute_output_delta(
     primary_balance_baseline=primary_balance_baseline,
     shock_year=2,
     shock_type=1,
-    shock_magnitudes=[-2.0, 0.0, 0.0],
+    shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
 )
 
 delta_interest = compute_output_delta(
@@ -120,7 +124,7 @@ delta_interest = compute_output_delta(
     primary_balance_baseline=primary_balance_baseline,
     shock_year=2,
     shock_type=2,
-    shock_magnitudes=[0.0, 2.0, 0.0],
+    shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
 )
 
 delta_primary = compute_output_delta(
@@ -131,14 +135,14 @@ delta_primary = compute_output_delta(
     primary_balance_baseline=primary_balance_baseline,
     shock_year=2,
     shock_type=3,
-    shock_magnitudes=[0.0, 0.0, -1.0],
+    shock_magnitudes=data.SHOCK_MAGNITUDES_DEFAULT,
 )
 
 delta_table = pl.DataFrame({
     "Year": [1, 2, 3, 4, 5],
-    "Growth shock": delta_growth,
-    "Interest shock": delta_interest,
-    "Primary balance shock": delta_primary,
+    "Growth shock": values(delta_growth),
+    "Interest shock": values(delta_interest),
+    "Primary balance shock": values(delta_primary),
 }).select(
     "Year",
     pl.col("Growth shock").round(2),

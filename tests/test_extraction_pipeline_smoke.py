@@ -21,7 +21,7 @@ def test_build_pipeline_graph_on_synthetic_workbook(
 
     internal_series = synthetic_configured_pipeline.internal_series
 
-    assert series_bindings["schema_version"] == "1.13.0"
+    assert series_bindings["schema_version"] == "1.17.0"
     validation = validate_series_bindings(
         graph,
         series_bindings,
