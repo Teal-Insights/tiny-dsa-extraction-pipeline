@@ -12,11 +12,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import pytest
-from dist.tiny_dsa.tensor import Tensor
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import create_dependency_graph
 
 from dist.tiny_dsa import api, data
+from dist.tiny_dsa.tensor import Tensor
 from src.binding_domains import pipeline_dynamic_ref_config
 
 ATOL = 1e-6
