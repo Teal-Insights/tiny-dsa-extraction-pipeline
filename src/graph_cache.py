@@ -21,9 +21,10 @@ from excel_grapher.grapher import (
 )
 from excel_grapher.grapher.blank_ranges import normalize_blank_range_specs
 
+from src.binding_domains import pipeline_dynamic_ref_config
 from src.pipeline_config import PipelineConfig
 
-GRAPH_CACHE_SCHEMA_VERSION = "1.1.0"
+GRAPH_CACHE_SCHEMA_VERSION = "1.2.0"
 DEFAULT_GRAPH_CACHE_DIR = (
     Path(__file__).resolve().parents[1] / ".cache" / "dependency-graph"
 )
@@ -84,13 +85,22 @@ def dependency_graph_cache_key(
     load_values: bool,
     capture_dependency_provenance: bool,
     blank_ranges: Sequence[str] = (),
+    bindings_path: Path | None = None,
 ) -> str:
-    """Hash workbook + targets + constraints + blank_ranges + flags + excel-grapher version."""
+    """Hash workbook + targets + overlay + bindings + blank_ranges + flags + version.
+
+    ``constraints`` is the optional Python overlay. Sidecar domains live in
+    ``bindings_path`` and are fingerprinted so domain edits invalidate the
+    graph cache.
+    """
     payload = {
         "cache_schema_version": GRAPH_CACHE_SCHEMA_VERSION,
         "workbook_fingerprint": file_fingerprint(workbook_path),
         "targets": sorted(targets),
         "constraints": dict(constraints),
+        "bindings_fingerprint": (
+            None if bindings_path is None else bindings_fingerprint(bindings_path)
+        ),
         "blank_ranges": sorted(normalize_blank_range_specs(blank_ranges)),
         "load_values": load_values,
         "capture_dependency_provenance": capture_dependency_provenance,
@@ -195,6 +205,7 @@ def try_load_cached_dependency_graph(
     load_values: bool = True,
     capture_dependency_provenance: bool = True,
     blank_ranges: Sequence[str] = (),
+    bindings_path: Path | None = None,
     cache_dir: Path | None = None,
 ) -> DependencyGraphCacheResult | None:
     """Load a warm dependency-graph cache entry without building or writing.
@@ -211,6 +222,7 @@ def try_load_cached_dependency_graph(
         load_values=load_values,
         capture_dependency_provenance=capture_dependency_provenance,
         blank_ranges=blank_ranges,
+        bindings_path=bindings_path,
     )
     started = time.perf_counter()
     cached = load_dependency_graph(
@@ -241,6 +253,7 @@ def get_or_build_dependency_graph(
     load_values: bool = True,
     capture_dependency_provenance: bool = True,
     blank_ranges: Sequence[str] = (),
+    bindings_path: Path | None = None,
     cache_dir: Path | None = None,
     no_cache: bool = False,
     force_rebuild: bool = False,
@@ -254,6 +267,7 @@ def get_or_build_dependency_graph(
         load_values=load_values,
         capture_dependency_provenance=capture_dependency_provenance,
         blank_ranges=blank_ranges,
+        bindings_path=bindings_path,
     )
     process_slot = _process_cache_slot(resolved_cache_dir, cache_key)
     started = time.perf_counter()
@@ -450,6 +464,7 @@ def _pipeline_dependency_graph_cache_key(config: PipelineConfig) -> str:
         load_values=True,
         capture_dependency_provenance=True,
         blank_ranges=config.blank_ranges,
+        bindings_path=config.bindings_path,
     )
 
 
@@ -459,7 +474,7 @@ def _warn_if_cached_graph_is_stale(config: PipelineConfig, cache_key: str) -> No
         return
     print(
         "Warning: newest cached graph key does not match the current workbook, "
-        "targets, constraints, or blank_ranges fingerprint. Results may be stale; run "
+        "targets, constraints, bindings, or blank_ranges fingerprint. Results may be stale; run "
         "uv run python -m scripts.regenerate_graph_cache to refresh."
     )
 
@@ -494,7 +509,7 @@ def load_pipeline_dependency_graph(
         _warn_if_cached_graph_is_stale(config, cache_key)
         return graph, cache_key
 
-    dynamic_ref_config = DynamicRefConfig.from_constraints(config.constraints, {})
+    dynamic_ref_config = pipeline_dynamic_ref_config(config)
     result = get_or_build_dependency_graph(
         workbook_path=config.workbook_path,
         targets=config.targets,
@@ -503,6 +518,7 @@ def load_pipeline_dependency_graph(
         load_values=True,
         capture_dependency_provenance=True,
         blank_ranges=config.blank_ranges,
+        bindings_path=config.bindings_path,
         cache_dir=resolved_cache_dir,
     )
     print(f"Built graph key={result.cache_key[:12]} ({len(result.graph)} nodes)")

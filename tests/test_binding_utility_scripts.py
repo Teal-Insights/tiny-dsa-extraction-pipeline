@@ -781,16 +781,16 @@ def test_binding_guidance_documents_constant_direction() -> None:
         assert "constant.reader" not in lowered
 
 
-def test_excel_grapher_floor_is_21_1_0() -> None:
-    """Lockfile and pyproject must agree on excel-grapher>=21.1.0."""
+def test_excel_grapher_floor_is_21_5_0() -> None:
+    """Lockfile and pyproject must agree on excel-grapher>=21.5.0."""
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     lockfile = (root / "uv.lock").read_text(encoding="utf-8")
     installed = tuple(int(part) for part in version("excel-grapher").split(".")[:3])
 
-    assert "excel-grapher>=21.1.0" in pyproject
-    assert '{ name = "excel-grapher", specifier = ">=21.1.0" }' in lockfile
-    assert installed >= (21, 1, 0)
+    assert "excel-grapher>=21.5.0" in pyproject
+    assert '{ name = "excel-grapher", specifier = ">=21.5.0" }' in lockfile
+    assert installed >= (21, 5, 0)
 
 
 def test_binding_resolution_audit_uses_public_apply_series_excludes() -> None:

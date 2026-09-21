@@ -5,12 +5,11 @@ output cells:
 
     [golden] Microsoft Excel, automated via xlwings (the source of truth).
     [mvp]    excel-grapher, set up exactly as in `src/extraction_pipeline.py`:
-             the imported `constraints` dict is passed to
-             `DynamicRefConfig.from_constraints`, and a `FormulaEvaluator` is
-             layered on top so we can actually read output cell values to
-             compare. Because the constraints are imported (not redefined
-             here), the differential stays in lockstep with the extraction
-             pipeline as it evolves.
+             `DynamicRefConfig.from_bindings` (plus any leftover CONSTRAINTS
+             overlay), and a `FormulaEvaluator` is layered on top so we can
+             actually read output cell values to compare. Because the domains
+             come from the same sidecar the pipeline ships, the differential
+             stays in lockstep with extraction as it evolves.
 
 The 15 output cells (output_baseline / output_shocked / output_delta, 5 years
 each) are compared at every input point. A text + CSV report is written to
@@ -40,7 +39,6 @@ from excel_grapher import XlError
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import (
     DependencyGraph,
-    DynamicRefConfig,
     create_dependency_graph,
 )
 
@@ -51,10 +49,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Import the canonical configuration from workbook_config so the differential
 # always tests the same shape the pipeline ships.
+from src.binding_domains import pipeline_dynamic_ref_config
 from src.pipeline_config import load_pipeline_config
 
 _pipeline = load_pipeline_config(repo_root=PROJECT_ROOT)
-PIPELINE_CONSTRAINTS = _pipeline.constraints
 PIPELINE_TARGETS = list(_pipeline.targets)
 PIPELINE_WORKBOOK_PATH = _pipeline.workbook_path
 
@@ -471,7 +469,7 @@ class MvpOracleDriver:
     """
 
     def __init__(self, workbook_path: Path, targets: list[str]) -> None:
-        config = DynamicRefConfig.from_constraints(PIPELINE_CONSTRAINTS, {})
+        config = pipeline_dynamic_ref_config(_pipeline)
         self._graph: DependencyGraph = create_dependency_graph(
             workbook_path,
             targets,

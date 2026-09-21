@@ -87,12 +87,13 @@ def _load_workbook_graph_for_audit(config: PipelineConfig) -> DependencyGraph:
         load_values=True,
         capture_dependency_provenance=True,
         blank_ranges=config.blank_ranges,
+        bindings_path=config.bindings_path,
         cache_dir=COMMITTED_GRAPH_CACHE_DIR,
     )
     if cached is None:
         pytest.skip(
             "No warm committed dependency-graph cache for the current workbook/"
-            "targets/constraints/blank_ranges. Run `uv run python -m src.extraction_pipeline "
+            "targets/constraints/bindings/blank_ranges. Run `uv run python -m src.extraction_pipeline "
             "--only-stage extract` (or `uv run python -m scripts.regenerate_graph_cache`) "
             "first, then re-run with --run-skipped."
         )
@@ -153,6 +154,7 @@ def test_workbook_audit_loads_committed_cache_read_only() -> None:
     assert kwargs["workbook_path"] == config.workbook_path
     assert kwargs["targets"] == config.targets
     assert kwargs["constraints"] == config.constraints
+    assert kwargs["bindings_path"] == config.bindings_path
     assert kwargs["load_values"] is True
     assert kwargs["capture_dependency_provenance"] is True
 

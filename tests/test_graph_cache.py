@@ -450,17 +450,18 @@ def test_bindings_fingerprint_stable_for_missing_bindings_dir(tmp_path: Path) ->
     assert digest == bindings_fingerprint(tmp_path / "also-missing")
 
 
-def test_dependency_graph_cache_key_stable_when_bindings_change(
+def test_dependency_graph_cache_key_changes_when_bindings_change(
     synthetic_config,
     tmp_path: Path,
 ) -> None:
-    """Bindings are not an input to graph construction (#272)."""
+    """Sidecar domains are an input to graph construction."""
     base_key = dependency_graph_cache_key(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
         load_values=True,
         capture_dependency_provenance=True,
+        bindings_path=synthetic_config.bindings_path,
     )
     alternate_bindings = tmp_path / "bindings"
     alternate_bindings.mkdir()
@@ -470,15 +471,15 @@ def test_dependency_graph_cache_key_stable_when_bindings_change(
             content = content.replace("input_rate", "input_rate_alt")
         (alternate_bindings / binding_file.name).write_text(content, encoding="utf-8")
 
-    # Graph key ignores bindings_path; workbook/targets/constraints/blank_ranges matter.
     changed_key = dependency_graph_cache_key(
         workbook_path=synthetic_config.workbook_path,
         targets=synthetic_config.targets,
         constraints=synthetic_config.constraints,
         load_values=True,
         capture_dependency_provenance=True,
+        bindings_path=alternate_bindings,
     )
-    assert base_key == changed_key
+    assert base_key != changed_key
     assert bindings_fingerprint(synthetic_config.bindings_path) != bindings_fingerprint(
         alternate_bindings
     )

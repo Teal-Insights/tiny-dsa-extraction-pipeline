@@ -14,11 +14,14 @@ from excel_grapher.core.cell_types import normalize_cell_type_env_key
 from excel_grapher.exporter import CodeGenerator, ProjectionResult
 from excel_grapher.grapher import (
     DependencyGraph,
-    DynamicRefConfig,
 )
 from excel_grapher.series_bindings import load_series_bindings
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
+from src.binding_domains import (
+    effective_domain_annotations,
+    pipeline_dynamic_ref_config,
+)
 from src.bindings_validation_cache import get_or_build_bindings_validation
 from src.codegen_cache import get_or_build_codegen_modules
 from src.dependency_graph_viz import (
@@ -228,7 +231,7 @@ def extract_dependency_graph_result(
         graph_build = _build()
     elapsed_seconds = time.perf_counter() - started
     leaf_classification = _best_effort_leaf_classification(
-        config.constraints,
+        effective_domain_annotations(config),
         graph_build.graph.leaf_keys(),
     )
     return DependencyGraphExtraction(
@@ -462,12 +465,13 @@ def build_dependency_graph(
         )
 
     with stage("create_dependency_graph"):
-        dynamic_ref_config = DynamicRefConfig.from_constraints(config.constraints, {})
+        dynamic_ref_config = pipeline_dynamic_ref_config(config)
         graph_result = get_or_build_dependency_graph(
             workbook_path=config.workbook_path,
             targets=config.targets,
             constraints=config.constraints,
             dynamic_refs=dynamic_ref_config,
+            bindings_path=config.bindings_path,
             load_values=True,
             capture_dependency_provenance=True,
             blank_ranges=config.blank_ranges,
@@ -544,7 +548,9 @@ def resolve_pipeline_bindings(
     with stage("series_derived"):
         derived_result = get_or_build_series_derived(
             graph,
-            constraints=config.constraints,
+            constraints=effective_domain_annotations(
+                config, bindings=series_bindings
+            ),
             input_series=input_series,
             output_series=output_series,
             internal_series=internal_series,

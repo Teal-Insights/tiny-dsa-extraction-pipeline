@@ -49,6 +49,7 @@ from typing import Any, Literal
 from excel_grapher.core.address_keys import normalize_key, parse_address
 from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import DependencyGraph, DynamicRefConfig
+from excel_grapher.series_bindings import load_series_bindings
 
 from src.graph_cache import (
     COMMITTED_GRAPH_CACHE_DIR,
@@ -70,6 +71,28 @@ logger = logging.getLogger(__name__)
 LayoutName = Literal["repo"]
 
 
+def _dynamic_ref_config(
+    workbook_path: Path,
+    *,
+    constraints: dict[str, object],
+    bindings_path: Path | None,
+) -> DynamicRefConfig:
+    """Prefer sidecar domains; overlay a Python table when tests still supply one."""
+    if bindings_path is None:
+        return DynamicRefConfig.from_constraints(constraints, {})
+    derived = DynamicRefConfig.from_bindings(
+        load_series_bindings(bindings_path),
+        workbook_path,
+        bindings_path=bindings_path,
+    )
+    if not constraints:
+        return derived
+    merged, _overrides = derived.overlay(
+        DynamicRefConfig.from_constraints(constraints, {})
+    )
+    return merged
+
+
 @dataclass(frozen=True)
 class GraphDifferentialConfig:
     """Runtime paths and extraction settings for one graph differential run."""
@@ -84,6 +107,7 @@ class GraphDifferentialConfig:
     rtol: float = RTOL
     allow_matched_errors: bool = False
     blank_ranges: tuple[str, ...] = ()
+    bindings_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -190,6 +214,7 @@ def resolve_config(
         constraints=pipeline.constraints,
         library_name=pipeline.dist_metadata.library_name,
         blank_ranges=pipeline.blank_ranges,
+        bindings_path=pipeline.bindings_path,
     )
 
     return GraphDifferentialConfig(
@@ -203,6 +228,7 @@ def resolve_config(
         rtol=RTOL,
         allow_matched_errors=allow_matched_errors,
         blank_ranges=defaults.blank_ranges,
+        bindings_path=defaults.bindings_path,
     )
 
 
@@ -287,8 +313,11 @@ class MvpGraphDriver:
         targets: tuple[str, ...],
         constraints: dict[str, object],
         blank_ranges: tuple[str, ...] = (),
+        bindings_path: Path | None = None,
     ) -> None:
-        config = DynamicRefConfig.from_constraints(constraints, {})
+        config = _dynamic_ref_config(
+            workbook_path, constraints=constraints, bindings_path=bindings_path
+        )
         cached = try_load_cached_dependency_graph(
             workbook_path=workbook_path,
             targets=targets,
@@ -296,6 +325,7 @@ class MvpGraphDriver:
             load_values=True,
             capture_dependency_provenance=True,
             blank_ranges=blank_ranges,
+            bindings_path=bindings_path,
             cache_dir=COMMITTED_GRAPH_CACHE_DIR,
         )
         if cached is None:
@@ -304,6 +334,7 @@ class MvpGraphDriver:
                 targets=targets,
                 constraints=constraints,
                 dynamic_refs=config,
+                bindings_path=bindings_path,
                 load_values=True,
                 capture_dependency_provenance=True,
                 blank_ranges=blank_ranges,
@@ -409,10 +440,10 @@ def _verify_paths(config: GraphDifferentialConfig) -> None:
             "workbook_config.TARGETS is empty. Declare extraction targets before "
             "running the graph differential."
         )
-    if not config.constraints:
+    if not config.constraints and config.bindings_path is None:
         raise FileNotFoundError(
-            "workbook_config.CONSTRAINTS is empty. Classify graph leaves before "
-            "running the graph differential."
+            "Series-binding domains (or a CONSTRAINTS overlay) are required "
+            "before running the graph differential."
         )
 
 
@@ -610,6 +641,7 @@ def run_sweep(config: GraphDifferentialConfig) -> tuple[list[Trial], list[str]]:
         targets=config.targets,
         constraints=config.constraints,
         blank_ranges=config.blank_ranges,
+        bindings_path=config.bindings_path,
     )
     all_input_cells = collect_scenario_input_addresses(axes, inputs_for_excel)
     missing_inputs_in_graph = sorted(

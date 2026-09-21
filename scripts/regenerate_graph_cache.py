@@ -2,11 +2,10 @@
 
 Warm pytest and CI runs can read these caches to skip cold graph builds,
 ``derive_*_series`` work, and ``validate_series_bindings``. Cache keys
-fingerprint the workbook, bindings YAML, targets/constraints/blank_ranges, and
-the excel-grapher version. Rerun after changing the workbook,
-``bindings/*.bindings.yaml``, ``workbook_config.py`` targets/constraints/
-``BLANK_RANGES``, or upgrading excel-grapher (``--force`` after a
-``BLANK_RANGES`` edit as well):
+fingerprint the workbook, bindings YAML, targets/optional CONSTRAINTS overlay/
+blank_ranges, and the excel-grapher version. Rerun after changing the workbook,
+``bindings/*.bindings.yaml``, ``workbook_config.py`` targets/``BLANK_RANGES``,
+or upgrading excel-grapher (``--force`` after a ``BLANK_RANGES`` edit as well):
 
     uv run python -m scripts.regenerate_graph_cache
 
@@ -30,9 +29,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from excel_grapher.grapher import DynamicRefConfig
 from excel_grapher.series_bindings import load_series_bindings
 
+from src.binding_domains import pipeline_dynamic_ref_config
 from src.bindings_validation_cache import (
     COMMITTED_BINDINGS_VALIDATION_CACHE_DIR,
     bindings_validation_cache_key,
@@ -77,7 +76,7 @@ def regenerate_graph_cache(
 ) -> set[str]:
     config = load_pipeline_config()
     validate_pipeline_config(config)
-    dynamic_refs = DynamicRefConfig.from_constraints(config.constraints, {})
+    dynamic_refs = pipeline_dynamic_ref_config(config)
     bindings = load_series_bindings(config.bindings_path)
 
     if force:
@@ -102,6 +101,7 @@ def regenerate_graph_cache(
             load_values=True,
             capture_dependency_provenance=True,
             blank_ranges=config.blank_ranges,
+            bindings_path=config.bindings_path,
             cache_dir=COMMITTED_GRAPH_CACHE_DIR,
             force_rebuild=force,
         )

@@ -13,8 +13,9 @@ from collections.abc import Sequence
 
 import pytest
 from excel_grapher.evaluator import FormulaEvaluator
-from excel_grapher.grapher import DynamicRefConfig, create_dependency_graph
+from excel_grapher.grapher import create_dependency_graph
 
+from src.binding_domains import pipeline_dynamic_ref_config
 from dist.tiny_dsa import api, data
 from dist.tiny_dsa.tensor import Tensor
 
@@ -29,12 +30,11 @@ _DELTA_ADDRS = tuple(f"Outputs!{col}14" for col in "BCDEF")
 def workbook_oracle(tiny_dsa_configured_pipeline) -> FormulaEvaluator:
     """Evaluate the workbook's formula graph under stored default inputs."""
     pipeline = tiny_dsa_configured_pipeline
-    config = DynamicRefConfig.from_constraints(pipeline.config.constraints, {})
     graph = create_dependency_graph(
         pipeline.config.workbook_path,
         list(pipeline.config.targets),
         load_values=True,
-        dynamic_refs=config,
+        dynamic_refs=pipeline_dynamic_ref_config(pipeline.config),
     )
     return FormulaEvaluator(graph)
 

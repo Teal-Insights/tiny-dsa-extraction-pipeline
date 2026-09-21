@@ -76,7 +76,7 @@ def test_workbook_reference_labels_match_constraints_and_scenarios() -> None:
 
     constraint_literals = {
         key: literal_constraint_values(constraint)
-        for key, constraint in workbook_config.CONSTRAINTS.items()
+        for key, constraint in getattr(workbook_config, "CONSTRAINTS", {}).items()
         if literal_constraint_values(constraint)
     }
     scenario_values = workbook_config.REFERENCE_LABEL_SCENARIO_VALUES

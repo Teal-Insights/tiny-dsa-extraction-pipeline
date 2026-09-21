@@ -63,6 +63,7 @@ class DifferentialConfig:
     targets: tuple[str, ...] = ()
     constraints: dict[str, object] = field(default_factory=dict)
     blank_ranges: tuple[str, ...] = ()
+    bindings_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,7 @@ def resolve_config(
             targets=pipeline.targets,
             constraints=pipeline.constraints,
             blank_ranges=pipeline.blank_ranges,
+            bindings_path=pipeline.bindings_path,
         )
     else:
         defaults = DifferentialConfig(
@@ -205,6 +207,7 @@ def resolve_config(
             targets=pipeline.targets,
             constraints=pipeline.constraints,
             blank_ranges=pipeline.blank_ranges,
+            bindings_path=pipeline.bindings_path,
         )
 
     return DifferentialConfig(
@@ -220,6 +223,7 @@ def resolve_config(
         targets=defaults.targets,
         constraints=defaults.constraints,
         blank_ranges=defaults.blank_ranges,
+        bindings_path=defaults.bindings_path,
     )
 
 
@@ -480,9 +484,10 @@ class FormulaEvaluatorGraphOracle:
             raise RuntimeError(
                 "DifferentialConfig.targets is empty; cannot build the graph oracle."
             )
-        if not config.constraints:
+        if not config.constraints and config.bindings_path is None:
             raise RuntimeError(
-                "DifferentialConfig.constraints is empty; cannot build the graph oracle."
+                "DifferentialConfig needs sidecar bindings or a constraints overlay "
+                "to build the graph oracle."
             )
         from tests.differential.differential_test_graph import MvpGraphDriver
 
@@ -491,6 +496,7 @@ class FormulaEvaluatorGraphOracle:
             targets=config.targets,
             constraints=config.constraints,
             blank_ranges=config.blank_ranges,
+            bindings_path=config.bindings_path,
         )
         self._baselines_recorded = False
 
