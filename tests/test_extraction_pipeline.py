@@ -12,7 +12,12 @@ from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import to_mermaid
 from excel_grapher.grapher.parser import expand_range
 from excel_grapher.grapher.resolver import NamedRangeMaps, build_named_range_map
+from excel_grapher.series_bindings.domains import undomained_leaves
 
+from src.binding_domains import (
+    effective_domain_annotations,
+    pipeline_dynamic_ref_config,
+)
 from tests.conftest import SyntheticConfiguredPipeline
 
 load_dotenv()
@@ -31,9 +36,19 @@ REQUIRED_CONSTRAINT_KEYS = frozenset(
 def test_all_leaf_cells_are_constrained(tiny_dsa_configured_pipeline):
     pipeline = tiny_dsa_configured_pipeline
     graph = pipeline.graph
-    constraints = pipeline.config.constraints
-    assert all(key in constraints for key in graph.leaf_keys())
-    assert all(key in graph.leaf_keys() for key in constraints)
+    domain_env = pipeline_dynamic_ref_config(pipeline.config).cell_type_env
+    assert all(key in domain_env for key in graph.leaf_keys())
+    assert all(key in graph.leaf_keys() for key in domain_env)
+
+
+def test_sidecar_domains_cover_every_graph_leaf(tiny_dsa_configured_pipeline):
+    pipeline = tiny_dsa_configured_pipeline
+    missing = undomained_leaves(
+        pipeline.graph,
+        pipeline.series_bindings,
+        workbook=pipeline.config.workbook_path,
+    )
+    assert missing == []
 
 
 def test_all_leaf_cells_are_classified(tiny_dsa_configured_pipeline):
@@ -108,7 +123,7 @@ def test_llm_judges_that_graph_is_correct(tiny_dsa_configured_pipeline):
 
     pipeline = tiny_dsa_configured_pipeline
     graph = pipeline.graph
-    constraints = pipeline.config.constraints
+    constraints = effective_domain_annotations(pipeline.config)
     required_constraints = {
         key: constraints[key] for key in REQUIRED_CONSTRAINT_KEYS if key in constraints
     }
@@ -186,7 +201,7 @@ def test_formula_evaluator_matches_excel_for_randomized_inputs(
 ):
     pipeline = tiny_dsa_configured_pipeline
     graph = pipeline.graph
-    constraints = pipeline.config.constraints
+    constraints = effective_domain_annotations(pipeline.config)
     targets = list(pipeline.config.targets)
     workbook_path = pipeline.config.workbook_path
 

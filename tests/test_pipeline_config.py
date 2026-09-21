@@ -13,6 +13,7 @@ from src.pipeline_config import (
 
 def test_load_pipeline_config_reads_workbook_config() -> None:
     config = load_pipeline_config()
+    assert config.constraints == {}
     assert config.dist_metadata.project_name == "tiny-dsa"
     assert config.dist_metadata.package_name == "tiny_dsa"
     assert config.workbook_path.name == "tiny-dsa.xlsx"
@@ -143,6 +144,12 @@ def test_repo_relative_posix_path_falls_back_outside_repo(tmp_path: Path) -> Non
     outside = tmp_path / "outside.txt"
     outside.write_text("x", encoding="utf-8")
     assert config.repo_relative_posix_path(outside) == outside.resolve().as_posix()
+
+
+def test_workbook_config_has_no_constraints_table() -> None:
+    import workbook_config
+
+    assert not hasattr(workbook_config, "CONSTRAINTS")
 
 
 def test_validate_pipeline_config_passes_for_tiny_dsa() -> None:

@@ -222,7 +222,7 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     bindings_path = Path(user_config.BINDINGS_PATH)
     dist_root = root / "dist"
     targets = tuple(user_config.TARGETS)
-    constraints = dict(user_config.CONSTRAINTS)
+    constraints = dict(getattr(user_config, "CONSTRAINTS", {}))
     blank_ranges = _load_blank_ranges(getattr(user_config, "BLANK_RANGES", ()))
     dist_metadata = user_config.DIST_METADATA
 
@@ -308,8 +308,6 @@ def validate_pipeline_config(config: PipelineConfig) -> None:
     # series before export so the public API and leaf coverage are complete.
     if not config.targets:
         missing.append("workbook_config.TARGETS (at least one extraction target)")
-    if not config.constraints:
-        missing.append("workbook_config.CONSTRAINTS (leaf and dynamic-ref constraints)")
     if missing:
         raise FileNotFoundError(
             "Pipeline configuration is incomplete:\n"

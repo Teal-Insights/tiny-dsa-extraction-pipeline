@@ -607,7 +607,9 @@ def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
     data_mod.COUNTRY_INITIAL_DEBT_DEFAULT = _BoundSeries((60.0, 80.0, 40.0))
     data_mod.GROWTH_BASELINE_DEFAULT = _BoundSeries((3.5, 3.5, 3.5, 3.5, 3.5))
     data_mod.INTEREST_BASELINE_DEFAULT = _BoundSeries((4.0, 4.0, 4.0, 4.0, 4.0))
-    data_mod.PRIMARY_BALANCE_BASELINE_DEFAULT = _BoundSeries((-1.0, -0.5, 0.0, 0.5, 1.0))
+    data_mod.PRIMARY_BALANCE_BASELINE_DEFAULT = _BoundSeries(
+        (-1.0, -0.5, 0.0, 0.5, 1.0)
+    )
     data_mod.SHOCK_MAGNITUDES_DEFAULT = _BoundSeries((0.0, 0.0, 0.0))
     pkg: Any = types.ModuleType("tiny_dsa_fake")
     pkg.data = data_mod

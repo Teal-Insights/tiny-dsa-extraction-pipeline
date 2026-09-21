@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "cursor-sdk>=1.0.31",
-    "excel-grapher>=21.1.0",
+    "excel-grapher>=21.5.0",
     "openai>=2.38.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",

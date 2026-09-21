@@ -83,62 +83,17 @@ class Model:
 
 @publish(data.OUTPUT_BASELINE.schema, constants=_CONSTANTS_0, cells=data.OUTPUT_BASELINE.cells)
 def compute_output_baseline(*, country_name: str, country_initial_debt: data.CountryInitialDebt, growth_baseline: data.GrowthBaseline, interest_baseline: data.InterestBaseline, primary_balance_baseline: data.PrimaryBalanceBaseline) -> data.OutputBaseline:
-    """Compute the baseline debt-to-GDP path for projection years 1 through 5.
-
-    Recurse the real-terms debt-dynamics identity over the five-year horizon under the baseline macroeconomic and fiscal path, without any shock applied.
-
-    Args:
-        country_name: Name of the selected country, drawn from the country profile table; used only for labeling the output surface.
-        country_initial_debt: Initial debt-to-GDP ratio at end of year 0, in percent of GDP, loaded from the country profile lookup.
-        growth_baseline: Baseline real GDP growth rates for years 1 through 5, in percent per annum.
-        interest_baseline: Baseline effective real interest rates paid on outstanding general-government debt for years 1 through 5, in percent per annum.
-        primary_balance_baseline: Baseline primary fiscal balances for years 1 through 5, in percent of GDP, with positive values denoting a surplus.
-
-    Returns:
-        Baseline debt-to-GDP path for projection years 1 through 5, in percent of GDP, obtained by annually applying debt(t) = debt(t-1) x (1 + r(t)) / (1 + g(t)) - primary_balance(t) from the initial debt stock.
-    """
+    """Compute `output_baseline` using authored coordinate identities."""
     return Model(**locals()).output_baseline
 
 @publish(data.OUTPUT_SHOCKED.schema, constants=_CONSTANTS_1, cells=data.OUTPUT_SHOCKED.cells)
 def compute_output_shocked(*, country_name: str, country_initial_debt: data.CountryInitialDebt, growth_baseline: data.GrowthBaseline, interest_baseline: data.InterestBaseline, primary_balance_baseline: data.PrimaryBalanceBaseline, shock_year: int | str, shock_type: int | str, shock_magnitudes: data.ShockMagnitudes) -> data.OutputShocked:
-    """Compute the shocked debt-to-GDP path over the five-year projection horizon.
-
-    Recurse the real-terms debt-dynamics identity with the selected parameter shifted by the shock magnitude from the shock year through the end of the horizon.
-
-    Args:
-        country_name: User-selected country, drawn from the country profile lookup table; used to resolve the initial debt-to-GDP ratio.
-        country_initial_debt: Initial general-government debt-to-GDP ratio of the selected country at end of year 0, in percent of GDP, from which the recursion begins.
-        growth_baseline: Baseline real GDP growth rates for projection years 1 through 5, in percent per annum.
-        interest_baseline: Baseline real interest rates paid on outstanding general-government debt for years 1 through 5, in percent per annum; combined with growth in the snowball factor (1 + r) / (1 + g).
-        primary_balance_baseline: Baseline primary fiscal balance for years 1 through 5, in percent of GDP, with positive values denoting a surplus.
-        shock_year: Integer between 1 and 5 giving the first projection year in which the shock takes effect; the shock persists from that year through the end of the horizon.
-        shock_type: Integer between 1 and 3 selecting the parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, and 3 for the primary balance.
-        shock_magnitudes: Shock magnitudes in percentage points, one per shock type in order (growth, interest, primary balance); only the magnitude matching shock_type is applied, the others are ignored.
-
-    Returns:
-        Shocked debt-to-GDP path for projection years 1 through 5, in percent of GDP, produced by recursing the debt-dynamics identity with the shocked parameter applied from the shock year onwards.
-    """
+    """Compute `output_shocked` using authored coordinate identities."""
     return Model(**locals()).output_shocked
 
 @publish(data.OUTPUT_DELTA.schema, constants=_CONSTANTS_1, cells=data.OUTPUT_DELTA.cells)
 def compute_output_delta(*, country_name: str, country_initial_debt: data.CountryInitialDebt, growth_baseline: data.GrowthBaseline, interest_baseline: data.InterestBaseline, primary_balance_baseline: data.PrimaryBalanceBaseline, shock_year: int | str, shock_type: int | str, shock_magnitudes: data.ShockMagnitudes) -> data.OutputDelta:
-    """Compute the year-by-year difference between the shocked and baseline debt-to-GDP paths.
-
-    Produce the `output_delta` series that reports, for years 1 through 5, the shocked debt-to-GDP path minus the baseline path in percentage points of GDP.
-
-    Args:
-        country_name: Name of the user-selected country, drawn from the country profile lookup table.
-        country_initial_debt: Initial general-government debt-to-GDP ratio for the selected country, in percent of GDP at end of year 0.
-        growth_baseline: Five-year vector of baseline real GDP growth rates for years 1 through 5, in percent per annum.
-        interest_baseline: Five-year vector of baseline real interest rates on outstanding debt for years 1 through 5, in percent per annum.
-        primary_balance_baseline: Five-year vector of baseline primary balances for years 1 through 5, in percent of GDP, with positive values denoting a surplus.
-        shock_year: First year in which the shock takes effect, an integer between 1 and 5; the shock applies from that year through the end of the horizon.
-        shock_type: Parameter affected by the shock: 1 for real GDP growth, 2 for the real interest rate, or 3 for the primary balance.
-        shock_magnitudes: Shock magnitudes in percentage points, one per shock type in order; only the magnitude associated with the selected shock type is applied.
-
-    Returns:
-        The `output_delta` series: for each year 1 through 5, the shocked debt-to-GDP path minus the baseline debt-to-GDP path, in percentage points.
-    """
+    """Compute `output_delta` using authored coordinate identities."""
     return Model(**locals()).output_delta
 
 __all__ = [
