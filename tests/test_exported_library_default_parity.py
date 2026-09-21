@@ -16,7 +16,6 @@ from excel_grapher.evaluator import FormulaEvaluator
 from excel_grapher.grapher import create_dependency_graph
 
 from dist.tiny_dsa import api, data
-from dist.tiny_dsa.tensor import Tensor
 from src.binding_domains import pipeline_dynamic_ref_config
 
 ATOL = 1e-6
@@ -39,7 +38,7 @@ def workbook_oracle(tiny_dsa_configured_pipeline) -> FormulaEvaluator:
     return FormulaEvaluator(graph)
 
 
-def _series_floats(series: Tensor[object]) -> tuple[float, ...]:
+def _series_floats(series: data.Series[float | str | None]) -> tuple[float, ...]:
     keys = series.domain.axes[0].keys
     narrowed: list[float] = []
     for key in keys:
