@@ -6,21 +6,10 @@ subtitle: "A practical guide for economists"
 Tiny DSA is a Python reimplementation of the small Excel workbook described in
 the [guidance note](../docs-source/guidance-note.md). It projects
 general-government debt-to-GDP over five years from a baseline path and one
-configurable stress scenario.
-
-The model is intentionally narrow: it is a transparent accounting exercise for
-economists who want to trace the debt-dynamics identity, test assumptions, or
-reproduce the corresponding Excel calculations. It is not an operational
+configurable stress scenario. The model is a transparent accounting exercise
+for economists who want to trace the debt-dynamics identity, test assumptions,
+or reproduce the corresponding Excel calculations. It is not an operational
 debt-sustainability framework.
-
-## Start here
-
-- [Install and run a first projection](getting-started.qmd)
-- [Understand the input and output contract](01-functional-overview.qmd)
-- [Work through a scenario](02-illustrative-example.qmd)
-- [Use the API in an analysis workflow](api-workflow.qmd)
-- [Understand the equation and its limitations](04-methodology.qmd)
-- [Validate results against Excel](excel-parity-validation.qmd)
 
 ## The model in one equation
 
@@ -35,25 +24,18 @@ growth, and $PB$ is the primary balance. Rates and balances are entered as
 percentage-point values (for example, `3.5`, not `0.035`). A positive primary
 balance is a surplus and reduces debt.
 
-The public calculation functions are in `tiny_dsa.api`:
-
-- `compute_output_baseline`
-- `compute_output_shocked`
-- `compute_output_delta`
-
-All three return a labelled `Series` indexed by projection year. The delta is
-always shocked minus baseline, in percentage points of GDP.
-
-## Scope and interpretation
-
-The projection is in real terms, covers exactly five years, and applies one
-step shock from a selected year through year 5. Inflation, exchange-rate
-effects, debt-currency composition, stock-flow adjustments, contingent
-liabilities, and endogenous fiscal responses are outside the model.
-
 ::: {.callout-warning}
 Tiny DSA is a methodological artifact, not an operational debt-sustainability
 framework. It is not validated against country data and is not endorsed by the
 IMF, the World Bank, or any other institution. Do not use its results for
 policy decisions without a substantially richer model and independent review.
 :::
+
+## Start here
+
+- [Install and run a first projection](01-getting-started.qmd)
+- [Understand the input and output contract](02-inputs-and-outputs.qmd)
+- [Work through a scenario](03-illustrative-example.qmd)
+- [Use the API in an analysis workflow](04-workflow.qmd)
+- [Understand the equation and its limitations](05-methodology.qmd)
+- [Validate results against Excel](user-guide/excel-parity-validation.qmd)

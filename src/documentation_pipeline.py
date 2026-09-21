@@ -42,13 +42,13 @@ from src.qmd_python_validation import (
 
 DOCUMENT_AGENT_MODEL_ENV = "DOCUMENT_AGENT_MODEL"
 DEFAULT_DOCUMENT_AGENT_MODEL = "gpt-5.6-luna"
-USER_GUIDE_AGENT_PROMPT_VERSION = 2
+USER_GUIDE_AGENT_PROMPT_VERSION = 4
 DOCUMENT_AGENT_DEADLINE_ENV = "DOCUMENT_AGENT_DEADLINE"
 DEFAULT_DOCUMENT_AGENT_DEADLINE_SECONDS = 1800.0
 CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
 
 GUIDANCE_NOTE_RELATIVE = Path("docs-source") / "guidance-note.md"
-VALIDATION_PAGE_FILENAME = "03-excel-parity-validation.qmd"
+VALIDATION_PAGE_FILENAME = "99-excel-parity-validation.qmd"
 # Great Docs strips numeric prefixes when publishing user-guide pages, so the
 # landing-page link must use the published slug rather than the source filename.
 VALIDATION_PAGE_LINK = "user-guide/excel-parity-validation.qmd"

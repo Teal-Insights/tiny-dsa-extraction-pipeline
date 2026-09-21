@@ -180,6 +180,19 @@ def test_user_guide_agent_prompt_forbids_site_builds() -> None:
     assert "iterate until it succeeds" not in lowered
     assert "that build succeeds" not in lowered
     assert "uv run --project . python" in prompt
+    assert "99-excel-parity-validation.qmd" in prompt
+    assert "03-excel-parity-validation.qmd" not in prompt
+
+
+def test_user_guide_agent_prompt_reuses_existing_pages() -> None:
+    config = load_pipeline_config()
+    prompt = build_user_guide_agent_prompt(config)
+    lowered = " ".join(prompt.lower().split())
+    assert "existing" in lowered
+    assert "from scratch" in lowered
+    assert "update" in lowered
+    assert "reorganize" in lowered
+    assert "clean" in lowered
 
 
 def test_document_agent_model_defaults_to_luna(
@@ -378,7 +391,7 @@ Result: PASS
     )
     write_validation_page(config=config)
     page = (
-        config.dist_root / "user_guide" / "03-excel-parity-validation.qmd"
+        config.dist_root / "user_guide" / "99-excel-parity-validation.qmd"
     ).read_text(encoding="utf-8")
     assert "PASS" in page
     assert "My Model" in page

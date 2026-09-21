@@ -10,13 +10,16 @@ Facts (not style rules):
 Your job:
 1. Read the guidance note and explore the public API by reading code and
    running experiments with `uv run --project . python`.
-2. Write Quarto pages under `user_guide/` in whatever structure would help an
-   economist use this library. Choose page count, titles, and narrative freely.
+2. Inspect `user_guide/` before writing. Existing pages are a starting point:
+   update, reorganize, or clean them up when they still help an economist use
+   this library. Add or remove pages only as needed. Do not rebuild from scratch
+   unless the current pages cannot be salvaged. Choose page count, titles, and
+   narrative freely.
 3. Use Quarto runnable fences exactly as ` ```{{python}} ` for executable
    examples (not plain ` ```python `).
 4. Do not modify generated package modules under `{package_name}/`. You may
    add documentation-only dependencies to `pyproject.toml`.
-5. Do not create or overwrite `user_guide/03-excel-parity-validation.qmd`; the
+5. Do not create or overwrite `user_guide/99-excel-parity-validation.qmd`; the
    pipeline writes that page after you finish. You may link to
    `user-guide/excel-parity-validation.qmd` from a landing page.
 6. Do not run `great-docs`, `quarto render`, `quarto preview`, or any other
