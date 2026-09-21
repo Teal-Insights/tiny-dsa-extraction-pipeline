@@ -512,6 +512,7 @@ def test_harness_conforms_to_standard() -> None:
     )
     assert "apply_inputs_to_mvp" not in harness._REQUIRED_WORKBOOK_HOOKS
     assert "XlwingsExcelOracle" not in dir(harness)
+    assert "from_defaults" in harness.mvp_outputs_for_scenario.__doc__
 
     both_blank = harness.compare_cell(
         "s", "A1", "label", None, None, atol=ATOL, rtol=RTOL

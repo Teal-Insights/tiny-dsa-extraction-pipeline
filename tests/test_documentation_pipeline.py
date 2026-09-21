@@ -15,7 +15,6 @@ from src.documentation_pipeline import (
     DEFAULT_DOCUMENT_AGENT_MODEL,
     DOCUMENT_AGENT_DEADLINE_ENV,
     DOCUMENT_AGENT_MODEL_ENV,
-    GREAT_DOCS_BUILD_COMMAND,
     assert_package_modules_unchanged,
     assert_user_guide_pages_exist,
     author_or_restore_user_guide,
@@ -114,7 +113,8 @@ def _minimal_config(tmp_path: Path) -> PipelineConfig:
             "Docs for {library_name}. Import `{api_import_path}`. "
             "Install: `{install_command}`. Package `{package_name}`. "
             "Read docs-source/guidance-note.md. "
-            "Do not run great-docs, quarto render, or quarto preview.\n"
+            "Build with: uv run --project . --with great-docs great-docs "
+            "build --project-path .\n"
         ),
         encoding="utf-8",
     )
@@ -161,38 +161,30 @@ def test_build_user_guide_agent_prompt_contains_facts_not_outline(
     assert "My Model" in prompt
     assert "my_model.api" in prompt
     assert "docs-source/guidance-note.md" in prompt
-    assert GREAT_DOCS_BUILD_COMMAND not in prompt
+    assert "uv run --project . --with great-docs great-docs build --project-path ." in (
+        prompt
+    )
     assert config.dist_metadata.resolved_install_command() in prompt
     assert "Functional Overview" not in prompt
     assert "canonical_api_usage" not in prompt
     assert "make_context" not in prompt
 
 
-def test_user_guide_agent_prompt_forbids_site_builds() -> None:
-    config = load_pipeline_config()
-    prompt = build_user_guide_agent_prompt(config)
-    lowered = prompt.lower()
-    assert GREAT_DOCS_BUILD_COMMAND not in prompt
-    assert "do not run" in lowered
-    assert "great-docs" in lowered
-    assert "quarto render" in lowered
-    assert "quarto preview" in lowered
-    assert "iterate until it succeeds" not in lowered
-    assert "that build succeeds" not in lowered
-    assert "uv run --project . python" in prompt
-    assert "99-excel-parity-validation.qmd" in prompt
-    assert "03-excel-parity-validation.qmd" not in prompt
-
-
 def test_user_guide_agent_prompt_reuses_existing_pages() -> None:
     config = load_pipeline_config()
+    prompt = " ".join(build_user_guide_agent_prompt(config).lower().split())
+    assert "existing pages" in prompt
+    assert "from scratch" in prompt
+    assert "update" in prompt
+    assert "reorganize" in prompt
+    assert "clean" in prompt
+
+
+def test_user_guide_agent_prompt_reserves_99_parity_page() -> None:
+    config = load_pipeline_config()
     prompt = build_user_guide_agent_prompt(config)
-    lowered = " ".join(prompt.lower().split())
-    assert "existing" in lowered
-    assert "from scratch" in lowered
-    assert "update" in lowered
-    assert "reorganize" in lowered
-    assert "clean" in lowered
+    assert "99-excel-parity-validation.qmd" in prompt
+    assert "03-excel-parity-validation.qmd" not in prompt
 
 
 def test_document_agent_model_defaults_to_luna(

@@ -115,8 +115,10 @@ itself a differential signal about extraction coverage.
 3. **`inputs_for_excel(scenario)`** — map each scenario to graph cell writes
    (Excel addresses). The graph driver sets nodes by those addresses; keep the
    hook name.
-4. **`mvp_outputs_for_scenario(api, scenario)`** — call keyword-only `compute_*`
-   and return `{label: value}`.
+4. **`mvp_outputs_for_scenario(api, scenario)`** — wrap leaf kwargs in
+   `{Output}Inputs.from_defaults(...)`, pass that bundle to `compute_*`, and
+   return `{label: value}`. Do not call `compute_*(country_name=..., ...)`;
+   excel-grapher 22 helpers take a single Inputs dataclass.
 
 Optional fifth hook:
 
@@ -157,9 +159,16 @@ Prefer building output specs from derived output series
 [`output_specs.py`](output_specs.py):
 
 - `specs_from_output_series(...)` → one `OutputCellSpec` per bound cell
+- `compute_outputs_for_writes(...)` → call each unique `compute_*` and map
+  results onto those labels. Scalar returns (`str`, `float`) are one
+  observation, not character sequences. Named-axis series are read by spec
+  keys.
 
-Graph outputs are keyed by **address**; MVP outputs by **label**. Map
-`compute_*` tuple results onto those labels in `mvp_outputs_for_scenario()`.
+Graph outputs are keyed by **address**; MVP outputs by **label**. Prefer
+`compute_outputs_for_writes` from `mvp_outputs_for_scenario()` so scalars,
+1-tuples, sequences, and named-axis series all map onto those labels via
+`outputs_from_sequences()`. Wrap leaf kwargs in `{Output}Inputs.from_defaults(...)`
+before calling `compute_*`; do not pass leaf kwargs into `compute_*`.
 
 ### Crash attribution and reports
 

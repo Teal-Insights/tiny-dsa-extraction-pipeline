@@ -1,7 +1,7 @@
 """Workbook-specific configuration for the Tiny DSA extraction project.
 
 Edit values here before running the pipeline. See README.md for the
-extract → export → annotate → validate → document workflow.
+extract → export → validate → annotate → document workflow.
 """
 
 from __future__ import annotations

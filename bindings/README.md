@@ -5,7 +5,7 @@ and (when needed) `constants.bindings.yaml` here.
 
 Bootstrap extract (`--extract-graph` / `--stop-after-stage extract`) is graph-first: empty `series: []` placeholder shards are fine so you can review `artifacts/dependency-graph/` before bindings exist. excel-grapher 5.1.4+ also loads and merges those placeholders (including divergent `concept_scheme` blocks). Author real series before export so the public API and leaf coverage are complete.
 
-Use the schema version from the installed package (`CURRENT_SCHEMA_VERSION`) and the skill in [`.agents/skills/author-bindings`](../.agents/skills/author-bindings). Prefer authoring from an extracted graph rather than guessing sheet geometry up front.
+Use schema version `1.19.0` and the vendored skill in [.agents/skills/author-bindings](../.agents/skills/author-bindings/SKILL.md). Prefer authoring from an extracted graph rather than guessing sheet geometry up front.
 
 ## Constant bindings (reader-only leaves)
 
@@ -20,7 +20,7 @@ Put constant series in `constants.bindings.yaml` (or any mergeable
 `constant: {}` instead of `input` / `output` / `internal`:
 
 ```yaml
-schema_version: 1.17.0
+schema_version: 1.19.0
 series:
   - id: shock_year_anchor
     sheet: Engine
@@ -40,19 +40,17 @@ series:
 |---|---|
 | Leaf-only | `data_range` must intersect graph **leaves** (inverse of `internal`, which requires formula nodes). Non-leaf overlap → `non_leaf_constant_overlap`; no leaf overlap → `no_leaf_constant_targets`. |
 | Exclusive | Mutually exclusive with `input`, `output`, and `internal` on the same series. |
-| Codegen | Names the leaf for inverted-tree export: values land in `data.py` and as defaulted `compute_*` kwargs. Inverted-tree does not emit public readers or extra `compute_*` for constants. |
-| Mutability | Values still live in `data.py` and as defaulted `compute_*` kwargs; there is no public write surface. |
+| Codegen | Names the leaf for inverted-tree export: values land in `data.py` and as defaulted `{Output}Inputs.from_defaults(...)` fields. Optional `constant.reader.name` is gone; inverted-tree does not emit public readers or extra `compute_*` for constants. |
+| Mutability | Values still live in `data.py` and as Inputs defaults; there is no public write surface. |
 | Validate | `validate_series_bindings(...)`, then `derive_constant_series(...)`. Include `constant` when running `scripts.binding_resolution_audit`. |
 
 **Leaf classification vs constant bindings.** `CONSTRAINTS` with a single-value
 `Literal[...]` classifies a leaf as `constant` for codegen `CONSTANTS` vs
-required keyword-only `compute_*` arguments. Fail closed: every `constant`
-leaf must appear in `constants.bindings.yaml`, and every mutable `input` leaf
-in `inputs.bindings.yaml`. The configure tests assert an empty unbound list even
+`DEFAULT_INPUTS`. Fail closed: every `constant` leaf must appear in
+`constants.bindings.yaml`, and every mutable `input` leaf in
+`inputs.bindings.yaml`. The configure tests assert an empty unbound list even
 when a workbook has no constant leaves (do not skip-if-empty). A `constant: {}`
-series names those leaves as `data.py` defaults / defaulted `compute_*` kwargs
-rather than unnamed cell reads. Mutable leaves still need an `input` binding
-so they become required keyword-only `compute_*` arguments.
+series also emits a semantic `read_*` so formulas do not keep bare `xl_cell`.
 
 **Structural blanks are not constants.** Padding inside `INDEX`/`MATCH` arrays,
 far-right `NPV`/`SUM` overflow, unused ladder copies, and separator rows belong
@@ -71,7 +69,7 @@ Synthetic example: [tests/fixtures/synthetic/constants.bindings.yaml](../tests/f
 
 When an internals helper covers a published output series' leaves, declare
 `output.compute.helper` so generated `compute_*` calls the helper from record
-dims instead of `xl_cell(address)` (excel-grapher schema 1.10.0+):
+dims instead of `xl_cell(address)` (excel-grapher schema 1.13.0+):
 
 ```yaml
 output:
@@ -83,8 +81,8 @@ output:
 ```
 
 `dims` defaults to the series `key` when omitted. Leaves without helper coverage
-still use `xl_cell`. Declare helper blocks on every output series whose leaves
-are covered by a same-named function in the generated `internals.py`.
+still use `xl_cell`. Declare helper blocks on every output series id that matches a same-named function in the generated
+`internals.py`.
 
 After authoring (or when export fails in codegen), run
 `uv run python -m scripts.binding_resolution_audit`
@@ -130,15 +128,13 @@ but fail at output/input codegen:
 
    | Choice | When | Effect |
    |---|---|---|
-   | **Share** the same compute name or input id across shards | Shards are complementary slices of one logical public series (e.g. Gap columns for 2050 / 2075 that should become one `compute_gap_milestones`) | Export merges shards into one public function |
+   | **Share** the same name / id across shards | Shards are complementary slices of one logical public series (e.g. Gap columns for 2050 / 2075 that should become one `compute_gap_milestones`) | Export merges shards into one public function |
    | **Uniquify** per shard | Each shard is a distinct scenario / engine path (e.g. Paris vs Moderate expenditure rows on separate sheets) | Each path keeps its own `output.compute.name` / input series id |
 
-   Output shards uniquify by `output.compute.name`. Input shards uniquify by
-   series `id` (`input: {}` marks the direction; schema 1.16.0 dropped
-   `input.setter`). Complementary input slices that should merge must share
-   one series id and may declare different `sheet` / `data_range` (schema
-   1.14.0). Callers pass keyword-only `compute_*` arguments named from those
-   ids.
+   Complementary input shards share a series `id` (schema 1.14.0+); `input: {}`
+   marks them as editable leaves. Extra `setter` / `reader` keys are rejected.
+   Callers pass those series as `{Output}Inputs.from_defaults(...)` fields into
+   `compute_*`.
 
    Sharing a name across distinct engine paths is the failure mode: export
    merges the colliding definitions, so most scenario paths become
@@ -151,8 +147,8 @@ but fail at output/input codegen:
    `data_range` that must stay on-graph for those cells). Bound cells outside
    the extracted graph never resolve cleanly.
 
-Pedagogical fragment (not used by the synthetic smoke workbook):
-[`.agents/skills/author-bindings/assets/measure-shards.example.yaml`](../.agents/skills/author-bindings/assets/measure-shards.example.yaml).
+Pedagogical catalog fragment (not used by the synthetic smoke workbook):
+[.agents/skills/author-bindings/assets/measure-shards.example.yaml](../.agents/skills/author-bindings/assets/measure-shards.example.yaml).
 The example shows the intentional **shared-name** merge for milestone Gap
 columns; see its header comments for the **unique-name** alternative used
 for per-scenario engine shards.

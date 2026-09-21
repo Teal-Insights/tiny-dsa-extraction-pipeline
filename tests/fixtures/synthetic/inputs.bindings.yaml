@@ -1,4 +1,4 @@
-schema_version: 1.17.0
+schema_version: 1.19.0
 workbook: workbook.xlsx
 concept_scheme:
   id: synthetic_model
@@ -14,7 +14,11 @@ series:
     sheet: Inputs
     data_range: Inputs!A1
     layout: scalar
-    input: {}
+    input:
+      domain:
+        real_between:
+          min: 0.0
+          max: 100.0
     structure:
       measure:
         concept: OBS_VALUE

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, cast
@@ -12,7 +12,7 @@ import fastpyxl
 import pytest
 import yaml
 from excel_grapher.grapher.graph import DependencyGraph
-from excel_grapher.series_bindings import load_series_bindings
+from excel_grapher.series_bindings import CURRENT_SCHEMA_VERSION, load_series_bindings
 from excel_grapher.series_bindings.resolve import BindingDirection
 
 from scripts.regenerate_graph_cache import (
@@ -59,6 +59,13 @@ from tests.fixtures.test_state import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTHOR_BINDINGS_SKILL = REPO_ROOT / ".agents" / "skills" / "author-bindings"
+_REMOVED_CATALOG_EMITTER_PATHS = (
+    Path("templates") / "binding-authoring-prompt.txt",
+    Path("templates") / "binding-catalog.example.yaml",
+    Path("templates") / "binding-pattern-measure-shards.example.yaml",
+    Path("scripts") / "author_bindings.py",
+    Path("src") / "binding_authoring.py",
+)
 
 _SPARSE_YEARS_SERIES: dict[str, Any] = {
     "id": "engine_sparse_years",
@@ -670,45 +677,34 @@ def test_internal_binding_burndown_reports_no_unbound_cells_for_synthetic(
 
 
 def test_author_bindings_skill_is_vendored() -> None:
-    skill_md = AUTHOR_BINDINGS_SKILL / "SKILL.md"
-    assert skill_md.is_file()
-    text = skill_md.read_text(encoding="utf-8")
-    assert "name: author-bindings" in text
-    assert "generic catalog" in text.lower()
-    assert "four-file" in text.lower()
+    skill = AUTHOR_BINDINGS_SKILL / "SKILL.md"
+    assert skill.is_file()
+    text = skill.read_text(encoding="utf-8")
+    assert "four-file replace is not" in text
     assert (AUTHOR_BINDINGS_SKILL / "assets" / "catalog.example.yaml").is_file()
     assert (AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml").is_file()
-    for name in ("conventions.md", "pitfalls.md", "validation-loop.md"):
-        assert (AUTHOR_BINDINGS_SKILL / "references" / name).is_file()
 
 
-def test_replaced_binding_authoring_files_are_gone() -> None:
-    present = [
-        path
-        for path in (
-            REPO_ROOT / "templates" / "binding-authoring-prompt.txt",
-            REPO_ROOT / "templates" / "binding-catalog.example.yaml",
-            REPO_ROOT / "templates" / "binding-pattern-measure-shards.example.yaml",
-            REPO_ROOT / "scripts" / "author_bindings.py",
-            REPO_ROOT / "src" / "binding_authoring.py",
-        )
-        if path.exists()
-    ]
-    assert present == []
+def test_catalog_emitter_and_prompt_are_removed() -> None:
+    for relative in _REMOVED_CATALOG_EMITTER_PATHS:
+        assert not (REPO_ROOT / relative).exists()
+    assert "binding_authoring_prompt_path" not in PipelineConfig.__dataclass_fields__
 
 
-def test_pipeline_config_has_no_binding_authoring_prompt_path() -> None:
-    names = {field.name for field in fields(PipelineConfig)}
-    assert "binding_authoring_prompt_path" not in names
+def test_docs_point_at_author_bindings_skill_not_catalog_emitter() -> None:
+    for relative in ("AGENTS.md", "README.md", "bindings/README.md"):
+        text = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        assert "scripts.author_bindings" not in text
+        assert "scripts/author_bindings" not in text
+        assert "templates/binding-authoring-prompt.txt" not in text
+        assert "templates/binding-catalog.example.yaml" not in text
+        assert ".agents/skills/author-bindings" in text
 
 
-def test_measure_shard_skill_asset_uses_filled_gap_column_shards() -> None:
-    """Pedagogical filled-header + measure-shard asset stays structurally valid."""
-    catalog = yaml.safe_load(
-        (AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
+def test_measure_shard_pattern_catalog_documents_filled_gap_column_shards() -> None:
+    """Pedagogical filled-header + measure-shard catalog stays structurally valid."""
+    catalog_path = AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml"
+    catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
     outputs = catalog["outputs"]["series"]
     internals = catalog["internals"]["series"]
 
@@ -738,9 +734,6 @@ def test_measure_shard_skill_asset_uses_filled_gap_column_shards() -> None:
 def test_binding_guidance_documents_unique_vs_shared_compute_names() -> None:
     """Authoring materials teach when shared names merge vs when they mask paths."""
     readme = (REPO_ROOT / "bindings" / "README.md").read_text(encoding="utf-8")
-    conventions = (AUTHOR_BINDINGS_SKILL / "references" / "conventions.md").read_text(
-        encoding="utf-8"
-    )
     pitfalls = (AUTHOR_BINDINGS_SKILL / "references" / "pitfalls.md").read_text(
         encoding="utf-8"
     )
@@ -755,7 +748,8 @@ def test_binding_guidance_documents_unique_vs_shared_compute_names() -> None:
         assert "share" in lowered or "shared" in lowered
 
     assert "output.compute.name" in readme
-    assert "compute_" in conventions
+    assert "input series" in readme.lower() or "series `id`" in readme
+    assert "compute_" in pitfalls
 
 
 def test_binding_guidance_documents_constant_direction() -> None:
@@ -765,29 +759,30 @@ def test_binding_guidance_documents_constant_direction() -> None:
     conventions = (AUTHOR_BINDINGS_SKILL / "references" / "conventions.md").read_text(
         encoding="utf-8"
     )
-    pitfalls = (AUTHOR_BINDINGS_SKILL / "references" / "pitfalls.md").read_text(
-        encoding="utf-8"
-    )
 
     for text in (bindings_readme, pipeline_readme, conventions):
         lowered = text.lower()
         assert "constant: {}" in text
-        assert "constants.bindings.yaml" in lowered or "constant: {}" in text
+        assert "constants.bindings.yaml" in lowered
 
     assert "keyword-only" in bindings_readme
     assert "data.py" in bindings_readme.lower()
     assert "compute_*" in bindings_readme
     assert "non_leaf_constant_overlap" in bindings_readme
     assert "bind.kind: constant" in bindings_readme
-    assert "bind.kind: constant" in conventions
     assert "derive_constant_series" in pipeline_readme
-    assert "constant: {}" in pitfalls
 
     for text in (pipeline_readme, conventions):
         lowered = text.lower()
+        assert "read_" in lowered or "reader-only" in lowered
         assert "input: {}" in text
-        assert "constant.reader" not in lowered
-    assert "xl_cell" in pipeline_readme.lower()
+        assert (
+            "xl_cell" in lowered
+            or "formula-body" in lowered
+            or "phase 2" in lowered
+            or "body rewrite" in lowered
+            or "data.py" in lowered
+        )
 
 
 def test_excel_grapher_floor_is_22_0_0() -> None:
@@ -819,7 +814,7 @@ def test_binding_resolution_audit_directions_include_constant() -> None:
     assert DIRECTIONS == ("input", "output", "internal", "constant")
 
 
-def test_skill_catalog_asset_includes_constant_series() -> None:
+def test_skill_catalog_documents_constants_sidecar() -> None:
     catalog = yaml.safe_load(
         (AUTHOR_BINDINGS_SKILL / "assets" / "catalog.example.yaml").read_text(
             encoding="utf-8"
@@ -832,6 +827,76 @@ def test_skill_catalog_asset_includes_constant_series() -> None:
     assert "input" not in constants[0]
     assert "output" not in constants[0]
     assert "internal" not in constants[0]
+
+
+def test_synthetic_fixtures_and_skill_catalog_use_current_schema() -> None:
+    """Authored shards and pedagogical assets stamp CURRENT_SCHEMA_VERSION."""
+    synthetic = REPO_ROOT / "tests" / "fixtures" / "synthetic"
+    for shard in (
+        "inputs.bindings.yaml",
+        "outputs.bindings.yaml",
+        "internals.bindings.yaml",
+        "constants.bindings.yaml",
+    ):
+        payload = yaml.safe_load((synthetic / shard).read_text(encoding="utf-8"))
+        assert payload["schema_version"] == CURRENT_SCHEMA_VERSION
+    shared = yaml.safe_load(
+        (
+            REPO_ROOT
+            / "tests"
+            / "fixtures"
+            / "bindings_shared_time_period"
+            / "internals.bindings.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    assert shared["schema_version"] == CURRENT_SCHEMA_VERSION
+    catalog = yaml.safe_load(
+        (AUTHOR_BINDINGS_SKILL / "assets" / "catalog.example.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    measure = yaml.safe_load(
+        (AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert catalog["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert measure["schema_version"] == CURRENT_SCHEMA_VERSION
+
+
+def test_synthetic_fixtures_load_on_current_excel_grapher() -> None:
+    bindings = load_series_bindings(REPO_ROOT / "tests" / "fixtures" / "synthetic")
+    assert bindings["schema_version"] == CURRENT_SCHEMA_VERSION
+    series_by_id = {series["id"]: series for series in bindings["series"]}
+    input_block = series_by_id["input_rate"]["input"]
+    assert "setter" not in input_block
+    assert input_block["domain"]["real_between"] == {"min": 0.0, "max": 100.0}
+
+
+def test_authored_yaml_has_no_input_setter_blocks() -> None:
+    roots = (
+        REPO_ROOT / "bindings",
+        REPO_ROOT / "tests" / "fixtures",
+        REPO_ROOT / "templates",
+        AUTHOR_BINDINGS_SKILL / "assets",
+    )
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.yaml"):
+            text = path.read_text(encoding="utf-8")
+            assert "setter:" not in text, path
+
+
+def test_skill_catalog_input_has_no_setter() -> None:
+    catalog = yaml.safe_load(
+        (AUTHOR_BINDINGS_SKILL / "assets" / "catalog.example.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    input_block = catalog["inputs"]["series"][0]["input"]
+    assert "setter" not in input_block
+    assert input_block["domain"]["real_between"] == {"min": 0.0, "max": 100.0}
 
 
 def test_findings_from_resolution_flags_partial_bind_and_empty_public() -> None:

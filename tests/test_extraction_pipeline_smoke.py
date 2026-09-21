@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from excel_grapher.series_bindings import (
+    CURRENT_SCHEMA_VERSION,
     derive_input_series,
     derive_internal_series,
     derive_output_series,
@@ -21,7 +22,7 @@ def test_build_pipeline_graph_on_synthetic_workbook(
 
     internal_series = synthetic_configured_pipeline.internal_series
 
-    assert series_bindings["schema_version"] == "1.17.0"
+    assert series_bindings["schema_version"] == CURRENT_SCHEMA_VERSION
     validation = validate_series_bindings(
         graph,
         series_bindings,

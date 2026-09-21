@@ -14,8 +14,8 @@ def test_pipeline_stages_are_inverted_tree_order() -> None:
     assert PIPELINE_STAGES == (
         "extract",
         "export",
-        "annotate",
         "validate",
+        "annotate",
         "document",
     )
 
@@ -30,6 +30,8 @@ def test_readme_describes_live_stages_not_ctx_refactor() -> None:
     assert "keyword-only" in text
     assert "compute_*" in text
     assert "FormulaEvaluator" in text
+    assert "extract → export → validate → annotate → document" in text
+    assert "extract → export → annotate → validate → document" not in text
     for stage in PIPELINE_STAGES:
         assert stage in text
 
@@ -80,24 +82,6 @@ def test_artifacts_docs_list_annotate_not_live_refactor() -> None:
         assert "stages/{export,refactor,validate,document}" not in text
 
 
-def test_technical_standard_export_gate_is_inverted_tree() -> None:
-    text = (REPO_ROOT / "technical_standard.md").read_text(encoding="utf-8")
-    assert "Records-shaped public API" not in text
-    assert "configure → extract → export → refactor" not in text
-    assert "keyword-only" in text
-    assert "FormulaEvaluator" in text
-    assert "annotate" in text
-
-
-def test_lessons_learned_does_not_center_library_vs_excel() -> None:
-    text = (REPO_ROOT / "lessons-learned.md").read_text(encoding="utf-8")
-    assert "FormulaEvaluator" in text
-    assert "annotate" in text
-    lowered = text.lower()
-    assert "library-vs-excel" not in lowered
-    assert "exported-library" not in lowered or "graph" in lowered
-
-
 def test_env_example_drops_refactor_model() -> None:
     text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "DOCSTRING_MODEL=" in text
@@ -105,6 +89,22 @@ def test_env_example_drops_refactor_model() -> None:
     assert "CURSOR_API_KEY=" in text
     assert "DOCUMENT_AGENT_MODEL=" in text
     assert "SECTION_REWRITE_MODEL" not in text
+
+
+def test_validate_docs_describe_full_sweep_not_default_path_canary() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    playbook = (REPO_ROOT / "docs" / "inverted-tree-migration.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (readme, playbook):
+        assert "INVERTED_TREE_VALIDATE_CASES" not in text
+        assert "default-path" not in text
+        assert "canary" not in text.lower()
+        assert "differential_test_exported_library" in text
+
+
+def test_inverted_tree_validate_module_is_removed() -> None:
+    assert not (REPO_ROOT / "src" / "inverted_tree_validate.py").is_file()
 
 
 def test_inverted_tree_migration_names_live_path_and_grapher_floor() -> None:
@@ -115,6 +115,8 @@ def test_inverted_tree_migration_names_live_path_and_grapher_floor() -> None:
     assert "compute_*" in text
     assert "FormulaEvaluator" in text
     assert "excel-grapher>=22.0.0" in text
+    assert "extract → export → validate → annotate → document" in text
+    assert "extract → export → annotate → validate → document" not in text
     assert "compare_cluster_variation_modes" not in text.split("Do not keep")[0]
     assert "run_refactor_stage" not in text.split("Do not keep")[0]
     pin_idx = text.find("3c759a4")
@@ -123,20 +125,12 @@ def test_inverted_tree_migration_names_live_path_and_grapher_floor() -> None:
     assert "historical" in window or "then pinned" in window or "originally" in window
 
 
-def test_canonical_api_usage_is_human_note() -> None:
-    text = (REPO_ROOT / "templates" / "canonical-api-usage.md").read_text(
-        encoding="utf-8"
-    )
-    lowered = text.lower()
-    assert "human" in lowered or "not loaded" in lowered
-    assert "make_context()" in text
-    assert "compute_*" in text
-
-
 def test_agents_md_documents_annotate_and_live_caches() -> None:
     text = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     assert "annotate" in text.lower()
     assert "inverted-tree-docstrings" in text
+    assert "extract → export → validate → annotate → document" in text
+    assert "warm `validate.json`" in text
     assert "Pass 1 mechanical checkpoint" not in text
     assert "**before first export**" not in text
     assert "compare_cluster_variation_modes" not in text
@@ -172,10 +166,9 @@ def test_bindings_readme_does_not_teach_ctx_setters() -> None:
     assert "helper parameter" in text.lower()
 
 
-def test_ruff_format_exclude_is_the_synthetic_guide() -> None:
+def test_ruff_format_exclude_covers_fixture_markdown() -> None:
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'exclude = ["tests/fixtures/synthetic/guide.md"]' in text
-    assert 'exclude = ["tests/fixtures/**/*.md"]' not in text
+    assert 'exclude = ["tests/fixtures/**/*.md"]' in text
 
 
 def test_dormant_ctx_refactor_stack_is_removed() -> None:

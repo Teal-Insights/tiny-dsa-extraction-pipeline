@@ -26,7 +26,7 @@ def test_manifest_binding_addresses_expands_list_data_range(
 ) -> None:
     pipeline = synthetic_configured_pipeline
     bindings = {
-        "schema_version": "1.17.0",
+        "schema_version": "1.19.0",
         "series": [
             {
                 "id": "engine_path",

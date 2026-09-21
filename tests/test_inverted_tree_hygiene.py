@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REMOVED_PATHS = (
     Path("src/projection_columns.py"),
     Path("src/inverted_tree_export.py"),
+    Path("src/inverted_tree_validate.py"),
     Path("src/runtime_symbols.py"),
     Path("scripts/export_inverted_tree.py"),
     Path("archive/extraction-pipeline.qmd"),
@@ -76,6 +77,7 @@ def test_removed_modules_are_not_importable() -> None:
     for module in (
         "src.projection_columns",
         "src.inverted_tree_export",
+        "src.inverted_tree_validate",
         "src.runtime_symbols",
     ):
         with pytest.raises(ModuleNotFoundError):

@@ -20,9 +20,9 @@ PipelineStageName = str  # narrowed by callers to PIPELINE_STAGES members
 
 _UPSTREAM_STAGE: dict[str, str] = {
     "export": "extract",
-    "annotate": "export",
-    "validate": "annotate",
-    "document": "validate",
+    "validate": "export",
+    "annotate": "validate",
+    "document": "annotate",
 }
 
 

@@ -244,12 +244,25 @@ def test_require_upstream_manifest_loads_prior_stage(tmp_path: Path) -> None:
         upstream_keys={},
         fingerprints=compute_input_fingerprints(config),
     )
-    upstream = require_upstream_manifest(config, start_from_stage="annotate")
+    upstream = require_upstream_manifest(config, start_from_stage="validate")
     assert isinstance(upstream, StageManifest)
     assert upstream.stage == "export"
 
 
+def test_require_upstream_manifest_annotate_loads_validate(tmp_path: Path) -> None:
+    config = _sample_config(tmp_path)
+    write_stage_manifest(
+        config,
+        stage="validate",
+        cache_keys={"codegen_cache_key": "c" * 64},
+        upstream_keys={},
+        fingerprints=compute_input_fingerprints(config),
+    )
+    upstream = require_upstream_manifest(config, start_from_stage="annotate")
+    assert upstream.stage == "validate"
+
+
 def test_require_upstream_manifest_missing_names_file(tmp_path: Path) -> None:
     config = _sample_config(tmp_path)
-    with pytest.raises(StageManifestMissingError, match="export\\.json"):
+    with pytest.raises(StageManifestMissingError, match="validate\\.json"):
         require_upstream_manifest(config, start_from_stage="annotate")

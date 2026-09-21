@@ -17,7 +17,7 @@ Follow this order when adapting the template to a new workbook. Each step has a 
 | 5. Review graph | **Graph reviewer** | Inspect `artifacts/dependency-graph/` (see [artifacts/README.md](artifacts/README.md)). Confirm expected sheets, no spurious nodes, and complete shock/engine paths. Optionally run opt-in LLM dependency audits: `uv run pytest tests/test_extraction_graph_accuracy.py --run-skipped` (workbook audits auto-select parents from the warm committed `.cache/dependency-graph/` entry — run `--only-stage extract` or `scripts.regenerate_graph_cache` first; `GRAPH_AUDIT_CASES` is optional steering only. The synthetic smoke-test audit runs without extra configuration). Set the provider API key for `LLM_GRAPH_AUDIT_MODEL` (defaults to `gpt-5.5`). |
 | 6. Verify graph | **Parity owner** | Define a scenario matrix in `tests/differential/` and run graph-oracle differential parity before export (see [Verify graph](#3-verify-graph)). Prefer a warm `.cache/dependency-graph/` from extract first. Do not proceed to export until graph-oracle parity passes. |
 | 7. Export | **Parity owner** | Run export (`uv run python -m src.extraction_pipeline --stop-after-stage export` or the full pipeline). Codegen emits keyword-only `compute_*`. See [Export](#4-export). |
-| 8. Annotate and validate | **Parity owner** | Annotate splices LLM docstrings onto `api.py` / `internals.py`. Validate compares `compute_*` to `FormulaEvaluator` on the graph (see [Annotate](#5-annotate) and [Validate](#6-validate)). |
+| 8. Validate and annotate | **Parity owner** | Validate compares `compute_*` to `FormulaEvaluator` on the graph. Annotate splices LLM docstrings onto `api.py` / `internals.py` after parity (see [Validate](#5-validate) and [Annotate](#6-annotate)). |
 | 9. Document | **Config author** | Generate economist-facing docs from the exported package (see [Document](#7-document)). |
 
 Copy the checkbox list in [Checklist for a new workbook](#checklist-for-a-new-workbook) into your extraction tracking issue and check items off as you go.
@@ -41,7 +41,7 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Graph parity evidence | `data/differential/graph/` | Reference reports after passing pre-export graph-oracle sweeps (optional until configured) |
 | Exported-library parity evidence | `data/differential/exported_library/` | Reference reports after passing post-export parity sweeps (optional until configured) |
 
-Use [`.agents/skills/author-bindings`](.agents/skills/author-bindings) with a coding agent to draft bindings from the guide, workbook, and extracted graph.
+Use [.agents/skills/author-bindings](.agents/skills/author-bindings/SKILL.md) with a coding agent to draft bindings from the guide, workbook, and extracted graph.
 
 ### Iterative configuration
 
@@ -56,24 +56,24 @@ Extract is graph-first. Binding load, validation, derivation, and internal-cover
 
 ## Pipeline stages
 
-The orchestrator is `extract → export → annotate → validate → document` (`PIPELINE_STAGES` in [src/extraction_pipeline.py](src/extraction_pipeline.py)). Configure and graph-vs-Excel review are human gates around that sequence:
+The orchestrator is `extract → export → validate → annotate → document` (`PIPELINE_STAGES` in [src/extraction_pipeline.py](src/extraction_pipeline.py)). Configure and graph-vs-Excel review are human gates around that sequence:
 
 ```mermaid
 flowchart LR
   configure[Configure] --> extract[Extract]
   extract --> verifyGraph[Verify graph]
   verifyGraph --> export[Export]
-  export --> annotate[Annotate]
-  annotate --> validate[Validate]
-  validate --> document[Document]
+  export --> validate[Validate]
+  validate --> annotate[Annotate]
+  annotate --> document[Document]
 ```
 
 ### 1. Configure
 
 1. Edit [workbook_config.py](workbook_config.py): paths, `TARGETS`, `BLANK_RANGES`, `CONSTRAINTS`, and `DIST_METADATA`. Keep `bindings/*.bindings.yaml` as empty `series: []` placeholders until after the first extract if needed.
 2. **Dynamic-ref pass** — list leaves that need domains to resolve `OFFSET` / `INDIRECT` / `INDEX` (`excel_grapher.list_dynamic_ref_constraint_candidates` against `TARGETS`), constrain them, and iterate until `--extract-graph` succeeds without `DynamicRefError`. That lister only covers dynamic-ref argument leaves; it will not enumerate every leaf that later appears in the finished graph.
-3. **Leaf-classification pass** — after a successful extract, review empty leaves that sit in the graph only because a formula rectangle names them (`INDEX`/`MATCH` padding, far-right `NPV`/`SUM` year-window overflow, unused ladder copies, separator rows). Declare those sheet-qualified A1 rectangles in `BLANK_RANGES` and re-extract: BFS does not create the nodes, edges that name them are kept, and OFFSET/INDEX leaves inside the rects are **not** required in `CONSTRAINTS`. Pass the **same** sequence to graph build, `FormulaEvaluator`, and codegen (the pipeline does this from `workbook_config.BLANK_RANGES`). Do **not** bind these as inputs or constants, do **not** drop them by narrowing a year domain (`C18`-style — the ranges are literal `:BB` / `:BD`), and do **not** put user-fillable yellow slots in `BLANK_RANGES`. `Literal[None]` freezes dynamic-ref *classification*; it does not omit nodes from the graph. Then constrain every remaining unconstrained graph leaf (`graph.leaf_keys()` minus `CONSTRAINTS`) so each leaf classifies as `input` or `constant`. Every mutable input leaf must appear in `inputs.bindings.yaml`. Fixed leaves that formulas should consume as named `data.py` defaults / defaulted `compute_*` kwargs (not unnamed `xl_cell`) need a `constant: {}` series in `constants.bindings.yaml` (see [Authoring constants](#authoring-constants)).
-4. Author I/O `bindings/*.bindings.yaml` (schema version `1.17.0`, one logical series per public API function or input/constant group). Empty `series: []` placeholders load (excel-grapher 5.1.4+); author real series before export.
+3. **Leaf-classification pass** — after a successful extract, review empty leaves that sit in the graph only because a formula rectangle names them (`INDEX`/`MATCH` padding, far-right `NPV`/`SUM` year-window overflow, unused ladder copies, separator rows). Declare those sheet-qualified A1 rectangles in `BLANK_RANGES` and re-extract: BFS does not create the nodes, edges that name them are kept, and OFFSET/INDEX leaves inside the rects are **not** required in `CONSTRAINTS`. Pass the **same** sequence to graph build, `FormulaEvaluator`, and codegen (the pipeline does this from `workbook_config.BLANK_RANGES`). Do **not** bind these as inputs or constants, do **not** drop them by narrowing a year domain (`C18`-style — the ranges are literal `:BB` / `:BD`), and do **not** put user-fillable yellow slots in `BLANK_RANGES`. `Literal[None]` freezes dynamic-ref *classification*; it does not omit nodes from the graph. Then constrain every remaining unconstrained graph leaf (`graph.leaf_keys()` minus `CONSTRAINTS`) so each leaf classifies as `input` or `constant`. Every mutable input leaf must appear in `inputs.bindings.yaml`. Fixed leaves that formulas should read via `read_*` (not `xl_cell`) need a `constant: {}` series in `constants.bindings.yaml` (see [Authoring constants](#authoring-constants)).
+4. Author I/O `bindings/*.bindings.yaml` (schema version `1.19.0`, one logical series per public API function or input/constant group). Empty `series: []` placeholders load (excel-grapher 5.1.4+); author real series before export.
 5. Bind every internal formula cell in `internals.bindings.yaml` (see [Authoring internals](#authoring-internals) below).
 
 Validation checks:
@@ -136,18 +136,17 @@ Author `internals.bindings.yaml` after `--extract-graph`, when you can see which
 - **Validate** — `validate_series_bindings(...)`, then `derive_internal_series(...)`. Run `uv run pytest tests/test_internal_binding_coverage.py` once `INTERNAL_BINDING_VALIDATION_MODE` is enabled.
 - **Review** — re-run `--extract-graph` and confirm bound formula nodes show `keys:` / `record:` labels in the graph explorer.
 
-Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction). Use [`.agents/skills/author-bindings`](.agents/skills/author-bindings) for agent-assisted drafting.
+Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction, schema 1.19.0). Use [.agents/skills/author-bindings](.agents/skills/author-bindings/SKILL.md) for agent-assisted drafting.
 
 #### Authoring constants
 
-Author `constants.bindings.yaml` for graph **leaves** that formulas depend on but that are not user-editable public inputs. Classification via `Literal[...]` in `CONSTRAINTS` marks those leaves as `constant` for codegen `CONSTANTS`; a `constant: {}` binding names those leaves in `data.py` and as defaulted `compute_*` kwargs rather than unnamed `xl_cell` reads.
+Author `constants.bindings.yaml` for graph **leaves** that formulas depend on but that are not user-editable public inputs. Classification via `Literal[...]` in `CONSTRAINTS` marks those leaves as `constant` for codegen `CONSTANTS`; a `constant: {}` binding additionally emits a semantic `read_*` and rewrites formula bodies off bare `xl_cell`.
 
 Structural blanks are a different lever. Cells that formulas *name* but users never fill belong in `BLANK_RANGES`, not `CONSTRAINTS` + `constants.bindings.yaml`. If those nodes are deleted without `blank_ranges`, `FormulaEvaluator.evaluate()` raises `KeyError` (`Cell … not found in graph`); a still-present empty leaf returns `None`. The supported way to drop the nodes without breaking eval/export is the same sheet-qualified A1 sequence passed to `create_dependency_graph`, `FormulaEvaluator`, and `CodeGenerator.generate` / `generate_modules`.
 
 - **Same YAML shape as public bindings** — use `constant: {}` instead of `input` / `output` / `internal`. Mutually exclusive with those directions.
 - **Leaf-only** — `data_range` must cover graph leaves (not formula nodes). Formula triangulation stays in `internals.bindings.yaml`.
-- **Keyword name** — the series `id` names the `data.py` default / defaulted `compute_*` kwarg.
-- **No public input** — do not declare `input: {}` on constant series. If downstream users must edit the cell, use an `input` binding instead.
+- **No public write surface** — do not declare `input: {}` on constant series. If downstream users must edit the cell, use an `input` binding instead.
 - **Validate** — `validate_series_bindings(...)`, then `derive_constant_series(...)`. Run `uv run python -m scripts.binding_resolution_audit` (includes the `constant` direction by default).
 
 Synthetic example: [tests/fixtures/synthetic/constants.bindings.yaml](tests/fixtures/synthetic/constants.bindings.yaml). Full rules: [bindings/README.md](bindings/README.md#constant-bindings-reader-only-leaves). Schema reference: excel-grapher `user_guide/05-series-bindings.qmd` (constant direction, schema 1.11.0+).
@@ -175,13 +174,14 @@ Use `warn` while iterating locally; treat pytest failures as the CI gate once ex
 |---|---|---|
 | Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints/`BLANK_RANGES`, or excel-grapher. Add `--force` to rebuild even when entries exist; `--force` also clears and prunes `.cache/series-resolution/`, `.cache/series-derived/`, and `.cache/bindings-validation/`. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
 | Internal-binding burndown | `uv run python -m scripts.internal_binding_burndown` | After `--extract-graph` to see which formula rows still need `internals.bindings.yaml` entries. Supports `--per-sheet` and `--max-rows`. Reuses the newest cached graph even when bindings changed. |
-| Series-binding skill | [`.agents/skills/author-bindings`](.agents/skills/author-bindings) | Agent-assisted authoring of input/output/internal/constant sidecars. Checks: `uv run excel-grapher bindings {validate,audit,burndown,upsert}`. |
+| Startup-site I/O catalog | `uv run python -m scripts.i_o_tables` | After extract (warm graph cache) to write `artifacts/startup-site/`: public-input and output CSV catalogs, HTML pages, a workbook download, and excel-grapher's statement graph. Override the destination with `--output-dir`. Serve with `uv run python -m http.server 8000 --directory artifacts/startup-site` (POSIX `/` in `--directory` so Git Bash does not treat `\t` as a tab). |
+| Author-bindings skill | `.agents/skills/author-bindings` | Agent-assisted series-binding authoring. Pedagogical shapes: `.agents/skills/author-bindings/assets/`. Do not emit four sidecars from a generic catalog. Keep pipeline-wired `scripts.binding_resolution_audit` and `scripts.internal_binding_burndown` (cached `TARGETS` graph); they are not replaced by `excel-grapher bindings audit` / `burndown`. |
 
 Commit `.cache/dependency-graph/` only when your downstream pipeline vendors the cache for warm CI (override `.gitignore` for that directory). Run `uv run pytest tests/test_binding_utility_scripts.py` to exercise the synthetic fixture path end-to-end.
 
 ### 3. Verify graph
 
-**Why:** Graph-oracle parity isolates extraction, configuration, and dynamic-ref resolution bugs from codegen bugs. Library-vs-graph (`FormulaEvaluator` vs `compute_*`) cannot tell you the graph itself is wrong.
+**Why:** Graph-oracle parity isolates extraction, configuration, and dynamic-ref resolution bugs from export and codegen bugs. When export happens first, exported-library differential failures are ambiguous — they may come from the graph, the bindings, or the generated package.
 
 **What:** A scenario matrix (canonical baselines, single-axis shocks, categorical factorials, and boundary cases) exercised by [`tests/differential/differential_test_graph.py`](tests/differential/differential_test_graph.py). The harness compares Microsoft Excel (golden master via `xlwings`) against the in-memory dependency graph evaluated with `FormulaEvaluator.evaluate`.
 
@@ -202,29 +202,18 @@ Reports land under `data/differential/graph/`. Exit codes: **`0`** all compariso
 
 ### 4. Export
 
-Export calls `CodeGenerator.generate_modules(series_bindings=..., bindings_workbook=..., blank_ranges=...)`.
-The package is keyword-only `compute_*`
-functions: scalars stay scalars, series are 1-D sequences in canonical key
-order, and each helper returns `tuple[float, ...]`. There is no `make_context`,
+Export calls `CodeGenerator.generate_modules(...)`.
+The package is `compute_*`
+functions that take a typed `{Output}Inputs` bundle
+(`from_defaults` fills `data.*_DEFAULT` with keyword leaf overrides).
+Scalars stay scalars; series are named-axis tensors in canonical key
+order. There is no `make_context`,
 no `set_*`, and no records-shaped setters. Helpers are named from output
 `series_id` / `output.compute.name`. Package shape: `api.py`, `internals.py`,
 `runtime.py`, `data.py`, `__init__.py`. The validation bundle is copied into
-`dist/tests/`. Docstrings are placeholders until [Annotate](#5-annotate).
+`dist/tests/`. Docstrings are placeholders until [Annotate](#6-annotate).
 
-### 5. Annotate
-
-[src/inverted_tree_docstrings.py](src/inverted_tree_docstrings.py) asks
-`DOCSTRING_MODEL` for Google-style docstrings keyed by function signature and
-bindings notes, then splices them onto `api.py` and `internals.py`. Successful
-responses cache under `.cache/inverted-tree-docstrings.json`. The stage fails
-closed if the model returns argument names that do not match the signature.
-
-```bash
-uv run python -m src.extraction_pipeline --start-from-stage annotate --stop-after-stage annotate
-# equivalent: --only-stage annotate
-```
-
-### 6. Validate
+### 5. Validate
 
 Two oracles, two questions:
 
@@ -233,35 +222,47 @@ Two oracles, two questions:
 | Did we extract the workbook faithfully? | Excel (`xlwings`) | `FormulaEvaluator` on the graph ([Verify graph](#3-verify-graph)) |
 | Did we code-generate that graph faithfully? | Graph (`FormulaEvaluator`) | keyword-only `compute_*` |
 
-The pipeline `validate` stage ([src/differential_validation.py](src/differential_validation.py))
-runs the authored library-vs-graph FormulaEvaluator sweep
-([tests/differential/differential_test_exported_library.py](tests/differential/differential_test_exported_library.py)).
-Empty `build_scenarios()` / `output_cell_labels()` fail closed. Reports land
-under `data/differential/exported_library/` and are copied into
-`dist/tests/results/reference/` when present. The sweep does not overwrite
-committed Excel goldens under `data/differential/graph/`. Library ≈ Excel then
-follows by transitivity on the **same** scenarios.
+The pipeline `validate` stage runs the authored exported-library FormulaEvaluator
+sweep (`tests.differential.differential_test_exported_library` via
+`src.differential_validation.run_post_refactor_differential`). It compares
+keyword-only `compute_*` to `FormulaEvaluator` on the extraction graph across
+`build_scenarios()`. Empty `build_scenarios()` / `output_cell_labels()` fail
+closed — fill those hooks in a derived repo before claiming library ≈ graph.
+Microsoft Excel is not required.
 
-You can also run the sweep directly:
+Reports land under `data/differential/exported_library/`. When present, validate
+copies them into `dist/tests/results/reference/`. It does not overwrite Excel
+goldens under `data/differential/graph/`.
 
 ```bash
 uv run python -m tests.differential.differential_test_exported_library
 ```
 
-Microsoft Excel is not required for this harness.
+### 6. Annotate
+
+[src/inverted_tree_docstrings.py](src/inverted_tree_docstrings.py) asks
+`DOCSTRING_MODEL` for Google-style docstrings keyed by function signature and
+bindings notes, then splices them onto `api.py` and `internals.py`. Successful
+responses cache under `.cache/inverted-tree-docstrings.json`. The stage fails
+closed if the model returns argument names that do not match the signature.
+A full pipeline run skips annotate (and document) when validate exits non-zero,
+unless you pass `--force-document`.
+
+```bash
+uv run python -m src.extraction_pipeline --start-from-stage annotate --stop-after-stage annotate
+# equivalent: --only-stage annotate
+```
+
+Entering at annotate requires a warm `artifacts/stages/validate.json`.
 
 ### 7. Document
 
-Great Docs scaffolds the distributable website from the exported package. On a
-cache miss the document stage launches a local Cursor SDK agent (`cwd=dist/`)
-that reads the guidance note, experiments with the generated keyword-only
-`compute_*` API, and writes economist-facing `user_guide/` pages. The agent
-must not run `great-docs` or Quarto site builds; the stage renders the site
-with `great-docs build` after the agent finishes. Cached `user_guide/` trees live under
-`.cache/user-guide/`. Uncached runs need `CURSOR_API_KEY`. Runnable `{python}`
-cells must not call `make_context()` or `set_*` (`RUNNABLE_CELL_RULES` in
-[workbook_config.py](workbook_config.py)). [templates/canonical-api-usage.md](templates/canonical-api-usage.md)
-is a human note for that interaction model; the document agent does not load it.
+Great Docs generates the distributable website from the exported package. LLM
+rewrites guide sections into Python-first user-guide pages when cache misses
+require an API key. Runnable `{python}` cells must not call `make_context()` or
+`set_*` (`RUNNABLE_CELL_RULES` in [workbook_config.py](workbook_config.py)).
+[templates/canonical-api-usage.md](templates/canonical-api-usage.md) is the
+canonical interaction model for those rewrites.
 
 ## Run the pipeline
 
@@ -274,33 +275,34 @@ uv run python -m src.extraction_pipeline
 
 ### Stage entry and exit
 
-The pipeline is ordered as `extract → export → annotate → validate → document`. Each completed stage writes `artifacts/stages/<stage>.json` (cache keys, upstream keys, and input fingerprints). Use the flags below to enter or exit at a named stage without re-paying upstream work:
+The pipeline is ordered as `extract → export → validate → annotate → document`. Each completed stage writes `artifacts/stages/<stage>.json` (cache keys, upstream keys, and input fingerprints). Use the flags below to enter or exit at a named stage without re-paying upstream work:
 
 | Flag | Behavior | Typical use |
 |---|---|---|
 | `--stop-after-stage extract` (or `--extract-graph`) | Run extract only (graph review artifacts) | Bindings / constraint iteration |
-| `--stop-after-stage export` | Run through export | Inspect generated `compute_*` before docstrings |
-| `--start-from-stage annotate` | Resume at annotate from warm `export.json` | Re-run LLM docstrings after export is stable |
-| `--only-stage validate` | Run validate only (rehydrates `dist/` from manifest keys) | Authored library-vs-graph FormulaEvaluator sweep without export/annotate |
+| `--stop-after-stage export` | Run through export | Inspect generated `compute_*` before the library sweep |
+| `--stop-after-stage validate` | Run through the exported-library FormulaEvaluator sweep | Inspect parity before paying for docstrings |
+| `--start-from-stage annotate` | Resume at annotate from warm `validate.json` | Re-run LLM docstrings after parity passes |
+| `--only-stage validate` | Run validate only from warm `export.json` (no cached docstring overlay) | Exported-library FormulaEvaluator sweep without annotate |
 | `--only-stage document` | Run document only | Guide rewrite against an existing package |
 | `--stop-after-stage document` (default) | Full pipeline from the start | Release / complete run |
 | `--force-rebuild` | Rebuild warm on-disk caches even when keys match | Invalidate stale cache payloads |
 
-`--start-from-stage` and `--only-stage` are mutually exclusive. `--only-stage` cannot be combined with `--stop-after-stage`. Loading a stage manifest recomputes workbook / bindings / constraints / mode fingerprints and **fails loudly** (naming the drifted input) when they disagree — it never silently falls back to a full run. Entering at `validate` or `document` rebuilds `dist/` via `materialize_package` from the manifest's codegen key, then re-applies cached annotate docstrings.
+`--start-from-stage` and `--only-stage` are mutually exclusive. `--only-stage` cannot be combined with `--stop-after-stage`. Loading a stage manifest recomputes workbook / bindings / constraints / mode fingerprints and **fails loudly** (naming the drifted input) when they disagree — it never silently falls back to a full run. `--only-stage validate` / `--start-from-stage validate` rebuild `dist/` via `materialize_package` from the export codegen key and do **not** re-apply cached annotate docstrings. Entering at `annotate` requires `artifacts/stages/validate.json`. Entering at `document` rematerializes from the annotate codegen key and then re-applies cached annotate docstrings.
 
-When the default full run reaches `document` after a non-zero exported-library differential exit, the document stage is skipped so parity diagnosis is not gated on guide rewrite. Pass `--force-document` to rewrite guides anyway. Document-stage failures (agent errors, package mutation, empty guides, or `great-docs build` failure) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
+When the default full run reaches `annotate` after a non-zero exported-library differential exit, annotate and document are skipped so parity diagnosis is not gated on LLM docstring spend or guide rewrite. Pass `--force-document` to splice docstrings and rewrite guides anyway. Harness exceptions abort the pipeline (fail closed). Document-stage failures (timeouts, validation exhaustion, LLM errors) raise loudly after logging that export/differential artifacts under `dist/` are preserved.
 
 The document stage launches a Cursor SDK agent against `dist/` (`CURSOR_API_KEY`, `DOCUMENT_AGENT_MODEL`, default deadline 1800s via `DOCUMENT_AGENT_DEADLINE`). Authored trees cache under `.cache/user-guide/`. Set `PIPELINE_STALL_SECONDS` for heartbeat stack dumps during the document stage.
 
 ```bash
 uv run python -m src.extraction_pipeline --stop-after-stage export
-uv run python -m src.extraction_pipeline --start-from-stage annotate --stop-after-stage validate
+uv run python -m src.extraction_pipeline --start-from-stage validate --stop-after-stage annotate
 uv run python -m src.extraction_pipeline --only-stage validate
 ```
 
 ### Prerequisites
 
-LLM steps (annotate docstrings) and the document-stage Cursor agent cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, projection, and codegen module texts cache gzipped pickle payloads under `.cache/series-resolution/`, `.cache/bindings-validation/`, `.cache/series-derived/`, `.cache/projection/`, and `.cache/codegen/`. Series-resolution, series-derived, and bindings-validation keys fold a `bindings_fingerprint`; projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version; codegen keys also fold `paradigm="inverted_tree"`. Annotate caches LLM docstrings in `.cache/inverted-tree-docstrings.json`. Authored user-guide trees cache under `.cache/user-guide/<key>/`. `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen cache key recorded in `dist/.pipeline-cache-keys.json`, then annotate re-applies cached docstrings. Stage entry/exit records keys plus fingerprints under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, codegen, annotate, and user-guide caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
+LLM steps (annotate docstrings, document-stage Cursor agent) cache results under `.cache/`. Dependency graph extraction caches under `.cache/dependency-graph/` as excel-grapher EGDG multipart payloads, keyed by workbook bytes, targets, constraints, load/provenance flags, and `excel-grapher` version — **not** bindings. `derive_*_series` resolution, `validate_series_bindings`, derived leaf/binding objects, projection, and codegen module texts cache gzipped pickle payloads under `.cache/series-resolution/`, `.cache/bindings-validation/`, `.cache/series-derived/`, `.cache/projection/`, and `.cache/codegen/`. Series-resolution, series-derived, and bindings-validation keys fold a `bindings_fingerprint`; projection keys fold the graph cache key, preserve-scope flag, strategy, and `excel-grapher` version; codegen keys fold `paradigm="inverted_tree"`. Annotate caches LLM docstrings in `.cache/inverted-tree-docstrings.json`. Authored user-guide trees cache under `.cache/user-guide/`. `dist/` is a disposable projection of those caches: `materialize_package` rebuilds it from the codegen cache key recorded in `dist/.pipeline-cache-keys.json`, then annotate re-applies cached docstrings. Stage entry/exit records keys plus fingerprints under `artifacts/stages/*.json`. Pass `--no-cache` to bypass graph, projection, series-resolution, series-derived, bindings-validation, codegen, and annotate caches for a single run; pass `--force-rebuild` to rewrite warm cache entries. A clean run reproduces committed output without an API key unless inputs change. For uncached steps, set provider API keys and per-stage model names in a `.env` file at the repository root:
 
 ```bash
 # .env — logging verbosity for pipeline entry points (default: INFO)
@@ -311,17 +313,15 @@ OPENAI_API_KEY=sk-...
 ZAI_API_KEY=...
 DEEPSEEK_API_KEY=...
 
-# Document stage uses the Cursor SDK (local agent against dist/)
-CURSOR_API_KEY=cursor_...
-
 # Per-stage model selection (optional; default gpt-5.5 when unset)
-# Name prefix selects the provider for OpenAI-compatible stages: gpt-*, glm-*, deepseek-*
+# Name prefix selects the provider: gpt-*, glm-*, deepseek-*
+CURSOR_API_KEY=...
 DOCSTRING_MODEL=gpt-5.5
 DOCUMENT_AGENT_MODEL=gpt-5.6-luna
 LLM_GRAPH_AUDIT_MODEL=gpt-5.5
 ```
 
-If an uncached LLM step is reached without the required API key, the pipeline fails fast with an `*_API_KEY is required ...` error. The document stage requires `CURSOR_API_KEY` on a user-guide cache miss.
+If an uncached LLM step is reached without the required API key, the pipeline fails fast with an `*_API_KEY is required ...` error.
 
 Opt-in graph dependency audits (`pytest --run-skipped`) use the same multi-provider routing: set `LLM_GRAPH_AUDIT_MODEL` to a `gpt-*`, `glm-*`, or `deepseek-*` model name and provide the matching API key (`OPENAI_API_KEY`, `ZAI_API_KEY`, or `DEEPSEEK_API_KEY`). One model drives every audit case in a run. Workbook audits auto-select difficulty-ranked formula parents from the warm committed `.cache/dependency-graph/` cache (they never cold-build under pytest's redirected cache — miss skips with a hint to run `--only-stage extract`). Optional `workbook_config.GRAPH_AUDIT_CASES` entries steer selection (`required` pins and labeled focuses); the synthetic smoke-test audit uses the fixture catalog.
 
@@ -370,7 +370,7 @@ Open `http://localhost:8000/`.
 
 Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-checklist):
 
-- [ ] **Ingest:** `data/tiny-dsa.xlsx` and `data/tiny-dsa-guide.md` populated (replace those names when adapting); bindings reset to empty placeholders (or removed); `dist/` and `.cache/` cleared
+- [ ] **Ingest:** `data/tiny-dsa.xlsx` and `data/tiny-dsa-guide.md` populated; bindings reset to empty placeholders (or removed); `dist/` and `.cache/` cleared
 - [ ] **Audit:** Pre-extraction workbook audit reviewed (`uv run python -m src.workbook_audit`); blocking automation resolved
 - [ ] **Configure:** Outputs declared as extraction targets in `workbook_config.py`
 - [ ] **Configure:** Dynamic-ref constraint candidates constrained (`list_dynamic_ref_constraint_candidates`; graph builds without `DynamicRefError`)
@@ -386,7 +386,7 @@ Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-chec
 - [ ] **Configure:** Internal binding coverage passes (`uv run pytest tests/test_internal_binding_coverage.py`)
 - [ ] **Export:** `dist/` package builds; keyword-only `compute_*` scenario runs (bindings authored beyond empty placeholders)
 - [ ] **Annotate:** Public API and internals helpers have Google-style docstrings (`--only-stage annotate` or a full run)
-- [ ] **Validate:** authored library-vs-graph FormulaEvaluator sweep passes (no Excel required)
+- [ ] **Validate:** Authored exported-library FormulaEvaluator sweep passes (`build_scenarios()` / `output_cell_labels()` filled; no Excel required for the library harness)
 - [ ] **Document:** Public API uses domain language; economist-facing `user_guide/` present
 
 ## Development
@@ -424,7 +424,7 @@ Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audit
 | `bindings/` | Series binding sidecars (user-authored) |
 | `data/` | Workbook, guide, differential reports |
 | `dist/` | Generated distributable package (gitignored) |
-| `templates/` | Binding prompt; `canonical-api-usage.md` is a human note (not loaded by the document agent) |
+| `templates/` | Binding prompt and canonical API usage reference |
 | `.github/workflows/` | Template CI (PR tests) and manual deploy workflow |
 | `technical_standard.md` | Acceptance bar and stage gates |
 | `lessons-learned.md` | Design rationale from the Tiny DSA rehearsal |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import logging
 import time
@@ -30,6 +31,7 @@ from src.dependency_graph_viz import (
     write_dependency_graph_site,
 )
 from src.graph_cache import get_or_build_dependency_graph
+from src.input_domain_dtype import require_input_domain_dtype_consistency
 from src.internal_binding_coverage import InternalBindingCoverageReport
 from src.internal_bindings import (
     BindingKeyValue,
@@ -78,15 +80,15 @@ logger = logging.getLogger(__name__)
 PipelineStageName = Literal[
     "extract",
     "export",
-    "annotate",
     "validate",
+    "annotate",
     "document",
 ]
 PIPELINE_STAGES: tuple[PipelineStageName, ...] = (
     "extract",
     "export",
-    "annotate",
     "validate",
+    "annotate",
     "document",
 )
 
@@ -156,7 +158,7 @@ class ExportStageState:
 
 @dataclass(frozen=True)
 class AnnotateStageState:
-    """Cache-key references produced by annotate for validation / document."""
+    """Cache-key references produced by annotate for document."""
 
     config: PipelineConfig
     codegen_cache_key: str
@@ -231,7 +233,7 @@ def extract_dependency_graph_result(
         graph_build = _build()
     elapsed_seconds = time.perf_counter() - started
     leaf_classification = _best_effort_leaf_classification(
-        effective_domain_annotations(config),
+        config.constraints,
         graph_build.graph.leaf_keys(),
     )
     return DependencyGraphExtraction(
@@ -471,10 +473,10 @@ def build_dependency_graph(
             targets=config.targets,
             constraints=config.constraints,
             dynamic_refs=dynamic_ref_config,
-            bindings_path=config.bindings_path,
             load_values=True,
             capture_dependency_provenance=True,
             blank_ranges=config.blank_ranges,
+            bindings_path=config.bindings_path,
             no_cache=no_cache,
             force_rebuild=force_rebuild,
         )
@@ -511,6 +513,7 @@ def resolve_pipeline_bindings(
         series_bindings: WorkbookSeriesBindings = load_series_bindings(
             config.bindings_path
         )
+        require_input_domain_dtype_consistency(series_bindings)
 
     with stage("validate_series_bindings"):
         validation_result = get_or_build_bindings_validation(
@@ -679,6 +682,34 @@ def run_export_stage(
         return state
 
 
+def call_generate_modules(
+    generator: Any,
+    *,
+    series_bindings: object,
+    bindings_workbook: Path | str,
+    blank_ranges: Sequence[str] | None = None,
+) -> dict[str, str]:
+    """Call ``generate_modules`` without removed positional targets or ``paradigm``.
+
+    excel-grapher 15 is inverted-tree only and keyword-only. Older exporters
+    still declare ``paradigm`` and default to ctx, so pass
+    ``paradigm='inverted_tree'`` only when that parameter exists.
+    """
+    generate_modules = generator.generate_modules
+    if "paradigm" in inspect.signature(generate_modules).parameters:
+        return generate_modules(
+            series_bindings=series_bindings,
+            bindings_workbook=bindings_workbook,
+            blank_ranges=blank_ranges,
+            paradigm="inverted_tree",
+        )
+    return generate_modules(
+        series_bindings=series_bindings,
+        bindings_workbook=bindings_workbook,
+        blank_ranges=blank_ranges,
+    )
+
+
 def _generate_export_package(
     config: PipelineConfig,
     *,
@@ -699,7 +730,8 @@ def _generate_export_package(
 
     def _build_modules() -> dict[str, str]:
         with CodeGenerator(graph) as generator:
-            return generator.generate_modules(
+            return call_generate_modules(
+                generator,
                 series_bindings=series_bindings,
                 bindings_workbook=config.workbook_path,
                 blank_ranges=config.blank_ranges,
@@ -760,7 +792,7 @@ def _generate_export_package(
 
 
 def run_annotate_stage(
-    state: ExportStageState,
+    state: ExportStageState | AnnotateStageState,
     *,
     no_cache: bool = False,
     force_rebuild: bool = False,
@@ -798,7 +830,7 @@ def annotate_stage_state_from_manifest(
     config: PipelineConfig,
     manifest: StageManifest,
 ) -> AnnotateStageState:
-    """Build ``AnnotateStageState`` from an annotate-stage (or compatible) manifest."""
+    """Build ``AnnotateStageState`` from a validate- or annotate-stage manifest."""
     codegen_key = manifest.cache_keys.get("codegen_cache_key")
     if not codegen_key:
         raise StageManifestError(
@@ -824,16 +856,22 @@ def _write_downstream_manifest(
 
 
 def run_validate_stage(
-    state: AnnotateStageState,
+    state: ExportStageState,
     *,
     no_cache: bool = False,
     timings: PipelineTimings | None = None,
 ) -> int | None:
     """Run the authored exported-library FormulaEvaluator sweep.
 
+    Compares keyword-only ``compute_*`` to the graph evaluator across
+    ``build_scenarios()``. Copies reports from
+    ``data/differential/exported_library/`` into
+    ``dist/tests/results/reference/`` when present. Does not overwrite Excel
+    goldens under ``data/differential/graph/``.
+
     Returns 0 when every compared cell matches, otherwise 1. Non-zero does not
-    abort the pipeline; document may still run with ``--force-document``. Empty
-    scenario hooks fail closed inside the harness.
+    abort the pipeline; annotate and document may still run with
+    ``--force-document``. Harness exceptions propagate (fail closed).
     """
     from src.differential_validation import (
         has_parity_reports,
@@ -851,14 +889,14 @@ def run_validate_stage(
             config=config,
             no_cache=no_cache,
         )
+        report_dir = config.repo_root / config.differential_report_dir_rel
+        if has_parity_reports(report_dir):
+            export_reference_reports(config=config)
         timer.record("exported_library_differential", time.perf_counter() - started)
         print(
             f"validate: exported-library differential exit={exit_code}",
             flush=True,
         )
-        report_dir = config.repo_root / config.differential_report_dir_rel
-        if has_parity_reports(report_dir):
-            export_reference_reports(config=config)
     _write_downstream_manifest(
         config, stage="validate", codegen_cache_key=state.codegen_cache_key
     )
@@ -921,8 +959,8 @@ def run_pipeline(
     """Run pipeline stages from ``start_from_stage`` through ``stop_after_stage``.
 
     A full run records ``extract`` then ``export`` (handing the live graph from
-    extract into export so the graph is not built twice), then ``annotate``,
-    ``validate``, and ``document``. When ``only_stage`` is set it overrides both
+    extract into export so the graph is not built twice), then ``validate``,
+    ``annotate``, and ``document``. When ``only_stage`` is set it overrides both
     bounds to that single stage. Entering mid-pipeline requires a warm upstream
     stage manifest whose fingerprints still match the current inputs.
     """
@@ -992,18 +1030,25 @@ def _run_pipeline_stages(
 ) -> None:
     export_state: ExportStageState | None = None
     annotate_state: AnnotateStageState | None = None
+    annotate_source: ExportStageState | AnnotateStageState | None = None
     extracted_graph: DependencyGraph | None = None
     extracted_graph_cache_key: str | None = None
 
     if start_from_stage != "extract":
         upstream = require_upstream_manifest(config, start_from_stage=start_from_stage)
-        if start_from_stage == "annotate":
+        if start_from_stage == "validate":
             export_state = export_stage_state_from_manifest(config, upstream)
             materialize_package(
                 config,
                 codegen_key=export_state.codegen_cache_key,
             )
-        elif start_from_stage in ("validate", "document"):
+        elif start_from_stage == "annotate":
+            annotate_source = annotate_stage_state_from_manifest(config, upstream)
+            materialize_package(
+                config,
+                codegen_key=annotate_source.codegen_cache_key,
+            )
+        elif start_from_stage == "document":
             annotate_state = annotate_stage_state_from_manifest(config, upstream)
             materialize_package(
                 config,
@@ -1045,17 +1090,50 @@ def _run_pipeline_stages(
         if stop_after_stage == "export":
             return
 
+    differential_exit_code: int | None = None
     if _stage_in_range(
-        "annotate",
+        "validate",
         start_from_stage=start_from_stage,
         stop_after_stage=stop_after_stage,
     ):
         if export_state is None:
             raise StageManifestError(
-                "annotate stage requires export stage state or a warm export manifest"
+                "validate stage requires export stage state or a warm export manifest"
+            )
+        differential_exit_code = run_validate_stage(
+            export_state,
+            no_cache=no_cache,
+            timings=timings,
+        )
+        if stop_after_stage == "validate":
+            return
+        if (
+            isinstance(differential_exit_code, int)
+            and differential_exit_code != 0
+            and not force_document
+        ):
+            print(
+                "Skipping annotate and document stages because exported-library "
+                f"differential exited with code {differential_exit_code}. "
+                "Export artifacts are ready for diagnosis; pass --force-document "
+                "to splice docstrings and rewrite guides anyway.",
+                flush=True,
+            )
+            return
+
+    if _stage_in_range(
+        "annotate",
+        start_from_stage=start_from_stage,
+        stop_after_stage=stop_after_stage,
+    ):
+        source = annotate_source if annotate_source is not None else export_state
+        if source is None:
+            raise StageManifestError(
+                "annotate stage requires validate stage state or a warm validate "
+                "manifest"
             )
         annotate_state = run_annotate_stage(
-            export_state,
+            source,
             no_cache=no_cache,
             force_rebuild=force_rebuild,
             timings=timings,
@@ -1063,43 +1141,11 @@ def _run_pipeline_stages(
         if stop_after_stage == "annotate":
             return
 
-    differential_exit_code: int | None = None
-    if _stage_in_range(
-        "validate",
-        start_from_stage=start_from_stage,
-        stop_after_stage=stop_after_stage,
-    ):
-        if annotate_state is None:
-            raise StageManifestError(
-                "validate stage requires annotate stage state or a warm annotate "
-                "manifest"
-            )
-        differential_exit_code = run_validate_stage(
-            annotate_state,
-            no_cache=no_cache,
-            timings=timings,
-        )
-        if stop_after_stage == "validate":
-            return
-
     if _stage_in_range(
         "document",
         start_from_stage=start_from_stage,
         stop_after_stage=stop_after_stage,
     ):
-        if (
-            isinstance(differential_exit_code, int)
-            and differential_exit_code != 0
-            and not force_document
-        ):
-            print(
-                "Skipping document stage because exported-library differential "
-                f"exited with code {differential_exit_code}. Export artifacts "
-                "are ready for diagnosis; pass --force-document to rewrite "
-                "guides anyway.",
-                flush=True,
-            )
-            return
         run_document_stage(
             config,
             timings=timings,
@@ -1183,8 +1229,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--force-document",
         action="store_true",
         help=(
-            "Run the document stage even when FormulaEvaluator parity "
-            "finished with a non-zero exit code."
+            "Run the annotate and document stages even when exported-library "
+            "differential finished with a non-zero exit code."
         ),
     )
     args = parser.parse_args(list(argv) if argv is not None else None)

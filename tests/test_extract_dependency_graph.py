@@ -25,7 +25,7 @@ def _write_empty_placeholder_bindings(bindings_dir: Path) -> None:
     ):
         (bindings_dir / name).write_text(
             (
-                "schema_version: 1.17.0\n"
+                "schema_version: 1.19.0\n"
                 "workbook: workbook.xlsx\n"
                 "concept_scheme:\n"
                 f"  id: {scheme_id}\n"

@@ -42,7 +42,7 @@ from src.qmd_python_validation import (
 
 DOCUMENT_AGENT_MODEL_ENV = "DOCUMENT_AGENT_MODEL"
 DEFAULT_DOCUMENT_AGENT_MODEL = "gpt-5.6-luna"
-USER_GUIDE_AGENT_PROMPT_VERSION = 4
+USER_GUIDE_AGENT_PROMPT_VERSION = 2
 DOCUMENT_AGENT_DEADLINE_ENV = "DOCUMENT_AGENT_DEADLINE"
 DEFAULT_DOCUMENT_AGENT_DEADLINE_SECONDS = 1800.0
 CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
@@ -506,8 +506,8 @@ def render_validation_page(
     if evidence_kind == "formula_evaluator":
         what_tested = (
             f"The validation compares `{package_name}` `compute_*` results against "
-            f"excel-grapher's FormulaEvaluator on the extraction graph across the "
-            f"authored scenario sweep. It does not drive Microsoft Excel or "
+            f"excel-grapher's FormulaEvaluator on the extraction graph, using the "
+            f"workbook's default scenario. It does not drive Microsoft Excel or "
             f"public `set_*` setters."
         )
         report_path = "`tests/results/reference/parity_report.txt`"

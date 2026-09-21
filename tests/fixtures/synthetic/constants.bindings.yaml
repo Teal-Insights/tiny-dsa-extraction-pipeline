@@ -1,4 +1,4 @@
-schema_version: 1.17.0
+schema_version: 1.19.0
 workbook: workbook.xlsx
 series:
   - id: input_bias
@@ -15,4 +15,4 @@ series:
           read: float
       dimensions: []
     key: []
-    notes: Fixed bias leaf (Literal[0]); reader-only, not a public setter.
+    notes: Fixed bias leaf (Literal[0]); reader-only, not a public input.
