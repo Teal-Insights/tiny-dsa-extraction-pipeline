@@ -1,6 +1,6 @@
 # Migrating a derived pipeline to inverted-tree export
 
-This template exports **only** inverted-tree Python. excel-grapher 21.5.0+
+This template exports **only** inverted-tree Python. excel-grapher 22.0.0+
 `generate_modules()` is keyword-only inverted-tree codegen (no `paradigm`, no
 cell-address `targets`; outputs come from the bindings catalog). There is no
 ctx dual-mode flag, no `make_context` / `set_*` public API, and no clustering
@@ -15,7 +15,7 @@ hooks, and files later deleted.
 
 The first Tiny DSA inverted-tree pin was excel-grapher git rev
 `3c759a472f85c115359e9cb14c05eac86432e093` (excel-grapher #597). That pin is
-**historical**: this template now requires `excel-grapher>=21.5.0`. Raise the
+**historical**: this template now requires `excel-grapher>=22.0.0`. Raise the
 floor and `uv lock` when upgrading, then regenerate caches with `--force`.
 
 ## Why move
@@ -124,7 +124,7 @@ not the extraction venv.
 
 1. Land constant-binding coverage and schema 1.17.0 while still on ctx export.
    Ctx and inverted tree both need those series.
-2. Require `excel-grapher>=21.5.0`. `generate_modules()` is inverted-tree only; keep `paradigm="inverted_tree"` in the codegen cache key.
+2. Require `excel-grapher>=22.0.0`. `generate_modules()` is inverted-tree only; keep `paradigm="inverted_tree"` in the codegen cache key.
 3. Remodel stages to `extract → export → annotate → validate → document`.
 4. Author graph-vs-Excel hooks and run that sweep on Windows before trusting
    extraction.

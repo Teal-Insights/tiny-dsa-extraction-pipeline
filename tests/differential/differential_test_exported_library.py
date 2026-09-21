@@ -1020,37 +1020,38 @@ def mvp_outputs_for_scenario(api: ModuleType, scenario: Scenario) -> dict[str, A
         inputs.shock_table,
         name="shock_magnitudes",
     )
-    compute_baseline = api.compute_output_baseline
-    compute_shocked = api.compute_output_shocked
-    compute_delta = api.compute_output_delta
+    model = importlib.import_module(f"{api.__package__}.model")
+    baseline_inputs = model.OutputBaselineInputs.from_defaults(
+        country_name=inputs.country_name,
+        country_initial_debt=initial_debt,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+    )
+    shocked_inputs = model.OutputShockedInputs.from_defaults(
+        country_name=inputs.country_name,
+        country_initial_debt=initial_debt,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+        shock_year=inputs.shock_year,
+        shock_type=inputs.shock_type,
+        shock_magnitudes=shock_magnitudes,
+    )
+    delta_inputs = model.OutputDeltaInputs.from_defaults(
+        country_name=inputs.country_name,
+        country_initial_debt=initial_debt,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+        shock_year=inputs.shock_year,
+        shock_type=inputs.shock_type,
+        shock_magnitudes=shock_magnitudes,
+    )
     computed = {
-        "output_baseline": compute_baseline(
-            country_name=inputs.country_name,
-            country_initial_debt=initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-        ),
-        "output_shocked": compute_shocked(
-            country_name=inputs.country_name,
-            country_initial_debt=initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-            shock_year=inputs.shock_year,
-            shock_type=inputs.shock_type,
-            shock_magnitudes=shock_magnitudes,
-        ),
-        "output_delta": compute_delta(
-            country_name=inputs.country_name,
-            country_initial_debt=initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-            shock_year=inputs.shock_year,
-            shock_type=inputs.shock_type,
-            shock_magnitudes=shock_magnitudes,
-        ),
+        "output_baseline": api.compute_output_baseline(baseline_inputs),
+        "output_shocked": api.compute_output_shocked(shocked_inputs),
+        "output_delta": api.compute_output_delta(delta_inputs),
     }
     outputs: dict[str, Any] = {}
     for name, cells in OUTPUT_RANGES:

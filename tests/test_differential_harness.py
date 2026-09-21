@@ -577,6 +577,24 @@ class _YearTensor:
         return self._by_key[key]
 
 
+@dataclasses.dataclass
+class _FakeInputs:
+    """Stand-in for generated ``{Output}Inputs.from_defaults`` bundles."""
+
+    country_name: object | None = None
+    country_initial_debt: object | None = None
+    growth_baseline: object | None = None
+    interest_baseline: object | None = None
+    primary_balance_baseline: object | None = None
+    shock_year: object | None = None
+    shock_type: object | None = None
+    shock_magnitudes: object | None = None
+
+    @classmethod
+    def from_defaults(cls, **kwargs: object) -> _FakeInputs:
+        return cls(**kwargs)
+
+
 def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -584,22 +602,22 @@ def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
     harness = _load_harness_module()
     calls: list[str] = []
 
-    def compute_output_baseline(**kwargs: object) -> _YearTensor:
+    def compute_output_baseline(inputs: _FakeInputs) -> _YearTensor:
         calls.append("baseline")
-        assert "ctx" not in kwargs
-        growth = kwargs["growth_baseline"]
+        assert not hasattr(inputs, "ctx")
+        growth = inputs.growth_baseline
         assert isinstance(growth, _BoundSeries)
         assert growth.values == (3.5, 3.5, 3.5, 3.5, 3.5)
         return _YearTensor((1.0, 2.0, 3.0, 4.0, 5.0))
 
-    def compute_output_shocked(**kwargs: object) -> _YearTensor:
+    def compute_output_shocked(inputs: _FakeInputs) -> _YearTensor:
         calls.append("shocked")
-        magnitudes = kwargs["shock_magnitudes"]
+        magnitudes = inputs.shock_magnitudes
         assert isinstance(magnitudes, _BoundSeries)
         assert magnitudes.values == (-2.0, 0.0, 0.0)
         return _YearTensor((1.5, 2.5, 3.5, 4.5, 5.5))
 
-    def compute_output_delta(**kwargs: object) -> _YearTensor:
+    def compute_output_delta(inputs: _FakeInputs) -> _YearTensor:
         calls.append("delta")
         return _YearTensor((0.5, 0.5, 0.5, 0.5, 0.5))
 
@@ -611,8 +629,13 @@ def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
         (-1.0, -0.5, 0.0, 0.5, 1.0)
     )
     data_mod.SHOCK_MAGNITUDES_DEFAULT = _BoundSeries((0.0, 0.0, 0.0))
+    model_mod: Any = types.ModuleType("tiny_dsa_fake.model")
+    model_mod.OutputBaselineInputs = _FakeInputs
+    model_mod.OutputShockedInputs = _FakeInputs
+    model_mod.OutputDeltaInputs = _FakeInputs
     pkg: Any = types.ModuleType("tiny_dsa_fake")
     pkg.data = data_mod
+    pkg.model = model_mod
     api: Any = types.ModuleType("tiny_dsa_fake.api")
     api.__package__ = "tiny_dsa_fake"
     api.compute_output_baseline = compute_output_baseline
@@ -620,6 +643,7 @@ def test_mvp_outputs_for_scenario_uses_keyword_only_computes(
     api.compute_output_delta = compute_output_delta
     monkeypatch.setitem(sys.modules, "tiny_dsa_fake", pkg)
     monkeypatch.setitem(sys.modules, "tiny_dsa_fake.data", data_mod)
+    monkeypatch.setitem(sys.modules, "tiny_dsa_fake.model", model_mod)
 
     scenario = harness._scenario(
         "canonical:Borvelia:growth_shock",

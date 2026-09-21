@@ -63,6 +63,7 @@ class DifferentialConfig:
     targets: tuple[str, ...] = ()
     constraints: dict[str, object] = field(default_factory=dict)
     blank_ranges: tuple[str, ...] = ()
+    bindings_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,7 @@ def resolve_config(
             targets=pipeline.targets,
             constraints=pipeline.constraints,
             blank_ranges=pipeline.blank_ranges,
+            bindings_path=pipeline.bindings_path,
         )
     else:
         defaults = DifferentialConfig(
@@ -205,6 +207,7 @@ def resolve_config(
             targets=pipeline.targets,
             constraints=pipeline.constraints,
             blank_ranges=pipeline.blank_ranges,
+            bindings_path=pipeline.bindings_path,
         )
 
     return DifferentialConfig(
@@ -220,6 +223,7 @@ def resolve_config(
         targets=defaults.targets,
         constraints=defaults.constraints,
         blank_ranges=defaults.blank_ranges,
+        bindings_path=defaults.bindings_path,
     )
 
 
@@ -480,9 +484,10 @@ class FormulaEvaluatorGraphOracle:
             raise RuntimeError(
                 "DifferentialConfig.targets is empty; cannot build the graph oracle."
             )
-        if not config.constraints:
+        if not config.constraints and config.bindings_path is None:
             raise RuntimeError(
-                "DifferentialConfig.constraints is empty; cannot build the graph oracle."
+                "DifferentialConfig needs sidecar bindings or a constraints overlay "
+                "to build the graph oracle."
             )
         from tests.differential.differential_test_graph import MvpGraphDriver
 
@@ -491,6 +496,7 @@ class FormulaEvaluatorGraphOracle:
             targets=config.targets,
             constraints=config.constraints,
             blank_ranges=config.blank_ranges,
+            bindings_path=config.bindings_path,
         )
         self._baselines_recorded = False
 
@@ -1014,37 +1020,38 @@ def mvp_outputs_for_scenario(api: ModuleType, scenario: Scenario) -> dict[str, A
         inputs.shock_table,
         name="shock_magnitudes",
     )
-    compute_baseline = api.compute_output_baseline
-    compute_shocked = api.compute_output_shocked
-    compute_delta = api.compute_output_delta
+    model = importlib.import_module(f"{api.__package__}.model")
+    baseline_inputs = model.OutputBaselineInputs.from_defaults(
+        country_name=inputs.country_name,
+        country_initial_debt=initial_debt,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+    )
+    shocked_inputs = model.OutputShockedInputs.from_defaults(
+        country_name=inputs.country_name,
+        country_initial_debt=initial_debt,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+        shock_year=inputs.shock_year,
+        shock_type=inputs.shock_type,
+        shock_magnitudes=shock_magnitudes,
+    )
+    delta_inputs = model.OutputDeltaInputs.from_defaults(
+        country_name=inputs.country_name,
+        country_initial_debt=initial_debt,
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+        shock_year=inputs.shock_year,
+        shock_type=inputs.shock_type,
+        shock_magnitudes=shock_magnitudes,
+    )
     computed = {
-        "output_baseline": compute_baseline(
-            country_name=inputs.country_name,
-            country_initial_debt=initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-        ),
-        "output_shocked": compute_shocked(
-            country_name=inputs.country_name,
-            country_initial_debt=initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-            shock_year=inputs.shock_year,
-            shock_type=inputs.shock_type,
-            shock_magnitudes=shock_magnitudes,
-        ),
-        "output_delta": compute_delta(
-            country_name=inputs.country_name,
-            country_initial_debt=initial_debt,
-            growth_baseline=growth_baseline,
-            interest_baseline=interest_baseline,
-            primary_balance_baseline=primary_balance_baseline,
-            shock_year=inputs.shock_year,
-            shock_type=inputs.shock_type,
-            shock_magnitudes=shock_magnitudes,
-        ),
+        "output_baseline": api.compute_output_baseline(baseline_inputs),
+        "output_shocked": api.compute_output_shocked(shocked_inputs),
+        "output_delta": api.compute_output_delta(delta_inputs),
     }
     outputs: dict[str, Any] = {}
     for name, cells in OUTPUT_RANGES:

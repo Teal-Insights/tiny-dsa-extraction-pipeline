@@ -114,7 +114,7 @@ def test_inverted_tree_migration_names_live_path_and_grapher_floor() -> None:
     assert "annotate" in text
     assert "compute_*" in text
     assert "FormulaEvaluator" in text
-    assert "excel-grapher>=21.5.0" in text
+    assert "excel-grapher>=22.0.0" in text
     assert "compare_cluster_variation_modes" not in text.split("Do not keep")[0]
     assert "run_refactor_stage" not in text.split("Do not keep")[0]
     pin_idx = text.find("3c759a4")

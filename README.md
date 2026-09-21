@@ -255,8 +255,9 @@ Microsoft Excel is not required for this harness.
 Great Docs scaffolds the distributable website from the exported package. On a
 cache miss the document stage launches a local Cursor SDK agent (`cwd=dist/`)
 that reads the guidance note, experiments with the generated keyword-only
-`compute_*` API, writes economist-facing `user_guide/` pages, and renders them
-with `great-docs build`. Cached `user_guide/` trees live under
+`compute_*` API, and writes economist-facing `user_guide/` pages. The agent
+must not run `great-docs` or Quarto site builds; the stage renders the site
+with `great-docs build` after the agent finishes. Cached `user_guide/` trees live under
 `.cache/user-guide/`. Uncached runs need `CURSOR_API_KEY`. Runnable `{python}`
 cells must not call `make_context()` or `set_*` (`RUNNABLE_CELL_RULES` in
 [workbook_config.py](workbook_config.py)). [templates/canonical-api-usage.md](templates/canonical-api-usage.md)

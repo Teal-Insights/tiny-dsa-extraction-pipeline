@@ -111,7 +111,7 @@ wheels = [
 
 [[package]]
 name = "excel-grapher"
-version = "21.6.0"
+version = "22.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastpyxl" },
@@ -119,9 +119,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ff/a3/0bfeb75adbd0139665c1e54af5b312b0d25fa439d7a5e8f1262feb617df4/excel_grapher-21.6.0.tar.gz", hash = "sha256:470c763f4e6e6dd0fb759fbc3b9d5dd80b435fc2948c24bb62797b651a9d3712", size = 6240449, upload-time = "2026-09-21T01:33:11.747Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/8a/308ebd48e63812134038adb576ce61bbb36b43b813bae8f7d6573c00eeef/excel_grapher-22.0.0.tar.gz", hash = "sha256:8e3d80474e5985b13029103fbc78f08a7344f57334d982157fc5a04a5b9d3c45", size = 6250498, upload-time = "2026-09-21T03:50:30.81Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/06/d98d2e9558cb0c70629f878f2e37cc8dac8422f3f548f183e3b3fd4064a9/excel_grapher-21.6.0-py3-none-any.whl", hash = "sha256:02a7b064fe32c928549f773d61c711995f565b075c29807914f4d7589c2e58dd", size = 602324, upload-time = "2026-09-21T01:33:09.783Z" },
+    { url = "https://files.pythonhosted.org/packages/70/c6/17cb08254a74f368704d36a6747c65af3307cbf0557b37b1e54c4d43ecd5/excel_grapher-22.0.0-py3-none-any.whl", hash = "sha256:cfa5a23d24a884e9135ede9928d78c66b6bfee514f67c55786d0445c633a5019", size = 606848, upload-time = "2026-09-21T03:50:28.579Z" },
 ]
 
 [[package]]
@@ -784,7 +784,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cursor-sdk", specifier = ">=1.0.31" },
-    { name = "excel-grapher", specifier = ">=21.5.0" },
+    { name = "excel-grapher", specifier = ">=22.0.0" },
     { name = "openai", specifier = ">=2.38.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
@@ -858,7 +858,7 @@ wheels = [
 
 [[package]]
 name = "virtualenv"
-version = "21.8.1"
+version = "21.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "distlib" },
@@ -866,9 +866,9 @@ dependencies = [
     { name = "platformdirs" },
     { name = "python-discovery" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/af/76/6067b553c6cfda44ed049ef821bdeda1b40b4597c934663ecd6cdfcdfc16/virtualenv-21.8.1.tar.gz", hash = "sha256:529a4c883b4efa067b98cfb61b64cdc0e453d01800ef5b5a29d0a9c514499a4f", size = 5367579, upload-time = "2026-09-19T15:56:04.047Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/5d/42254e91a9203a13d95ab4f5211f4cdda52b82fc3546340f7fb33a642173/virtualenv-21.9.0.tar.gz", hash = "sha256:fa0f2a26fcb6f32b376fc8b2c705b6057366763d5b9e5242d1ab10ecc3279fd3", size = 5372770, upload-time = "2026-09-20T00:29:19.843Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/2d/44e007b170a3c55fade1f8e5c11826c9ff63c1f45e001b55de5e811fcb00/virtualenv-21.8.1-py3-none-any.whl", hash = "sha256:0685ab90c9c3748dd6c99631207bda9fb359c72c28337047e719c83fb41a7a59", size = 5332653, upload-time = "2026-09-19T15:56:01.874Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/e5/9446b7a2a3d73de5f9fcf8f825efe78b071b111729e89f4ac07649b9448b/virtualenv-21.9.0-py3-none-any.whl", hash = "sha256:8c7cde05f630fbedf61758258014a92e6d6d5b4b9c6e6be7279d233f89e09aac", size = 5477625, upload-time = "2026-09-20T00:29:18.065Z" },
 ]
 
 [[package]]

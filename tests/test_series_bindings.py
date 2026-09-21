@@ -122,16 +122,10 @@ def test_output_series_resolve_to_expected_cells(tiny_dsa_configured_pipeline):
 
 
 def test_generated_keyword_api_computes_and_overrides_values():
-    from dist.tiny_dsa import data
+    from dist.tiny_dsa import OutputBaselineInputs, data
     from dist.tiny_dsa.api import compute_output_baseline
 
-    baseline = compute_output_baseline(
-        country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
-        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
-    )
+    baseline = compute_output_baseline(OutputBaselineInputs.from_defaults())
 
     assert len(baseline.domain.axes[0].keys) == 5
     assert baseline[1] == pytest.approx(61.28985507246378)
@@ -141,11 +135,7 @@ def test_generated_keyword_api_computes_and_overrides_values():
         (2.5, *(growth[key] for key in growth.domain.axes[0].keys[1:]))
     )
     updated = compute_output_baseline(
-        country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=data.COUNTRY_INITIAL_DEBT_DEFAULT,
-        growth_baseline=slower_growth,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+        OutputBaselineInputs.from_defaults(growth_baseline=slower_growth)
     )
     assert updated[1] != baseline[1]
 
@@ -154,11 +144,7 @@ def test_generated_keyword_api_computes_and_overrides_values():
         (70.0, *(debt[key] for key in debt.domain.axes[0].keys[1:]))
     )
     updated_initial_debt = compute_output_baseline(
-        country_name=data.COUNTRY_NAME_DEFAULT,
-        country_initial_debt=higher_borvelia_debt,
-        growth_baseline=data.GROWTH_BASELINE_DEFAULT,
-        interest_baseline=data.INTEREST_BASELINE_DEFAULT,
-        primary_balance_baseline=data.PRIMARY_BALANCE_BASELINE_DEFAULT,
+        OutputBaselineInputs.from_defaults(country_initial_debt=higher_borvelia_debt)
     )
     assert updated_initial_debt[1] != updated[1]
 
