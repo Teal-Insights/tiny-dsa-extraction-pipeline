@@ -2,14 +2,14 @@
 title: "Functional Overview"
 ---
 
-Tiny DSA is organized around three logical surfaces: **inputs**, **engine**, and **outputs**. In the Python API, the inputs are keyword-only arguments to `compute_*` functions, the engine is the internal calculation inside those functions, and the outputs are labelled annual series. This section covers the input-and-output contract, country selection, baseline parameters, shock configuration, and output retrieval.
+Tiny DSA is organized around three logical surfaces: **inputs**, **engine**, and **outputs**. In the Python API, each calculation receives a validated input bundle, the engine is the internal calculation, and the outputs are labelled annual series.
 
 ### A. Python API conventions
 
-The public API is exposed through `tiny_dsa.api`. All compute functions are keyword-only and accept leaf inputs as Python scalars or 1-D sequences. There is no evaluation context: do not call `make_context()` or `set_*` setters.
+The public API is exposed through `tiny_dsa.api`. Compute functions accept one of the matching input bundles. There is no evaluation context: do not call `make_context()` or `set_*` setters.
 
-- Scalar arguments such as `country_name`, `shock_year`, and `shock_type` are passed as bare values (for example `country_name='Borvelia'`), never as one-element lists.
-- Series arguments are validated `tiny_dsa.tensor.Series` objects with the expected semantic axis. The defaults in `tiny_dsa.data` are the simplest valid inputs.
+- Scalar fields such as `country_name`, `shock_year`, and `shock_type` are passed as bare values when constructing a bundle.
+- Series fields are validated `tiny_dsa.tensor.Series` objects with the expected semantic axis. The defaults in `tiny_dsa.data` are the simplest valid inputs.
 - Constants such as the country profile names and year labels are held in the
   generated `data` module; the public compute functions still require their
   scenario inputs explicitly.
@@ -38,6 +38,7 @@ The initial debt-to-GDP ratio is not a separate input. It is resolved internally
 
 ```{python}
 from tiny_dsa import data
+from tiny_dsa.api import OutputBaselineInputs
 
 from tiny_dsa.api import (
     compute_output_baseline,
@@ -45,8 +46,7 @@ from tiny_dsa.api import (
     compute_output_delta,
 )
 
-country_name = 'Borvelia'
-country_initial_debt = data.COUNTRY_INITIAL_DEBT_DEFAULT
+baseline_inputs = OutputBaselineInputs.from_defaults(country_name="Borvelia")
 ```
 
 ### C. Setting the baseline parameters
@@ -69,13 +69,13 @@ Once these are provided, `compute_output_baseline` returns the year-by-year base
 
 ```{python}
 baseline = compute_output_baseline(
-    country_name=country_name,
-    country_initial_debt=country_initial_debt,
-    growth_baseline=growth_baseline,
-    interest_baseline=interest_baseline,
-    primary_balance_baseline=primary_balance_baseline,
+    OutputBaselineInputs.from_defaults(
+        country_name="Borvelia",
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+    )
 )
-
 baseline
 ```
 
@@ -94,15 +94,17 @@ shock_year = 2
 shock_type = 1
 shock_magnitudes = data.SHOCK_MAGNITUDES_DEFAULT
 
+from tiny_dsa.api import OutputShockedInputs
+
 shocked = compute_output_shocked(
-    country_name=country_name,
-    country_initial_debt=country_initial_debt,
-    growth_baseline=growth_baseline,
-    interest_baseline=interest_baseline,
-    primary_balance_baseline=primary_balance_baseline,
-    shock_year=shock_year,
-    shock_type=shock_type,
-    shock_magnitudes=shock_magnitudes,
+    OutputShockedInputs.from_defaults(
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+        shock_year=shock_year,
+        shock_type=shock_type,
+        shock_magnitudes=shock_magnitudes,
+    )
 )
 
 shocked
@@ -115,15 +117,17 @@ The API returns three annual series for years 1 through 5: the baseline path, th
 A summary of the active configuration can be assembled from the same scalar inputs used to make the calls: `country_name`, the resolved initial debt, `shock_year`, and `shock_type`. The following example computes all three outputs and turns the delta into tidy records.
 
 ```{python}
+from tiny_dsa.api import OutputDeltaInputs
+
 output_delta = compute_output_delta(
-    country_name=country_name,
-    country_initial_debt=country_initial_debt,
-    growth_baseline=growth_baseline,
-    interest_baseline=interest_baseline,
-    primary_balance_baseline=primary_balance_baseline,
-    shock_year=shock_year,
-    shock_type=shock_type,
-    shock_magnitudes=shock_magnitudes,
+    OutputDeltaInputs.from_defaults(
+        growth_baseline=growth_baseline,
+        interest_baseline=interest_baseline,
+        primary_balance_baseline=primary_balance_baseline,
+        shock_year=shock_year,
+        shock_type=shock_type,
+        shock_magnitudes=shock_magnitudes,
+    )
 )
 
 from tiny_dsa.runtime import as_records
