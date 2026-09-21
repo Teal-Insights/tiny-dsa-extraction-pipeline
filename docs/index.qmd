@@ -1,0 +1,43 @@
+---
+title: "The extraction pipeline"
+description: "Follow spreadsheet logic, describe the model, and generate a verified Python implementation."
+---
+
+An Excel workbook contains more than numbers. Its formulas encode a
+computational model: inputs flow through calculations and produce outputs.
+The extraction pipeline follows those relationships and makes the model
+explicit.
+
+```{mermaid}
+flowchart LR
+    Workbook["Excel workbook"] --> Model["Computational model"]
+    Model --> Guide["User guide from bindings"]
+    Model --> Python["Python implementation"]
+    Python --> Verify["Differential verification"]
+```
+
+This guide develops that story in three steps.
+
+## 1. Follow the spreadsheet logic
+
+Starting from selected outputs, the pipeline follows formula references across
+the workbook. Cells become computations and references become dependencies,
+forming a computational model of what the spreadsheet does.
+
+[See how extraction works](user-guide/pipeline-overview.qmd)
+
+## 2. Describe how people use the model
+
+Input and output bindings translate workbook coordinates into domain concepts.
+They provide the structured foundation for a user guide and show how users
+interact with the model without requiring them to understand every cell.
+
+[See how bindings shape the user guide](user-guide/user-guide-bindings.qmd)
+
+## 3. Generate the Python implementation
+
+The graph and bindings become a keyword-only Python API. The generated package
+does not require Excel at runtime and can be tested, automated, and integrated
+with other software.
+
+[See how the Python implementation works](user-guide/python-implementation.qmd)

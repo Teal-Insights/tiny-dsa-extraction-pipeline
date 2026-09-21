@@ -1,0 +1,93 @@
+---
+title: "From cell addresses to a user guide"
+description: "How input and output bindings describe the model in user-facing terms."
+---
+
+The computational graph explains how cells depend on one another. It does not,
+by itself, explain which values users should provide, which results they should
+read, or what those values mean.
+
+Bindings add that semantic layer. They map workbook ranges to named concepts
+with direction, shape, dimensions, data types, and notes.
+
+## The four binding roles
+
+### Input bindings
+
+Input bindings identify values supplied by a user. In Tiny DSA these include
+`country_name`, `growth_baseline`, `shock_year`, `shock_type`, and
+`shock_magnitudes`.
+
+A binding records more than an address such as `Inputs!B5`. It gives that range
+a stable name, data type, record structure, and description suitable for a
+guide or API.
+
+### Output bindings
+
+Output bindings define the model's published results. Tiny DSA exposes
+`output_baseline`, `output_shocked`, and `output_delta`. These bindings tell the
+pipeline which records each public `compute_*` function returns.
+
+### Graph view
+
+The graph view shows the model's computational structure:
+
+```{mermaid}
+flowchart LR
+    InputBindings["Input bindings<br>country, baseline, shock"] --> Model["Computational model"]
+    Model --> OutputBindings["Output bindings<br>baseline, shocked, delta"]
+```
+
+This view answers “what can I provide, and what can I calculate?” It maps more
+directly to a user guide and to the generated Python API.
+
+## Workbook view
+
+The sheet diagram helps readers orient themselves in the original workbook:
+
+```{mermaid}
+flowchart LR
+    Inputs["Inputs sheet<br>assumptions and shocks"] --> Engine["Engine sheet<br>baseline and shocked calculations"]
+    Engine --> Outputs["Outputs sheet<br>published paths and deltas"]
+```
+
+This view answers “where does the calculation happen?” It is familiar to
+workbook authors, but it still exposes implementation details such as sheet
+layout.
+
+## Binding-group view
+
+The binding-group diagram describes the same model through its user-facing
+contract:
+
+```{mermaid}
+flowchart LR
+    InputBindings["Input bindings<br>country, baseline, shock"] --> Model["Computational model"]
+    ConstantBindings["Constant bindings<br>profiles and years"] --> Model
+    Model --> InternalBindings["Internal bindings<br>baseline and shocked paths"]
+    InternalBindings --> OutputBindings["Output bindings<br>baseline, shocked, delta"]
+```
+
+This view answers “what can I provide, and what can I calculate?” It maps more
+directly to a user guide and to the generated Python API.
+
+## How bindings become documentation
+
+Bindings provide a structured inventory from which the documentation pipeline
+can derive:
+
+- input and output catalogs;
+- names and signatures for public calculations;
+- dimensions, measures, and expected data types;
+- grouping of related calculations; and
+- notes attached to model concepts.
+
+Bindings are the guide's foundation, not the whole guide. **Authored guidance**
+still supplies economic interpretation, workflow instructions, examples, and
+caveats that cannot be inferred safely from workbook geometry.
+
+Together, the graph, bindings, and authored guidance let the documentation
+explain both how the spreadsheet is organized and how a user should interact
+with the model.
+
+[Next: generate the Python implementation](03-python-implementation.qmd)

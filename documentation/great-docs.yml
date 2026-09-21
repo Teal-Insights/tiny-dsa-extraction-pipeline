@@ -1,0 +1,12 @@
+module: pipeline_docs
+display_name: Extraction Pipeline
+homepage: user_guide
+user_guide: ../docs
+parser: google
+dynamic: false
+seo:
+  enabled: false
+site:
+  toc: true
+  toc-depth: 3
+  toc-title: On this page

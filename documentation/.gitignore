@@ -1,0 +1,6 @@
+.venv/
+.quarto/
+# Legacy/generated build assets remain local if present.
+assets/
+generated/
+great-docs/

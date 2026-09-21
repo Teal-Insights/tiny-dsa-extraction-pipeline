@@ -1,0 +1,81 @@
+---
+title: "From spreadsheet logic to a computational model"
+description: "How the pipeline follows formulas and verifies the extracted model."
+---
+
+An Excel workbook is an executable model. Input cells hold assumptions, formula
+cells transform them, and output cells expose results. The extraction pipeline
+follows this logic and creates an explicit **computational model** of what the
+spreadsheet does.
+
+```{mermaid}
+flowchart LR
+    Targets["Selected output cells"] --> Formulas["Follow formula references"]
+    Formulas --> Dependencies["Resolve dependencies across sheets"]
+    Dependencies --> Graph["Computational model"]
+```
+
+## Following the logic
+
+Extraction starts from configured target cells—the results the model is
+expected to produce. excel-grapher walks backward through each formula
+reference until it reaches workbook leaves such as inputs and constants.
+
+In the resulting dependency graph:
+
+- each cell is a computation or value;
+- each formula reference is a dependency;
+- cross-sheet references remain explicit;
+- constrained dynamic references such as `OFFSET`, `INDIRECT`, and `INDEX` are
+  resolved; and
+- calculation order follows the graph rather than worksheet position.
+
+This target-driven boundary matters. The computational model contains the logic
+required for the selected outputs, rather than assuming that every populated
+cell belongs to the public model.
+
+## Inspecting the model
+
+The extract stage writes a dependency-graph explorer under
+`artifacts/dependency-graph/`. It lets a reviewer move from an output to its
+upstream formulas, inspect cross-sheet paths, and confirm that the expected
+inputs were reached.
+
+Run only this first stage with:
+
+```bash
+uv run python -m src.extraction_pipeline --extract-graph
+```
+
+The graph is also executable. excel-grapher's `FormulaEvaluator` evaluates the
+same dependencies in memory, providing a reference implementation for later
+code generation.
+
+## How the model is verified
+
+The pipeline uses two differential comparisons:
+
+```{mermaid}
+flowchart TB
+    Excel["Live Excel workbook"] -->|"Excel versus graph"| Graph["FormulaEvaluator on computational model"]
+    Graph -->|"Graph versus Python"| Python["Generated compute functions"]
+```
+
+- **Excel versus graph** asks whether extraction preserved workbook behavior.
+- **Graph versus Python** asks whether generated code preserved the extracted
+  model's behavior.
+
+Both sides receive the same scenario inputs and their outputs are compared
+under a defined numerical tolerance. A mismatch fails validation rather than
+being explained away by visual inspection.
+
+For the full methodology, acceptance standard, and examples from production
+models, see [Proving the Numbers Match](https://teal-insights.github.io/differential-testing/).
+
+::: {.callout-note}
+Differential testing establishes computational fidelity over the scenarios
+tested. It does not determine whether the spreadsheet's economic assumptions
+are correct; that remains a domain-review question.
+:::
+
+[Next: turn cell addresses into a user guide](02-user-guide-bindings.qmd)

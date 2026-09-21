@@ -1,0 +1,97 @@
+---
+title: "The Python implementation"
+description: "How the computational model and bindings become a portable compute API."
+---
+
+Once the spreadsheet has been represented as a computational graph and its
+public concepts have been bound, the same information can generate a Python
+implementation.
+
+```{mermaid}
+flowchart LR
+    Graph["Computational graph"] --> Generator["CodeGenerator"]
+    Bindings["Input, output, internal, and constant bindings"] --> Generator
+    Generator --> Modules["Generated Python modules"]
+    Modules --> API["Keyword-only compute_* API"]
+```
+
+## Code generation
+
+excel-grapher's `CodeGenerator` reads formulas from the graph and ownership
+information from the bindings:
+
+```python
+with CodeGenerator(graph) as generator:
+    modules = generator.generate_modules(
+        series_bindings=series_bindings,
+        bindings_workbook=workbook_path,
+        blank_ranges=blank_ranges,
+    )
+```
+
+The generated source is cached and then materialized as an installable package.
+The main modules have distinct responsibilities:
+
+- `api.py` contains the public `compute_*` functions and model interface.
+- `internals.py` contains bound intermediate calculations.
+- `runtime.py` supplies spreadsheet-compatible runtime helpers.
+- `data.py` contains generated constants and metadata.
+
+## A keyword-only API
+
+Input bindings become named function arguments. Output bindings become public
+compute functions. For example, the Tiny DSA baseline output is exposed as:
+
+```python
+from tiny_dsa_inverted.api import compute_output_baseline
+
+baseline = compute_output_baseline(
+    country_name="Borvelia",
+    country_initial_debt=[58.0, 64.0, 71.0],
+    growth_baseline=[3.2, 3.4, 3.6, 3.8, 4.0],
+    interest_baseline=[4.8, 4.9, 5.0, 5.1, 5.2],
+    primary_balance_baseline=[-2.1, -1.8, -1.4, -1.0, -0.6],
+)
+```
+
+The `*` in the generated signature makes these arguments keyword-only. That
+prevents callers from depending on an arbitrary positional order and keeps the
+Python interface aligned with the domain names in the bindings.
+
+## How calculations run
+
+The generated implementation follows the dependency closure for each output.
+Only the inputs needed by a calculation appear in its public signature.
+Internal functions evaluate upstream formulas and publish the records described
+by the output binding.
+
+The resulting package **does not require Excel** at runtime. It can run in:
+
+- notebooks and analytical scripts;
+- automated tests and CI;
+- batch scenario pipelines;
+- web services; and
+- other Python applications.
+
+The source workbook remains the authority used during extraction and
+verification, but it is not opened when a consumer calls `compute_*`.
+
+## Verifying generated Python
+
+Generation is followed by a second differential boundary. The same scenarios
+are evaluated through excel-grapher's `FormulaEvaluator` and through the public
+Python functions:
+
+```{mermaid}
+flowchart LR
+    Scenarios["Identical scenario inputs"] --> Evaluator["FormulaEvaluator"]
+    Scenarios --> Python["Public compute_* functions"]
+    Evaluator --> Compare["Compare every published value"]
+    Python --> Compare
+```
+
+For Tiny DSA, the committed parity evidence records 1,770 of 1,770 comparisons
+passing. This check establishes that the Python implementation preserves the
+behavior of the extracted computational model.
+
+[Return to the extraction overview](01-pipeline-overview.qmd)
