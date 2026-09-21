@@ -548,9 +548,7 @@ def resolve_pipeline_bindings(
     with stage("series_derived"):
         derived_result = get_or_build_series_derived(
             graph,
-            constraints=effective_domain_annotations(
-                config, bindings=series_bindings
-            ),
+            constraints=effective_domain_annotations(config, bindings=series_bindings),
             input_series=input_series,
             output_series=output_series,
             internal_series=internal_series,

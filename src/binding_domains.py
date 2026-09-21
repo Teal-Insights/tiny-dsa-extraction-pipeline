@@ -10,7 +10,10 @@ import fastpyxl
 from excel_grapher.core.address_keys import parse_address
 from excel_grapher.core.cell_types import Between, RealBetween
 from excel_grapher.grapher import DynamicRefConfig
-from excel_grapher.series_bindings import load_series_bindings
+from excel_grapher.series_bindings import (
+    SeriesBindingsLoadError,
+    load_series_bindings,
+)
 from excel_grapher.series_bindings.domains import compile_domain_spec
 from excel_grapher.series_bindings.ranges import expand_bound_series_addresses
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
@@ -18,11 +21,19 @@ from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 from src.pipeline_config import PipelineConfig
 
 _RuntimeLiteral: Any = cast(Any, Literal)
+_EMPTY_BINDINGS: dict[str, Any] = {"schema_version": "1.19.0", "series": []}
 
 
 def load_pipeline_bindings(config: PipelineConfig) -> WorkbookSeriesBindings:
-    """Load the merged binding manifest for ``config.bindings_path``."""
-    return load_series_bindings(config.bindings_path)
+    """Load the merged binding manifest for ``config.bindings_path``.
+
+    An empty or missing sidecar (bootstrap extract) returns an empty manifest
+    so graph build can still apply a ``CONSTRAINTS`` overlay.
+    """
+    try:
+        return load_series_bindings(config.bindings_path)
+    except SeriesBindingsLoadError:
+        return cast(WorkbookSeriesBindings, dict(_EMPTY_BINDINGS))
 
 
 def pipeline_dynamic_ref_config(
@@ -36,9 +47,7 @@ def pipeline_dynamic_ref_config(
     overlay is empty. Tests may still pass a Python table on
     ``PipelineConfig.constraints``; those keys win on overlap.
     """
-    loaded = (
-        bindings if bindings is not None else load_series_bindings(config.bindings_path)
-    )
+    loaded = bindings if bindings is not None else load_pipeline_bindings(config)
     derived = DynamicRefConfig.from_bindings(
         loaded,
         config.workbook_path,
@@ -91,7 +100,7 @@ def domain_annotations_from_bindings(
             for address in from_workbook_addresses:
                 sheet, coord = parse_address(address)
                 annotations[address] = _RuntimeLiteral[
-                    tuple([workbook_values[sheet][coord].value])
+                    (workbook_values[sheet][coord].value,)
                 ]
         finally:
             workbook_values.close()
@@ -104,9 +113,7 @@ def effective_domain_annotations(
     bindings: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     """Sidecar domain annotations with optional ``CONSTRAINTS`` overlay."""
-    loaded = (
-        bindings if bindings is not None else load_series_bindings(config.bindings_path)
-    )
+    loaded = bindings if bindings is not None else load_pipeline_bindings(config)
     annotations = domain_annotations_from_bindings(
         loaded, workbook=config.workbook_path
     )

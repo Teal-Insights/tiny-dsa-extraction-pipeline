@@ -458,6 +458,7 @@ def test_committed_graph_cache_is_fresh_when_present(
         constraints=config.constraints,
         load_values=True,
         capture_dependency_provenance=True,
+        bindings_path=config.bindings_path,
     )
     assert expected_key in current_keys
     assert load_dependency_graph(expected_key, cache_dir=cache_dir) is not None
@@ -522,7 +523,7 @@ def test_internal_binding_burndown_groups_unbound_formula_cells(
     assert collapse_unbound_cells_to_ranges(unbound) == ("Engine!B2:C2",)
 
 
-def test_internal_binding_burndown_does_not_warn_when_only_bindings_change(
+def test_internal_binding_burndown_warns_when_only_bindings_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -558,7 +559,8 @@ def test_internal_binding_burndown_does_not_warn_when_only_bindings_change(
     load_pipeline_dependency_graph(config)
     captured = capsys.readouterr()
 
-    assert "Warning: newest cached graph key does not match" not in captured.out
+    assert "Warning: newest cached graph key does not match" in captured.out
+    assert "bindings" in captured.out
 
 
 def test_internal_binding_burndown_warns_when_cached_graph_is_stale(
@@ -595,8 +597,6 @@ def test_internal_binding_burndown_warns_when_cached_graph_is_stale(
 
     assert "Warning: newest cached graph key does not match" in captured.out
     assert "regenerate_graph_cache" in captured.out
-    warning_line = captured.out.split("Warning:", 1)[1].split("\n", 1)[0]
-    assert "bindings" not in warning_line
 
 
 def test_load_pipeline_dependency_graph_prefers_fingerprint_match_over_newer_stale_pickle(
@@ -617,6 +617,7 @@ def test_load_pipeline_dependency_graph_prefers_fingerprint_match_over_newer_sta
         constraints=config.constraints,
         load_values=True,
         capture_dependency_provenance=True,
+        bindings_path=config.bindings_path,
     )
     matched_graph = load_dependency_graph(expected_key, cache_dir=cache_dir)
     assert matched_graph is not None

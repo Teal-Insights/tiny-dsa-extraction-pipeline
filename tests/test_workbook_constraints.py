@@ -7,11 +7,11 @@ import pytest
 from excel_grapher.core.cell_types import normalize_cell_type_env_key
 from excel_grapher.series_bindings import validate_series_bindings
 
-from src.dependency_graph_viz import series_cell_keys, unbound_classified_leaf_keys
 from src.binding_domains import (
     effective_domain_annotations,
     pipeline_dynamic_ref_config,
 )
+from src.dependency_graph_viz import series_cell_keys, unbound_classified_leaf_keys
 from src.extraction_pipeline import (
     PipelineGraphResult,
     build_pipeline_graph,
@@ -53,8 +53,7 @@ def test_every_graph_leaf_has_a_typed_constraint(
     missing = [
         key
         for key in leaf_keys
-        if normalize_cell_type_env_key(key) not in domain_env
-        and key not in domain_env
+        if normalize_cell_type_env_key(key) not in domain_env and key not in domain_env
     ]
     assert missing == [], f"missing sidecar domains for leaf cells: {missing!r}"
 

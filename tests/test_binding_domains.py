@@ -2,16 +2,26 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, get_args, get_origin
 
-from excel_grapher.core.cell_types import Between, RealBetween, normalize_cell_type_env_key
+from excel_grapher.core.cell_types import (
+    Between,
+    RealBetween,
+    normalize_cell_type_env_key,
+)
 from excel_grapher.series_bindings import load_series_bindings
-from excel_grapher.series_bindings.domains import cell_type_env_from_bindings, undomained_leaves
+from excel_grapher.series_bindings.domains import (
+    cell_type_env_from_bindings,
+    undomained_leaves,
+)
 
 from src.binding_domains import (
     domain_annotations_from_bindings,
     effective_domain_annotations,
     pipeline_dynamic_ref_config,
 )
-from src.extraction_pipeline import classify_leaves_from_constraints, is_constant_constraint
+from src.extraction_pipeline import (
+    classify_leaves_from_constraints,
+    is_constant_constraint,
+)
 from src.pipeline_config import load_pipeline_config
 
 _COLS = ("C", "D", "E", "F", "G")
