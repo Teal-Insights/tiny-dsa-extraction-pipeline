@@ -1,6 +1,5 @@
 # Pedagogical fragment for filled-header + measure-column shards.
-# Not consumed by scripts.author_bindings or the synthetic smoke workbook.
-# Copy the shape into a derived catalog; adjust sheet/ranges to the real table.
+# Not an input to a generator. Copy the shape into sidecar YAML.
 #
 # Layout this models (year on triplet start; Gap is the public measure):
 #
@@ -8,19 +7,18 @@
 #   row 2:  Base   Alt     Gap      Base   Alt     Gap
 #   rows:   ...    ...     H3:H5    ...    ...     K3:K5
 #
-# Anti-pattern: one series with data_range covering H3:K5 and column_header
-# without fill — only the labeled start columns resolve; mixed measures share
-# the same (SCENARIO, TIME_PERIOD) key.
+# Anti-pattern: one series covering H3:K5 and column_header without fill —
+# only labeled start columns resolve; mixed measures share the same
+# (SCENARIO, TIME_PERIOD) key.
 #
 # Shared vs unique compute names / input series ids across shards:
 # - Share the same output.compute.name or input series id when shards are
 #   complementary slices of one logical public series (this file: Gap columns
 #   for 2050/2075 → one compute_gap_milestones).
-# - Uniquify per shard when each shard is a distinct scenario/engine path
-#   (e.g. compute_scenario_primary_expenditure_pct_gdp_paris vs _moderate).
+# - Uniquify per shard when each shard is a distinct scenario/engine path.
 #   Sharing a name/id across those paths merges definitions at export and can
 #   leave most scenario paths unreachable in the exported library.
-schema_version: 1.17.0
+schema_version: 1.19.0
 workbook: workbook.xlsx
 
 concept_scheme:
@@ -41,13 +39,10 @@ concept_scheme:
 
 outputs:
   series:
-    # Shared compute name → export merges complementary Gap milestone shards
-    # into one public function. Do not reuse this pattern for distinct
-    # scenario/engine sheets; uniquify those compute names instead.
     - id: gap_milestones_2050
       sheet: Summary
       data_range: Summary!H3:H5
-      layout: column_series
+      layout: series
       output:
         compute:
           name: compute_gap_milestones
@@ -66,7 +61,7 @@ outputs:
             scope: cell
             bind:
               kind: row_label
-              label_column: 1
+              label_column: A
               read: string
           - id: TIME_PERIOD
             concept: TIME_PERIOD
@@ -86,7 +81,7 @@ outputs:
     - id: gap_milestones_2075
       sheet: Summary
       data_range: Summary!K3:K5
-      layout: column_series
+      layout: series
       output:
         compute:
           name: compute_gap_milestones
@@ -105,7 +100,7 @@ outputs:
             scope: cell
             bind:
               kind: row_label
-              label_column: 1
+              label_column: A
               read: string
           - id: TIME_PERIOD
             concept: TIME_PERIOD
@@ -118,13 +113,12 @@ outputs:
               read: int
       key: [SCENARIO, TIME_PERIOD]
       notes: >
-        Gap measure column for the 2075 triplet. Widen workbook_config.TARGETS
-        (and any overlapping internals) through column K so these cells are on-graph.
+        Gap measure column for the 2075 triplet. Widen extraction targets (and
+        any overlapping internals) through column K so these cells are on-graph.
         Shares compute_gap_milestones with the 2050 shard intentionally.
 
 internals:
   series:
-    # Richer key keeps the whole Base/Alt/Gap block as one internal series.
     - id: summary_milestone_triplet_block
       sheet: Summary
       data_range: Summary!F3:K5
@@ -144,7 +138,7 @@ internals:
             scope: cell
             bind:
               kind: row_label
-              label_column: 1
+              label_column: A
               read: string
           - id: TIME_PERIOD
             concept: TIME_PERIOD
@@ -166,4 +160,5 @@ internals:
       key: [SCENARIO, TIME_PERIOD, MEASURE]
       notes: >
         Internal triangulation of the full triplet table. MEASURE in the key
-        avoids colliding Base/Alt/Gap under the same TIME_PERIOD.
+        avoids colliding Base/Alt/Gap under the same TIME_PERIOD. Do not let
+        this matrix cover cells already owned by public output series.

@@ -74,7 +74,6 @@ class PipelineConfig:
     targets: tuple[str, ...]
     constraints: dict[str, object]
     dist_metadata: DistProjectMetadata
-    binding_authoring_prompt_path: Path
     user_guide_agent_prompt_path: Path
     differential_workbook_rel: Path
     differential_report_dir_rel: Path
@@ -227,7 +226,6 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     dist_metadata = user_config.DIST_METADATA
 
     templates_root = root / "templates"
-    binding_authoring_prompt_path = templates_root / "binding-authoring-prompt.txt"
     user_guide_agent_prompt_path = Path(
         getattr(
             user_config,
@@ -279,7 +277,6 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         targets=targets,
         constraints=constraints,
         dist_metadata=dist_metadata,
-        binding_authoring_prompt_path=binding_authoring_prompt_path,
         user_guide_agent_prompt_path=user_guide_agent_prompt_path,
         differential_workbook_rel=differential_workbook_rel,
         differential_report_dir_rel=differential_report_dir_rel,

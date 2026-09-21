@@ -41,7 +41,7 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Graph parity evidence | `data/differential/graph/` | Reference reports after passing pre-export graph-oracle sweeps (optional until configured) |
 | Exported-library parity evidence | `data/differential/exported_library/` | Reference reports after passing post-export parity sweeps (optional until configured) |
 
-Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt) with a coding agent to draft bindings from the guide, workbook, and extracted graph.
+Use [`.agents/skills/author-bindings`](.agents/skills/author-bindings) with a coding agent to draft bindings from the guide, workbook, and extracted graph.
 
 ### Iterative configuration
 
@@ -136,7 +136,7 @@ Author `internals.bindings.yaml` after `--extract-graph`, when you can see which
 - **Validate** — `validate_series_bindings(...)`, then `derive_internal_series(...)`. Run `uv run pytest tests/test_internal_binding_coverage.py` once `INTERNAL_BINDING_VALIDATION_MODE` is enabled.
 - **Review** — re-run `--extract-graph` and confirm bound formula nodes show `keys:` / `record:` labels in the graph explorer.
 
-Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction, schema 1.17.0). Use [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt) for agent-assisted drafting.
+Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction). Use [`.agents/skills/author-bindings`](.agents/skills/author-bindings) for agent-assisted drafting.
 
 #### Authoring constants
 
@@ -175,7 +175,7 @@ Use `warn` while iterating locally; treat pytest failures as the CI gate once ex
 |---|---|---|
 | Graph-cache regeneration | `uv run python -m scripts.regenerate_graph_cache` | After changing the workbook, bindings, targets/constraints/`BLANK_RANGES`, or excel-grapher. Add `--force` to rebuild even when entries exist; `--force` also clears and prunes `.cache/series-resolution/`, `.cache/series-derived/`, and `.cache/bindings-validation/`. Optional extra bundles: `GRAPH_CACHE_TARGET_BUNDLES` in `workbook_config.py`. |
 | Internal-binding burndown | `uv run python -m scripts.internal_binding_burndown` | After `--extract-graph` to see which formula rows still need `internals.bindings.yaml` entries. Supports `--per-sheet` and `--max-rows`. Reuses the newest cached graph even when bindings changed. |
-| Programmatic binding emission | `uv run python -m scripts.author_bindings` | Large, regular binding surfaces defined in a declarative catalog (`templates/binding-catalog.example.yaml`). Complements [templates/binding-authoring-prompt.txt](templates/binding-authoring-prompt.txt). |
+| Series-binding skill | [`.agents/skills/author-bindings`](.agents/skills/author-bindings) | Agent-assisted authoring of input/output/internal/constant sidecars. Checks: `uv run excel-grapher bindings {validate,audit,burndown,upsert}`. |
 
 Commit `.cache/dependency-graph/` only when your downstream pipeline vendors the cache for warm CI (override `.gitignore` for that directory). Run `uv run pytest tests/test_binding_utility_scripts.py` to exercise the synthetic fixture path end-to-end.
 

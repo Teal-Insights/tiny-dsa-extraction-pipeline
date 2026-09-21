@@ -116,7 +116,6 @@ def synthetic_pipeline_config(
             documentation_url="https://example.com/synthetic-model/",
             repository_url=None,
         ),
-        binding_authoring_prompt_path=templates_root / "binding-authoring-prompt.txt",
         user_guide_agent_prompt_path=templates_root / "user-guide-agent.txt",
         differential_workbook_rel=Path("data/workbook.xlsx"),
         differential_report_dir_rel=Path("data/differential/exported_library"),

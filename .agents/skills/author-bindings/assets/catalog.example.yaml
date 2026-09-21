@@ -1,4 +1,6 @@
-schema_version: 1.17.0
+# Pedagogical catalog fragment. Not an input to a generator.
+# Copy shapes into sidecar YAML; do not bulk-emit four files from this document.
+schema_version: 1.19.0
 workbook: workbook.xlsx
 
 concept_scheme:
@@ -27,7 +29,7 @@ inputs:
             read: float
         dimensions: []
       key: []
-      notes: Scalar input rate for the synthetic smoke workbook.
+      notes: Scalar input rate.
 
 outputs:
   series:
@@ -48,26 +50,7 @@ outputs:
             read: float
         dimensions: []
       key: []
-      notes: First parallel output column.
-
-    - id: result_b
-      sheet: Outputs
-      data_range: Outputs!C1
-      layout: scalar
-      output:
-        compute:
-          name: compute_result_b
-          record_contract: records
-      structure:
-        measure:
-          concept: OBS_VALUE
-          dtype: float
-          bind:
-            kind: data_cell
-            read: float
-        dimensions: []
-      key: []
-      notes: Second parallel output column.
+      notes: First public output.
 
 internals:
   series:
@@ -85,23 +68,7 @@ internals:
             read: float
         dimensions: []
       key: []
-      notes: First engine formula cell in the synthetic smoke workbook.
-
-    - id: engine_c2
-      sheet: Engine
-      data_range: Engine!C2
-      layout: scalar
-      internal: {}
-      structure:
-        measure:
-          concept: OBS_VALUE
-          dtype: float
-          bind:
-            kind: data_cell
-            read: float
-        dimensions: []
-      key: []
-      notes: Second engine formula cell in the synthetic smoke workbook.
+      notes: Engine formula cell.
 
 constants:
   series:
@@ -119,4 +86,4 @@ constants:
             read: float
         dimensions: []
       key: []
-      notes: Fixed bias leaf (Literal[0]); reader-only, not a public setter.
+      notes: Reader-only leaf (not a public input).

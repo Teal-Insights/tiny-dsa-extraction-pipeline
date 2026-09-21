@@ -37,9 +37,6 @@ def _sample_config(repo_root: Path) -> PipelineConfig:
             description="Example library.",
             documentation_url="https://example.com/",
         ),
-        binding_authoring_prompt_path=repo_root
-        / "templates"
-        / "binding-authoring-prompt.txt",
         user_guide_agent_prompt_path=repo_root / "templates" / "user-guide-agent.txt",
         differential_workbook_rel=Path("data/workbook.xlsx"),
         differential_report_dir_rel=Path("data/differential/exported_library"),

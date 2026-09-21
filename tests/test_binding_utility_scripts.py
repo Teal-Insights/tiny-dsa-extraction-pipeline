@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, cast
@@ -18,11 +18,6 @@ from excel_grapher.series_bindings.resolve import BindingDirection
 from scripts.regenerate_graph_cache import (
     graph_cache_target_bundles,
     regenerate_graph_cache,
-)
-from src.binding_authoring import (
-    build_binding_documents,
-    emit_bindings_from_catalog,
-    load_binding_catalog,
 )
 from src.binding_resolution_audit import (
     AuditFinding,
@@ -61,6 +56,9 @@ from tests.fixtures.test_state import (
     REPO_SERIES_DERIVED_CACHE_DIR,
     REPO_SERIES_RESOLUTION_CACHE_DIR,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+AUTHOR_BINDINGS_SKILL = REPO_ROOT / ".agents" / "skills" / "author-bindings"
 
 _SPARSE_YEARS_SERIES: dict[str, Any] = {
     "id": "engine_sparse_years",
@@ -671,41 +669,48 @@ def test_internal_binding_burndown_reports_no_unbound_cells_for_synthetic(
     assert unbound == ()
 
 
-def test_binding_catalog_roundtrip_matches_synthetic_fixtures(
-    tmp_path: Path,
-) -> None:
-    catalog_path = (
-        Path(__file__).resolve().parents[1]
-        / "templates"
-        / "binding-catalog.example.yaml"
-    )
-    catalog = load_binding_catalog(catalog_path)
-    documents = build_binding_documents(catalog)
+def test_author_bindings_skill_is_vendored() -> None:
+    skill_md = AUTHOR_BINDINGS_SKILL / "SKILL.md"
+    assert skill_md.is_file()
+    text = skill_md.read_text(encoding="utf-8")
+    assert "name: author-bindings" in text
+    assert "generic catalog" in text.lower()
+    assert "four-file" in text.lower()
+    assert (AUTHOR_BINDINGS_SKILL / "assets" / "catalog.example.yaml").is_file()
+    assert (AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml").is_file()
+    for name in ("conventions.md", "pitfalls.md", "validation-loop.md"):
+        assert (AUTHOR_BINDINGS_SKILL / "references" / name).is_file()
 
-    for direction in ("inputs", "outputs", "internals", "constants"):
-        fixture_path = (
-            Path(__file__).resolve().parent
-            / "fixtures"
-            / "synthetic"
-            / f"{direction}.bindings.yaml"
+
+def test_replaced_binding_authoring_files_are_gone() -> None:
+    present = [
+        path
+        for path in (
+            REPO_ROOT / "templates" / "binding-authoring-prompt.txt",
+            REPO_ROOT / "templates" / "binding-catalog.example.yaml",
+            REPO_ROOT / "templates" / "binding-pattern-measure-shards.example.yaml",
+            REPO_ROOT / "scripts" / "author_bindings.py",
+            REPO_ROOT / "src" / "binding_authoring.py",
         )
-        emitted = documents[f"{direction}.bindings.yaml"]
-        expected = yaml.safe_load(fixture_path.read_text(encoding="utf-8"))
-        assert emitted["schema_version"] == expected["schema_version"]
-        assert emitted["series"] == expected["series"]
+        if path.exists()
+    ]
+    assert present == []
 
 
-def test_measure_shard_pattern_catalog_emits_filled_gap_column_shards() -> None:
-    """Pedagogical filled-header + measure-shard catalog stays structurally valid."""
-    catalog_path = (
-        Path(__file__).resolve().parents[1]
-        / "templates"
-        / "binding-pattern-measure-shards.example.yaml"
+def test_pipeline_config_has_no_binding_authoring_prompt_path() -> None:
+    names = {field.name for field in fields(PipelineConfig)}
+    assert "binding_authoring_prompt_path" not in names
+
+
+def test_measure_shard_skill_asset_uses_filled_gap_column_shards() -> None:
+    """Pedagogical filled-header + measure-shard asset stays structurally valid."""
+    catalog = yaml.safe_load(
+        (AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml").read_text(
+            encoding="utf-8"
+        )
     )
-    catalog = load_binding_catalog(catalog_path)
-    documents = build_binding_documents(catalog)
-    outputs = documents["outputs.bindings.yaml"]["series"]
-    internals = documents["internals.bindings.yaml"]["series"]
+    outputs = catalog["outputs"]["series"]
+    internals = catalog["internals"]["series"]
 
     concept_ids = {concept["id"] for concept in catalog["concept_scheme"]["concepts"]}
     assert {"OBS_VALUE", "TIME_PERIOD", "SCENARIO", "MEASURE"} <= concept_ids
@@ -732,54 +737,57 @@ def test_measure_shard_pattern_catalog_emits_filled_gap_column_shards() -> None:
 
 def test_binding_guidance_documents_unique_vs_shared_compute_names() -> None:
     """Authoring materials teach when shared names merge vs when they mask paths."""
-    root = Path(__file__).resolve().parents[1]
-    readme = (root / "bindings" / "README.md").read_text(encoding="utf-8")
-    prompt = (root / "templates" / "binding-authoring-prompt.txt").read_text(
+    readme = (REPO_ROOT / "bindings" / "README.md").read_text(encoding="utf-8")
+    conventions = (AUTHOR_BINDINGS_SKILL / "references" / "conventions.md").read_text(
+        encoding="utf-8"
+    )
+    pitfalls = (AUTHOR_BINDINGS_SKILL / "references" / "pitfalls.md").read_text(
         encoding="utf-8"
     )
     example = (
-        root / "templates" / "binding-pattern-measure-shards.example.yaml"
+        AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml"
     ).read_text(encoding="utf-8")
 
-    for text in (readme, prompt, example):
+    for text in (readme, pitfalls, example):
         lowered = text.lower()
         assert "unreachable" in lowered
         assert "unique" in lowered or "uniquify" in lowered
         assert "share" in lowered or "shared" in lowered
 
     assert "output.compute.name" in readme
-    assert "compute_/set_" in prompt or "compute_" in prompt
+    assert "compute_" in conventions
 
 
 def test_binding_guidance_documents_constant_direction() -> None:
     """Authoring materials teach constant: {} for reader-only graph leaves."""
-    root = Path(__file__).resolve().parents[1]
-    bindings_readme = (root / "bindings" / "README.md").read_text(encoding="utf-8")
-    pipeline_readme = (root / "README.md").read_text(encoding="utf-8")
-    prompt = (root / "templates" / "binding-authoring-prompt.txt").read_text(
+    bindings_readme = (REPO_ROOT / "bindings" / "README.md").read_text(encoding="utf-8")
+    pipeline_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    conventions = (AUTHOR_BINDINGS_SKILL / "references" / "conventions.md").read_text(
+        encoding="utf-8"
+    )
+    pitfalls = (AUTHOR_BINDINGS_SKILL / "references" / "pitfalls.md").read_text(
         encoding="utf-8"
     )
 
-    for text in (bindings_readme, pipeline_readme, prompt):
+    for text in (bindings_readme, pipeline_readme, conventions):
         lowered = text.lower()
         assert "constant: {}" in text
-        assert "constants.bindings.yaml" in lowered
+        assert "constants.bindings.yaml" in lowered or "constant: {}" in text
 
     assert "keyword-only" in bindings_readme
     assert "data.py" in bindings_readme.lower()
     assert "compute_*" in bindings_readme
     assert "non_leaf_constant_overlap" in bindings_readme
     assert "bind.kind: constant" in bindings_readme
-    assert (
-        "derive_constant_series" in pipeline_readme
-        or "derive_constant_series" in prompt
-    )
+    assert "bind.kind: constant" in conventions
+    assert "derive_constant_series" in pipeline_readme
+    assert "constant: {}" in pitfalls
 
-    for text in (pipeline_readme, prompt):
+    for text in (pipeline_readme, conventions):
         lowered = text.lower()
         assert "input: {}" in text
-        assert "xl_cell" in lowered
         assert "constant.reader" not in lowered
+    assert "xl_cell" in pipeline_readme.lower()
 
 
 def test_excel_grapher_floor_is_21_5_0() -> None:
@@ -811,46 +819,19 @@ def test_binding_resolution_audit_directions_include_constant() -> None:
     assert DIRECTIONS == ("input", "output", "internal", "constant")
 
 
-def test_binding_catalog_emits_constants_sidecar() -> None:
-    catalog_path = (
-        Path(__file__).resolve().parents[1]
-        / "templates"
-        / "binding-catalog.example.yaml"
+def test_skill_catalog_asset_includes_constant_series() -> None:
+    catalog = yaml.safe_load(
+        (AUTHOR_BINDINGS_SKILL / "assets" / "catalog.example.yaml").read_text(
+            encoding="utf-8"
+        )
     )
-    documents = build_binding_documents(load_binding_catalog(catalog_path))
-    assert "constants.bindings.yaml" in documents
-    constants = documents["constants.bindings.yaml"]["series"]
+    constants = catalog["constants"]["series"]
     assert len(constants) == 1
     assert constants[0]["id"] == "input_bias"
     assert constants[0]["constant"] == {}
     assert "input" not in constants[0]
     assert "output" not in constants[0]
     assert "internal" not in constants[0]
-
-
-def test_emit_bindings_from_catalog_validates_against_synthetic_workbook(
-    tmp_path: Path,
-) -> None:
-    workbook_path = tmp_path / "workbook.xlsx"
-    write_synthetic_workbook(workbook_path)
-    config = synthetic_pipeline_config(workbook_path=workbook_path)
-    bindings_dir = tmp_path / "bindings"
-    catalog_path = (
-        Path(__file__).resolve().parents[1]
-        / "templates"
-        / "binding-catalog.example.yaml"
-    )
-
-    written, validation = emit_bindings_from_catalog(
-        catalog_path=catalog_path,
-        bindings_dir=bindings_dir,
-        workbook_path=config.workbook_path,
-        validate=True,
-    )
-
-    assert len(written) == 4
-    assert validation is not None
-    assert validation["report"]["ok"] is True
 
 
 def test_findings_from_resolution_flags_partial_bind_and_empty_public() -> None:
