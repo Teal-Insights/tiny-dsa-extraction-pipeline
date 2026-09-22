@@ -103,7 +103,7 @@ def synthetic_config(tmp_path: Path):
 
 
 def _build_graph(config, *, cache_dir: Path, **kwargs):
-    dynamic_refs = DynamicRefConfig.from_constraints(config.constraints, {})
+    dynamic_refs = DynamicRefConfig.from_constraints(config.constraints)
     return get_or_build_dependency_graph(
         workbook_path=config.workbook_path,
         targets=config.targets,
@@ -401,7 +401,7 @@ def test_get_or_build_dependency_graph_forwards_blank_ranges(
             targets=synthetic_config.targets,
             constraints=synthetic_config.constraints,
             dynamic_refs=DynamicRefConfig.from_constraints(
-                synthetic_config.constraints, {}
+                synthetic_config.constraints
             ),
             blank_ranges=blank_ranges,
             cache_dir=graph_cache_dir,

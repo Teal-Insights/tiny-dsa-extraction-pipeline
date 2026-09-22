@@ -79,7 +79,7 @@ def _dynamic_ref_config(
 ) -> DynamicRefConfig:
     """Prefer sidecar domains; overlay a Python table when tests still supply one."""
     if bindings_path is None:
-        return DynamicRefConfig.from_constraints(constraints, {})
+        return DynamicRefConfig.from_constraints(constraints)
     derived = DynamicRefConfig.from_bindings(
         load_series_bindings(bindings_path),
         workbook_path,
@@ -87,9 +87,7 @@ def _dynamic_ref_config(
     )
     if not constraints:
         return derived
-    merged, _overrides = derived.overlay(
-        DynamicRefConfig.from_constraints(constraints, {})
-    )
+    merged, _overrides = derived.overlay(DynamicRefConfig.from_constraints(constraints))
     return merged
 
 

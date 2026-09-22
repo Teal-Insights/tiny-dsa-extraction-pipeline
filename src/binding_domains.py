@@ -55,7 +55,7 @@ def pipeline_dynamic_ref_config(
     )
     if not config.constraints:
         return derived
-    overlay = DynamicRefConfig.from_constraints(config.constraints, {})
+    overlay = DynamicRefConfig.from_constraints(config.constraints)
     merged, _overrides = derived.overlay(overlay)
     return merged
 
