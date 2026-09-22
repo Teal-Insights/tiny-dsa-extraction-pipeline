@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,6 +87,38 @@ def _read_package_modules(package_root: Path) -> dict[str, str] | None:
     return modules
 
 
+def replace_dist_bindings(config: PipelineConfig) -> None:
+    """Replace ``dist/bindings`` with the authored bindings directory.
+
+    Anything under the destination that is absent from the source is removed,
+    including files left behind by an earlier materialization.
+    """
+    source = config.bindings_path
+    destination = config.dist_root / "bindings"
+    if not source.is_dir():
+        raise FileNotFoundError(f"bindings directory not found: {source}")
+
+    source_resolved = source.resolve()
+    destination_resolved = destination.resolve()
+    if (
+        source_resolved == destination_resolved
+        or destination_resolved.is_relative_to(source_resolved)
+        or source_resolved.is_relative_to(destination_resolved)
+    ):
+        raise ValueError(
+            f"refusing to replace {destination} from overlapping bindings path {source}"
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        destination.unlink()
+    elif destination.is_dir():
+        shutil.rmtree(destination)
+    elif destination.exists():
+        destination.unlink()
+    shutil.copytree(source, destination)
+
+
 def _write_dist_tree(config: PipelineConfig, modules: dict[str, str]) -> None:
     """Write package modules and dist metadata/harness files."""
     write_generated_modules(config.package_root, modules)
@@ -108,6 +141,7 @@ def _write_dist_tree(config: PipelineConfig, modules: dict[str, str]) -> None:
     )
     write_dist_readme(config.dist_root, metadata=config.dist_metadata)
     seed_validation_harness(config=config)
+    replace_dist_bindings(config)
 
 
 def materialize_package(
