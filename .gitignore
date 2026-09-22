@@ -8,10 +8,6 @@ __pycache__/
 # commit dist/ explicitly (git add -f dist); see README "Deploying the
 # generated package". Ignore contents so the inverted-tree prototype can be
 # tracked without force-adding the pipeline output.
-dist/*
-# Hand-rolled inverted-tree prototype (not pipeline output).
-!dist/tiny_dsa_inverted/
-!dist/tiny_dsa_inverted/**
 .env
 docs/dependency-graph/
 artifacts/dependency-graph/
