@@ -25,6 +25,15 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = "-v -p no:faulthandler -p no:cacheprovider"
+# pytest defaults plus package_overlay/, which is vendored into dist/ and
+# tested there, not here.
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "package_overlay"]
+
+[tool.ruff]
+extend-exclude = ["package_overlay"]
+
+[tool.ty.src]
+exclude = ["package_overlay"]
 
 [tool.ruff.lint]
 # Ruff 0.16+ expanded defaults (413 rules): see

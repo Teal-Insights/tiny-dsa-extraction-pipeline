@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from src.codegen_cache import save_codegen_payload
 from src.package_materialize import (
     PACKAGE_CACHE_KEYS_FILENAME,
+    PACKAGE_OVERLAY_MANIFEST_FILENAME,
     PackageCacheKeys,
     adopt_codegen_cache_from_dist,
     materialize_package,
@@ -201,3 +203,132 @@ def test_adopt_codegen_cache_from_dist_rejects_mismatched_key(tmp_path: Path) ->
         expected_codegen_key="z" * 64,
         projection_cache_key="proj-key",
     )
+
+
+def _with_overlay(config: PipelineConfig, files: dict[str, str]) -> PipelineConfig:
+    overlay = config.repo_root / "package_overlay"
+    for relative, text in files.items():
+        path = overlay / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+    return replace(config, package_overlay_path=overlay)
+
+
+_OVERLAY_FILES = {
+    "my_model/graph_api.py": "def evaluate():\n    return {}\n",
+    "assets/graph/index.html": "<html></html>\n",
+    "tests/test_graph_api.py": "def test_graph():\n    pass\n",
+    "Dockerfile": "FROM python:3.13-slim\n",
+    "_quarto.yml": "project:\n  type: website\n",
+}
+
+
+def test_materialize_package_copies_overlay_files(tmp_path: Path) -> None:
+    config = _with_overlay(_prepare_repo(tmp_path), _OVERLAY_FILES)
+    codegen_key = "c" * 64
+    save_codegen_payload(
+        _SAMPLE_MODULES,
+        cache_key=codegen_key,
+        projection_cache_key="proj-key",
+    )
+
+    materialize_package(config, codegen_key=codegen_key)
+    golden = _snapshot_dist(config.dist_root)
+
+    for relative, text in _OVERLAY_FILES.items():
+        assert golden[relative] == text.encode("utf-8")
+    assert golden["my_model/api.py"] == _SAMPLE_MODULES["api.py"].encode("utf-8")
+
+    shutil.rmtree(config.dist_root)
+    materialize_package(config, codegen_key=codegen_key)
+    assert _snapshot_dist(config.dist_root) == golden
+
+
+def test_materialize_package_removes_files_dropped_from_overlay(
+    tmp_path: Path,
+) -> None:
+    config = _with_overlay(_prepare_repo(tmp_path), _OVERLAY_FILES)
+    codegen_key = "d" * 64
+    save_codegen_payload(
+        _SAMPLE_MODULES,
+        cache_key=codegen_key,
+        projection_cache_key="proj-key",
+    )
+    materialize_package(config, codegen_key=codegen_key)
+    assert config.package_overlay_path is not None
+    (config.package_overlay_path / "Dockerfile").unlink()
+    shutil.rmtree(config.package_overlay_path / "assets")
+
+    materialize_package(config, codegen_key=codegen_key)
+
+    assert not (config.dist_root / "Dockerfile").exists()
+    assert not (config.dist_root / "assets").exists()
+    assert (config.dist_root / "my_model" / "graph_api.py").is_file()
+    assert (config.dist_root / PACKAGE_OVERLAY_MANIFEST_FILENAME).is_file()
+
+
+def test_materialize_package_without_overlay_writes_no_manifest(
+    tmp_path: Path,
+) -> None:
+    config = _prepare_repo(tmp_path)
+    codegen_key = "e" * 64
+    save_codegen_payload(
+        _SAMPLE_MODULES,
+        cache_key=codegen_key,
+        projection_cache_key="proj-key",
+    )
+    materialize_package(config, codegen_key=codegen_key)
+    assert not (config.dist_root / PACKAGE_OVERLAY_MANIFEST_FILENAME).exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "pyproject.toml",
+        "README.md",
+        ".gitignore",
+        "uv.lock",
+        "great-docs.yml",
+        PACKAGE_CACHE_KEYS_FILENAME,
+        ".github/workflows/deploy-docs.yml",
+        "my_model/api.py",
+        "bindings/inputs.bindings.yaml",
+        "user_guide/index.qmd",
+        "docs-source/guidance-note.md",
+        "tests/README.md",
+        "tests/differential/binding_adapter.py",
+        "tests/fixtures/workbook.xlsx",
+        "tests/results/reference/parity_report.txt",
+        "great-docs/_site/index.html",
+    ],
+)
+def test_materialize_package_rejects_overlay_paths_the_pipeline_writes(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    config = _with_overlay(_prepare_repo(tmp_path), {relative: "x\n"})
+    codegen_key = "f" * 64
+    save_codegen_payload(
+        _SAMPLE_MODULES,
+        cache_key=codegen_key,
+        projection_cache_key="proj-key",
+    )
+    with pytest.raises(ValueError, match="package overlay"):
+        materialize_package(config, codegen_key=codegen_key)
+
+
+def test_materialize_package_fails_loudly_on_missing_overlay_dir(
+    tmp_path: Path,
+) -> None:
+    config = replace(
+        _prepare_repo(tmp_path),
+        package_overlay_path=tmp_path / "missing_overlay",
+    )
+    codegen_key = "h" * 64
+    save_codegen_payload(
+        _SAMPLE_MODULES,
+        cache_key=codegen_key,
+        projection_cache_key="proj-key",
+    )
+    with pytest.raises(FileNotFoundError, match="package overlay"):
+        materialize_package(config, codegen_key=codegen_key)

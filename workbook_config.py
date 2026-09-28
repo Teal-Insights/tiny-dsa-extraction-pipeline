@@ -51,10 +51,52 @@ DIST_METADATA = DistProjectMetadata(
     ),
     documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
     repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
+    dependency_groups=(("graph", ("excel-grapher>=15.0.0", "pytest>=8.0.0")),),
     attribution=(
         "Created by Teal Insights.\n\n![Teal Insights logo](README_files/logo.png)"
     ),
 )
+
+# Hand-authored files copied into dist/ on materialize: the FormulaEvaluator
+# graph API, the interactive dependency-graph page, and their deploy config.
+# Overlay files may add paths but never replace ones the pipeline writes.
+PACKAGE_OVERLAY_PATH = REPO_ROOT / "package_overlay"
+
+# Extra dist/ docs-workflow setup for the graph page: install the ``graph``
+# dependency group, refresh the static bootstrap snapshot before the docs
+# build, and publish ``assets/graph`` into the built site afterwards.
+DOCS_WORKFLOW_SYNC_GROUPS: tuple[str, ...] = ("graph",)
+DOCS_WORKFLOW_PRE_BUILD_STEPS = r"""- name: Refresh static graph bootstrap snapshot
+  run: uv run python scripts/write_graph_bootstrap.py
+
+- name: Point graph UI at remote FormulaEvaluator API
+  env:
+    GRAPH_API_BASE: ${{ vars.GRAPH_API_BASE || secrets.GRAPH_API_BASE }}
+  run: |
+    if [ -n "${GRAPH_API_BASE}" ]; then
+      python - <<'PY'
+    import os
+    from pathlib import Path
+    base = os.environ["GRAPH_API_BASE"].rstrip("/")
+    Path("assets/graph/config.js").write_text(
+        "/** Injected by docs deploy (GRAPH_API_BASE). */\n"
+        f"window.TINY_DSA_GRAPH_API = {base!r};\n",
+        encoding="utf-8",
+    )
+    print(f"wrote assets/graph/config.js → {base}")
+    PY
+    else
+      echo "GRAPH_API_BASE unset; graph UI will use bootstrap.json only on Pages"
+    fi
+"""
+DOCS_WORKFLOW_POST_BUILD_STEPS = r"""- name: Ensure interactive graph assets are published
+  run: |
+    mkdir -p great-docs/_site/assets
+    cp -a assets/graph great-docs/_site/assets/
+    test -f great-docs/_site/assets/graph/index.html
+    test -f great-docs/_site/assets/graph/bootstrap.json
+    test -f great-docs/_site/assets/graph/config.js
+"""
 
 DIFFERENTIAL_WORKBOOK_REL = Path("data/tiny-dsa.xlsx")
 DIFFERENTIAL_REPORT_DIR_REL = Path("data/differential/exported_library")

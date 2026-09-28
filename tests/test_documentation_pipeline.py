@@ -8,6 +8,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from src.documentation_pipeline import (
     CURSOR_API_KEY_ENV,
@@ -22,6 +23,7 @@ from src.documentation_pipeline import (
     configure_great_docs_yml,
     document_agent_model,
     parse_parity_report,
+    render_docs_deploy_workflow,
     render_validation_page,
     require_cursor_api_key,
     resolve_document_agent_deadline_seconds,
@@ -491,3 +493,51 @@ def test_load_pipeline_config_user_guide_prompt_path() -> None:
 def test_restore_user_guide_cache_missing_returns_false(tmp_path: Path) -> None:
     config = _minimal_config(tmp_path)
     assert restore_user_guide_cache(config, cache_key="missing") is False
+
+
+def _workflow_steps(text: str) -> list[dict[str, Any]]:
+    workflow = yaml.safe_load(text)
+    return cast(list[dict[str, Any]], workflow["jobs"]["build-and-deploy"]["steps"])
+
+
+def test_render_docs_deploy_workflow_defaults_to_dev_group(tmp_path: Path) -> None:
+    steps = _workflow_steps(render_docs_deploy_workflow(_minimal_config(tmp_path)))
+    names = [step["name"] for step in steps]
+    sync = steps[names.index("Install project dependencies")]
+    assert sync["run"] == "uv sync --group dev"
+    assert names.index("Build documentation site") + 1 == names.index(
+        "Upload Pages artifact"
+    )
+
+
+def test_render_docs_deploy_workflow_splices_configured_steps(tmp_path: Path) -> None:
+    config = replace(
+        _minimal_config(tmp_path),
+        docs_workflow_sync_groups=("graph",),
+        docs_workflow_pre_build_steps=(
+            "- name: Refresh bootstrap\n"
+            "  run: uv run python scripts/write_graph_bootstrap.py\n"
+        ),
+        docs_workflow_post_build_steps=(
+            "- name: Publish graph assets\n"
+            "  run: |\n"
+            "    mkdir -p great-docs/_site/assets\n"
+            "    cp -a assets/graph great-docs/_site/assets/\n"
+        ),
+    )
+    steps = _workflow_steps(render_docs_deploy_workflow(config))
+    names = [step["name"] for step in steps]
+    assert names[names.index("Install project dependencies") :] == [
+        "Install project dependencies",
+        "Refresh bootstrap",
+        "Build documentation site",
+        "Publish graph assets",
+        "Upload Pages artifact",
+        "Deploy to GitHub Pages",
+    ]
+    assert steps[names.index("Install project dependencies")]["run"] == (
+        "uv sync --group dev --group graph"
+    )
+    assert steps[names.index("Publish graph assets")]["run"] == (
+        "mkdir -p great-docs/_site/assets\ncp -a assets/graph great-docs/_site/assets/\n"
+    )

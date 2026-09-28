@@ -34,7 +34,9 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Blank ranges | `workbook_config.py` → `BLANK_RANGES` | Sheet-qualified A1 rectangles of structurally empty cells omitted from the graph (same strings to graph build, `FormulaEvaluator`, and codegen) |
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml`, `bindings/constants.bindings.yaml` | Keyword-only `compute_*` public API, internal formula-cell triangulation, and reader-only constant leaves |
-| Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README |
+| Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README, extra `dependency_groups` |
+| Package overlay | `package_overlay/` via `workbook_config.py` → `PACKAGE_OVERLAY_PATH` | Optional hand-authored, workbook-specific files copied into `dist/` on materialize (may add paths, never replace pipeline-written ones) |
+| Docs workflow hooks | `workbook_config.py` → `DOCS_WORKFLOW_SYNC_GROUPS`, `DOCS_WORKFLOW_PRE_BUILD_STEPS`, `DOCS_WORKFLOW_POST_BUILD_STEPS` | Optional extra `uv sync` groups and YAML steps around the docs build in `dist/.github/workflows/deploy-docs.yml` |
 | Internal binding exemptions | `workbook_config.py` → `INTERNAL_BINDING_EXEMPT_CELLS` | Reviewed formula cells allowed to remain unbound |
 | Graph-cache target bundles | `workbook_config.py` → `GRAPH_CACHE_TARGET_BUNDLES` | Optional extra target sets for `scripts/regenerate_graph_cache.py` |
 | Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
@@ -404,14 +406,18 @@ Pull requests run the same test suite on Ubuntu via `.github/workflows/test.yml`
 
 ### Deploying the generated package
 
-The deploy workflow (`.github/workflows/deploy.yml`) is available from the Actions tab via `workflow_dispatch`. It is **publish-only**: the extraction pipeline calls LLM providers and can take hours, so generation is run locally and never in CI. Generate the package and commit `dist/`, then dispatch the workflow:
+Deploys are manual and local: the extraction pipeline calls LLM providers and can take hours, so generation never runs in CI. Generate the package, commit `dist/`, then run the deploy script:
 
 ```bash
 uv run python -m src.extraction_pipeline
-git add -f dist && git commit -m "Regenerate dist/"
+git add dist && git commit -m "Regenerate dist/"
+scripts/deploy_dist.sh --dry-run   # build and test the merge without pushing
+scripts/deploy_dist.sh
 ```
 
-`dist/` is gitignored by default; commit it explicitly (`git add -f dist`) so the deploy workflow has something to publish. On dispatch the workflow verifies the committed `dist/`, uploads it as a build artifact, and — when `DIST_METADATA.repository_url` points at a GitHub repository — publishes `dist/` to that repository by rsyncing over its contents and pushing to `main`. Publishing requires a `DEPLOY_TOKEN` repository secret (a token with write access to the target repository); when `repository_url` is unset or not a GitHub URL, the publish steps are skipped and only the artifact is produced. The generated package ships its own docs deploy workflow (`dist/.github/workflows/deploy-docs.yml`), so the target repository can publish the user guide to GitHub Pages on push.
+`scripts/deploy_dist.sh` publishes the committed `dist/` (never uncommitted edits) to the GitHub repository in `DIST_METADATA.repository_url`, or to `--remote URL`. It commits `dist/` on top of the previous `Deploy generated package from …` commit and merges that into the package repo's `main`, so commits made directly in the package repo survive. It stops without pushing on a merge conflict or if the package test suite fails on the merged tree (`--skip-tests` skips the suite). Pushing uses your local git credentials. The generated package ships its own docs deploy workflow (`dist/.github/workflows/deploy-docs.yml`), so the package repo publishes the user guide to GitHub Pages on push.
+
+When contributors add workbook-specific features directly in the package repo, bring them back so regeneration reproduces them: new files go in `package_overlay/`, extra dependency groups in `DIST_METADATA.dependency_groups`, docs-build steps in the `DOCS_WORKFLOW_*` settings, and user-guide edits into `dist/user_guide/` plus the `.cache/user-guide/` entry.
 
 Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audits auto-select from a warm `.cache/dependency-graph/`; optional `GRAPH_AUDIT_CASES` steers pins/labels; synthetic fixture audits run without extra setup; provider API key required for `LLM_GRAPH_AUDIT_MODEL`).
 
@@ -424,8 +430,10 @@ Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audit
 | `bindings/` | Series binding sidecars (user-authored) |
 | `data/` | Workbook, guide, differential reports |
 | `dist/` | Generated distributable package (gitignored) |
+| `package_overlay/` | Hand-authored files copied into `dist/` (Tiny DSA graph API and page) |
+| `scripts/deploy_dist.sh` | Manual deploy of the committed `dist/` to the package repo |
 | `templates/` | Binding prompt and canonical API usage reference |
-| `.github/workflows/` | Template CI (PR tests) and manual deploy workflow |
+| `.github/workflows/` | Template CI (PR tests) |
 | `technical_standard.md` | Acceptance bar and stage gates |
 | `lessons-learned.md` | Design rationale from the Tiny DSA rehearsal |
 | `artifacts/` | Generated exploration artifacts; see [artifacts/README.md](artifacts/README.md) |

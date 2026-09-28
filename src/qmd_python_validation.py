@@ -107,6 +107,15 @@ def render_dist_pyproject_toml(
     metadata: DistProjectMetadata,
 ) -> str:
     dep_lines = "\n".join(f'    "{dep}",' for dep in dev_dependencies)
+    extra_groups_block = ""
+    for group, requirements in metadata.dependency_groups:
+        if group in {"dev", VALIDATION_DEPENDENCY_GROUP}:
+            raise ValueError(f"dependency group {group!r} is reserved for the pipeline")
+        requirement_lines = "\n".join(f'    "{dep}",' for dep in requirements)
+        extra_groups_block += f"""
+{group} = [
+{requirement_lines}
+]"""
     validation_block = ""
     if validation_dependencies:
         validation_lines = "\n".join(f'    "{dep}",' for dep in validation_dependencies)
@@ -124,7 +133,7 @@ version = "0.1.0"
 description = {_toml_string(metadata.description)}
 requires-python = ">=3.13"
 dependencies = [
-    "fastpyxl",
+    "fastpyxl>=1.1.0",
     "numpy",
 ]
 
@@ -134,7 +143,7 @@ packages = [{_toml_string(metadata.package_name)}]
 [dependency-groups]
 dev = [
 {dep_lines}
-]{validation_block}
+]{extra_groups_block}{validation_block}
 """
 
 

@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -742,10 +743,20 @@ def run_cmd(
     )
 
 
-def write_docs_deploy_workflow(config: PipelineConfig) -> None:
-    docs_workflow_path = _docs_workflow_path(config)
-    docs_workflow_path.parent.mkdir(parents=True, exist_ok=True)
-    docs_workflow = """name: Build and deploy docs
+def _workflow_steps_block(steps: str) -> str:
+    """Indent a YAML step list into the build job, followed by a blank line."""
+    if not steps.strip():
+        return ""
+    return textwrap.indent(steps.strip("\n"), " " * 6) + "\n\n"
+
+
+def render_docs_deploy_workflow(config: PipelineConfig) -> str:
+    sync_groups = " ".join(
+        f"--group {group}" for group in ("dev", *config.docs_workflow_sync_groups)
+    )
+    pre_build_steps = _workflow_steps_block(config.docs_workflow_pre_build_steps)
+    post_build_steps = _workflow_steps_block(config.docs_workflow_post_build_steps)
+    return f"""name: Build and deploy docs
 
 on:
   push:
@@ -781,12 +792,12 @@ jobs:
         run: uv python install
 
       - name: Install project dependencies
-        run: uv sync --group dev
+        run: uv sync {sync_groups}
 
-      - name: Build documentation site
+{pre_build_steps}      - name: Build documentation site
         run: uv run --with great-docs great-docs build --project-path .
 
-      - name: Upload Pages artifact
+{post_build_steps}      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
           path: great-docs/_site
@@ -795,7 +806,12 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 """
-    docs_workflow_path.write_text(docs_workflow, encoding="utf-8")
+
+
+def write_docs_deploy_workflow(config: PipelineConfig) -> None:
+    docs_workflow_path = _docs_workflow_path(config)
+    docs_workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    docs_workflow_path.write_text(render_docs_deploy_workflow(config), encoding="utf-8")
 
 
 def author_or_restore_user_guide(

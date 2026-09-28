@@ -24,6 +24,9 @@ class DistProjectMetadata:
     repository_url: str | None = None
     install_command: str | None = None
     attribution: str | None = None
+    # Extra ``[dependency-groups]`` for the dist ``pyproject.toml`` as
+    # ``(group, (requirement, ...))`` pairs, emitted after ``dev``.
+    dependency_groups: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def resolved_install_command(self) -> str:
         if self.install_command is not None:
@@ -85,6 +88,13 @@ class PipelineConfig:
     internal_binding_validation_mode: InternalBindingValidationMode = "warn"
     internal_binding_exempt_cells: frozenset[str] = frozenset()
     runnable_cell_rules: tuple[RunnableCellRule, ...] = ()
+    # Hand-authored files copied into ``dist/`` on materialize.
+    package_overlay_path: Path | None = None
+    # Extra ``uv sync --group`` names and YAML step lists spliced before and
+    # after the docs build in ``dist/.github/workflows/deploy-docs.yml``.
+    docs_workflow_sync_groups: tuple[str, ...] = ()
+    docs_workflow_pre_build_steps: str = ""
+    docs_workflow_post_build_steps: str = ""
 
     @property
     def package_root(self) -> Path:
@@ -211,6 +221,27 @@ def _load_blank_ranges(value: object) -> tuple[str, ...]:
     return tuple(ranges)
 
 
+def _load_docs_workflow_sync_groups(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise TypeError(
+            "DOCS_WORKFLOW_SYNC_GROUPS must be a tuple or list of group names, "
+            "not a single string"
+        )
+    if not isinstance(value, (tuple, list)) or not all(
+        isinstance(name, str) and name for name in value
+    ):
+        raise TypeError(
+            "DOCS_WORKFLOW_SYNC_GROUPS must be a tuple or list of non-empty strings"
+        )
+    return tuple(value)
+
+
+def _load_docs_workflow_steps(name: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string of YAML workflow steps")
+    return value
+
+
 def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     """Load workbook-specific settings from the repository ``workbook_config`` module."""
     root = repo_root or _REPO_ROOT
@@ -264,6 +295,21 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     runnable_cell_rules = _load_runnable_cell_rules(
         getattr(user_config, "RUNNABLE_CELL_RULES", ())
     )
+    package_overlay_value = getattr(user_config, "PACKAGE_OVERLAY_PATH", None)
+    package_overlay_path = (
+        None if package_overlay_value is None else Path(package_overlay_value)
+    )
+    docs_workflow_sync_groups = _load_docs_workflow_sync_groups(
+        getattr(user_config, "DOCS_WORKFLOW_SYNC_GROUPS", ())
+    )
+    docs_workflow_pre_build_steps = _load_docs_workflow_steps(
+        "DOCS_WORKFLOW_PRE_BUILD_STEPS",
+        getattr(user_config, "DOCS_WORKFLOW_PRE_BUILD_STEPS", ""),
+    )
+    docs_workflow_post_build_steps = _load_docs_workflow_steps(
+        "DOCS_WORKFLOW_POST_BUILD_STEPS",
+        getattr(user_config, "DOCS_WORKFLOW_POST_BUILD_STEPS", ""),
+    )
 
     if not isinstance(dist_metadata, DistProjectMetadata):
         raise TypeError("workbook_config.DIST_METADATA must be a DistProjectMetadata")
@@ -288,6 +334,10 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         internal_binding_validation_mode=internal_binding_validation_mode,
         internal_binding_exempt_cells=internal_binding_exempt_cells,
         runnable_cell_rules=runnable_cell_rules,
+        package_overlay_path=package_overlay_path,
+        docs_workflow_sync_groups=docs_workflow_sync_groups,
+        docs_workflow_pre_build_steps=docs_workflow_pre_build_steps,
+        docs_workflow_post_build_steps=docs_workflow_post_build_steps,
     )
 
 

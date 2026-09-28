@@ -212,3 +212,54 @@ def test_dist_project_metadata_repository_slug_without_repo() -> None:
         metadata, repository_url="https://gitlab.com/example-org/forecast-kit"
     )
     assert non_github.repository_slug() is None
+
+
+def test_load_pipeline_config_reads_tiny_dsa_graph_package_settings() -> None:
+    config = load_pipeline_config()
+    assert config.package_overlay_path == config.repo_root / "package_overlay"
+    assert config.package_overlay_path.is_dir()
+    assert config.docs_workflow_sync_groups == ("graph",)
+    assert "write_graph_bootstrap.py" in config.docs_workflow_pre_build_steps
+    assert "assets/graph" in config.docs_workflow_post_build_steps
+    assert dict(config.dist_metadata.dependency_groups)["graph"][0].startswith(
+        "excel-grapher>="
+    )
+
+
+def test_load_pipeline_config_defaults_package_hooks_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    for name in (
+        "PACKAGE_OVERLAY_PATH",
+        "DOCS_WORKFLOW_SYNC_GROUPS",
+        "DOCS_WORKFLOW_PRE_BUILD_STEPS",
+        "DOCS_WORKFLOW_POST_BUILD_STEPS",
+    ):
+        monkeypatch.delattr(workbook_config, name, raising=False)
+    config = load_pipeline_config()
+    assert config.package_overlay_path is None
+    assert config.docs_workflow_sync_groups == ()
+    assert config.docs_workflow_pre_build_steps == ""
+    assert config.docs_workflow_post_build_steps == ""
+
+
+def test_load_pipeline_config_rejects_bare_string_sync_groups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    monkeypatch.setattr(workbook_config, "DOCS_WORKFLOW_SYNC_GROUPS", "graph")
+    with pytest.raises(TypeError, match="DOCS_WORKFLOW_SYNC_GROUPS"):
+        load_pipeline_config()
+
+
+def test_load_pipeline_config_rejects_non_string_workflow_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workbook_config
+
+    monkeypatch.setattr(workbook_config, "DOCS_WORKFLOW_PRE_BUILD_STEPS", ["- name: x"])
+    with pytest.raises(TypeError, match="DOCS_WORKFLOW_PRE_BUILD_STEPS"):
+        load_pipeline_config()

@@ -25,6 +25,7 @@ from src.qmd_python_validation import (
 )
 
 PACKAGE_CACHE_KEYS_FILENAME = ".pipeline-cache-keys.json"
+PACKAGE_OVERLAY_MANIFEST_FILENAME = ".package-overlay-manifest.json"
 DIST_GITIGNORE_CONTENT = """
 *.egg-info/
 *.pyc
@@ -119,8 +120,97 @@ def replace_dist_bindings(config: PipelineConfig) -> None:
     shutil.copytree(source, destination)
 
 
+_OVERLAY_RESERVED_FILES = frozenset(
+    {
+        ".gitignore",
+        ".github/workflows/deploy-docs.yml",
+        PACKAGE_CACHE_KEYS_FILENAME,
+        PACKAGE_OVERLAY_MANIFEST_FILENAME,
+        "README.md",
+        "great-docs.yml",
+        "pyproject.toml",
+        "tests/README.md",
+        "tests/__init__.py",
+        "uv.lock",
+    }
+)
+_OVERLAY_RESERVED_DIRS = (
+    "bindings/",
+    "docs-source/",
+    "great-docs/",
+    "tests/differential/",
+    "tests/fixtures/",
+    "tests/results/",
+    "user_guide/",
+)
+
+
+def collect_package_overlay(
+    config: PipelineConfig, modules: dict[str, str]
+) -> tuple[str, ...]:
+    """Return overlay file paths relative to ``dist/``, rejecting pipeline-written paths.
+
+    The overlay holds hand-authored, workbook-specific files that codegen cannot
+    produce. It may add files but never replace one the pipeline writes, since
+    a later stage would silently overwrite it.
+    """
+    overlay = config.package_overlay_path
+    if overlay is None:
+        return ()
+    if not overlay.is_dir():
+        raise FileNotFoundError(f"package overlay directory not found: {overlay}")
+    package_name = config.dist_metadata.package_name
+    reserved = _OVERLAY_RESERVED_FILES | {f"{package_name}/{name}" for name in modules}
+    files: list[str] = []
+    for path in sorted(overlay.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(overlay).as_posix()
+        if relative in reserved or relative.startswith(_OVERLAY_RESERVED_DIRS):
+            raise ValueError(
+                f"package overlay file {relative!r} would replace a path the "
+                "pipeline writes; configure it through workbook_config instead"
+            )
+        files.append(relative)
+    return tuple(files)
+
+
+def _read_overlay_manifest(dist_root: Path) -> tuple[str, ...]:
+    path = dist_root / PACKAGE_OVERLAY_MANIFEST_FILENAME
+    if not path.is_file():
+        return ()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list) or not all(isinstance(p, str) for p in payload):
+        raise TypeError(f"invalid package overlay manifest: {path}")
+    return tuple(payload)
+
+
+def apply_package_overlay(config: PipelineConfig, files: tuple[str, ...]) -> None:
+    """Copy overlay ``files`` into ``dist/`` and drop files it no longer holds."""
+    dist_root = config.dist_root
+    for stale in sorted(set(_read_overlay_manifest(dist_root)) - set(files)):
+        stale_path = dist_root / stale
+        stale_path.unlink(missing_ok=True)
+        parent = stale_path.parent
+        while parent != dist_root and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+
+    manifest_path = dist_root / PACKAGE_OVERLAY_MANIFEST_FILENAME
+    if not files:
+        manifest_path.unlink(missing_ok=True)
+        return
+    assert config.package_overlay_path is not None
+    for relative in files:
+        destination = dist_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(config.package_overlay_path / relative, destination)
+    manifest_path.write_text(json.dumps(list(files), indent=2) + "\n", encoding="utf-8")
+
+
 def _write_dist_tree(config: PipelineConfig, modules: dict[str, str]) -> None:
     """Write package modules and dist metadata/harness files."""
+    overlay_files = collect_package_overlay(config, modules)
     write_generated_modules(config.package_root, modules)
 
     for stale_module in _GENERATED_ROOT_MODULE_NAMES:
@@ -142,6 +232,7 @@ def _write_dist_tree(config: PipelineConfig, modules: dict[str, str]) -> None:
     write_dist_readme(config.dist_root, metadata=config.dist_metadata)
     seed_validation_harness(config=config)
     replace_dist_bindings(config)
+    apply_package_overlay(config, overlay_files)
 
 
 def materialize_package(
