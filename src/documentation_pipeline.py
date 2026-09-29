@@ -693,6 +693,9 @@ def configure_great_docs_yml(config: PipelineConfig) -> None:
     package_module = config.dist_metadata.package_name
     content = great_docs_yml.read_text(encoding="utf-8")
     content = content.replace("# module: yaml12", f"module: {package_module}")
+    # dist/ is published, so the kernel must be a portable name rather than a
+    # machine-local interpreter path.
+    content = re.sub(r"^jupyter:.*$", "jupyter: python3", content, flags=re.MULTILINE)
 
     great_docs_settings: list[tuple[str, str]] = [
         ("display_name", config.dist_metadata.library_name),

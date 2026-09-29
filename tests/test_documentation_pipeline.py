@@ -403,6 +403,25 @@ def test_configure_great_docs_yml_sets_homepage(tmp_path: Path) -> None:
     assert 'site_url: "https://example.com/"' in content
 
 
+def test_configure_great_docs_yml_pins_portable_jupyter_kernel(
+    tmp_path: Path,
+) -> None:
+    config = _minimal_config(tmp_path)
+    yml = config.dist_root / "great-docs.yml"
+    config.dist_root.mkdir(parents=True, exist_ok=True)
+    yml.write_text(
+        "# module: yaml12\n"
+        "# jupyter: python3             # Default: python3\n"
+        "jupyter: 'C:/Users/someone/project/.venv/Scripts/python.exe'\n",
+        encoding="utf-8",
+    )
+    configure_great_docs_yml(config)
+    content = yml.read_text(encoding="utf-8")
+    assert "python.exe" not in content
+    assert "\njupyter: python3\n" in content
+    assert "# jupyter: python3             # Default: python3\n" in content
+
+
 def test_run_cmd_forces_utf8_env(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
