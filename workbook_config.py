@@ -51,25 +51,16 @@ DIST_METADATA = DistProjectMetadata(
     ),
     documentation_url="https://teal-insights.github.io/py-tiny-dsa/",
     repository_url="https://github.com/Teal-Insights/py-tiny-dsa",
-    dependency_groups=(("graph", ("excel-grapher>=15.0.0", "pytest>=8.0.0")),),
     attribution=(
         "Created by Teal Insights.\n\n![Teal Insights logo](README_files/logo.png)"
     ),
 )
 
-# Hand-authored files copied into dist/ on materialize: the FormulaEvaluator
-# graph API, the interactive dependency-graph page, and their deploy config.
-# Overlay files may add paths but never replace ones the pipeline writes.
-PACKAGE_OVERLAY_PATH = REPO_ROOT / "package_overlay"
-
-# Extra dist/ docs-workflow setup for the graph page: install the ``graph``
-# dependency group, refresh the static bootstrap snapshot before the docs
-# build, and publish ``assets/graph`` into the built site afterwards.
-DOCS_WORKFLOW_SYNC_GROUPS: tuple[str, ...] = ("graph",)
-DOCS_WORKFLOW_PRE_BUILD_STEPS = r"""- name: Refresh static graph bootstrap snapshot
-  run: uv run python scripts/write_graph_bootstrap.py
-
-- name: Point graph UI at remote FormulaEvaluator API
+# Extra dist/ docs-workflow setup for the graph page. The template already
+# installs the ``graph`` group, refreshes the static bootstrap snapshot, and
+# publishes ``assets/graph``; these point the UI at the hosted API and check
+# that the published page carries its snapshot and config.
+DOCS_WORKFLOW_PRE_BUILD_STEPS = r"""- name: Point graph UI at remote FormulaEvaluator API
   env:
     GRAPH_API_BASE: ${{ vars.GRAPH_API_BASE || secrets.GRAPH_API_BASE }}
   run: |
@@ -89,11 +80,8 @@ DOCS_WORKFLOW_PRE_BUILD_STEPS = r"""- name: Refresh static graph bootstrap snaps
       echo "GRAPH_API_BASE unset; graph UI will use bootstrap.json only on Pages"
     fi
 """
-DOCS_WORKFLOW_POST_BUILD_STEPS = r"""- name: Ensure interactive graph assets are published
+DOCS_WORKFLOW_POST_BUILD_STEPS = r"""- name: Check graph snapshot and config are published
   run: |
-    mkdir -p great-docs/_site/assets
-    cp -a assets/graph great-docs/_site/assets/
-    test -f great-docs/_site/assets/graph/index.html
     test -f great-docs/_site/assets/graph/bootstrap.json
     test -f great-docs/_site/assets/graph/config.js
 """
@@ -130,7 +118,7 @@ RUNNABLE_CELL_RULES: tuple[RunnableCellRule, ...] = (
         ),
     ),
     RunnableCellRule(
-        pattern=r"\bset_[A-Za-z_][A-Za-z0-9_]*\s*\(",
+        pattern=r"(?<![\w.])set_[A-Za-z_][A-Za-z0-9_]*\s*\(",
         message="inverted-tree runnable cells must not call set_* setters",
     ),
 )

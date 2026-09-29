@@ -32,6 +32,14 @@ Uniquify distinct scenario / engine paths. Sharing a name across those paths
 merges definitions at export and can leave most paths **unreachable** in the
 exported library even though every shard still looks valid in YAML.
 
+## Grab-bag pins need both address axes
+
+A non-rectangular `data_range` with no year header or row label is unique
+only as `(row, column)`. Prefer `bind.kind: row_index` plus
+`bind.kind: column_letter` over identity `value_map`s (`2: 2`, `B: B`).
+One axis alone still collides when two cells share a row or a column.
+A compact range map such as `2: "2:4"` stamps one key onto every row.
+
 ## Do not confuse `constant: {}` with `bind.kind: constant`
 
 - `constant: {}` names a reader-only **leaf**.
@@ -39,6 +47,31 @@ exported library even though every shard still looks valid in YAML.
 
 Structural blanks (`INDEX`/`MATCH` padding, NPV window overflow, separator
 rows) belong in `BLANK_RANGES`, not constants.
+
+## Extract-time domains are iterative
+
+`bindings candidates` is a pre-extract worklist of A1 leaves, not a series
+generator. One scalar `input` with `domain` (or a non-blank `constant`) per
+address is enough to extract. Choosing `input` versus `constant` is the
+semantic commitment the address table did not force.
+
+Re-run candidates after widening a selector domain. A too-narrow domain can
+make extract succeed while omitting a later `INDIRECT` or `OFFSET`.
+`attach_domains` covers leaves that do not feed dynamic refs; it does not
+discover those hidden cells.
+
+`constant` does not type a blank cell. A `greater_than` / `not_equal`
+relation without its partner series fails closed (`SeriesRelationError`)
+instead of emitting a guard.
+
+## Extract-only domain pins need `validation.catalog: false`
+
+`OFFSET` / `INDEX` / `INDIRECT` inference reads a `CellType` per cell. A
+constant that exists only for that extract-time pin is not a public tensor.
+Set `validation.catalog: false` so inverted-tree omits it from the catalog and
+`data.py`. Do not stamp identity `ROW`/`COL` keys just to satisfy catalog
+uniqueness. A catalog-skipped series that uniquely owns an on-graph formula
+cell fails closed.
 
 ## Anti-pattern: geometry-first YAML
 

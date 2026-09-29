@@ -35,8 +35,8 @@ Before running the pipeline, populate this repository with workbook-specific inp
 | Constraints | `workbook_config.py` → `CONSTRAINTS` | Dynamic-ref resolution and leaf input/constant classification |
 | Series bindings | `bindings/inputs.bindings.yaml`, `bindings/outputs.bindings.yaml`, `bindings/internals.bindings.yaml`, `bindings/constants.bindings.yaml` | Keyword-only `compute_*` public API, internal formula-cell triangulation, and reader-only constant leaves |
 | Package metadata | `workbook_config.py` → `DIST_METADATA` | Generated `dist/` project name, docs URLs, README, extra `dependency_groups` |
-| Package overlay | `package_overlay/` via `workbook_config.py` → `PACKAGE_OVERLAY_PATH` | Optional hand-authored, workbook-specific files copied into `dist/` on materialize (may add paths, never replace pipeline-written ones) |
-| Docs workflow hooks | `workbook_config.py` → `DOCS_WORKFLOW_SYNC_GROUPS`, `DOCS_WORKFLOW_PRE_BUILD_STEPS`, `DOCS_WORKFLOW_POST_BUILD_STEPS` | Optional extra `uv sync` groups and YAML steps around the docs build in `dist/.github/workflows/deploy-docs.yml` |
+| Dist overlay | `dist-overlay/` | Optional hand-authored, workbook-specific files copied over `dist/` last on materialize (may replace seeded series-graph files, never pipeline-written ones) |
+| Docs workflow hooks | `workbook_config.py` → `DOCS_WORKFLOW_SYNC_GROUPS`, `DOCS_WORKFLOW_PRE_BUILD_STEPS`, `DOCS_WORKFLOW_POST_BUILD_STEPS` | Optional `uv sync` groups beyond `dev`/`graph` and YAML steps around the docs build in `dist/.github/workflows/deploy-docs.yml` |
 | Internal binding exemptions | `workbook_config.py` → `INTERNAL_BINDING_EXEMPT_CELLS` | Reviewed formula cells allowed to remain unbound |
 | Graph-cache target bundles | `workbook_config.py` → `GRAPH_CACHE_TARGET_BUNDLES` | Optional extra target sets for `scripts/regenerate_graph_cache.py` |
 | Scenario matrix | `tests/differential/*_scenario_matrix.py` (or hooks in `differential_test_graph.py`) | Representative input combinations for differential parity sweeps |
@@ -75,7 +75,7 @@ flowchart LR
 1. Edit [workbook_config.py](workbook_config.py): paths, `TARGETS`, `BLANK_RANGES`, `CONSTRAINTS`, and `DIST_METADATA`. Keep `bindings/*.bindings.yaml` as empty `series: []` placeholders until after the first extract if needed.
 2. **Dynamic-ref pass** — list leaves that need domains to resolve `OFFSET` / `INDIRECT` / `INDEX` (`excel_grapher.list_dynamic_ref_constraint_candidates` against `TARGETS`), constrain them, and iterate until `--extract-graph` succeeds without `DynamicRefError`. That lister only covers dynamic-ref argument leaves; it will not enumerate every leaf that later appears in the finished graph.
 3. **Leaf-classification pass** — after a successful extract, review empty leaves that sit in the graph only because a formula rectangle names them (`INDEX`/`MATCH` padding, far-right `NPV`/`SUM` year-window overflow, unused ladder copies, separator rows). Declare those sheet-qualified A1 rectangles in `BLANK_RANGES` and re-extract: BFS does not create the nodes, edges that name them are kept, and OFFSET/INDEX leaves inside the rects are **not** required in `CONSTRAINTS`. Pass the **same** sequence to graph build, `FormulaEvaluator`, and codegen (the pipeline does this from `workbook_config.BLANK_RANGES`). Do **not** bind these as inputs or constants, do **not** drop them by narrowing a year domain (`C18`-style — the ranges are literal `:BB` / `:BD`), and do **not** put user-fillable yellow slots in `BLANK_RANGES`. `Literal[None]` freezes dynamic-ref *classification*; it does not omit nodes from the graph. Then constrain every remaining unconstrained graph leaf (`graph.leaf_keys()` minus `CONSTRAINTS`) so each leaf classifies as `input` or `constant`. Every mutable input leaf must appear in `inputs.bindings.yaml`. Fixed leaves that formulas should read via `read_*` (not `xl_cell`) need a `constant: {}` series in `constants.bindings.yaml` (see [Authoring constants](#authoring-constants)).
-4. Author I/O `bindings/*.bindings.yaml` (schema version `1.19.0`, one logical series per public API function or input/constant group). Empty `series: []` placeholders load (excel-grapher 5.1.4+); author real series before export.
+4. Author I/O `bindings/*.bindings.yaml` (schema version `1.22.0`, one logical series per public API function or input/constant group). Empty `series: []` placeholders load (excel-grapher 5.1.4+); author real series before export.
 5. Bind every internal formula cell in `internals.bindings.yaml` (see [Authoring internals](#authoring-internals) below).
 
 Validation checks:
@@ -138,7 +138,7 @@ Author `internals.bindings.yaml` after `--extract-graph`, when you can see which
 - **Validate** — `validate_series_bindings(...)`, then `derive_internal_series(...)`. Run `uv run pytest tests/test_internal_binding_coverage.py` once `INTERNAL_BINDING_VALIDATION_MODE` is enabled.
 - **Review** — re-run `--extract-graph` and confirm bound formula nodes show `keys:` / `record:` labels in the graph explorer.
 
-Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction, schema 1.19.0). Use [.agents/skills/author-bindings](.agents/skills/author-bindings/SKILL.md) for agent-assisted drafting.
+Schema details and field shapes: excel-grapher `user_guide/05-series-bindings.qmd` (internal direction, schema 1.22.0). Use [.agents/skills/author-bindings](.agents/skills/author-bindings/SKILL.md) for agent-assisted drafting.
 
 #### Authoring constants
 
@@ -266,6 +266,55 @@ require an API key. Runnable `{python}` cells must not call `make_context()` or
 [templates/canonical-api-usage.md](templates/canonical-api-usage.md) is the
 canonical interaction model for those rewrites.
 
+Export also seeds an **interactive series dependency graph** into `dist/`
+([templates/series-graph/](templates/series-graph/)): Cytoscape UI under
+`assets/graph/`, FormulaEvaluator API modules under `{package}/graph_*.py`, and
+local scripts (`serve_graph_api.py`, …). Author `{package}/graph_schema.py`
+(`NODES` / `EDGES`) from bindings + `data.*` cells — see
+`examples/reference_graph_schema.py`. The document agent embeds a short landing-page
+section (no long topology blurb); fragment notes live in
+[templates/series-graph/docs/user-guide-graph-section.md](templates/series-graph/docs/user-guide-graph-section.md).
+Export also writes `{package}/blank_ranges.py` from `BLANK_RANGES` in
+[workbook_config.py](workbook_config.py), and the seeded evaluator passes it to
+`create_dependency_graph`, so the runtime graph matches the pipeline's.
+
+### Durable `dist/` customizations: `dist-overlay/`
+
+`dist/` is rebuilt on every export, so do not hand-edit it. Put workbook-specific
+files that belong in the package but are not generated in `dist-overlay/` at the
+repository root, at their `dist/` relative paths: a filled-in
+`{package}/graph_schema.py`, deploy config (`Dockerfile`, `railway.toml`,
+`Procfile`), `LICENSE.md`, editor or agent config. Export copies them over
+`dist/` last. They may replace seeded series-graph files, so you can author the
+graph schema without forking [templates/series-graph/](templates/series-graph/).
+
+Export fails with `ValueError` if the overlay supplies a path the pipeline
+writes, because a later stage or the next run would overwrite it silently. These
+paths are:
+
+- Codegen package modules and `{package}/blank_ranges.py`
+- `pyproject.toml`, `uv.lock`, `README.md`, `.gitignore`, `great-docs.yml`,
+  `.github/workflows/deploy-docs.yml`, `tests/README.md`, `tests/__init__.py`,
+  `.pipeline-cache-keys.json`, `.package-overlay-manifest.json`
+- Anything under `bindings/`, `docs-source/`, `great-docs/`, `user_guide/`,
+  `tests/differential/`, `tests/fixtures/`, or `tests/results/`
+
+Export records the copied paths in `dist/.package-overlay-manifest.json`. On the
+next export, files you removed from the overlay are removed from `dist/`, and a
+seeded file you stopped overriding goes back to the template version.
+`__pycache__/` is skipped. Ruff, ty, and pytest ignore `dist-overlay/`, because
+overlay package fragments use relative imports that only resolve inside `dist/`.
+Tests under `dist-overlay/tests/` run in `dist/`.
+
+Run the FormulaEvaluator-backed viz from `dist/`:
+
+```bash
+cd dist
+uv sync --group graph
+uv run python scripts/serve_graph_api.py
+# http://127.0.0.1:8765/
+```
+
 ## Run the pipeline
 
 After graph-oracle (Excel vs graph) parity passes (see [Verify graph](#3-verify-graph)), run the full pipeline:
@@ -368,6 +417,10 @@ uv run python -m http.server 8000 --directory artifacts/dependency-graph
 
 Open `http://localhost:8000/`.
 
+This extract-time **cell** graph is for bindings review. The **series** graph
+shipped in `dist/` (FormulaEvaluator + docs embed) is separate — see
+[Document](#7-document) and [templates/series-graph/](templates/series-graph/).
+
 ## Checklist for a new workbook
 
 Ordered to match the [onboarding checklist](#clone-and-configure-onboarding-checklist):
@@ -406,18 +459,27 @@ Pull requests run the same test suite on Ubuntu via `.github/workflows/test.yml`
 
 ### Deploying the generated package
 
-Deploys are manual and local: the extraction pipeline calls LLM providers and can take hours, so generation never runs in CI. Generate the package, commit `dist/`, then run the deploy script:
+Deploy the committed `dist/` with `scripts/deploy_dist.sh`. Run that script when asked to deploy or publish `dist/`.
 
 ```bash
 uv run python -m src.extraction_pipeline
-git add dist && git commit -m "Regenerate dist/"
-scripts/deploy_dist.sh --dry-run   # build and test the merge without pushing
-scripts/deploy_dist.sh
+git add -f dist && git commit -m "Regenerate dist/"
+bash scripts/deploy_dist.sh            # or --dry-run to build and test the merge without pushing
 ```
 
-`scripts/deploy_dist.sh` publishes the committed `dist/` (never uncommitted edits) to the GitHub repository in `DIST_METADATA.repository_url`, or to `--remote URL`. It commits `dist/` on top of the previous `Deploy generated package from …` commit and merges that into the package repo's `main`, so commits made directly in the package repo survive. It stops without pushing on a merge conflict or if the package test suite fails on the merged tree (`--skip-tests` skips the suite). Pushing uses your local git credentials. The generated package ships its own docs deploy workflow (`dist/.github/workflows/deploy-docs.yml`), so the package repo publishes the user guide to GitHub Pages on push.
+The script reads the target repository from `DIST_METADATA.repository_url` (override with `--remote URL`) and clones it. It finds the most recent commit on `main` whose subject starts with `Deploy generated package from `, replaces that commit's tree with the committed `dist/` (exported with `git archive`, so ignored build output such as `.venv/` and `great-docs/_site/` stays behind), and commits it as a new deploy commit. It then merges that deploy commit into `main`. Commits made directly in the package repository survive the merge, and files dropped from `dist/` are removed.
 
-When contributors add workbook-specific features directly in the package repo, bring them back so regeneration reproduces them: new files go in `package_overlay/`, extra dependency groups in `DIST_METADATA.dependency_groups`, docs-build steps in the `DOCS_WORKFLOW_*` settings, and user-guide edits into `dist/user_guide/` plus the `.cache/user-guide/` entry.
+The script pushes nothing when:
+
+- `dist/` is missing from `HEAD` or has uncommitted changes.
+- The package repository has no earlier deploy commit to use as a base.
+- `dist/` matches the last deploy ("Nothing to deploy").
+- The merge conflicts with a commit made directly in the package repository. The script lists the conflicted files; bring those edits into the pipeline (usually `dist-overlay/`), regenerate `dist/`, and redeploy.
+- `uv run --locked --with pytest pytest -q` fails on the merged tree. Pass `--skip-tests` to skip this step.
+
+Otherwise it pushes `main` with your local git credentials. The package repository builds its user guide to GitHub Pages from `dist/.github/workflows/deploy-docs.yml` on that push.
+
+When contributors add workbook-specific features directly in the package repo, bring them back so regeneration reproduces them: new or replacement files go in `dist-overlay/`, extra dependency groups in `DIST_METADATA.dependency_groups`, extra docs-build steps in the `DOCS_WORKFLOW_*` settings, and user-guide edits into `dist/user_guide/` plus the `.cache/user-guide/` entry.
 
 Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audits auto-select from a warm `.cache/dependency-graph/`; optional `GRAPH_AUDIT_CASES` steers pins/labels; synthetic fixture audits run without extra setup; provider API key required for `LLM_GRAPH_AUDIT_MODEL`).
 
@@ -430,7 +492,7 @@ Opt-in LLM graph spot-check tests: `uv run pytest --run-skipped` (workbook audit
 | `bindings/` | Series binding sidecars (user-authored) |
 | `data/` | Workbook, guide, differential reports |
 | `dist/` | Generated distributable package (gitignored) |
-| `package_overlay/` | Hand-authored files copied into `dist/` (Tiny DSA graph API and page) |
+| `dist-overlay/` | Optional hand-authored files copied over `dist/` on export |
 | `scripts/deploy_dist.sh` | Manual deploy of the committed `dist/` to the package repo |
 | `templates/` | Binding prompt and canonical API usage reference |
 | `.github/workflows/` | Template CI (PR tests) |

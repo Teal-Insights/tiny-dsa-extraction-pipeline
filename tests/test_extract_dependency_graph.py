@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from src.extraction_pipeline import (
     build_pipeline_graph,
     count_provenance_edges,
@@ -25,7 +27,7 @@ def _write_empty_placeholder_bindings(bindings_dir: Path) -> None:
     ):
         (bindings_dir / name).write_text(
             (
-                "schema_version: 1.19.0\n"
+                "schema_version: 1.22.0\n"
                 "workbook: workbook.xlsx\n"
                 "concept_scheme:\n"
                 f"  id: {scheme_id}\n"
@@ -102,7 +104,9 @@ def test_build_pipeline_graph_accepts_empty_binding_shards(
     synthetic_pipeline_config_fixture,
     tmp_path: Path,
 ) -> None:
-    """excel-grapher 5.1.4+ loads empty ``series: []`` placeholders (unioned schemes)."""
+    """Empty shards load, but a graph with nodes and no series is a coverage error."""
+    from src.graph_binding_coverage import GraphBindingCoverageError
+
     bindings = tmp_path / "bindings"
     _write_empty_placeholder_bindings(bindings)
     config = replace(
@@ -111,14 +115,8 @@ def test_build_pipeline_graph_accepts_empty_binding_shards(
         graph_output_dir=tmp_path / "dependency-graph",
     )
 
-    result = build_pipeline_graph(config)
-
-    assert result.series_bindings["series"] == []
-    assert result.input_series == []
-    assert result.output_series == []
-    assert result.internal_series == []
-    assert result.graph_cache_key
-    assert len(result.graph) == 6
+    with pytest.raises(GraphBindingCoverageError, match="Engine!"):
+        build_pipeline_graph(config)
 
 
 def test_extract_dependency_graph_succeeds_without_binding_yaml_files(

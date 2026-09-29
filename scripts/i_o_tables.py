@@ -2,8 +2,8 @@
 
 Loads the cached dependency graph plus binding sidecars the same way as
 ``scripts.binding_resolution_audit`` / ``scripts.internal_binding_burndown``.
-Input rows come from ``derive_input_series`` and domain annotations compiled
-from series bindings (with a ``CONSTRAINTS`` overlay). Output rows come from
+Input rows come from ``derive_input_series`` and cell domains compiled from
+series bindings via ``cell_type_env_from_bindings``. Output rows come from
 ``derive_output_series`` and include ``UNIT_MEASURE`` when present.
 
 Run: ``uv run python -m scripts.i_o_tables``
@@ -21,15 +21,15 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAliasType, cast, get_args, get_origin
+from typing import Any, cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from excel_grapher.core.cell_types import (
-    Between,
-    RealBetween,
+    CellKind,
+    CellType,
     normalize_cell_type_env_key,
 )
 from excel_grapher.exporter import to_semantic_viz_payload, write_semantic_viz_html
@@ -39,8 +39,7 @@ from excel_grapher.series_bindings import (
     derive_output_series,
     load_series_bindings,
 )
-from excel_grapher.series_bindings.domains import compile_domain_spec
-from excel_grapher.series_bindings.ranges import expand_bound_series_addresses
+from excel_grapher.series_bindings.domains import cell_type_env_from_bindings
 from excel_grapher.series_bindings.relations import canonical_measure_dtype
 
 from src.graph_cache import load_pipeline_dependency_graph
@@ -87,7 +86,6 @@ _OUTPUT_LABELS = (
     ("description", "Description"),
     ("key", "Key"),
 )
-_RuntimeLiteral: Any = cast(Any, Literal)
 _PAGE_STYLE = """
 :root { color-scheme: light; }
 body { font-family: system-ui, sans-serif; margin: 1.5rem; line-height: 1.45; }
@@ -105,100 +103,44 @@ class ConstraintFormat:
     acceptable_values: str
 
 
-def unwrap_annotation(annotation: object) -> object:
-    """Resolve PEP 695 ``type`` aliases to their evaluated ``__value__``."""
-    while isinstance(annotation, TypeAliasType):
-        annotation = annotation.__value__
-    return annotation
-
-
-def format_constraint(
-    constraint: object | None,
+def format_cell_type(
+    cell_type: CellType | None,
     *,
     fallback_dtype: str | None = None,
 ) -> ConstraintFormat:
-    """Return dtype and acceptable values for Literal / Between / RealBetween."""
+    """Return dtype and acceptable values for a bindings-compiled ``CellType``."""
     fallback = fallback_dtype or ""
-    if constraint is None:
+    if cell_type is None:
         return ConstraintFormat(dtype=fallback, acceptable_values="")
-    resolved = unwrap_annotation(constraint)
-    origin = get_origin(resolved)
-    if origin is Literal:
-        values = get_args(resolved)
+    if cell_type.enum is not None:
+        values = tuple(_sorted_enum_values(cell_type.enum.values))
         return ConstraintFormat(
             dtype=_dtype_from_values(values) or fallback,
             acceptable_values=", ".join(_format_scalar(value) for value in values),
         )
-    if origin is Annotated:
-        args = get_args(resolved)
-        base = args[0] if args else object
-        dtype = _dtype_from_python_type(base) or fallback
-        for metadata in args[1:]:
-            if isinstance(metadata, RealBetween):
-                return ConstraintFormat(
-                    dtype=dtype or "float",
-                    acceptable_values=_format_interval(metadata.min, metadata.max),
-                )
-            if isinstance(metadata, Between):
-                return ConstraintFormat(
-                    dtype=dtype or "int",
-                    acceptable_values=_format_interval(metadata.min, metadata.max),
-                )
-        return ConstraintFormat(dtype=dtype, acceptable_values="")
-    if isinstance(resolved, type):
+    if cell_type.interval is not None:
         return ConstraintFormat(
-            dtype=_dtype_from_python_type(resolved) or fallback,
-            acceptable_values="",
+            dtype="int",
+            acceptable_values=_format_interval(
+                cell_type.interval.min, cell_type.interval.max
+            ),
         )
-    return ConstraintFormat(dtype=fallback, acceptable_values="")
-
-
-def domain_annotations_from_bindings(
-    bindings: Mapping[str, Any],
-    *,
-    workbook: Path,
-) -> dict[str, object]:
-    """Return typing annotations equivalent to compiled series domains."""
-    annotations: dict[str, object] = {}
-    series_list = bindings.get("series", ())
-    if not isinstance(series_list, list):
-        return annotations
-    for series in series_list:
-        if not isinstance(series, Mapping):
-            continue
-        spec = compile_domain_spec(series)
-        if spec is None or spec.get("from_workbook") is True:
-            continue
-        annotation = _annotation_from_domain_spec(spec)
-        if annotation is None:
-            continue
-        for address in expand_bound_series_addresses(series, workbook=workbook):
-            annotations[normalize_cell_type_env_key(address)] = annotation
-            annotations[address] = annotation
-    return annotations
-
-
-def effective_domain_annotations(
-    config: PipelineConfig,
-    *,
-    bindings: Mapping[str, Any] | None = None,
-) -> dict[str, object]:
-    """Sidecar domain annotations with optional ``CONSTRAINTS`` overlay."""
-    loaded = (
-        bindings if bindings is not None else load_series_bindings(config.bindings_path)
+    if cell_type.real_interval is not None:
+        return ConstraintFormat(
+            dtype="float",
+            acceptable_values=_format_interval(
+                cell_type.real_interval.min, cell_type.real_interval.max
+            ),
+        )
+    return ConstraintFormat(
+        dtype=_dtype_from_cell_kind(cell_type.kind) or fallback,
+        acceptable_values="",
     )
-    annotations = domain_annotations_from_bindings(
-        loaded, workbook=config.workbook_path
-    )
-    for key, value in config.constraints.items():
-        annotations[normalize_cell_type_env_key(key)] = value
-        annotations[key] = value
-    return annotations
 
 
 def input_catalog_rows(
     input_series: Sequence[Mapping[str, Any]],
-    domain_annotations: Mapping[str, object],
+    domain_index: Mapping[str, CellType],
     bindings: Mapping[str, Any],
 ) -> list[dict[str, str]]:
     """Build one catalog row per derived public-input cell."""
@@ -213,8 +155,8 @@ def input_catalog_rows(
             if not isinstance(cell, Mapping):
                 continue
             address = str(cell["address"])
-            formatted = format_constraint(
-                _annotation_for(address, domain_annotations),
+            formatted = format_cell_type(
+                _cell_type_for(address, domain_index),
                 fallback_dtype=fallback_dtype,
             )
             record = cell.get("record")
@@ -288,7 +230,7 @@ def emit_startup_site(
     bindings = load_series_bindings(config.bindings_path)
     input_rows = input_catalog_rows(
         derive_input_series(resolved_graph, bindings, workbook=config.workbook_path),
-        effective_domain_annotations(config, bindings=bindings),
+        cell_type_env_from_bindings(bindings, workbook=config.workbook_path),
         bindings,
     )
     output_rows = output_catalog_rows(
@@ -368,22 +310,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _annotation_from_domain_spec(spec: Mapping[str, Any]) -> object | None:
-    if "enum" in spec:
-        return _RuntimeLiteral[tuple(spec["enum"])]
-    if "between" in spec:
-        bounds = spec["between"]
-        if not isinstance(bounds, Mapping):
-            raise TypeError(f"domain.between must be a mapping; got {bounds!r}")
-        return Annotated[int, Between(bounds.get("min"), bounds.get("max"))]
-    if "real_between" in spec:
-        bounds = spec["real_between"]
-        if not isinstance(bounds, Mapping):
-            raise TypeError(f"domain.real_between must be a mapping; got {bounds!r}")
-        return Annotated[float, RealBetween(bounds.get("min"), bounds.get("max"))]
-    return None
-
-
 def _binding_series_by_id(
     bindings: Mapping[str, Any],
 ) -> dict[str, Mapping[str, Any]]:
@@ -397,17 +323,20 @@ def _binding_series_by_id(
     return indexed
 
 
+def _cell_type_for(address: str, domains: Mapping[str, CellType]) -> CellType | None:
+    if address in domains:
+        return domains[address]
+    normalized = normalize_cell_type_env_key(address)
+    if normalized in domains:
+        return domains[normalized]
+    return None
+
+
 def _series_notes(series: Mapping[str, Any] | None) -> str:
     if series is None:
         return ""
     notes = series.get("notes")
     return str(notes) if notes else ""
-
-
-def _annotation_for(address: str, annotations: Mapping[str, object]) -> object | None:
-    if address in annotations:
-        return annotations[address]
-    return annotations.get(normalize_cell_type_env_key(address))
 
 
 def _unit_measure(cell: Mapping[str, Any], series: Mapping[str, Any] | None) -> str:
@@ -456,14 +385,19 @@ def _format_interval(minimum: object, maximum: object) -> str:
     return ""
 
 
-def _dtype_from_python_type(python_type: object) -> str:
-    if python_type is bool:
+def _sorted_enum_values(values: frozenset[object]) -> list[object]:
+    try:
+        return sorted(cast("frozenset[Any]", values))
+    except TypeError:
+        return sorted(values, key=str)
+
+
+def _dtype_from_cell_kind(kind: CellKind) -> str:
+    if kind is CellKind.BOOL:
         return "bool"
-    if python_type is int:
-        return "int"
-    if python_type is float:
+    if kind is CellKind.NUMBER:
         return "float"
-    if python_type is str:
+    if kind is CellKind.STRING:
         return "string"
     return ""
 

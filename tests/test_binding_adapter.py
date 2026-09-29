@@ -176,6 +176,43 @@ def test_overlay_series_values_fail_closed_on_named_series_length_mismatch() -> 
         overlay_series_values(_shocks(), _shock_series((0.0, 0.0)), ())
 
 
+def test_overlay_named_series_keeps_published_cells_outside_graph_closure() -> None:
+    """Outside-closure cells stay on the published series and are not a length error.
+
+    Graph derivation drops them (``partial_graph_overlap``). The generated
+    default domain is the full ``data_range``, so it may be a superset of the
+    bound graph leaves. Overlays patch bound coordinates and leave the extra
+    published cells at their default values.
+    """
+    published = _FakeSeries(
+        _FakeDomain(
+            (_FakeAxis("SCENARIO"), _FakeAxis("TIME_PERIOD")),
+            (
+                ("base", 2020),
+                ("base", 2030),
+                ("base", 2035),
+                ("stress", 2099),
+            ),
+        ),
+        (9.0, 0.0, 0.0, 0.0),
+    )
+    untouched = overlay_series_values(_shocks(), published, ())
+    assert untouched is published
+
+    patched = overlay_series_values(
+        _shocks(),
+        published,
+        ({"SCENARIO": "base", "TIME_PERIOD": 2035, "OBS_VALUE": 1.5},),
+    )
+    assert isinstance(patched, _FakeSeries)
+    assert tuple(patched.items()) == (
+        (("base", 2020), 9.0),
+        (("base", 2030), 0.0),
+        (("base", 2035), 1.5),
+        (("stress", 2099), 0.0),
+    )
+
+
 def test_overlay_series_values_fail_closed_on_unknown_named_series_key() -> None:
     with pytest.raises(LookupError, match="revenue_shocks"):
         overlay_series_values(

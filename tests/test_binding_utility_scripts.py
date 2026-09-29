@@ -680,9 +680,24 @@ def test_author_bindings_skill_is_vendored() -> None:
     skill = AUTHOR_BINDINGS_SKILL / "SKILL.md"
     assert skill.is_file()
     text = skill.read_text(encoding="utf-8")
-    assert "four-file replace is not" in text
+    assert "or later `#724` candidates into" in text
+    assert "A generic catalog → four-file replace is not." in text
+    assert (
+        "`data_range` to clear `partial_graph_overlap` or `leaf_in_formula_series`."
+        in text
+    )
     assert (AUTHOR_BINDINGS_SKILL / "assets" / "catalog.example.yaml").is_file()
     assert (AUTHOR_BINDINGS_SKILL / "assets" / "measure-shards.example.yaml").is_file()
+
+
+def test_internal_binding_burndown_docstring_is_a_coverage_worklist() -> None:
+    from scripts.internal_binding_burndown import __doc__ as burndown_doc
+
+    assert burndown_doc is not None
+    assert "Those ranges are a coverage worklist." in burndown_doc
+    assert (
+        "one-cell range is not a reason to author ``layout: scalar``." in burndown_doc
+    )
 
 
 def test_catalog_emitter_and_prompt_are_removed() -> None:
@@ -785,16 +800,16 @@ def test_binding_guidance_documents_constant_direction() -> None:
         )
 
 
-def test_excel_grapher_floor_is_22_0_0() -> None:
-    """Lockfile and pyproject must agree on excel-grapher>=22.0.0."""
+def test_excel_grapher_floor_is_23_11_1() -> None:
+    """Lockfile and pyproject must agree on excel-grapher>=23.11.1."""
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     lockfile = (root / "uv.lock").read_text(encoding="utf-8")
     installed = tuple(int(part) for part in version("excel-grapher").split(".")[:3])
 
-    assert "excel-grapher>=22.0.0" in pyproject
-    assert '{ name = "excel-grapher", specifier = ">=22.0.0" }' in lockfile
-    assert installed >= (22, 0, 0)
+    assert "excel-grapher>=23.11.1" in pyproject
+    assert '{ name = "excel-grapher", specifier = ">=23.11.1" }' in lockfile
+    assert installed >= (23, 11, 1)
 
 
 def test_binding_resolution_audit_uses_public_apply_series_excludes() -> None:

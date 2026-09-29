@@ -18,6 +18,13 @@ DOCUMENTATION_BASELINE_DEV_DEPS: tuple[str, ...] = (
     "matplotlib",
 )
 
+GRAPH_DEPENDENCY_GROUP = "graph"
+
+GRAPH_BASELINE_DEPS: tuple[str, ...] = (
+    "excel-grapher>=15.0.0",
+    "pytest>=8.0.0",
+)
+
 VALIDATION_DEPENDENCY_GROUP = "validation"
 
 VALIDATION_BASELINE_DEV_DEPS: tuple[str, ...] = (
@@ -104,12 +111,13 @@ def render_dist_pyproject_toml(
     *,
     dev_dependencies: list[str],
     validation_dependencies: list[str] | None = None,
+    graph_dependencies: list[str] | None = None,
     metadata: DistProjectMetadata,
 ) -> str:
     dep_lines = "\n".join(f'    "{dep}",' for dep in dev_dependencies)
     extra_groups_block = ""
     for group, requirements in metadata.dependency_groups:
-        if group in {"dev", VALIDATION_DEPENDENCY_GROUP}:
+        if group in {"dev", GRAPH_DEPENDENCY_GROUP, VALIDATION_DEPENDENCY_GROUP}:
             raise ValueError(f"dependency group {group!r} is reserved for the pipeline")
         requirement_lines = "\n".join(f'    "{dep}",' for dep in requirements)
         extra_groups_block += f"""
@@ -122,6 +130,13 @@ def render_dist_pyproject_toml(
         validation_block = f"""
 {VALIDATION_DEPENDENCY_GROUP} = [
 {validation_lines}
+]"""
+    graph_block = ""
+    if graph_dependencies:
+        graph_lines = "\n".join(f'    "{dep}",' for dep in graph_dependencies)
+        graph_block = f"""
+{GRAPH_DEPENDENCY_GROUP} = [
+{graph_lines}
 ]"""
     return f"""[build-system]
 requires = ["setuptools>=69", "wheel"]
@@ -143,7 +158,7 @@ packages = [{_toml_string(metadata.package_name)}]
 [dependency-groups]
 dev = [
 {dep_lines}
-]{extra_groups_block}{validation_block}
+]{graph_block}{extra_groups_block}{validation_block}
 """
 
 
@@ -189,6 +204,7 @@ def write_dist_pyproject(
     *,
     dev_dependencies: list[str],
     validation_dependencies: list[str] | None = None,
+    graph_dependencies: list[str] | None = None,
     metadata: DistProjectMetadata,
 ) -> None:
     pyproject_path = dist_root / "pyproject.toml"
@@ -196,6 +212,7 @@ def write_dist_pyproject(
         render_dist_pyproject_toml(
             dev_dependencies=dev_dependencies,
             validation_dependencies=validation_dependencies,
+            graph_dependencies=graph_dependencies,
             metadata=metadata,
         ),
         encoding="utf-8",

@@ -60,7 +60,7 @@ Open `http://localhost:8000/`.
 
 ## `startup-site/`
 
-Written by `uv run python -m scripts.i_o_tables` (override the destination with `--output-dir`). Local/untracked (see `artifacts/.gitignore`). Built from the cached dependency graph plus binding sidecars; input domains come from series bindings (`Literal` / `Between` / `RealBetween`) with a `CONSTRAINTS` overlay.
+Written by `uv run python -m scripts.i_o_tables` (override the destination with `--output-dir`). Local/untracked (see `artifacts/.gitignore`). Built from the cached dependency graph plus binding sidecars; input domains come from series bindings via `cell_type_env_from_bindings` (`CellType` enum / interval / real_interval).
 
 | File | Description |
 |---|---|

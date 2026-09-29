@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from src.codegen_cache import (
     save_codegen_payload,
     write_generated_modules,
 )
+from src.export_series_graph import seed_series_graph
 from src.export_validation_assets import (
     export_reference_reports,
     seed_validation_harness,
@@ -19,6 +21,7 @@ from src.export_validation_assets import (
 from src.pipeline_config import PipelineConfig
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
+    GRAPH_BASELINE_DEPS,
     VALIDATION_BASELINE_DEV_DEPS,
     render_dist_pyproject_toml,
     write_dist_readme,
@@ -26,13 +29,44 @@ from src.qmd_python_validation import (
 
 PACKAGE_CACHE_KEYS_FILENAME = ".pipeline-cache-keys.json"
 PACKAGE_OVERLAY_MANIFEST_FILENAME = ".package-overlay-manifest.json"
+# Hand-authored, workbook-specific files copied over ``dist/`` at the same
+# relative paths after everything else is written.
+DIST_OVERLAY_REL = Path("dist-overlay")
 DIST_GITIGNORE_CONTENT = """
 *.egg-info/
 *.pyc
 __pycache__/
 .venv/
 tests/results/local/
+.cache/
 """
+_BLANK_RANGES_MODULE_NAME = "blank_ranges.py"
+# Paths the pipeline writes into ``dist/``. The overlay may not supply them,
+# because a later stage (or the next run) would silently overwrite it. Seeded
+# series-graph files stay overridable.
+_OVERLAY_RESERVED_FILES = frozenset(
+    {
+        ".github/workflows/deploy-docs.yml",
+        ".gitignore",
+        PACKAGE_CACHE_KEYS_FILENAME,
+        PACKAGE_OVERLAY_MANIFEST_FILENAME,
+        "README.md",
+        "great-docs.yml",
+        "pyproject.toml",
+        "tests/README.md",
+        "tests/__init__.py",
+        "uv.lock",
+    }
+)
+_OVERLAY_RESERVED_DIRS = (
+    "bindings/",
+    "docs-source/",
+    "great-docs/",
+    "tests/differential/",
+    "tests/fixtures/",
+    "tests/results/",
+    "user_guide/",
+)
 _GENERATED_ROOT_MODULE_NAMES = frozenset(
     {"__init__.py", "api.py", "data.py", "runtime.py", "internals.py"}
 )
@@ -120,59 +154,58 @@ def replace_dist_bindings(config: PipelineConfig) -> None:
     shutil.copytree(source, destination)
 
 
-_OVERLAY_RESERVED_FILES = frozenset(
-    {
-        ".gitignore",
-        ".github/workflows/deploy-docs.yml",
-        PACKAGE_CACHE_KEYS_FILENAME,
-        PACKAGE_OVERLAY_MANIFEST_FILENAME,
-        "README.md",
-        "great-docs.yml",
-        "pyproject.toml",
-        "tests/README.md",
-        "tests/__init__.py",
-        "uv.lock",
-    }
-)
-_OVERLAY_RESERVED_DIRS = (
-    "bindings/",
-    "docs-source/",
-    "great-docs/",
-    "tests/differential/",
-    "tests/fixtures/",
-    "tests/results/",
-    "user_guide/",
-)
+def render_blank_ranges_module(blank_ranges: Iterable[str]) -> str:
+    """Python module exposing the pipeline's ``BLANK_RANGES`` to the package."""
+    entries = "".join(f"    {spec!r},\n" for spec in blank_ranges)
+    return (
+        '"""Blank ranges copied from the extraction pipeline workbook config.\n'
+        "\n"
+        "The series-graph evaluator passes these to ``create_dependency_graph`` so\n"
+        'the runtime graph matches the one the pipeline built.\n"""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        f"BLANK_RANGES: tuple[str, ...] = (\n{entries})\n"
+    )
 
 
-def collect_package_overlay(
-    config: PipelineConfig, modules: dict[str, str]
+def dist_overlay_root(config: PipelineConfig) -> Path:
+    return config.repo_root / DIST_OVERLAY_REL
+
+
+def collect_dist_overlay(
+    config: PipelineConfig, modules: Mapping[str, str]
 ) -> tuple[str, ...]:
-    """Return overlay file paths relative to ``dist/``, rejecting pipeline-written paths.
+    """Return ``dist-overlay/`` file paths relative to ``dist/``.
 
-    The overlay holds hand-authored, workbook-specific files that codegen cannot
-    produce. It may add files but never replace one the pipeline writes, since
-    a later stage would silently overwrite it.
+    Raises ``ValueError`` if any would replace a path the pipeline writes.
     """
-    overlay = config.package_overlay_path
-    if overlay is None:
+    overlay_root = dist_overlay_root(config)
+    if not overlay_root.is_dir():
         return ()
-    if not overlay.is_dir():
-        raise FileNotFoundError(f"package overlay directory not found: {overlay}")
-    package_name = config.dist_metadata.package_name
-    reserved = _OVERLAY_RESERVED_FILES | {f"{package_name}/{name}" for name in modules}
-    files: list[str] = []
-    for path in sorted(overlay.rglob("*")):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
-        relative = path.relative_to(overlay).as_posix()
-        if relative in reserved or relative.startswith(_OVERLAY_RESERVED_DIRS):
-            raise ValueError(
-                f"package overlay file {relative!r} would replace a path the "
-                "pipeline writes; configure it through workbook_config instead"
-            )
-        files.append(relative)
-    return tuple(files)
+    package = config.dist_metadata.package_name
+    reserved = _OVERLAY_RESERVED_FILES | {
+        f"{package}/{name}" for name in (*modules, _BLANK_RANGES_MODULE_NAME)
+    }
+    # Sort the POSIX strings: Windows ``Path`` ordering ignores case.
+    files = tuple(
+        sorted(
+            path.relative_to(overlay_root).as_posix()
+            for path in overlay_root.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.relative_to(overlay_root).parts
+        )
+    )
+    shadowed = [
+        relative
+        for relative in files
+        if relative in reserved or relative.startswith(_OVERLAY_RESERVED_DIRS)
+    ]
+    if shadowed:
+        raise ValueError(
+            f"dist-overlay/ may not replace paths the pipeline writes: {shadowed}"
+        )
+    return files
 
 
 def _read_overlay_manifest(dist_root: Path) -> tuple[str, ...]:
@@ -185,9 +218,12 @@ def _read_overlay_manifest(dist_root: Path) -> tuple[str, ...]:
     return tuple(payload)
 
 
-def apply_package_overlay(config: PipelineConfig, files: tuple[str, ...]) -> None:
-    """Copy overlay ``files`` into ``dist/`` and drop files it no longer holds."""
-    dist_root = config.dist_root
+def remove_stale_overlay_files(dist_root: Path, files: tuple[str, ...]) -> None:
+    """Delete files a previous overlay copied that the current overlay lacks.
+
+    Runs before the tree is rewritten, so a dropped override of a seeded file
+    (e.g. ``graph_schema.py``) is restored from the template.
+    """
     for stale in sorted(set(_read_overlay_manifest(dist_root)) - set(files)):
         stale_path = dist_root / stale
         stale_path.unlink(missing_ok=True)
@@ -196,21 +232,27 @@ def apply_package_overlay(config: PipelineConfig, files: tuple[str, ...]) -> Non
             parent.rmdir()
             parent = parent.parent
 
-    manifest_path = dist_root / PACKAGE_OVERLAY_MANIFEST_FILENAME
+
+def apply_dist_overlay(config: PipelineConfig, files: tuple[str, ...]) -> None:
+    """Copy overlay ``files`` onto ``dist/`` and record them in the manifest."""
+    manifest_path = config.dist_root / PACKAGE_OVERLAY_MANIFEST_FILENAME
     if not files:
         manifest_path.unlink(missing_ok=True)
         return
-    assert config.package_overlay_path is not None
+    overlay_root = dist_overlay_root(config)
     for relative in files:
-        destination = dist_root / relative
+        destination = config.dist_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(config.package_overlay_path / relative, destination)
-    manifest_path.write_text(json.dumps(list(files), indent=2) + "\n", encoding="utf-8")
+        shutil.copyfile(overlay_root / relative, destination)
+    manifest_path.write_text(
+        json.dumps(list(files), indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
 
 
 def _write_dist_tree(config: PipelineConfig, modules: dict[str, str]) -> None:
     """Write package modules and dist metadata/harness files."""
-    overlay_files = collect_package_overlay(config, modules)
+    overlay_files = collect_dist_overlay(config, modules)
+    remove_stale_overlay_files(config.dist_root, overlay_files)
     write_generated_modules(config.package_root, modules)
 
     for stale_module in _GENERATED_ROOT_MODULE_NAMES:
@@ -225,14 +267,21 @@ def _write_dist_tree(config: PipelineConfig, modules: dict[str, str]) -> None:
         render_dist_pyproject_toml(
             dev_dependencies=list(DOCUMENTATION_BASELINE_DEV_DEPS),
             validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+            graph_dependencies=list(GRAPH_BASELINE_DEPS),
             metadata=config.dist_metadata,
         ),
         encoding="utf-8",
     )
     write_dist_readme(config.dist_root, metadata=config.dist_metadata)
     seed_validation_harness(config=config)
+    seed_series_graph(config=config)
+    (config.package_root / _BLANK_RANGES_MODULE_NAME).write_text(
+        render_blank_ranges_module(config.blank_ranges),
+        encoding="utf-8",
+        newline="\n",
+    )
     replace_dist_bindings(config)
-    apply_package_overlay(config, overlay_files)
+    apply_dist_overlay(config, overlay_files)
 
 
 def materialize_package(

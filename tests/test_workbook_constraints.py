@@ -17,6 +17,7 @@ from src.extraction_pipeline import (
     build_pipeline_graph,
     classify_leaves_from_constraints,
 )
+from src.graph_binding_coverage import GraphBindingCoverageError
 from src.pipeline_config import PipelineConfig
 
 
@@ -139,34 +140,26 @@ def test_omitted_constant_binding_reports_unbound_leaf(
     synthetic_pipeline_config_fixture: PipelineConfig,
     tmp_path: Path,
 ) -> None:
-    result = _pipeline_with_emptied_binding_shard(
-        synthetic_pipeline_config_fixture,
-        tmp_path,
-        "constants.bindings.yaml",
-    )
-    unbound = unbound_classified_leaf_keys(
-        result.leaf_classification,
-        series_cell_keys(result.constant_series),
-        kind="constant",
-    )
-    assert unbound == ["Inputs!B1"]
+    with pytest.raises(GraphBindingCoverageError, match="Inputs!B1") as exc_info:
+        _pipeline_with_emptied_binding_shard(
+            synthetic_pipeline_config_fixture,
+            tmp_path,
+            "constants.bindings.yaml",
+        )
+    assert exc_info.value.unbound_cells == ("Inputs!B1",)
 
 
 def test_omitted_input_binding_reports_unbound_leaf(
     synthetic_pipeline_config_fixture: PipelineConfig,
     tmp_path: Path,
 ) -> None:
-    result = _pipeline_with_emptied_binding_shard(
-        synthetic_pipeline_config_fixture,
-        tmp_path,
-        "inputs.bindings.yaml",
-    )
-    unbound = unbound_classified_leaf_keys(
-        result.leaf_classification,
-        series_cell_keys(result.input_series),
-        kind="input",
-    )
-    assert unbound == ["Inputs!A1"]
+    with pytest.raises(GraphBindingCoverageError, match="Inputs!A1") as exc_info:
+        _pipeline_with_emptied_binding_shard(
+            synthetic_pipeline_config_fixture,
+            tmp_path,
+            "inputs.bindings.yaml",
+        )
+    assert exc_info.value.unbound_cells == ("Inputs!A1",)
 
 
 def test_unbound_classified_leaf_keys_rejects_unknown_kind() -> None:

@@ -8,6 +8,7 @@ import pytest
 from src.pipeline_config import DistProjectMetadata
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
+    GRAPH_BASELINE_DEPS,
     VALIDATION_BASELINE_DEV_DEPS,
     VALIDATION_DEPENDENCY_GROUP,
     extract_python_cells,
@@ -104,11 +105,11 @@ def test_write_dist_pyproject_and_readme(tmp_path: Path) -> None:
     )
 
 
-_GRAPH_GROUPS = (("graph", ("excel-grapher>=15.0.0", "pytest>=8.0.0")),)
+_EXTRA_GROUPS = (("serve", ("uvicorn>=0.30",)),)
 
 
 def _graph_metadata(
-    dependency_groups: tuple[tuple[str, tuple[str, ...]], ...] = _GRAPH_GROUPS,
+    dependency_groups: tuple[tuple[str, tuple[str, ...]], ...] = _EXTRA_GROUPS,
 ) -> DistProjectMetadata:
     return DistProjectMetadata(
         project_name="my-model",
@@ -124,11 +125,13 @@ def test_render_dist_pyproject_toml_emits_extra_dependency_groups() -> None:
     text = render_dist_pyproject_toml(
         dev_dependencies=["quarto>=0.1.0"],
         validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+        graph_dependencies=list(GRAPH_BASELINE_DEPS),
         metadata=_graph_metadata(),
     )
     groups = tomllib.loads(text)["dependency-groups"]
-    assert list(groups) == ["dev", "graph", VALIDATION_DEPENDENCY_GROUP]
-    assert groups["graph"] == ["excel-grapher>=15.0.0", "pytest>=8.0.0"]
+    assert list(groups) == ["dev", "graph", "serve", VALIDATION_DEPENDENCY_GROUP]
+    assert groups["graph"] == list(GRAPH_BASELINE_DEPS)
+    assert groups["serve"] == ["uvicorn>=0.30"]
     assert parse_dev_dependencies_from_pyproject(text) == ["quarto>=0.1.0"]
 
 
@@ -143,7 +146,7 @@ def test_render_dist_pyproject_toml_requires_fastpyxl_floor() -> None:
     ]
 
 
-@pytest.mark.parametrize("name", ["dev", VALIDATION_DEPENDENCY_GROUP])
+@pytest.mark.parametrize("name", ["dev", "graph", VALIDATION_DEPENDENCY_GROUP])
 def test_render_dist_pyproject_toml_rejects_reserved_group_names(name: str) -> None:
     with pytest.raises(ValueError, match="reserved"):
         render_dist_pyproject_toml(

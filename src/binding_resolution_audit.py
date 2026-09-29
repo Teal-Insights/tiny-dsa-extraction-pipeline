@@ -35,6 +35,11 @@ from fastpyxl.utils.cell import (
     get_column_letter,
 )
 
+from src.graph_binding_coverage import (
+    format_unbound_graph_cells,
+    unbound_graph_cells,
+)
+
 AuditSeverity = Literal["error", "warning"]
 DIRECTIONS: tuple[BindingDirection, ...] = (
     "input",
@@ -370,6 +375,28 @@ def find_duplicate_internal_formula_cell_bindings(
     return findings
 
 
+def find_unbound_graph_cell_bindings(
+    graph: DependencyGraph,
+    bindings: WorkbookSeriesBindings,
+    *,
+    workbook_path: Path | str | None = None,
+) -> list[AuditFinding]:
+    """Return one error when leaves or formulas sit outside every data_range."""
+    unbound = unbound_graph_cells(graph, bindings, workbook=workbook_path)
+    if not unbound:
+        return []
+    return [
+        AuditFinding(
+            severity="error",
+            code="unbound_graph_cell",
+            series_id="",
+            direction="internal",
+            message=format_unbound_graph_cells(unbound),
+            address=unbound[0],
+        )
+    ]
+
+
 def audit_binding_resolutions(
     graph: DependencyGraph,
     bindings: WorkbookSeriesBindings,
@@ -431,6 +458,14 @@ def audit_binding_resolutions(
                 workbook_path=workbook_path,
             )
         )
+
+    findings.extend(
+        find_unbound_graph_cell_bindings(
+            graph,
+            bindings,
+            workbook_path=workbook_path,
+        )
+    )
 
     return BindingResolutionAuditReport(findings=tuple(findings))
 

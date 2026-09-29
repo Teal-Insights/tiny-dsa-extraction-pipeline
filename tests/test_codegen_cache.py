@@ -216,8 +216,10 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
 ) -> None:
     from src import codegen_cache
     from src.extraction_pipeline import run_export_stage
+    from tests.fixtures.synthetic_pipeline import link_series_graph_template
 
     config = MagicMock()
+    link_series_graph_template(tmp_path)
     config.repo_root = tmp_path
     config.package_root = tmp_path / "dist" / "pkg"
     config.dist_root = tmp_path / "dist"
@@ -238,6 +240,8 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
     )
     config.graph_output_dir = tmp_path / "artifacts"
     config.dist_metadata = MagicMock()
+    config.dist_metadata.package_name = "pkg"
+    config.differential_workbook_rel = Path("data/workbook.xlsx")
     config.graph_output_dir.mkdir()
 
     graph_result = MagicMock()

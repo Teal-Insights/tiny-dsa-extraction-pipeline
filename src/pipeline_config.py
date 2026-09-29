@@ -38,9 +38,10 @@ class DistProjectMetadata:
     def repository_slug(self) -> str | None:
         """Return ``owner/repo`` when ``repository_url`` is a GitHub repository.
 
-        The deploy workflow uses this slug as the target repository for
-        publishing the generated ``dist/`` package. Returns ``None`` for
-        non-GitHub or unset URLs, which disables the publish steps.
+        ``scripts/deploy_dist.sh`` uses this slug as the default target
+        repository for deploying the generated ``dist/`` package. Returns
+        ``None`` for non-GitHub or unset URLs, in which case that script
+        requires ``--remote``.
         """
         if self.repository_url is None:
             return None
@@ -88,8 +89,6 @@ class PipelineConfig:
     internal_binding_validation_mode: InternalBindingValidationMode = "warn"
     internal_binding_exempt_cells: frozenset[str] = frozenset()
     runnable_cell_rules: tuple[RunnableCellRule, ...] = ()
-    # Hand-authored files copied into ``dist/`` on materialize.
-    package_overlay_path: Path | None = None
     # Extra ``uv sync --group`` names and YAML step lists spliced before and
     # after the docs build in ``dist/.github/workflows/deploy-docs.yml``.
     docs_workflow_sync_groups: tuple[str, ...] = ()
@@ -295,10 +294,6 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
     runnable_cell_rules = _load_runnable_cell_rules(
         getattr(user_config, "RUNNABLE_CELL_RULES", ())
     )
-    package_overlay_value = getattr(user_config, "PACKAGE_OVERLAY_PATH", None)
-    package_overlay_path = (
-        None if package_overlay_value is None else Path(package_overlay_value)
-    )
     docs_workflow_sync_groups = _load_docs_workflow_sync_groups(
         getattr(user_config, "DOCS_WORKFLOW_SYNC_GROUPS", ())
     )
@@ -334,7 +329,6 @@ def load_pipeline_config(*, repo_root: Path | None = None) -> PipelineConfig:
         internal_binding_validation_mode=internal_binding_validation_mode,
         internal_binding_exempt_cells=internal_binding_exempt_cells,
         runnable_cell_rules=runnable_cell_rules,
-        package_overlay_path=package_overlay_path,
         docs_workflow_sync_groups=docs_workflow_sync_groups,
         docs_workflow_pre_build_steps=docs_workflow_pre_build_steps,
         docs_workflow_post_build_steps=docs_workflow_post_build_steps,

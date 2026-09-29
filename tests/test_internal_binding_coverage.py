@@ -9,6 +9,7 @@ import pytest
 from excel_grapher.series_bindings.types import WorkbookSeriesBindings
 
 from src.extraction_pipeline import build_pipeline_graph
+from src.graph_binding_coverage import GraphBindingCoverageError
 from src.internal_binding_coverage import (
     InternalBindingCoverageError,
     enforce_internal_binding_coverage,
@@ -26,7 +27,7 @@ def test_manifest_binding_addresses_expands_list_data_range(
 ) -> None:
     pipeline = synthetic_configured_pipeline
     bindings = {
-        "schema_version": "1.19.0",
+        "schema_version": "1.22.0",
         "series": [
             {
                 "id": "engine_path",
@@ -284,12 +285,14 @@ def test_build_pipeline_graph_raises_when_validation_mode_is_error(
         bindings_path=bindings_path,
         internal_binding_validation_mode="error",
     )
-    with pytest.raises(InternalBindingCoverageError, match="Engine!B2"):
+    with pytest.raises(GraphBindingCoverageError, match="Engine!B2"):
         build_pipeline_graph(config)
 
 
 def test_workbook_internal_binding_coverage_gate() -> None:
-    from src.dependency_graph_viz import series_cell_keys
+    from excel_grapher.series_bindings import load_series_bindings
+
+    from src.graph_cache import load_pipeline_dependency_graph
     from src.pipeline_config import load_pipeline_config, validate_pipeline_config
 
     config = load_pipeline_config()
@@ -300,15 +303,11 @@ def test_workbook_internal_binding_coverage_gate() -> None:
     except FileNotFoundError as exc:
         pytest.skip(f"Pipeline configuration is incomplete: {exc}")
 
-    graph_result = build_pipeline_graph(config)
-    report = enforce_internal_binding_coverage(
-        graph=graph_result.graph,
-        internal_series=graph_result.internal_series,
-        input_cells=series_cell_keys(graph_result.input_series),
-        output_cells=series_cell_keys(graph_result.output_series),
+    graph, _cache_key = load_pipeline_dependency_graph(config)
+    bindings = load_series_bindings(config.bindings_path)
+    unbound = find_unbound_internal_formula_cells_from_manifest(
+        graph=graph,
+        bindings=bindings,
         exempt_cells=config.internal_binding_exempt_cells,
-        mode=config.internal_binding_validation_mode,
-        context="pytest",
     )
-    assert report is not None
-    assert report.unbound_cells == ()
+    assert unbound == ()

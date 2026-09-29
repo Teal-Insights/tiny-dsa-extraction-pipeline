@@ -19,6 +19,7 @@ from src.extraction_pipeline import (
 )
 from src.pipeline_config import DistProjectMetadata, PipelineConfig
 from src.stage_timings import PipelineTimings, stage_timings_path
+from tests.fixtures.synthetic_pipeline import link_series_graph_template
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +39,7 @@ def _stage_timings_in_tmp_path(
 
 
 def _sample_config(repo_root: Path) -> PipelineConfig:
+    link_series_graph_template(repo_root)
     workbook_path = repo_root / "data" / "workbook.xlsx"
     guide_path = repo_root / "data" / "guide.md"
     bindings_path = repo_root / "bindings"

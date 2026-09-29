@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
+import workbook_config
 from src.documentation_pipeline import (
     CURSOR_API_KEY_ENV,
     DEFAULT_DOCUMENT_AGENT_DEADLINE_SECONDS,
@@ -189,6 +190,28 @@ def test_user_guide_agent_prompt_reserves_99_parity_page() -> None:
     assert "03-excel-parity-validation.qmd" not in prompt
 
 
+def test_user_guide_agent_prompt_embeds_graph_with_absolute_urls() -> None:
+    config = load_pipeline_config()
+    config = replace(
+        config,
+        dist_metadata=replace(
+            config.dist_metadata, documentation_url="https://docs.example.org/pkg/"
+        ),
+    )
+    prompt = build_user_guide_agent_prompt(config)
+    assert "https://docs.example.org/pkg/assets/graph/index.html" in prompt
+    assert "https://docs.example.org/pkg/assets/graph/index.html?preview=1" in prompt
+    assert "resources: [../assets/graph/**]" not in prompt
+
+
+def test_user_guide_agent_prompt_teaches_input_discovery() -> None:
+    config = load_pipeline_config()
+    prompt = build_user_guide_agent_prompt(config)
+    assert "inspect.signature" in prompt
+    assert "*Inputs.describe()" in prompt
+    assert "Lead with the model's result" in prompt
+
+
 def test_document_agent_model_defaults_to_luna(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -364,6 +387,46 @@ def test_validate_runnable_cell_rules_rejects_forbidden_pattern(
         validate_runnable_cell_rules(config)
 
 
+def _config_with_authored_runnable_cell_rules(tmp_path: Path) -> PipelineConfig:
+    return replace(
+        _minimal_config(tmp_path),
+        runnable_cell_rules=workbook_config.RUNNABLE_CELL_RULES,
+    )
+
+
+def _write_python_cell(config: PipelineConfig, source: str) -> None:
+    guide = config.dist_root / "user_guide"
+    guide.mkdir(parents=True)
+    (guide / "01-worked-assessment.qmd").write_text(
+        f"---\ntitle: t\n---\n\n```{{python}}\n{source}\n```\n",
+        encoding="utf-8",
+    )
+
+
+def test_validate_runnable_cell_rules_allows_matplotlib_method_calls(
+    tmp_path: Path,
+) -> None:
+    config = _config_with_authored_runnable_cell_rules(tmp_path)
+    _write_python_cell(
+        config,
+        'ax.set_ylabel("Debt, percent of GDP")\n'
+        'ax.set_xlabel("Year")\n'
+        'ax.set_title("France, primary expenditure held at the baseline level")\n'
+        'ax.spines["top"].set_visible(False)\n'
+        'ax.spines["right"].set_visible(False)',
+    )
+    validate_runnable_cell_rules(config)
+
+
+def test_validate_runnable_cell_rules_rejects_bare_set_call(
+    tmp_path: Path,
+) -> None:
+    config = _config_with_authored_runnable_cell_rules(tmp_path)
+    _write_python_cell(config, 'set_country_name(ctx, "France")')
+    with pytest.raises(ValueError, match="must not call set_"):
+        validate_runnable_cell_rules(config)
+
+
 def test_write_validation_page_independent_of_agent(tmp_path: Path) -> None:
     config = _minimal_config(tmp_path)
     tests_root = config.dist_root / "tests"
@@ -519,44 +582,53 @@ def _workflow_steps(text: str) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], workflow["jobs"]["build-and-deploy"]["steps"])
 
 
-def test_render_docs_deploy_workflow_defaults_to_dev_group(tmp_path: Path) -> None:
+def test_render_docs_deploy_workflow_defaults_to_dev_and_graph_groups(
+    tmp_path: Path,
+) -> None:
     steps = _workflow_steps(render_docs_deploy_workflow(_minimal_config(tmp_path)))
     names = [step["name"] for step in steps]
     sync = steps[names.index("Install project dependencies")]
-    assert sync["run"] == "uv sync --group dev"
-    assert names.index("Build documentation site") + 1 == names.index(
-        "Upload Pages artifact"
-    )
+    assert sync["run"] == "uv sync --group dev --group graph"
+    assert names[names.index("Install project dependencies") :] == [
+        "Install project dependencies",
+        "Refresh static graph bootstrap snapshot",
+        "Build documentation site",
+        "Ensure interactive graph assets are published",
+        "Upload Pages artifact",
+        "Deploy to GitHub Pages",
+    ]
 
 
 def test_render_docs_deploy_workflow_splices_configured_steps(tmp_path: Path) -> None:
     config = replace(
         _minimal_config(tmp_path),
-        docs_workflow_sync_groups=("graph",),
+        docs_workflow_sync_groups=("extra",),
         docs_workflow_pre_build_steps=(
-            "- name: Refresh bootstrap\n"
-            "  run: uv run python scripts/write_graph_bootstrap.py\n"
+            "- name: Point graph UI at API\n  run: echo configured\n"
         ),
         docs_workflow_post_build_steps=(
-            "- name: Publish graph assets\n"
+            "- name: Check graph assets\n"
             "  run: |\n"
-            "    mkdir -p great-docs/_site/assets\n"
-            "    cp -a assets/graph great-docs/_site/assets/\n"
+            "    test -f great-docs/_site/assets/graph/index.html\n"
+            "    test -f great-docs/_site/assets/graph/config.js\n"
         ),
     )
     steps = _workflow_steps(render_docs_deploy_workflow(config))
     names = [step["name"] for step in steps]
     assert names[names.index("Install project dependencies") :] == [
         "Install project dependencies",
-        "Refresh bootstrap",
+        "Refresh static graph bootstrap snapshot",
+        "Point graph UI at API",
         "Build documentation site",
-        "Publish graph assets",
+        "Ensure interactive graph assets are published",
+        "Check graph assets",
         "Upload Pages artifact",
         "Deploy to GitHub Pages",
     ]
     assert steps[names.index("Install project dependencies")]["run"] == (
-        "uv sync --group dev --group graph"
+        "uv sync --group dev --group graph --group extra"
     )
-    assert steps[names.index("Publish graph assets")]["run"] == (
-        "mkdir -p great-docs/_site/assets\ncp -a assets/graph great-docs/_site/assets/\n"
+    assert steps[names.index("Check graph assets")]["run"] == (
+        "test -f great-docs/_site/assets/graph/index.html\n"
+        "test -f great-docs/_site/assets/graph/config.js\n"
     )

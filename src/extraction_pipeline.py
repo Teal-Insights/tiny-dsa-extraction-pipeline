@@ -30,6 +30,7 @@ from src.dependency_graph_viz import (
     series_cell_keys,
     write_dependency_graph_site,
 )
+from src.graph_binding_coverage import require_graph_binding_coverage
 from src.graph_cache import get_or_build_dependency_graph
 from src.input_domain_dtype import require_input_domain_dtype_consistency
 from src.internal_binding_coverage import InternalBindingCoverageReport
@@ -531,6 +532,13 @@ def resolve_pipeline_bindings(
             raise ValueError(
                 f"Invalid series bindings: {binding_validation_report['issues']!r}"
             )
+
+    with stage("graph_binding_coverage"):
+        require_graph_binding_coverage(
+            graph,
+            series_bindings,
+            workbook=config.workbook_path,
+        )
 
     with stage("derive_series"):
         series_result = get_or_build_series_resolution(

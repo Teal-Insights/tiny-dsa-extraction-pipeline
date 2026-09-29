@@ -34,6 +34,7 @@ from src.pipeline_monitor import (
 )
 from src.qmd_python_validation import (
     DOCUMENTATION_BASELINE_DEV_DEPS,
+    GRAPH_BASELINE_DEPS,
     VALIDATION_BASELINE_DEV_DEPS,
     extract_python_cells,
     merge_dev_dependencies,
@@ -43,7 +44,7 @@ from src.qmd_python_validation import (
 
 DOCUMENT_AGENT_MODEL_ENV = "DOCUMENT_AGENT_MODEL"
 DEFAULT_DOCUMENT_AGENT_MODEL = "gpt-5.6-luna"
-USER_GUIDE_AGENT_PROMPT_VERSION = 2
+USER_GUIDE_AGENT_PROMPT_VERSION = 3
 DOCUMENT_AGENT_DEADLINE_ENV = "DOCUMENT_AGENT_DEADLINE"
 DEFAULT_DOCUMENT_AGENT_DEADLINE_SECONDS = 1800.0
 CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
@@ -132,6 +133,7 @@ def build_user_guide_agent_prompt(config: PipelineConfig) -> str:
         api_import_path=config.api_import_path,
         install_command=config.dist_metadata.resolved_install_command(),
         package_name=config.dist_metadata.package_name,
+        documentation_url=config.dist_metadata.documentation_url,
     ).strip()
 
 
@@ -246,6 +248,7 @@ def merge_agent_pyproject_extras(config: PipelineConfig) -> list[str]:
             extras,
         ),
         validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+        graph_dependencies=list(GRAPH_BASELINE_DEPS),
         metadata=config.dist_metadata,
     )
     return extras
@@ -294,6 +297,7 @@ def restore_user_guide_cache(config: PipelineConfig, *, cache_key: str) -> bool:
             extras,
         ),
         validation_dependencies=list(VALIDATION_BASELINE_DEV_DEPS),
+        graph_dependencies=list(GRAPH_BASELINE_DEPS),
         metadata=config.dist_metadata,
     )
     return True
@@ -755,7 +759,8 @@ def _workflow_steps_block(steps: str) -> str:
 
 def render_docs_deploy_workflow(config: PipelineConfig) -> str:
     sync_groups = " ".join(
-        f"--group {group}" for group in ("dev", *config.docs_workflow_sync_groups)
+        f"--group {group}"
+        for group in ("dev", "graph", *config.docs_workflow_sync_groups)
     )
     pre_build_steps = _workflow_steps_block(config.docs_workflow_pre_build_steps)
     post_build_steps = _workflow_steps_block(config.docs_workflow_post_build_steps)
@@ -797,8 +802,20 @@ jobs:
       - name: Install project dependencies
         run: uv sync {sync_groups}
 
+      - name: Refresh static graph bootstrap snapshot
+        run: uv run python scripts/write_graph_bootstrap.py
+        continue-on-error: true
+
 {pre_build_steps}      - name: Build documentation site
         run: uv run --with great-docs great-docs build --project-path .
+
+      - name: Ensure interactive graph assets are published
+        run: |
+          mkdir -p great-docs/_site/assets
+          if [ -d assets/graph ]; then
+            cp -a assets/graph great-docs/_site/assets/
+            test -f great-docs/_site/assets/graph/index.html
+          fi
 
 {post_build_steps}      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

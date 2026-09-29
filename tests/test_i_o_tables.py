@@ -6,11 +6,19 @@ import csv
 import importlib
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 import pytest
-from excel_grapher.core.cell_types import Between, RealBetween
+from excel_grapher.core.cell_types import (
+    CellKind,
+    CellType,
+    EnumDomain,
+    IntervalDomain,
+    RealBetween,
+    RealIntervalDomain,
+)
 from excel_grapher.series_bindings import derive_input_series, derive_output_series
+from excel_grapher.series_bindings.domains import cell_type_env_from_bindings
 
 from tests.conftest import SyntheticConfiguredPipeline
 from tests.fixtures.synthetic_pipeline import (
@@ -19,81 +27,103 @@ from tests.fixtures.synthetic_pipeline import (
 )
 
 
-def test_format_constraint_literal_enum() -> None:
-    from scripts.i_o_tables import format_constraint
+def test_format_cell_type_enum() -> None:
+    from scripts.i_o_tables import format_cell_type
 
-    formatted = format_constraint(Literal["Borvelia", "Litellia", "Aurelium"])
+    formatted = format_cell_type(
+        CellType(
+            kind=CellKind.STRING,
+            enum=EnumDomain(values=frozenset({"Borvelia", "Litellia", "Aurelium"})),
+        )
+    )
     assert formatted.dtype == "string"
-    assert formatted.acceptable_values == "Borvelia, Litellia, Aurelium"
+    assert formatted.acceptable_values == "Aurelium, Borvelia, Litellia"
 
 
-def test_format_constraint_singleton_literal() -> None:
-    from scripts.i_o_tables import format_constraint
+def test_format_cell_type_singleton_enum() -> None:
+    from scripts.i_o_tables import format_cell_type
 
-    formatted = format_constraint(Literal[0])
+    formatted = format_cell_type(
+        CellType(kind=CellKind.NUMBER, enum=EnumDomain(values=frozenset({0})))
+    )
     assert formatted.dtype == "int"
     assert formatted.acceptable_values == "0"
 
 
-def test_format_constraint_between() -> None:
-    from scripts.i_o_tables import format_constraint
+def test_format_cell_type_interval() -> None:
+    from scripts.i_o_tables import format_cell_type
 
-    formatted = format_constraint(Annotated[int, Between(1, 5)])
+    formatted = format_cell_type(
+        CellType(kind=CellKind.NUMBER, interval=IntervalDomain(min=1, max=5))
+    )
     assert formatted.dtype == "int"
     assert formatted.acceptable_values == "1 ≤ x ≤ 5"
 
 
-def test_format_constraint_real_between() -> None:
-    from scripts.i_o_tables import format_constraint
+def test_format_cell_type_real_interval() -> None:
+    from scripts.i_o_tables import format_cell_type
 
-    formatted = format_constraint(Annotated[float, RealBetween(0.0, 100.0)])
+    formatted = format_cell_type(
+        CellType(
+            kind=CellKind.NUMBER,
+            real_interval=RealIntervalDomain(min=0.0, max=100.0),
+        )
+    )
     assert formatted.dtype == "float"
     assert formatted.acceptable_values == "0.0 ≤ x ≤ 100.0"
 
 
-def test_format_constraint_falls_back_to_measure_dtype() -> None:
-    from scripts.i_o_tables import format_constraint
+def test_format_cell_type_falls_back_to_measure_dtype() -> None:
+    from scripts.i_o_tables import format_cell_type
 
-    formatted = format_constraint(None, fallback_dtype="float")
+    formatted = format_cell_type(None, fallback_dtype="float")
     assert formatted.dtype == "float"
     assert formatted.acceptable_values == ""
 
 
-def test_format_constraint_open_ended_interval() -> None:
-    from scripts.i_o_tables import format_constraint
+def test_format_cell_type_open_ended_interval() -> None:
+    from scripts.i_o_tables import format_cell_type
 
-    formatted = format_constraint(Annotated[int, Between(None, 10)])
+    formatted = format_cell_type(
+        CellType(kind=CellKind.NUMBER, interval=IntervalDomain(min=None, max=10))
+    )
     assert formatted.dtype == "int"
     assert formatted.acceptable_values == "x ≤ 10"
 
 
-def test_effective_domain_annotations_overlay_wins(
+def test_input_catalog_uses_binding_domains_not_constraints_overlay(
     synthetic_configured_pipeline: SyntheticConfiguredPipeline,
 ) -> None:
-    from scripts.i_o_tables import effective_domain_annotations
+    from scripts.i_o_tables import input_catalog_rows
 
     overlay = {"Inputs!A1": Annotated[float, RealBetween(1.0, 2.0)]}
     config = replace(synthetic_configured_pipeline.config, constraints=overlay)
-    annotations = effective_domain_annotations(
-        config, bindings=synthetic_configured_pipeline.series_bindings
+    bindings = synthetic_configured_pipeline.series_bindings
+    rows = input_catalog_rows(
+        derive_input_series(
+            synthetic_configured_pipeline.graph,
+            bindings,
+            workbook=config.workbook_path,
+        ),
+        cell_type_env_from_bindings(bindings, workbook=config.workbook_path),
+        bindings,
     )
-    assert annotations["Inputs!A1"] is overlay["Inputs!A1"]
+    assert len(rows) == 1
+    assert rows[0]["acceptable_values"] == "0.0 ≤ x ≤ 100.0"
+    assert rows[0]["dtype"] == "float"
 
 
 def test_synthetic_input_catalog_rows(
     synthetic_configured_pipeline: SyntheticConfiguredPipeline,
 ) -> None:
-    from scripts.i_o_tables import (
-        effective_domain_annotations,
-        input_catalog_rows,
-    )
+    from scripts.i_o_tables import input_catalog_rows
 
     config = synthetic_configured_pipeline.config
     graph = synthetic_configured_pipeline.graph
     bindings = synthetic_configured_pipeline.series_bindings
     rows = input_catalog_rows(
         derive_input_series(graph, bindings, workbook=config.workbook_path),
-        effective_domain_annotations(config, bindings=bindings),
+        cell_type_env_from_bindings(bindings, workbook=config.workbook_path),
         bindings,
     )
     assert len(rows) == 1

@@ -1,4 +1,4 @@
-"""Output compute helpers (series-bindings schema 1.19.0).
+"""Output compute helpers (series-bindings schema 1.22.0).
 
 When an internals helper covers a published output series' leaves, the series
 declares ``output.compute.helper`` so generated ``compute_*`` calls the helper

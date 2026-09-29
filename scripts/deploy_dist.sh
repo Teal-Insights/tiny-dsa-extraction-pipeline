@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish the committed dist/ to the generated package's repository.
+# Deploy the committed dist/ to the generated package's repository.
 #
 # The committed dist/ tree becomes a deploy commit on top of the previous
 # deploy commit, which is then merged into the package repo's main. Commits
@@ -40,6 +40,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+for tool in git tar; do
+  command -v "$tool" >/dev/null 2>&1 || die "required tool not on PATH: $tool"
+done
+
 pipeline_root="$(git rev-parse --show-toplevel)"
 cd "$pipeline_root"
 
@@ -50,6 +54,7 @@ git diff --quiet HEAD -- dist ||
 
 source_sha="$(git rev-parse HEAD)"
 origin_url="$(git remote get-url origin 2>/dev/null || true)"
+# Match after any userinfo so a credentialed HTTPS remote is recorded as owner/repo.
 if [[ "$origin_url" =~ github\.com[:/]([^/]+/[^/]+)$ ]]; then
   source_name="${BASH_REMATCH[1]%.git}"
 else

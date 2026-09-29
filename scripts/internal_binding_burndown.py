@@ -3,8 +3,8 @@
 Loads the cached dependency graph plus the binding sidecars, finds every formula
 node not covered by input/output/internal bindings or the exemption list, and
 groups the unbound addresses by ``(sheet, row)`` into contiguous column ranges.
-Each printed range is one candidate ``layout: row_series`` entry; singletons are
-``layout: scalar`` lookups or anchors.
+Those ranges are a coverage worklist. They are not series to emit, and a
+one-cell range is not a reason to author ``layout: scalar``.
 
 Run: ``uv run python -m scripts.internal_binding_burndown``
 

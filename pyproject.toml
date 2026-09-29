@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "cursor-sdk>=1.0.31",
-    "excel-grapher>=22.0.0",
+    "excel-grapher>=23.11.1",
     "openai>=2.38.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
@@ -25,15 +25,24 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = "-v -p no:faulthandler -p no:cacheprovider"
-# pytest defaults plus package_overlay/, which is vendored into dist/ and
-# tested there, not here.
-norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "package_overlay"]
+# pytest defaults plus dist-overlay/, whose tests run after materialization
+# in dist/.
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+    "dist-overlay",
+]
 
 [tool.ruff]
-extend-exclude = ["package_overlay"]
-
-[tool.ty.src]
-exclude = ["package_overlay"]
+# Overlay package fragments use relative imports that resolve only in dist/.
+extend-exclude = ["dist-overlay"]
 
 [tool.ruff.lint]
 # Ruff 0.16+ expanded defaults (413 rules): see
@@ -46,6 +55,12 @@ exclude = ["package_overlay"]
 # - B010: setattr marker on a patched function (ty rejects direct assignment)
 # Prefer fixing the code over adding noqa when cheap (e.g. typed attribute
 # access instead of getattr(..., "const")).
+
+[tool.ty.src]
+# Series-graph templates are copied into a generated package. Their relative
+# imports and ``tiny_dsa`` imports resolve only after that copy. The same holds
+# for ``dist-overlay/`` fragments.
+exclude = ["templates", "dist-overlay"]
 
 [tool.ruff.format]
 # Keep formatted Python on LF so Windows checkouts cannot reintroduce the CRLF

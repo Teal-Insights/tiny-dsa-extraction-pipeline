@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -82,6 +83,20 @@ def write_synthetic_workbook(path: Path) -> Path:
 
     workbook.save(path)
     return path
+
+
+def link_series_graph_template(repo_root: Path) -> None:
+    """Copy the vendored series-graph template into a sandbox repo.
+
+    Copies rather than symlinks: Windows refuses symlinks without admin rights
+    or Developer Mode, and a copy keeps tests from mutating the real template.
+    """
+    source = Path(__file__).resolve().parents[2] / "templates" / "series-graph"
+    destination = repo_root / "templates" / "series-graph"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        return
+    shutil.copytree(source, destination)
 
 
 def load_synthetic_series_bindings(
