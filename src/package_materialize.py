@@ -26,6 +26,7 @@ from src.qmd_python_validation import (
     render_dist_pyproject_toml,
     write_dist_readme,
 )
+from src.series_graph_layout import SERIES_GRAPH_LAYOUT_REL, write_series_graph_layout
 
 PACKAGE_CACHE_KEYS_FILENAME = ".pipeline-cache-keys.json"
 PACKAGE_OVERLAY_MANIFEST_FILENAME = ".package-overlay-manifest.json"
@@ -51,6 +52,7 @@ _OVERLAY_RESERVED_FILES = frozenset(
         PACKAGE_CACHE_KEYS_FILENAME,
         PACKAGE_OVERLAY_MANIFEST_FILENAME,
         "README.md",
+        SERIES_GRAPH_LAYOUT_REL.as_posix(),
         "great-docs.yml",
         "pyproject.toml",
         "tests/README.md",
@@ -282,6 +284,8 @@ def _write_dist_tree(config: PipelineConfig, modules: dict[str, str]) -> None:
     )
     replace_dist_bindings(config)
     apply_dist_overlay(config, overlay_files)
+    # After the overlay: it supplies the authored graph_schema.py.
+    write_series_graph_layout(config)
 
 
 def materialize_package(

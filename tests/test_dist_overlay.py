@@ -19,6 +19,8 @@ from src.pipeline_config import PipelineConfig
 from tests.test_package_materialize import _SAMPLE_MODULES, _prepare_repo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Materialize imports graph_schema.py to lay out the series graph.
+_STUB_SCHEMA = "# workbook schema\nNODES = ()\nEDGES = ()\n"
 
 
 def _materialize(config: PipelineConfig) -> None:
@@ -90,14 +92,14 @@ def test_materialize_without_overlay_writes_no_manifest(tmp_path: Path) -> None:
 
 def test_overlay_replaces_seeded_series_graph_files(tmp_path: Path) -> None:
     config = _prepare_repo(tmp_path)
-    _write_overlay(tmp_path, "my_model/graph_schema.py", "# workbook schema\n")
+    _write_overlay(tmp_path, "my_model/graph_schema.py", _STUB_SCHEMA)
     _write_overlay(tmp_path, "Dockerfile", "FROM python:3.13-slim\n")
     _write_overlay(tmp_path, "assets/graph/README.md", "# workbook viz\n")
     _materialize(config)
 
     assert (config.package_root / "graph_schema.py").read_text(
         encoding="utf-8"
-    ) == "# workbook schema\n"
+    ) == _STUB_SCHEMA
     assert (config.dist_root / "Dockerfile").read_text(
         encoding="utf-8"
     ) == "FROM python:3.13-slim\n"
@@ -157,7 +159,7 @@ def test_dropping_an_overlaid_seed_file_restores_the_template(tmp_path: Path) ->
     _materialize(config)
     seeded = (config.package_root / "graph_schema.py").read_bytes()
 
-    _write_overlay(tmp_path, "my_model/graph_schema.py", "# workbook schema\n")
+    _write_overlay(tmp_path, "my_model/graph_schema.py", _STUB_SCHEMA)
     _materialize(config)
     (tmp_path / DIST_OVERLAY_REL / "my_model" / "graph_schema.py").unlink()
     _materialize(config)
