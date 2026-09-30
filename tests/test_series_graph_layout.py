@@ -54,6 +54,19 @@ def test_layout_flows_left_to_right_from_inputs_to_outputs() -> None:
     assert inputs < internal < outputs
 
 
+def test_layout_centres_each_role_on_the_flow_axis() -> None:
+    """Role clusters share a mean y, so no role looks like the graph's root."""
+    positions = compute_series_graph_layout(_TOPOLOGY)
+
+    for role in set(_TOPOLOGY.roles):
+        ys = [
+            positions[series_id][1]
+            for series_id, r in zip(_TOPOLOGY.node_ids, _TOPOLOGY.roles, strict=True)
+            if r == role
+        ]
+        assert sum(ys) / len(ys) == pytest.approx(0.0, abs=0.01), role
+
+
 def test_layout_is_deterministic() -> None:
     assert compute_series_graph_layout(_TOPOLOGY) == compute_series_graph_layout(
         _TOPOLOGY
