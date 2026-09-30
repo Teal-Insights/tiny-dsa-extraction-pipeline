@@ -266,6 +266,7 @@ def test_run_export_stage_skips_generate_modules_on_cache_hit(
         patch("src.extraction_pipeline.StageTimer") as timer_cls,
         patch("src.extraction_pipeline.resolve_stall_log_path") as stall_path,
         patch("src.package_materialize.seed_validation_harness"),
+        patch("src.package_materialize.write_series_graph_layout"),
         patch("src.package_materialize.render_dist_pyproject_toml", return_value=""),
         patch("src.package_materialize.write_dist_readme"),
         patch("src.extraction_pipeline.CodeGenerator") as codegen_cls,
