@@ -100,6 +100,7 @@ def test_run_export_stage_prints_codegen_stage_boundary(
         ),
         patch("src.extraction_pipeline.CodeGenerator") as generator_cls,
         patch("src.package_materialize.seed_validation_harness"),
+        patch("src.package_materialize.write_series_graph_layout"),
     ):
         generator = generator_cls.return_value.__enter__.return_value
         generator.generate_modules.return_value = {"internals.py": "pass\n"}

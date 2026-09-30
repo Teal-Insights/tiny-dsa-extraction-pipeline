@@ -26,6 +26,8 @@ _SAMPLE_MODULES = {
     "data.py": "DATA = {}\n",
     "runtime.py": "def run():\n    pass\n",
     "internals.py": "def cell_a1(ctx):\n    return 1.0\n",
+    # The seeded graph_schema.py scaffold imports Model.
+    "model.py": "class Model:\n    _INPUT_IDS = ()\n",
 }
 
 
