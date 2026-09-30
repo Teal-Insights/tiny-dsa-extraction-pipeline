@@ -9,6 +9,8 @@ Fullscreen Cytoscape explorer for the exported package. Values recompute via
 | `config.js` | Optional remote API base (empty = same-origin) |
 | `app.js` | Cytoscape wiring; `GET /api/graph`, `POST /api/evaluate` |
 | `bootstrap.json` | Optional static snapshot when the API is offline |
+| `force-layout.js` | Fits `layout.json` to node boxes (scale, then separate vertically) |
+| `layout.json` | Pipeline-written starter layout; absent → layered layout |
 | `style.css` | Layout and role colors |
 | `API.md` | Full HTTP contract the UI expects |
 

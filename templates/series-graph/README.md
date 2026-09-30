@@ -12,6 +12,7 @@ browser-side formula clone.
 | `{package}/graph_schema.py` | **Author** `NODES` / `EDGES` (scaffold) |
 | `{package}/graph_formula_evaluator.py` | FormulaEvaluator over the `tests/fixtures/` workbook and `bindings/` |
 | `assets/graph/` | Cytoscape UI (`app.js` calls `/api/…`) |
+| `assets/graph/layout.json` | Starter layout the pipeline computes from `NODES` / `EDGES` with excel-grapher's clustered force layout (not seeded; not overlayable) |
 | `scripts/serve_graph_api.py` | Local stdlib HTTP server |
 | `scripts/write_graph_bootstrap.py` | Static `bootstrap.json` for docs paint |
 | `scripts/check_graph_eval.py` | FormulaEvaluator vs export parity on defaults |

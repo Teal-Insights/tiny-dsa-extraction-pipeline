@@ -800,16 +800,22 @@ def test_binding_guidance_documents_constant_direction() -> None:
         )
 
 
-def test_excel_grapher_floor_is_23_11_1() -> None:
-    """Lockfile and pyproject must agree on excel-grapher>=23.11.1."""
+def test_excel_grapher_floor_is_24_0_0() -> None:
+    """Lockfile and pyproject must agree on excel-grapher[fast]>=24.0.0.
+
+    24.0.0 ships the clustered force layout; ``fast`` brings the numpy it needs.
+    """
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     lockfile = (root / "uv.lock").read_text(encoding="utf-8")
     installed = tuple(int(part) for part in version("excel-grapher").split(".")[:3])
 
-    assert "excel-grapher>=23.11.1" in pyproject
-    assert '{ name = "excel-grapher", specifier = ">=23.11.1" }' in lockfile
-    assert installed >= (23, 11, 1)
+    assert "excel-grapher[fast]>=24.0.0" in pyproject
+    assert (
+        '{ name = "excel-grapher", extras = ["fast"], specifier = ">=24.0.0" }'
+        in lockfile
+    )
+    assert installed >= (24, 0, 0)
 
 
 def test_binding_resolution_audit_uses_public_apply_series_excludes() -> None:
