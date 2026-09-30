@@ -3,7 +3,8 @@
 excel-grapher's shared clustered force layout (``clustered_force_layout``)
 places the authored series DAG from ``{package}/graph_schema.py``: one cluster
 per role, with a weak pull towards input depth inside and between clusters.
-The result is rotated so data flows left to right and written to
+The result is rotated so data flows left to right, each role is centred on the
+flow axis, and it is written to
 ``dist/assets/graph/layout.json`` in layout units (``link_distance`` is the
 spring rest length). The viewer scales it to its node boxes, so the package and
 its frontend never import excel-grapher.
@@ -76,10 +77,19 @@ def compute_series_graph_layout(
         rank_pull="everywhere",
     )
     # The engine pulls inputs towards the smallest y; the viewer flows along x.
+    flow = positions[:, 1]
+    cross = positions[:, 0].copy()
+    # The pull fixes only where clusters sit along the flow. Across it, cluster
+    # separation leaves them in a triangle, so one role would look like the
+    # root. Centre every role on the flow axis, keeping each cluster's shape.
+    # Drop once excel-grapher can align clusters itself (excel-grapher#1040).
+    for role in set(topology.roles):
+        members = [i for i, r in enumerate(topology.roles) if r == role]
+        cross[members] -= cross[members].mean()
     return {
         series_id: (
-            round(float(positions[i, 1]), _POSITION_DECIMALS),
-            round(float(positions[i, 0]), _POSITION_DECIMALS),
+            round(float(flow[i]), _POSITION_DECIMALS),
+            round(float(cross[i]), _POSITION_DECIMALS),
         )
         for i, series_id in enumerate(topology.node_ids)
     }
